@@ -30,6 +30,7 @@ class TestDashboardA11y(unittest.TestCase):
     def setUp(self):
         self.html = pathlib.Path("static/index.html").read_text(encoding="utf-8")
         self.js = pathlib.Path("static/js/pages.js").read_text(encoding="utf-8")
+        self.sources = pathlib.Path("static/js/sources.js").read_text(encoding="utf-8")
         self.app = pathlib.Path("static/js/app.js").read_text(encoding="utf-8")
 
     def test_pinch_zoom_is_allowed(self):
@@ -41,14 +42,17 @@ class TestDashboardA11y(unittest.TestCase):
         self.assertRegex(self.html, r"@media \(pointer: coarse\) \{\s*input, select, textarea \{ font-size: 16px !important; \}")
 
     def test_live_switches_have_a_name_and_a_state(self):
-        toggles = re.findall(r'<button[^>]*class="live-toggle[^>]*>', self.js)
-        self.assertEqual(len(toggles), 3)
+        # pages.js: YouTube and channel switches; sources.js: a provider's
+        # "Use for ..." switches and its channel groups.
+        toggles = re.findall(r'<button[^>]*class="live-toggle[^>]*>', self.js + self.sources)
+        self.assertEqual(len(toggles), 4)
         for t in toggles:
             self.assertIn("aria-label=", t)
             self.assertIn("aria-pressed=", t)
         # Every place that flips a switch keeps aria-pressed in step.
         self.assertNotIn("classList.add('on'); else btn.classList.remove('on')", self.js)
         self.assertNotIn("classList.add('on'); else row.classList.remove('on')", self.js)
+        self.assertIn("btn.setAttribute('aria-pressed'", self.sources)
 
     def test_hidden_switch_checkboxes_have_a_name(self):
         self.assertRegex(self.js, r'<input type="checkbox" \$\{checked\} aria-label=[^>]*toggleAutoPlaylist')
@@ -56,7 +60,7 @@ class TestDashboardA11y(unittest.TestCase):
         self.assertRegex(self.html, r'id="notif-enabled-checkbox" aria-label=')
 
     def test_filters_and_pickers_have_a_name(self):
-        for id_ in ("lib-sort", "vod-provider-select", "live-ch-group-filter", "live-ch-epg-filter",
+        for id_ in ("lib-sort", "lib-source", "live-ch-group-filter", "live-ch-epg-filter",
                     "home-hero-select", "home-hero-sort", "home-hero-item-count", "card-previews-select"):
             with self.subTest(id=id_):
                 self.assertRegex(self.html, rf'id="{id_}" aria-label="[^"]+"')

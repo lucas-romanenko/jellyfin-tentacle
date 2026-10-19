@@ -27,7 +27,7 @@ If you use Radarr and/or Sonarr for downloading content:
 - **URL** — Your Radarr/Sonarr address (e.g., `http://192.168.1.100:7878`)
 - **API Key** — Found in Radarr/Sonarr → Settings → General → API Key
 
-Click **Test Radarr** / **Test Sonarr** to verify each connection. Once connected, pick a **Default quality profile**: every request made from Tentacle uses it. You can change it later in Settings → Connections.
+Click **Test Radarr** / **Test Sonarr** to verify each connection. Once connected, pick a **Default quality profile**: every request made from Tentacle uses it. You can change it later in Settings → Services.
 
 Don't use Radarr or Sonarr? Click **Skip — I don't use Radarr/Sonarr** to go straight to step 5.
 
@@ -47,9 +47,9 @@ Add each one in Radarr/Sonarr under **Settings → Connect → + → Webhook**, 
 
 All three are optional:
 
-- **TMDB Bearer Token** — Leave it empty: Tentacle ships with a built-in TMDB key, so metadata works out of the box. Use your own from [themoviedb.org](https://www.themoviedb.org/settings/api) only if you want to (Settings → Connections later).
-- **Trakt Client ID** — For subscribing to Trakt lists (Settings → Integrations later).
-- **Logo.dev API Key** — For auto-generated playlist artwork (Settings → Integrations later).
+- **TMDB Bearer Token** — Leave it empty: Tentacle ships with a built-in TMDB key, so metadata works out of the box. Use your own from [themoviedb.org](https://www.themoviedb.org/settings/api) only if you want to (Settings → Services later).
+- **Trakt Client ID** — For subscribing to Trakt lists (Settings → Services later).
+- **Logo.dev API Key** — For auto-generated playlist artwork (Settings → Services later).
 
 Click **Get Started** to save and go to step 6, or **Skip everything — I'll configure later** to close the wizard right away.
 
@@ -61,7 +61,7 @@ Click **Done**, or **Skip — I'll install later**.
 
 ## Check Library Paths
 
-Library Paths is not part of the wizard. After it, go to **Settings → Library Paths** to verify your volume mounts:
+Library Paths is not part of the wizard. After it, go to **Health → Media folders** to verify your volume mounts:
 
 | Path | Status | What it means |
 |------|--------|---------------|
@@ -76,7 +76,7 @@ Red paths mean the volume isn't mounted in your Docker Compose. This is fine if 
 
 After the wizard, here's the recommended order:
 
-1. **Add a streaming provider** — Go to **Settings → Providers** and click **+ Add Provider**. One provider serves both VOD and Live TV: when its account has live channels, Live TV is switched on for it automatically (see [Live TV](../features/live-tv.md))
+1. **Add a streaming provider** — Go to **Sources → IPTV providers** and click **+ Add Provider**. One provider serves both VOD and Live TV: when its account has live channels, Live TV is switched on for it automatically (see [Live TV](../features/live-tv.md))
 2. **Enable playlists** — Go to Jellyfin → Playlists to toggle on auto-generated playlists
 3. **Customize your home screen** — Go to Jellyfin → Home Screen to set up hero spotlight and playlist rows
 4. **Install the plugin** — If you skipped step 6, [install the Tentacle Jellyfin plugin](../integrations/jellyfin-plugin.md)

@@ -174,7 +174,7 @@ If playlists were recreated during a sync (new Jellyfin playlist IDs), Tentacle 
 
 ### Sync completes but no content appears in Jellyfin
 
-1. Check that VOD volume mounts are correct: Settings → Library Paths should show green for `/media/vod/movies` and `/media/vod/shows`
+1. Check that VOD volume mounts are correct: Health → Media folders should show green for `/media/vod/movies` and `/media/vod/shows`
 2. Verify Jellyfin has a library pointing to the same folders
 3. Run a Jellyfin library scan after VOD sync
 4. Check if "Require TMDB Match" is enabled — unmatched content is skipped by default
@@ -183,7 +183,7 @@ If playlists were recreated during a sync (new Jellyfin playlist IDs), Tentacle 
 
 Click the Categories tab — Tentacle auto-fetches categories on first visit. If nothing loads:
 
-1. Test the provider connection (click Test on the provider's card in Settings → Providers)
+1. Test the provider connection (click Test on the provider's card in Sources → IPTV providers)
 2. Verify credentials are correct
 3. Some providers may be temporarily unavailable
 
@@ -209,14 +209,14 @@ likely not in your package.
 |---|---|
 | Provider refusing: 403 | The provider blocks your IP, the account has expired, or the server URL has moved. Ask the provider. |
 | Provider refusing streams: 403 (the login still works) | IP block, or the account is over its connection limit (another device is using it). |
-| Provider rejects the login | Wrong username or password, or the account has expired. Check them in Settings → Providers. |
+| Provider rejects the login | Wrong username or password, or the account has expired. Check them in Sources → IPTV providers. |
 | Provider address not found (404) / answers with a web page | The server URL has moved, or a block page answers instead of the provider. |
 | Provider server error (HTTP 5xx) | A problem on the provider's side; usually passes. |
 | Provider unreachable | No answer, connection refused, or the name does not resolve: the provider is down or the URL is wrong. |
 | Provider account expired on ... / Provider account is ... | What the provider itself reports about the account. |
 | Provider test streams not found (404) | The titles tried have left the provider; the next sync replaces them. |
 
-**Alerts on your phone:** in Settings → Integrations → Pushover, enter an
+**Alerts on your phone:** in Settings → Schedule & notifications → Pushover, enter an
 application token (create an application at pushover.net) and your user
 key, Save, then press **Send test**. Tentacle then sends one message when a
 provider starts failing and one when it works again.
@@ -264,7 +264,7 @@ If titles appear without posters or proper names:
 
 1. Verify the HDHomeRun tuner is added in Jellyfin (Dashboard → Live TV → Tuner Devices)
 2. Make sure channels are enabled in Tentacle (not just the groups)
-3. Save Tentacle's address on the Live TV page's **Jellyfin Setup** tab, then click **Sync EPG** on the Channels tab — when it finishes, Tentacle recreates the XMLTV listing provider in Jellyfin, forcing a full channel remap
+3. Save Tentacle's address in **Settings → Services**, then click **Update TV guide** on Sources → Live TV → Channels — when it finishes, Tentacle recreates the XMLTV listing provider in Jellyfin, forcing a full channel remap
 4. Simply refreshing guide data in Jellyfin alone won't pick up new channels
 
 ### No EPG data for channels
@@ -299,10 +299,10 @@ source", "Could not read Radarr's root folders…"). The common ones:
 |---------|-----------|
 | Could not read Radarr's/Sonarr's root folders | The *arr was busy or down. Nothing was added — retry in a moment. |
 | Sonarr could not find this show in its TVDB metadata source | The show isn't on TheTVDB yet (usually very new). Nothing you can fix in Tentacle. |
-| Pick a default Radarr/Sonarr quality profile in Tentacle's settings | Pick one under Radarr/Sonarr in Settings → Connections. Tentacle won't guess. |
+| Pick a default Radarr/Sonarr quality profile in Tentacle's settings | Pick one under Radarr/Sonarr in Settings → Services. Tentacle won't guess. |
 | Requests aren't set up yet / aren't working right now: an admin has to… | What a non-admin sees for the same problems (they can't open Settings). An admin fixes it as in the rows around this one. |
-| the root folder Tentacle used does not exist | Add a root folder in the *arr (Settings → Media Management), or pick another default root folder in Settings → Connections. |
-| the quality profile Tentacle used no longer exists / Your default quality profile no longer exists | Pick another default in Settings → Connections. |
+| the root folder Tentacle used does not exist | Add a root folder in the *arr (Settings → Media Management), or pick another default root folder in Settings → Services. |
+| the quality profile Tentacle used no longer exists / Your default quality profile no longer exists | Pick another default in Settings → Services. |
 | another series/movie is already using that folder | A folder collision in the *arr — rename or remove the existing one. |
 
 If it's an authorization problem instead, the plugin passes the Jellyfin user ID
@@ -333,7 +333,7 @@ for admin verification:
 1. Verify the webhook URL uses the internal IP: `http://<tentacle-ip>:8888/api/radarr/webhook`
 2. Don't use external/Cloudflare tunnel URLs — webhooks must reach Tentacle directly
 3. Check that all required triggers are enabled in Radarr/Sonarr
-4. Use the webhook test in Settings → Connections to verify
+4. Use the webhook test in Settings → Services to verify
 
 ### Webhook test fails from browser
 

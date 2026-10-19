@@ -6,7 +6,7 @@ Tentacle replaces tools like Threadfin as an HDHomeRun tuner emulator for Jellyf
 
 Tentacle emulates an HDHomeRun network tuner device. When Jellyfin discovers the tuner, it sees Tentacle as a native TV device — no third-party tools needed.
 
-1. You add your IPTV provider in Tentacle (Settings → Providers)
+1. You add your IPTV provider in Tentacle (Sources → IPTV providers)
 2. Tentacle fetches the channel groups
 3. You enable the groups you want
 4. Tentacle serves channel data via HDHomeRun endpoints
@@ -20,12 +20,12 @@ Jellyfin  ←→  HDHomeRun API  ←→  Tentacle  ←→  IPTV Provider
 
 ## Adding a Provider
 
-There is no separate Live TV provider. Go to **Settings → Providers**, click **+ Add Provider** and choose **Xtream Codes** (server URL, username, password). The same provider serves VOD and Live TV.
+There is no separate Live TV provider. Go to **Sources → IPTV providers**, click **+ Add Provider** and choose **Xtream Codes** (server URL, username, password). The same provider serves VOD and Live TV.
 
-When you save it, Tentacle tests the connection. If the account has live channels, Live TV is switched on for that provider and its channel groups are fetched automatically. The Live TV page then shows them; until a provider is added it says "No IPTV provider configured. Add a provider in Settings first."
+When you save it, Tentacle tests the connection. If the account has live channels, Live TV is switched on for that provider and its channel groups are fetched automatically. The provider's card (Sources → IPTV providers) then holds them under **Channel groups**, and a **Live TV** tab appears under Sources. Until a provider is used for Live TV, that tab says no provider is used for Live TV.
 
 !!! info "M3U providers"
-    An M3U URL or M3U file provider added in Settings → Providers is used for VOD only. Live TV needs an Xtream Codes provider.
+    An M3U URL or M3U file provider added in Sources → IPTV providers is used for VOD only. Live TV needs an Xtream Codes provider.
 
 ### User-Agent
 
@@ -33,7 +33,7 @@ Tentacle connects to your provider with a TiviMate User-Agent (`TiviMate/4.7.0 (
 
 ## Channel Groups
 
-Groups are fetched automatically when the provider is added. They are organized by your provider (Sports, Entertainment, News, etc.) and show the channel count for each. On the Live TV page's **Groups** tab, **Refresh** fetches the group list again (with no groups yet the button is **Sync Groups**).
+Groups are fetched automatically when the provider is added. They are organized by your provider (Sports, Entertainment, News, etc.) and show the channel count for each. On the provider's card, **Channel groups → Choose** lists them; **Refresh from provider** fetches the list again, and **Save & update channels** fetches the channels of the groups you switched on.
 
 ### Enabling Groups
 
@@ -89,7 +89,7 @@ Multiple channels can share the same EPG data (e.g., an HD channel and its backu
 4. Save and click **Refresh Guide**
 
 !!! tip "Automatic guide refresh"
-    Save Tentacle's address on the Live TV page's **Jellyfin Setup** tab. Then, after every EPG sync, Tentacle refreshes Jellyfin's guide by itself: it re-creates the XMLTV listing provider in Jellyfin (which forces a full channel remap) and triggers a guide refresh. This ensures new channels get properly mapped to EPG data.
+    Save Tentacle's address in **Settings → Services** (the **Jellyfin setup** tab under Sources → Live TV shows the tuner and guide addresses made from it). Then, after every TV guide update, Tentacle refreshes Jellyfin's guide by itself: it re-creates the XMLTV listing provider in Jellyfin (which forces a full channel remap) and triggers a guide refresh. This ensures new channels get properly mapped to EPG data.
 
 ### Verify
 
@@ -126,7 +126,7 @@ These endpoints are served automatically — you don't need to configure them ma
 ## Troubleshooting
 
 !!! warning "Channels missing after enable"
-    If you enable new channel groups but they don't appear in Jellyfin, check that Tentacle's address is saved on the **Jellyfin Setup** tab, then click **Sync EPG** on the Channels tab: when the sync finishes, Tentacle re-creates the XMLTV listing provider in Jellyfin, which makes it re-discover all channels. Simply clicking "Refresh Guide" in Jellyfin alone won't pick up new channels.
+    If you enable new channel groups but they don't appear in Jellyfin, check that Tentacle's address is saved in **Settings → Services**, then click **Update TV guide** on the Live TV tab's Channels: when the sync finishes, Tentacle re-creates the XMLTV listing provider in Jellyfin, which makes it re-discover all channels. Simply clicking "Refresh Guide" in Jellyfin alone won't pick up new channels.
 
 !!! warning "No EPG data"
     EPG badges in Tentacle ("Has EPG" / "No EPG") reflect actual program data in the database. If channels show "No EPG" after a fresh setup, run an EPG sync first. The auto-chain after channel sync usually handles this automatically.

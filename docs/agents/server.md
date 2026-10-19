@@ -25,7 +25,7 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   (unauthenticated): commit, build date, `code.matches` (the running files
   match the image's fingerprint).
 - Paths inside the container are fixed (users map host folders with
-  volumes; Settings → Library Paths checks them): `/data` (DB, caches,
+  volumes; Health → Media folders checks them): `/data` (DB, caches,
   per-user `smartlists/` and `home-configs/`), `/media/movies` (Radarr),
   `/media/shows` (Sonarr), `/media/vod/movies`, `/media/vod/shows` (VOD
   `.strm`), `/media/youtube`.
@@ -75,8 +75,9 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   the login refuses a non-admin while no user exists (the owner becomes
   `jellyfin_user_id`, the account Tentacle reads Jellyfin as);
   Settings → Users toggles admin through Jellyfin's policy API. Non-admins
-  see only Library and Jellyfin pages (`data-admin-only` in the nav,
-  `applyUserRole()`).
+  see only Library, Discover and My Home Screen (`data-admin-only` in the
+  nav, `applyUserRole()`; `showPage()` sends them from a server page to
+  Library).
 - Global (shared): providers, VOD sync, Radarr/Sonarr scans, library
   content, tags on content, Live TV. Per user: playlists (Jellyfin playlists
   with `IsPublic=false`), auto-playlist toggles, list subscriptions, tag
@@ -301,7 +302,7 @@ user_id)` computes them every time from source tags, list subscriptions
   can be there twice (VOD + download). Resolve the item from its path or
   its own id.
 - Every `log_deletion()`/`DeletionLog(...)` kind needs a label in
-  `_DELETION_KIND_META` (`static/js/pages.js`), or Health → Deletion Log
+  `_DELETION_KIND_META` (`static/js/pages.js`), or Health → What happened → Removals
   shows the raw code (`tests/test_deletion_log_kinds.py` enforces it).
   `*-blocked` kinds record removals a safety limit refused (nothing
   deleted): label "… refused", gray badge.
@@ -399,8 +400,36 @@ user_id)` computes them every time from source tags, list subscriptions
 
 The UI says "Playlist" everywhere; the code says SmartList, TagRule,
 output_tag. Never "Collection" (a different Jellyfin thing) or "Tag" in the
-UI. The "Jellyfin" page has three tabs: Home Screen, Playlists, Discover (the
-`discover_in_jellyfin` toggle lives there and saves at once).
+UI; "TV guide", never "EPG" (`plainWords()` in `sources.js` rewords server
+messages that still say EPG or SmartList).
+
+Dashboard layout (`static/js/sources.js` holds the Sources page):
+
+- Everyone: **Library** (Browse, Music, Following; content only, one Source
+  dropdown), **Discover** (Browse, My Lists, Activity), **My Home Screen**
+  (page id `jellyfin`: Home rows, Playlists with the "How playlists work" help).
+- Admins (`ADMIN_PAGES` in `app.js`; anyone else is sent to Library):
+  **Sources** (IPTV providers as cards with "Use for Movies & Series" =
+  `active` and "Use for Live TV" = `live_tv_enabled`, each card holding its
+  Categories / Channel groups; a Live TV tab once a provider has Live TV on;
+  YouTube; Radarr & Sonarr; Music), **Health** (every admin notice and
+  banner, downloads, missing, streams, duplicates, media folders, the "What
+  happened" log), **Settings** (Services, Schedule & notifications, Users,
+  Advanced).
+- Every page and tab has an address (`#health`, `#sources/live`,
+  `#settings/users`; `setRoute()`/`showRouteFromHash()` in `app.js`); old page
+  names (`vod`, `live-tv`, `youtube`) are aliases.
+- The sidebar's one Health count (`setHealthAlert()`): red only for real
+  problems (Radarr/Sonarr errors, a failing provider, Jellyfin not answering,
+  a required folder missing), grey for decisions (duplicates, new categories,
+  possibly wrong movies).
+- One Tentacle address: Settings → Services saves it through
+  `/api/youtube/setup` (`youtube_base_url`) and stores `live_setup_host/port`
+  from it; the webhook and tuner addresses are read-only copies made from it.
+- Settings that are defaults now have no field (they keep their stored value):
+  Deezer, Navidrome/Jellyfin artist-picture and rescan switches, MusicBrainz
+  cache days, the music re-pin automation, YouTube background checks and
+  interval, Health's download auto-fix switches.
 
 Every function called from an `onclick=""` in `index.html` must be exported
 in the `exposeGlobals()` block at the bottom of `pages.js` (else
@@ -539,7 +568,7 @@ User docs: `docs/features/live-tv.md`.
   no re-run (a tvg-id the feed lacks would re-run it on every call, #466).
 - Provider fields: `provider_type` (xtream, m3u_url, m3u_file),
   `user_agent`, `epg_url`, `require_tmdb_match`, `live_tv_enabled`. The
-  dashboard adds providers only in Settings → Providers, and one row serves
+  dashboard adds providers only in Sources → IPTV providers, and one row serves
   VOD and Live TV: `POST /api/providers/{id}/test` sets `live_tv_enabled`
   when an Xtream account has live categories (an M3U one never gets it).
   `/api/live/provider` (GET, POST, test) has no form in the dashboard, and

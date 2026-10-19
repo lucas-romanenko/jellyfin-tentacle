@@ -170,6 +170,8 @@ body {
   text-align: center;
 }
 
+.nav-badge-quiet { background: var(--bg3); color: var(--text2); }
+
 .sidebar-footer {
   padding: 12px 10px 20px;
   border-top: 1px solid var(--border);
@@ -659,6 +661,51 @@ td.primary { color: var(--text); font-weight: 500; }
 
 .provider-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 
+/* Sources → IPTV providers: one card per provider, its uses as switches */
+.provider-list { display: flex; flex-direction: column; gap: 14px; margin-bottom: 20px; }
+.provider-list .provider-card-url { max-width: min(420px, 60vw); }
+.provider-offers { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; margin-bottom: 14px; }
+.provider-offers-label { font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text3); margin-right: 4px; }
+.provider-uses { border-top: 1px solid var(--border); margin-bottom: 14px; }
+.provider-use { display: flex; gap: 12px; align-items: flex-start; padding: 14px 0 10px; }
+.provider-use .live-toggle { margin-top: 1px; flex-shrink: 0; }
+.provider-use-title { font-size: 13.5px; font-weight: 500; color: var(--text); }
+.provider-use-hint { font-size: 12px; color: var(--text3); margin-top: 1px; }
+.provider-section { margin: 0 0 6px 48px; padding: 10px 12px; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.provider-section-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 13px; flex-wrap: wrap; }
+.provider-section-sum { color: var(--text2); }
+.provider-panel { margin-top: 10px; }
+.provider-panel-tools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+.provider-panel-tools .form-input { width: 220px; padding: 5px 10px; font-size: 12px; }
+.provider-panel-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.provider-panel .cat-list { max-height: 380px; }
+.cat-found { font-size: 10px; font-family: 'DM Mono', monospace; white-space: nowrap; }
+.arr-status-row { display: flex; gap: 10px; align-items: baseline; font-size: 13px; color: var(--text2); flex-wrap: wrap; }
+.arr-status-row .dot { flex-shrink: 0; position: relative; top: -1px; }
+.arr-status-row strong { color: var(--text); min-width: 60px; }
+
+/* My Home Screen → Playlists: the help, folded */
+.help-card { background: var(--bg1); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 16px; }
+.help-card[open] summary { color: var(--text); }
+/* Health: empty cards stay small */
+#page-health .empty-state { padding: 14px 16px; }
+#page-health .empty-state .empty-icon { display: none; }
+/* Health → What happened */
+.health-log-row { display: grid; grid-template-columns: 120px 150px minmax(0, 1fr); gap: 12px; padding: 9px 16px; border-top: 1px solid var(--border); font-size: 13px; align-items: baseline; }
+.health-log-when { color: var(--text3); font-size: 12px; white-space: nowrap; }
+.health-log-times { font-size: 11px; color: var(--text2); background: var(--bg3); border-radius: 8px; padding: 0 6px; margin-left: 4px; }
+.health-log-what .badge { font-size: 10px; }
+.health-log-text { color: var(--text2); min-width: 0; overflow-wrap: anywhere; }
+.health-log-text strong { color: var(--text); font-weight: 500; }
+.health-log-who { font-size: 12px; color: var(--text3); white-space: nowrap; }
+.health-log-who::before { content: "· "; }
+.health-log-details { display: inline; margin-left: 6px; }
+.health-log-details summary { display: inline; cursor: pointer; font-size: 11px; color: var(--text3); list-style: none; }
+.health-log-details summary::-webkit-details-marker { display: none; }
+.health-log-details[open] summary { color: var(--text2); }
+.health-log-details pre { white-space: pre-wrap; font-size: 11px; font-family: 'DM Mono', monospace; background: var(--bg2); color: var(--text2); padding: 8px 10px; border-radius: 6px; margin: 6px 0 0; max-height: 240px; overflow: auto; }
+.card-header-hint { font-size: 11px; color: var(--text3); }
+
 /* ── Category list ── */
 .cat-controls { display: flex; gap: 10px; margin-bottom: 14px; align-items: center; flex-wrap: wrap; }
 
@@ -1087,6 +1134,8 @@ body.modal-open { overflow: hidden; }
    (no effect while they fit; matters on phones and on tablets with the sidebar open) */
 .page-header-row > [style*="display:flex"], .card-header > [style*="display:flex"],
 .form-group > [style*="display:flex"], .cat-controls { flex-wrap: wrap; max-width: 100%; }
+/* A field and its Test/Copy button share the line while there is room */
+.form-group > [style*="display:flex"] > .form-input { flex: 1 1 180px; width: auto; min-width: 0; }
 
 /* Touch screens have no hover: show the add buttons that hover reveals, drop hover lifts */
 @media (hover: none) {
@@ -1570,6 +1619,12 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
   /* Grids collapse */
   .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
   .provider-grid { grid-template-columns: 1fr; }
+  .provider-section { margin-left: 0; }
+  .provider-panel-tools .form-input { width: 100%; }
+  .health-log-row { grid-template-columns: 1fr auto; gap: 4px 10px; padding: 9px 12px; }
+  .health-log-when { order: 2; text-align: right; }
+  .health-log-what { order: 1; }
+  .health-log-text { order: 3; grid-column: 1 / -1; }
   .settings-grid { grid-template-columns: 1fr; gap: 16px; }
   .form-row { grid-template-columns: 1fr; }
   .guide-grid { grid-template-columns: 1fr; }
@@ -1720,48 +1775,46 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
       <div class="logo-icon">◈</div>
       <div>
         <div class="logo-text">Tentacle</div>
-        <div class="logo-version">v1.0.0</div>
+        <div class="logo-version" id="logo-version"></div>
       </div>
     </div>
 
-    <nav class="sidebar-nav">
+    <nav class="sidebar-nav" aria-label="Pages">
       <div class="nav-section">
         <button class="nav-item active" data-page="library">
           <span class="icon">◫</span> Library
-          <span class="nav-badge" id="dup-badge" style="display:none">0</span>
-          <span class="nav-badge" id="dl-badge" style="display:none;background:var(--accent)">0</span>
-        </button>
-        <button class="nav-item" data-page="vod" data-admin-only>
-          <span class="icon">◉</span> VOD
-        </button>
-        <button class="nav-item" data-page="live-tv" data-admin-only>
-          <span class="icon">▶</span> Live TV
         </button>
         <button class="nav-item" data-page="discover">
           <span class="icon">✦</span> Discover
         </button>
         <button class="nav-item" data-page="jellyfin">
-          <span class="icon">◈</span> Jellyfin
+          <span class="icon">◈</span> My Home Screen
         </button>
-        <button class="nav-item" data-page="youtube" data-admin-only>
-          <span class="icon">▷</span> YouTube
+      </div>
+      <!-- Server pages: what the admins run for everyone -->
+      <div class="nav-section" data-admin-only>
+        <div class="nav-section-label">Server</div>
+        <button class="nav-item" data-page="sources">
+          <span class="icon">◉</span> Sources
         </button>
-        <button class="nav-item" data-page="health" data-admin-only>
+        <button class="nav-item" data-page="health">
           <span class="icon">✚</span> Health
+          <!-- One count of what needs a look; red only for real problems -->
+          <span class="nav-badge nav-badge-quiet" id="health-badge" style="display:none" title="Things on the Health page that need a look">0</span>
         </button>
-        <button class="nav-item" data-page="settings" data-admin-only>
+        <button class="nav-item" data-page="settings">
           <span class="icon">⊙</span> Settings
         </button>
       </div>
     </nav>
 
     <div class="sidebar-footer">
-      <div style="padding: 8px 10px; background: var(--bg2); border-radius: var(--radius-sm); margin-bottom: 8px;">
+      <div id="sidebar-last-sync-box" data-admin-only style="padding: 8px 10px; background: var(--bg2); border-radius: var(--radius-sm); margin-bottom: 8px; cursor:pointer" onclick="showPage('settings');showSettingsSection('schedule')" title="Sync schedule">
         <div style="font-size:10px;color:var(--text3);margin-bottom:4px;font-family:'DM Mono',monospace">LAST SYNC</div>
         <div style="font-size:12px;font-family:'DM Mono',monospace" id="sidebar-last-sync">—</div>
       </div>
       <div style="padding: 8px 10px; display:flex; align-items:center; justify-content:space-between; gap:8px;">
-        <div style="font-size:12px; color:var(--text2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" id="sidebar-user" title="Logged in user"></div>
+        <div style="font-size:12px; color:var(--text2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" id="sidebar-user" title="Signed-in user"></div>
         <div style="display:flex;align-items:center;gap:4px;">
           <button onclick="doLogout()" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:11px;white-space:nowrap;padding:2px 6px;border-radius:4px;" title="Sign out" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">Sign out</button>
         </div>
@@ -1782,993 +1835,18 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
       <div class="topbar-sub" id="topbar-sub"></div>
     </div>
 
-    <!-- Radarr/Sonarr problems (admins): the usual cause of "it never downloads" -->
-    <div id="arr-problems-banner" class="arr-problems" style="display:none"></div>
-    <!-- IPTV provider failing (admins): the hourly provider check -->
-    <div id="provider-problems-banner" class="arr-problems error provider-problems" style="display:none" role="alert"></div>
-
     <!-- Pages -->
     <div class="page-content">
 
-      <!-- Dashboard page removed — stats and banners moved to Library -->
+      <!-- Pages: Library, Discover, My Home Screen for everyone; Sources, Health, Settings for admins -->
 
-      <!-- ── Health ── -->
-      <div class="page" id="page-youtube">
-        <div id="yt-unavailable" class="card" style="display:none;margin-bottom:16px">
-          <div class="card-body" style="font-size:13px;color:var(--text2)"></div>
-        </div>
-
-        <!-- Every video's pointer file carries Tentacle's address as the Jellyfin
-             server reaches it. It is worked out on its own — from the plugin's
-             own configuration first — so this is an override, not a step. -->
-        <div class="card" id="yt-address-card" style="margin-bottom:16px">
-          <details>
-            <summary style="cursor:pointer;padding:12px 16px;font-size:13px;color:var(--text2)">Advanced: Tentacle&rsquo;s address <span id="yt-address-summary" style="color:var(--text3)"></span></summary>
-            <div class="card-body" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;padding-top:0">
-              <div style="flex:1;min-width:min(320px,100%)">
-                <label class="form-label">As your Jellyfin server reaches this dashboard <span style="font-weight:400;color:var(--text3)">&mdash; worked out automatically; change it only if a video will not play</span></label>
-                <input type="text" id="yt-address" class="form-input" placeholder="http://192.168.1.10:8888">
-                <div id="yt-address-status" style="font-size:12px;margin-top:4px;color:var(--text3)"></div>
-              </div>
-              <button class="btn btn-secondary" onclick="ytDetectAddress('yt-address')" title="Work it out again">Detect</button>
-              <button class="btn btn-secondary" onclick="ytSaveAddress('yt-address')">Save</button>
-            </div>
-          </details>
-        </div>
-
-        <!-- How Tentacle talks to YouTube. The defaults are safe for everyone:
-             a light, randomly timed check per channel and a pause after any
-             bot check. Everything here is optional. -->
-        <div class="card" id="yt-traffic-card" style="margin-bottom:16px">
-          <details>
-            <summary style="cursor:pointer;padding:12px 16px;font-size:13px;color:var(--text2)">Advanced: how Tentacle talks to YouTube <span id="yt-traffic-summary" style="color:var(--text3)"></span></summary>
-            <div class="card-body" style="padding-top:0;display:grid;gap:14px">
-              <label style="font-size:13px;display:flex;gap:8px;align-items:flex-start"><input type="checkbox" id="yt-bg-checks" style="margin-top:3px"> <span>Check channels for new uploads and live streams in the background <span style="color:var(--text3)">&mdash; off: only when you press Refresh</span></span></label>
-              <div>
-                <label class="form-label" for="yt-interval">Check about every (minutes) <span style="font-weight:400;color:var(--text3)">&mdash; at least 30. Each check is one small request per channel, at random times around this.</span></label>
-                <input type="number" id="yt-interval" class="form-input" min="30" max="1440" step="5" style="max-width:140px">
-              </div>
-              <div>
-                <label class="form-label" for="yt-api-key">YouTube Data API key <span style="font-weight:400;color:var(--text3)">&mdash; optional. With one, new uploads, video details and live status come from Google&rsquo;s official API instead of YouTube&rsquo;s pages. Free from the Google Cloud console.</span></label>
-                <input type="text" id="yt-api-key" class="form-input" placeholder="Not set" autocomplete="off" spellcheck="false">
-                <div id="yt-api-status" style="font-size:12px;margin-top:4px;color:var(--text3)"></div>
-              </div>
-              <div>
-                <label class="form-label" for="yt-proxy">Proxy for YouTube traffic <span style="font-weight:400;color:var(--text3)">&mdash; optional, for example <code>http://gluetun:8888</code> to send YouTube through a VPN. Watching YouTube videos then goes through it too.</span></label>
-                <input type="text" id="yt-proxy" class="form-input" placeholder="None" autocomplete="off" spellcheck="false">
-              </div>
-              <div id="yt-traffic-status" style="font-size:12px;color:var(--text3)"></div>
-              <div><button class="btn btn-secondary" onclick="ytSaveTraffic()">Save</button></div>
-            </div>
-          </details>
-        </div>
-
-        <div class="card" id="yt-add-card" style="margin-bottom:16px">
-          <div class="card-header"><h3>Add a channel</h3></div>
-          <div class="card-body">
-            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-              <div style="flex:1;min-width:min(300px,100%)">
-                <label class="form-label">Channel or playlist URL</label>
-                <input type="text" id="yt-url" class="form-input" placeholder="https://www.youtube.com/@channel">
-              </div>
-              <div style="width:120px">
-                <label class="form-label">Keep newest</label>
-                <input type="number" id="yt-keep" class="form-input" value="10" min="1" max="100">
-              </div>
-              <button class="btn btn-primary" onclick="ytAddChannel()">Add</button>
-            </div>
-            <div style="margin-top:12px;font-size:13px;color:var(--text2);display:flex;gap:24px;flex-wrap:wrap">
-              <label><input type="checkbox" id="yt-inc-shorts"> Include Shorts</label>
-              <label><input type="checkbox" id="yt-live"> Live TV channel <span style="color:var(--text3)">&mdash; its live and upcoming streams appear in Jellyfin&rsquo;s Live TV</span></label>
-            </div>
-            <p style="font-size:12px;color:var(--text3);margin:12px 0 0">
-              That&rsquo;s it. The channel&rsquo;s newest videos are added to your library and its playlist
-              is created; from then on it is checked every hour and always holds the newest ones.
-              Put it on your home screen from the <strong>Home Screen</strong> tab. Nothing is downloaded &mdash;
-              videos stream from YouTube when played.
-            </p>
-          </div>
-        </div>
-
-        <div class="card" id="yt-diag-card" style="margin-bottom:16px;display:none">
-          <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
-            <h3>Setup check</h3>
-            <button class="btn btn-secondary btn-sm" onclick="ytDiagnose()">Re-run</button>
-          </div>
-          <div class="card-body" id="yt-diag"></div>
-          <div style="padding:0 16px 14px;font-size:12px;color:var(--text3)">
-            Playlist empty although Jellyfin has the videos?
-            <a href="#" onclick="ytRefill();return false">Refill playlists now</a>
-            &mdash; it happens when Jellyfin takes longer to import than the add step waits; the refill also runs on its own in the background.
-          </div>
-          <div style="padding:0 16px 14px;font-size:12px;color:var(--text3)">
-            Everything checks out but a video still won&rsquo;t play?
-            <a href="#" onclick="ytReprobe();return false">Ask Jellyfin to re-read the videos</a>
-            &mdash; it keeps the first thing it learned about each one, and this makes it look again.
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
-            <h3>Channels</h3>
-            <div style="display:flex;gap:8px">
-              <button class="btn btn-secondary btn-sm" onclick="ytDiagnose()">Why isn&rsquo;t it working?</button>
-              <button class="btn btn-secondary btn-sm" onclick="ytRefreshNow()" title="Runs every hour on its own. Press this to look for new videos right now.">Check for new videos</button>
-            </div>
-          </div>
-          <div class="card-body" id="yt-channels">
-            <div class="loading-state"><div class="spinner"></div></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="page" id="page-health">
-        <div class="page-header">
-          <div class="page-header-row">
-            <div>
-              <div class="page-title">Health</div>
-              <div class="page-subtitle">Library housekeeping, downloads & audit trail</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="card" style="margin-bottom:16px">
-          <div class="card-header">
-            <div class="card-title">Downloads</div>
-            <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
-              <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);cursor:pointer" title="Automatically cancel + blocklist stuck downloads and grab an alternative release (opposite protocol preferred)">
-                <input type="checkbox" id="health-auto-fix" onchange="saveHealthDownloadSettings()"> Auto-fix stuck
-              </label>
-              <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);cursor:pointer" title="Automatically force-import blocked downloads when the match is unambiguous; otherwise dequeue but keep the file">
-                <input type="checkbox" id="health-auto-import" onchange="saveHealthDownloadSettings()"> Auto-resolve blocked imports
-              </label>
-            </div>
-          </div>
-          <div id="health-downloads">
-            <div class="empty-state"><p>Loading…</p></div>
-          </div>
-        </div>
-
-        <div class="card" style="margin-bottom:16px">
-          <div class="card-header">
-            <div class="card-title">Missing Content <span id="health-missing-count" style="color:var(--text3);font-weight:400"></span></div>
-            <div style="display:flex;gap:6px">
-              <button class="btn btn-primary btn-sm" id="health-missing-tab-movies" onclick="showHealthMissingTab('movies')">Movies</button>
-              <button class="btn btn-secondary btn-sm" id="health-missing-tab-episodes" onclick="showHealthMissingTab('episodes')">Episodes</button>
-            </div>
-          </div>
-          <div id="health-missing">
-            <div class="empty-state"><p>Loading…</p></div>
-          </div>
-        </div>
-
-        <div class="card" style="margin-bottom:16px">
-          <div class="card-header">
-            <div class="card-title">Stream Health <span id="health-streams-count" style="color:var(--text3);font-weight:400"></span></div>
-            <div style="display:flex;gap:6px">
-              <button class="btn btn-secondary btn-sm" onclick="healthRecheckStreams(this)" title="Re-test all known-bad streams now; recovered ones are cleared">Recheck bad</button>
-              <button class="btn btn-secondary btn-sm" onclick="healthRunStreamSweep(this)" title="Probe the next batch of VOD streams now (also runs nightly)">Run sweep</button>
-            </div>
-          </div>
-          <div id="health-streams-summary" style="font-size:12px;color:var(--text3);margin-bottom:8px"></div>
-          <div id="health-streams">
-            <div class="empty-state"><p>Loading…</p></div>
-          </div>
-        </div>
-
-        <div class="card" style="margin-bottom:16px">
-          <div class="card-header">
-            <div class="card-title">Recent Activity <span id="health-activity-count" style="color:var(--text3);font-weight:400"></span></div>
-            <button class="btn btn-secondary btn-sm" onclick="loadHealthActivity()">Refresh</button>
-          </div>
-          <div id="health-activity">
-            <div class="empty-state"><p>Loading…</p></div>
-          </div>
-        </div>
-
-        <div class="card" style="margin-bottom:16px">
-          <div class="card-header">
-            <div class="card-title">Deletion Log</div>
-            <button class="btn btn-secondary btn-sm" onclick="loadHealthDeletions()">Refresh</button>
-          </div>
-          <div id="health-deletions">
-            <div class="empty-state"><p>Loading…</p></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- ── VOD ── -->
-      <div class="page" id="page-vod">
-        <div class="page-header">
-          <div class="page-header-row">
-            <div>
-              <div class="page-title">VOD</div>
-              <div class="page-subtitle">Categories, sync & content management</div>
-            </div>
-            <div style="display:flex;gap:8px;align-items:center">
-              <span id="vod-sync-status" style="font-size:12px;color:var(--text3)"></span>
-              <button class="btn btn-danger" id="sync-cancel-btn" onclick="cancelSync()" style="display:none">Cancel</button>
-              <button class="btn btn-primary" id="sync-now-btn" onclick="syncNow()">Sync All</button>
-            </div>
-          </div>
-        </div>
-
-        <!-- Sync progress (hidden by default) -->
-        <div class="dash-progress" id="vod-sync-progress" style="display:none">
-          <div class="dash-progress-header">
-            <div class="dot dot-amber"></div>
-            <span id="vod-progress-label">Syncing...</span>
-          </div>
-          <div class="dash-progress-bar-track">
-            <div class="dash-progress-bar-fill" id="vod-progress-fill"></div>
-          </div>
-          <div class="dash-progress-detail" id="vod-progress-detail"></div>
-        </div>
-
-        <!-- Provider selector -->
-        <div id="vod-no-provider" style="display:none;padding:20px;text-align:center;color:var(--text3);font-size:13px">
-          No VOD provider configured. <a href="#" onclick="showPage('settings');showSettingsSection('providers');return false" style="color:var(--accent)">Add a provider</a> in Settings first.
-        </div>
-
-        <div id="vod-provider-bar" style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
-          <select class="form-input" id="vod-provider-select" aria-label="VOD provider" style="width:240px;padding:6px 10px;font-size:13px" onchange="onVodProviderChange()">
-          </select>
-          <span id="vod-provider-status" style="font-size:12px;color:var(--text3)"></span>
-        </div>
-
-        <!-- Tab bar -->
-        <div id="vod-tabs-bar" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
-          <button class="live-tab active" data-vodtab="categories" onclick="showVodTab('categories')">Categories</button>
-          <button class="live-tab" data-vodtab="sync" onclick="showVodTab('sync')">Sync</button>
-        </div>
-
-        <!-- Tab: Categories -->
-        <div id="vod-tab-categories">
-          <div class="card">
-            <div class="card-header">
-              <div class="card-title">Categories <span id="vod-cat-count" style="color:var(--text3);font-weight:400"></span></div>
-              <div style="display:flex;gap:8px;align-items:center">
-                <input class="form-input" id="vod-cat-search" placeholder="Search categories..." style="width:200px;padding:5px 10px;font-size:12px" oninput="filterVodCats()">
-                <div class="filter-group">
-                  <button class="filter-btn active" data-vodcatfilter="all" onclick="setVodCatFilter('all',this)">All</button>
-                  <button class="filter-btn" data-vodcatfilter="movie" onclick="setVodCatFilter('movie',this)">Movies</button>
-                  <button class="filter-btn" data-vodcatfilter="series" onclick="setVodCatFilter('series',this)">Series</button>
-                  <button class="filter-btn" data-vodcatfilter="active" onclick="setVodCatFilter('active',this)">Active</button>
-                  <button class="filter-btn" data-vodcatfilter="english" onclick="setVodCatFilter('english',this)">English</button>
-                </div>
-              </div>
-            </div>
-            <div style="padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-              <button class="btn btn-secondary btn-sm" onclick="vodSelectAllVisible(true)">Select All Visible</button>
-              <button class="btn btn-secondary btn-sm" onclick="vodSelectAllVisible(false)">Deselect All Visible</button>
-              <div style="flex:1"></div>
-              <button class="btn btn-secondary btn-sm" onclick="vodFetchCategories()">Refresh from Provider</button>
-              <button class="btn btn-primary btn-sm" onclick="vodSaveCategories()">Save Selection</button>
-            </div>
-            <div id="vod-cat-list" style="max-height:500px;overflow-y:auto">
-              <div class="loading-state"><div class="spinner"></div></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Tab: Sync -->
-        <div id="vod-tab-sync" style="display:none">
-          <div class="grid-2col" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
-            <div class="card">
-              <div class="card-header"><div class="card-title">Sync Actions</div></div>
-              <div style="padding:8px 0;display:flex;flex-direction:column;gap:8px">
-                <button class="btn btn-primary" style="width:100%" onclick="vodRunSync('movies')" id="vod-sync-movies-btn">Sync Movies</button>
-                <button class="btn btn-primary" style="width:100%" onclick="vodRunSync('series')" id="vod-sync-series-btn">Sync Series</button>
-                <button class="btn btn-secondary" style="width:100%" onclick="vodRunSync('full')" id="vod-sync-full-btn">Full Sync (Movies + Series)</button>
-                <button class="btn btn-secondary" style="width:100%" onclick="vodPreviewSync()">Preview (estimate counts)</button>
-              </div>
-            </div>
-            <div class="card">
-              <div class="card-header"><div class="card-title">Status</div></div>
-              <div id="vod-sync-info" style="padding:8px 0;font-size:13px;color:var(--text2)">
-                <p>Select a sync type to start.</p>
-              </div>
-            </div>
-          </div>
-
-          <!-- VOD sync info: full pipeline runs automatically -->
-          <div style="padding:8px 0;font-size:12px;color:var(--text3)">
-            After syncing, Tentacle automatically scans Jellyfin, pushes tags, and updates playlists.
-          </div>
-        </div>
-      </div>
-
-      <!-- ── SETTINGS ── -->
-      <div class="page" id="page-settings">
-        <div class="page-header">
-          <div class="page-title">Settings</div>
-          <div class="page-subtitle">Connections, providers & configuration</div>
-        </div>
-
-        <div class="settings-grid">
-          <div class="settings-nav">
-            <button class="settings-nav-item active" data-section="connections">Connections</button>
-            <button class="settings-nav-item" data-section="providers">Providers</button>
-            <button class="settings-nav-item" data-section="integrations">Integrations</button>
-            <button class="settings-nav-item" data-section="music">Music</button>
-            <button class="settings-nav-item" data-section="paths">Library Paths</button>
-            <button class="settings-nav-item" data-section="users">Users</button>
-            <button class="settings-nav-item" data-section="playlists-info">Playlists Guide</button>
-          </div>
-
-          <div>
-            <!-- Providers -->
-            <div class="settings-section card" id="section-providers">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
-                <div>
-                  <h3>Providers</h3>
-                  <p class="section-desc">IPTV providers for VOD, series, and live TV content</p>
-                </div>
-                <div style="display:flex;gap:8px">
-                  <button class="btn btn-secondary" onclick="showMigrate()">⇄ Migrate</button>
-                  <button class="btn btn-primary" onclick="showAddProvider()">+ Add Provider</button>
-                </div>
-              </div>
-              <div class="provider-grid" id="provider-grid">
-                <div class="loading-state"><div class="spinner"></div> Loading...</div>
-              </div>
-            </div>
-
-            <!-- Connections -->
-            <div class="settings-section active card" id="section-connections">
-              <h3>API Connections</h3>
-              <p class="section-desc">Connect Tentacle to your services. All keys are stored locally.</p>
-
-              <div class="form-group">
-                <div class="form-label">TMDB Bearer Token <span style="color:var(--text3);font-size:12px">(optional)</span></div>
-                <div style="display:flex;gap:8px">
-                  <input class="form-input mono" id="tmdb_bearer_token" type="password" placeholder="Using built-in key">
-                  <button class="btn btn-secondary" onclick="testConnection('tmdb')">Test</button>
-                </div>
-                <div class="form-hint">Built-in key works out of the box. Override with your own from themoviedb.org/settings/api</div>
-              </div>
-
-              <div class="form-group">
-                <div class="form-label">MDBList API Key <span style="color:var(--text3);font-size:12px">(optional)</span></div>
-                <div style="display:flex;gap:8px">
-                  <input class="form-input mono" id="mdblist_api_key" type="password" placeholder="Enter MDBList API key">
-                  <button class="btn btn-secondary" onclick="testConnection('mdblist')">Test</button>
-                </div>
-                <div class="form-hint">Enables MDBList ratings on item details in Jellyfin. Get a key from mdblist.com/preferences</div>
-              </div>
-
-              <hr class="divider">
-
-              <div class="form-row">
-                <div class="form-group">
-                  <div class="form-label">Radarr URL <span id="conn-status-radarr" style="display:none;font-size:11px;padding:2px 8px;border-radius:4px;margin-left:4px"></span></div>
-                  <input class="form-input" id="radarr_url" placeholder="http://localhost:7878">
-                </div>
-                <div class="form-group">
-                  <div class="form-label">Radarr API Key</div>
-                  <div style="display:flex;gap:8px">
-                    <input class="form-input mono" id="radarr_api_key" type="password" placeholder="abc123...">
-                    <button class="btn btn-secondary" onclick="testService('radarr')">Test</button>
-                  </div>
-                </div>
-              </div>
-
-              <div class="form-row">
-                <div class="form-group">
-                  <div class="form-label">Default quality profile</div>
-                  <select class="form-input" id="radarr_quality_profile_id"><option value="">Enter the URL and key, then Test</option></select>
-                  <div class="form-hint">Used by every request: Tentacle, the Jellyfin plugin and Android TV. With none picked, requests are refused instead of guessed.</div>
-                </div>
-                <div class="form-group">
-                  <div class="form-label">Root folder</div>
-                  <select class="form-input" id="radarr_root_folder"><option value="">Automatic (first folder that isn't a VOD folder)</option></select>
-                </div>
-              </div>
-              <div class="svc-checks" id="checks-radarr"></div>
-
-              <hr class="divider">
-
-              <div class="form-row">
-                <div class="form-group">
-                  <div class="form-label">Sonarr URL <span id="conn-status-sonarr" style="display:none;font-size:11px;padding:2px 8px;border-radius:4px;margin-left:4px"></span></div>
-                  <input class="form-input" id="sonarr_url" placeholder="http://localhost:8989">
-                </div>
-                <div class="form-group">
-                  <div class="form-label">Sonarr API Key</div>
-                  <div style="display:flex;gap:8px">
-                    <input class="form-input mono" id="sonarr_api_key" type="password" placeholder="abc123...">
-                    <button class="btn btn-secondary" onclick="testService('sonarr')">Test</button>
-                  </div>
-                </div>
-              </div>
-
-              <div class="form-row">
-                <div class="form-group">
-                  <div class="form-label">Default quality profile</div>
-                  <select class="form-input" id="sonarr_quality_profile_id"><option value="">Enter the URL and key, then Test</option></select>
-                  <div class="form-hint">Used by every request: Tentacle, the Jellyfin plugin and Android TV. With none picked, requests are refused instead of guessed.</div>
-                </div>
-                <div class="form-group">
-                  <div class="form-label">Root folder</div>
-                  <select class="form-input" id="sonarr_root_folder"><option value="">Automatic (first folder that isn't a VOD folder)</option></select>
-                </div>
-              </div>
-              <div class="svc-checks" id="checks-sonarr"></div>
-
-              <hr class="divider">
-
-              <div class="form-row">
-                <div class="form-group">
-                  <div class="form-label">Jellyfin URL <span id="conn-status-jellyfin" style="display:none;font-size:11px;padding:2px 8px;border-radius:4px;margin-left:4px"></span></div>
-                  <input class="form-input" id="jellyfin_url" placeholder="http://localhost:8096">
-                </div>
-                <div class="form-group">
-                  <div class="form-label">Jellyfin API Key</div>
-                  <div style="display:flex;gap:8px">
-                    <input class="form-input mono" id="jellyfin_api_key" type="password" placeholder="abc123...">
-                    <button class="btn btn-secondary" onclick="testConnection('jellyfin')">Test</button>
-                  </div>
-                </div>
-              </div>
-              <div class="form-group" style="margin-top:12px">
-                <div class="form-label">Jellyfin URL for links (optional)</div>
-                <input class="form-input" id="jellyfin_public_url" placeholder="https://jellyfin.example.com">
-                <div class="form-hint">Where your browser opens Jellyfin, used by "Watch in Jellyfin". Leave empty if the Jellyfin URL above already works in your browser (it usually doesn't when it is a Docker name like http://jellyfin:8096).</div>
-              </div>
-
-
-              <!-- Music services: shown only while the Music module is on -->
-              <div id="music-connections" style="display:none">
-                <hr class="divider">
-                <div class="section-title">Music</div>
-                <p class="form-hint" style="margin:-6px 0 14px">Used by the Music module (Settings → Music). Lidarr finds, downloads and tags the music; your player plays it.</p>
-
-                <div class="form-row">
-                  <div class="form-group">
-                    <div class="form-label">Lidarr URL</div>
-                    <input class="form-input" id="lidarr_url" placeholder="http://localhost:8686">
-                  </div>
-                  <div class="form-group">
-                    <div class="form-label">Lidarr API Key</div>
-                    <div style="display:flex;gap:8px">
-                      <input class="form-input mono" id="lidarr_api_key" type="password" placeholder="abc123...">
-                      <button class="btn btn-secondary" onclick="testService('lidarr')">Test</button>
-                    </div>
-                  </div>
-                </div>
-                <div class="form-row">
-                  <div class="form-group">
-                    <div class="form-label">Root folder</div>
-                    <select class="form-input" id="lidarr_root_folder"><option value="">Enter the URL and key, then Test</option></select>
-                  </div>
-                  <div class="form-group">
-                    <div class="form-label">Quality profile</div>
-                    <select class="form-input" id="lidarr_quality_profile_id"><option value="">Enter the URL and key, then Test</option></select>
-                  </div>
-                </div>
-                <div class="form-row">
-                  <div class="form-group">
-                    <div class="form-label">Metadata profile</div>
-                    <select class="form-input" id="lidarr_metadata_profile_id"><option value="">Enter the URL and key, then Test</option></select>
-                  </div>
-                  <div class="form-hint" style="align-self:end;margin-bottom:16px">Artists Tentacle adds to Lidarr get these, with only the requested album monitored.</div>
-                </div>
-                <div class="svc-checks" id="checks-lidarr"></div>
-
-                <hr class="divider">
-
-                <label class="settings-toggle"><input type="checkbox" id="navidrome_enabled"> <span>Navidrome <span style="color:var(--text3)">&mdash; set artist pictures, rescan after imports, &ldquo;Open in Navidrome&rdquo; links</span></span></label>
-                <div class="form-row">
-                  <div class="form-group">
-                    <div class="form-label">Navidrome URL</div>
-                    <input class="form-input" id="navidrome_url" placeholder="http://localhost:4533">
-                  </div>
-                  <div class="form-group">
-                    <div class="form-label">Username</div>
-                    <input class="form-input" id="navidrome_username" autocomplete="off">
-                  </div>
-                </div>
-                <div class="form-group">
-                  <div class="form-label">Navidrome URL for links (optional)</div>
-                  <input class="form-input" id="navidrome_public_url" placeholder="https://music.example.com">
-                  <div class="form-hint">Where your browser opens Navidrome, for &ldquo;Open in Navidrome&rdquo;. Leave empty if the URL above works in your browser.</div>
-                </div>
-                <div class="form-row">
-                  <div class="form-group">
-                    <div class="form-label">Password</div>
-                    <div style="display:flex;gap:8px">
-                      <input class="form-input mono" id="navidrome_password" type="password" autocomplete="new-password">
-                      <button class="btn btn-secondary" onclick="testService('navidrome')">Test</button>
-                    </div>
-                  </div>
-                  <div class="form-hint" style="align-self:end;margin-bottom:16px">Navidrome has no API tokens, so Tentacle signs in with a user. An admin, or any user if EnableArtworkUpload is on, can upload artist pictures.</div>
-                </div>
-                <label class="settings-toggle"><input type="checkbox" id="navidrome_upload_artist_images"> <span>Upload artist pictures</span></label>
-                <label class="settings-toggle"><input type="checkbox" id="navidrome_rescan_after_import"> <span>Rescan after imports</span></label>
-                <div class="svc-checks" id="checks-navidrome"></div>
-
-                <hr class="divider">
-
-                <label class="settings-toggle"><input type="checkbox" id="jellyfin_music_enabled"> <span>Jellyfin as a music player <span style="color:var(--text3)">&mdash; uses the Jellyfin connection above; also shows music search and requests inside Jellyfin</span></span></label>
-                <div class="form-group">
-                  <div class="form-label">Music library</div>
-                  <div style="display:flex;gap:8px;flex-wrap:wrap">
-                    <select class="form-input" id="jellyfin_music_library_id" style="flex:1;min-width:200px"><option value="">Loading…</option></select>
-                    <button class="btn btn-secondary" onclick="toggleCreateMusicLibrary()">Create one</button>
-                    <button class="btn btn-secondary" onclick="testService('jellyfin_music')">Test</button>
-                  </div>
-                  <div id="jf-music-create" style="display:none;margin-top:10px">
-                    <div class="form-row">
-                      <input class="form-input" id="jf-music-create-name" value="Music" placeholder="Library name">
-                      <input class="form-input mono" id="jf-music-create-path" placeholder="Folder as Jellyfin sees it, e.g. /data/music">
-                    </div>
-                    <div class="form-hint">Starts as Lidarr&rsquo;s root folder. Change it if Jellyfin mounts that folder at a different path.</div>
-                    <button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="createMusicLibrary()">Create library</button>
-                  </div>
-                </div>
-                <label class="settings-toggle"><input type="checkbox" id="jellyfin_music_set_artist_images"> <span>Set artist images</span></label>
-                <div class="svc-checks" id="checks-jellyfin_music"></div>
-
-                <hr class="divider">
-
-                <div class="form-row">
-                  <div class="form-group">
-                    <div class="form-label">MusicBrainz contact email</div>
-                    <div style="display:flex;gap:8px">
-                      <input class="form-input" id="musicbrainz_contact" type="email" placeholder="you@example.com">
-                      <button class="btn btn-secondary" onclick="testService('musicbrainz')">Test</button>
-                    </div>
-                    <div class="form-hint">MusicBrainz requires a contact in every request&rsquo;s User-Agent. It is sent only to MusicBrainz.</div>
-                  </div>
-                  <div class="form-group">
-                    <div class="form-label">Cache lifetime (days)</div>
-                    <input class="form-input" id="musicbrainz_cache_days" type="number" min="1" max="365" placeholder="30">
-                  </div>
-                </div>
-                <div class="svc-checks" id="checks-musicbrainz"></div>
-
-                <div class="form-group" style="margin-top:6px">
-                  <div class="form-label">Music folder as Tentacle sees it (optional)</div>
-                  <input class="form-input mono" id="music_library_path" placeholder="/media/music">
-                  <div class="form-hint">Lidarr&rsquo;s root folder, mounted read-only into Tentacle, so an existing artist.jpg can be reused for artist pictures. Leave empty to take pictures from Deezer. Tentacle never writes here.</div>
-                </div>
-                <label class="settings-toggle" style="margin-top:6px"><input type="checkbox" id="deezer_enabled"> <span>Deezer as a source of artist pictures <span style="color:var(--text3)">&mdash; no key needed</span> <a href="#" onclick="testService('deezer');return false" style="color:var(--accent)">Test</a></span></label>
-                <div class="svc-checks" id="checks-deezer"></div>
-              </div>
-
-              <div style="margin-top:20px">
-                <button class="btn btn-primary" onclick="saveSettings()">Save Connections</button>
-              </div>
-
-              <hr class="divider">
-
-              <div class="form-row">
-                <div class="form-group">
-                  <div class="form-label">Tentacle&rsquo;s own address <span style="font-weight:400;color:var(--text3)">&mdash; used by YouTube pointer files; as your Jellyfin server reaches this dashboard</span></div>
-                  <div style="display:flex;gap:8px">
-                    <input class="form-input" id="settings-tentacle-address" placeholder="http://192.168.1.10:8888">
-                    <button class="btn btn-secondary" onclick="ytDetectAddress('settings-tentacle-address')">Detect</button>
-                    <button class="btn btn-secondary" onclick="ytSaveAddress('settings-tentacle-address')">Save</button>
-                  </div>
-                  <div id="settings-tentacle-address-status" style="font-size:12px;margin-top:4px;color:var(--text3)"></div>
-                </div>
-              </div>
-            </div>
-
-            <!-- Sync Settings removed — merged into Integrations -->
-
-            <!-- Library Paths -->
-            <div class="settings-section card" id="section-paths">
-              <h3>Library Paths</h3>
-              <p class="section-desc">Volume mounts detected inside the container. Add missing mounts to your <code>docker-compose.yml</code> and restart.</p>
-
-              <div id="paths-status" style="margin-bottom:16px">
-                <div class="loading-state"><div class="spinner"></div> Checking paths...</div>
-              </div>
-            </div>
-
-            <!-- Integrations -->
-            <div class="settings-section card" id="section-integrations">
-              <h3>Integrations</h3>
-              <p class="section-desc">External service connections, sync config & webhooks.</p>
-
-              <div class="form-group">
-                <div class="form-label">Jellyfin User</div>
-                <div id="jellyfin-login-status" style="padding:10px 12px;background:var(--green-dim);border:1px solid rgba(74,222,128,0.15);border-radius:var(--radius-sm)">
-                  <span style="color:var(--green);font-size:13px;font-weight:500" id="jellyfin-logged-in-label"></span>
-                  <div style="font-size:11px;color:var(--text3);margin-top:4px">Managed via login page. Sign out and sign in as a different user to change.</div>
-                </div>
-              </div>
-
-              <hr class="divider">
-
-              <div class="section-title">Sync</div>
-              <div class="form-group">
-                <div class="form-label">Daily Sync Time</div>
-                <input class="form-input" id="sync_schedule_time" type="time" value="03:00" style="max-width:160px">
-                <div class="form-hint" id="sync_schedule_hint">Runs every day at this time.</div>
-              </div>
-
-              <div class="form-group">
-                <div class="form-label">Recently Added Window (days)</div>
-                <input class="form-input" id="recently_added_days" placeholder="30" type="number" min="1" max="365">
-                <div class="form-hint">How long items stay in "Recently Added" collections</div>
-              </div>
-
-              <div class="form-group">
-                <div class="form-label">TMDB Match Threshold</div>
-                <input class="form-input" id="tmdb_match_threshold" placeholder="0.7" type="number" min="0.1" max="1.0" step="0.05">
-                <div class="form-hint">Minimum confidence for TMDB title match (0.1–1.0). Higher = stricter.</div>
-              </div>
-
-              <hr class="divider">
-
-              <div class="section-title">API Keys</div>
-              <div class="form-group">
-                <div class="form-label">Trakt Client ID</div>
-                <input class="form-input mono" id="trakt_client_id" type="password" placeholder="Enter Trakt API client ID">
-                <div class="form-hint">Required for Trakt list subscriptions. Create an app at trakt.tv/oauth/applications to get a Client ID.</div>
-              </div>
-
-              <div class="form-group">
-                <div class="form-label">Logo.dev API Key</div>
-                <input class="form-input mono" id="logodev_api_key" type="password" placeholder="pk_...">
-                <div class="form-hint">Optional. Enables streaming service logos on playlist artwork. Get a key at logo.dev</div>
-              </div>
-
-              <hr class="divider">
-
-              <div class="section-title">Pushover</div>
-              <div class="form-hint" style="margin-bottom:10px">Tentacle checks every IPTV provider each hour. When one starts failing, the dashboard shows a red banner and Pushover sends one message to your phone, and one more when it works again. Create an application at pushover.net for the app token; the user key is on your Pushover home page.</div>
-              <div class="form-group">
-                <div class="form-label">Pushover App Token</div>
-                <input class="form-input mono" id="pushover_app_token" type="password" placeholder="Application API token" autocomplete="off">
-              </div>
-              <div class="form-group">
-                <div class="form-label">Pushover User Key</div>
-                <div style="display:flex;gap:8px;align-items:center">
-                  <input class="form-input mono" id="pushover_user_key" type="password" placeholder="Your user key" autocomplete="off">
-                  <button class="btn btn-secondary" onclick="testPushover()">Send test</button>
-                </div>
-                <div class="form-hint">Leave both empty for no messages; the banner shows either way.</div>
-              </div>
-
-              <hr class="divider">
-
-              <div class="section-title">Webhooks</div>
-              <div class="form-group">
-                <div class="form-label">Radarr Webhook URL</div>
-                <div style="display:flex;gap:8px;align-items:center">
-                  <input class="form-input mono" id="webhook_host" placeholder="your-server-ip:8888" style="max-width:200px">
-                  <span style="color:var(--text3);font-family:'DM Mono',monospace;font-size:12px;white-space:nowrap">/api/radarr/webhook</span>
-                  <button class="btn btn-secondary" onclick="copyWebhookUrl()">Copy</button>
-                  <button class="btn btn-secondary" onclick="testWebhookUrl()">Test</button>
-                </div>
-                <div class="form-hint">Paste into Radarr → Settings → Connect → Webhook</div>
-              </div>
-
-              <div class="form-group">
-                <div class="form-label">Sonarr Webhook URL</div>
-                <div style="display:flex;gap:8px;align-items:center">
-                  <input class="form-input mono" id="sonarr_webhook_host" placeholder="your-server-ip:8888" style="max-width:200px">
-                  <span style="color:var(--text3);font-family:'DM Mono',monospace;font-size:12px;white-space:nowrap">/api/sonarr/webhook</span>
-                  <button class="btn btn-secondary" onclick="copySonarrWebhookUrl()">Copy</button>
-                  <button class="btn btn-secondary" onclick="testSonarrWebhookUrl()">Test</button>
-                </div>
-                <div class="form-hint">Paste into Sonarr → Settings → Connect → Webhook</div>
-              </div>
-
-              <div class="form-group">
-                <div class="form-label">Hybrid series layout</div>
-                <select class="form-input" id="hybrid_series_layout" style="max-width:460px">
-                  <option value="vod_root">Download into the VOD folder (needs a VOD root folder in Sonarr)</option>
-                  <option value="shared_library">Shared Jellyfin library — same folder name, separate roots</option>
-                </select>
-                <div class="form-hint">How VOD (.strm) + downloaded episodes combine into one Jellyfin series when using "Download More Episodes". Shared library: your VOD shows folder and Sonarr's shows folder must both be folders of ONE Jellyfin library — Sonarr then needs no VOD root folder.</div>
-              </div>
-
-              <hr class="divider">
-
-              <div class="section-title">Manual Scans</div>
-              <div class="form-hint" style="margin-bottom:10px">Re-import downloaded content from Radarr/Sonarr into Tentacle (runs automatically every night — use these to catch up immediately).</div>
-              <div style="display:flex;gap:8px;flex-wrap:wrap">
-                <button class="btn btn-secondary" id="radarr-scan-btn" onclick="scanRadarr()">⬇ Scan Radarr</button>
-                <button class="btn btn-secondary" id="sonarr-scan-btn" onclick="scanSonarr()">⬇ Scan Sonarr</button>
-              </div>
-
-              <div style="margin-top:20px">
-                <button class="btn btn-primary" onclick="saveSettings()">Save Integrations</button>
-              </div>
-            </div>
-
-            <!-- Music (the module's own settings) -->
-            <div class="settings-section card" id="section-music">
-              <h3>Music</h3>
-              <p class="section-desc">Turn &ldquo;I like this song, album or artist&rdquo; into the original studio album in your library, through Lidarr. Off by default; while off, Tentacle has no music anywhere.</p>
-
-              <label class="settings-toggle"><input type="checkbox" id="music_enabled" onchange="onMusicEnabledChange()"> <span><strong>Enable the music module</strong></span></label>
-              <div id="music-status-line" class="form-hint" style="margin:-4px 0 8px 22px"></div>
-
-              <div id="music-settings-body">
-                <hr class="divider">
-                <div class="section-title">Original release</div>
-                <p class="form-hint" style="margin:-6px 0 12px">Tentacle pins the release with the album&rsquo;s original tracklist: the earliest year&rsquo;s most common track count. These break ties between releases with that tracklist.</p>
-                <div class="form-row">
-                  <div class="form-group">
-                    <div class="form-label">Preferred countries</div>
-                    <input class="form-input" id="music_preferred_countries" placeholder="US,GB,CA,XW">
-                    <div class="form-hint">Country codes, in order. XW = worldwide.</div>
-                  </div>
-                  <div class="form-group">
-                    <div class="form-label">Preferred formats</div>
-                    <input class="form-input" id="music_preferred_formats" placeholder="CD,Digital Media">
-                    <div class="form-hint">MusicBrainz format names, in order.</div>
-                  </div>
-                </div>
-                <div class="form-group">
-                  <div class="form-label">Words that mark a special edition</div>
-                  <input class="form-input" id="music_edition_words" placeholder="deluxe,expanded,anniversary,bonus,live,mono,stereo,box,collector,legacy,super">
-                  <div class="form-hint">A release whose title or disambiguation contains one of these is passed over when another release has the same tracklist.</div>
-                </div>
-
-                <hr class="divider">
-                <div class="section-title">Discover</div>
-                <div class="form-group">
-                  <div class="form-label">Chart country</div>
-                  <select class="form-input" id="music_chart_country" style="max-width:240px"><option value="us">United States</option><option value="ca">Canada</option><option value="gb">United Kingdom</option><option value="au">Australia</option><option value="ie">Ireland</option><option value="nz">New Zealand</option><option value="de">Germany</option><option value="fr">France</option><option value="es">Spain</option><option value="it">Italy</option><option value="nl">Netherlands</option><option value="be">Belgium</option><option value="se">Sweden</option><option value="no">Norway</option><option value="dk">Denmark</option><option value="fi">Finland</option><option value="pl">Poland</option><option value="pt">Portugal</option><option value="br">Brazil</option><option value="mx">Mexico</option><option value="ar">Argentina</option><option value="jp">Japan</option><option value="kr">South Korea</option><option value="in">India</option><option value="za">South Africa</option></select>
-                  <div class="form-hint">Whose Apple Music charts Discover &rarr; Music shows under Trending and New releases. Top of all time is worldwide.</div>
-                </div>
-
-                <hr class="divider">
-                <div class="section-title">Reconcile</div>
-                <div class="form-group">
-                  <div class="form-label">Daily check at</div>
-                  <input class="form-input" id="music_reconcile_time" type="time" value="04:00" style="max-width:160px">
-                  <div class="form-hint">Checks monitored albums once a day, at low priority. Anything that isn&rsquo;t right goes to review.</div>
-                </div>
-                <div class="form-label" style="margin-bottom:8px">Apply automatically, without review</div>
-                <label class="settings-toggle"><input type="checkbox" id="music_auto_repin"> <span>Re-pin to the original release</span></label>
-                <label class="settings-toggle"><input type="checkbox" id="music_auto_repin_trim"> <span>Re-pin and remove extra tracks</span></label>
-                <label class="settings-toggle"><input type="checkbox" id="music_auto_repin_download"> <span>Re-pin and download missing tracks</span></label>
-                <div class="form-hint" style="margin-top:-4px">All off by default: everything waits for your click until you trust it. &ldquo;Needs review&rdquo; cases are never applied automatically.</div>
-
-                <hr class="divider">
-                <div class="section-title">Lidarr webhook</div>
-                <p class="form-hint" style="margin:-6px 0 12px">Lidarr tells Tentacle when an artist is added or an album is imported, so originals are pinned right away. Add it in Lidarr &rarr; Settings &rarr; Connect &rarr; + &rarr; Webhook:</p>
-                <div class="form-group">
-                  <div class="form-label">Name</div>
-                  <code style="font-size:12px">Tentacle</code>
-                </div>
-                <div class="form-group">
-                  <div class="form-label">Triggers <span style="font-weight:400;color:var(--text3)">&mdash; leave the others off</span></div>
-                  <div id="music-webhook-triggers" style="font-size:13px">On Artist Add, On Release Import, On Upgrade</div>
-                </div>
-                <div class="form-group">
-                  <div class="form-label">Webhook URL <span style="font-weight:400;color:var(--text3)">&mdash; Method: POST; Username and Password empty</span></div>
-                  <div style="display:flex;gap:8px;flex-wrap:wrap">
-                    <input class="form-input mono" id="music-webhook-url" readonly style="flex:1;min-width:240px;font-size:12px;background:var(--bg3)">
-                    <button class="btn btn-secondary" onclick="copyMusicWebhookUrl()">Copy</button>
-                    <button class="btn btn-secondary" onclick="regenerateMusicWebhookSecret()">New secret</button>
-                  </div>
-                  <div class="form-hint" id="music-webhook-hint">The part after ?secret= proves the call comes from your Lidarr.</div>
-                </div>
-                <div class="form-group">
-                  <div class="form-label">Status for monitoring <span style="font-weight:400;color:var(--text3)">&mdash; last check, counts, needs review, last error, health; cheap to poll</span></div>
-                  <input class="form-input mono" id="music-status-url" readonly style="font-size:12px;background:var(--bg3)">
-                </div>
-                <button class="btn btn-secondary" onclick="testMusicWebhook()">Send test</button>
-                <span id="music-webhook-last" class="form-hint" style="margin-left:8px"></span>
-                <div class="svc-checks" id="checks-music-webhook"></div>
-              </div>
-
-              <div style="margin-top:20px">
-                <button class="btn btn-primary" onclick="saveSettings()">Save Music</button>
-              </div>
-            </div>
-
-            <!-- Users Section -->
-            <div class="settings-section card" id="section-users">
-              <h3>Users</h3>
-              <p class="section-desc">Manage Jellyfin user permissions. Admin users get full access to Tentacle. Non-admin users can only browse the library and customize their home screen.</p>
-              <div id="users-list" style="margin-top:16px">
-                <div style="color:var(--text3);font-size:13px">Loading users...</div>
-              </div>
-            </div>
-
-            <div class="settings-section card" id="section-playlists-info">
-              <h3>Playlists Guide</h3>
-              <p class="section-desc">How auto playlists and custom playlists work in Tentacle.</p>
-
-              <div class="guide-section">
-                <h4 class="guide-heading">Auto Playlists</h4>
-                <p class="guide-text">Auto playlists are generated from your synced content. Toggle them on from <strong>Jellyfin &rarr; Playlists</strong> to create them in Jellyfin.</p>
-                <div class="guide-grid">
-                  <div class="guide-item">
-                    <div class="guide-item-name">Recently Added Movies</div>
-                    <div class="guide-item-desc">Movies added within the rolling window (default 30 days). Includes both VOD and downloaded content. The window is configurable in <a href="#" onclick="showSettingsSection('integrations');return false" style="color:var(--accent)">Integrations</a>.</div>
-                  </div>
-                  <div class="guide-item">
-                    <div class="guide-item-name">Recently Added TV</div>
-                    <div class="guide-item-desc">TV series added within the rolling window. Same timeframe as movies.</div>
-                  </div>
-                  <div class="guide-item">
-                    <div class="guide-item-name">Downloaded Movies</div>
-                    <div class="guide-item-desc">All movies downloaded through Radarr. Automatically tagged when Radarr finishes a download.</div>
-                  </div>
-                  <div class="guide-item">
-                    <div class="guide-item-name">Downloaded TV</div>
-                    <div class="guide-item-desc">All TV series downloaded through Sonarr. Automatically tagged when Sonarr finishes a download.</div>
-                  </div>
-                  <div class="guide-item">
-                    <div class="guide-item-name">Source Playlists</div>
-                    <div class="guide-item-desc">One playlist per IPTV provider source (e.g. "Netflix Movies", "HBO MAX Series"). Created automatically when you sync a provider with categorized content.</div>
-                  </div>
-                  <div class="guide-item">
-                    <div class="guide-item-name">List Playlists</div>
-                    <div class="guide-item-desc">One playlist per imported list (e.g. "IMDB TOP 250"). Enable from the list card on the Discover &rarr; My Lists tab. Only includes items that are in your library.</div>
-                  </div>
-                  <div class="guide-item">
-                    <div class="guide-item-name">User's Downloads</div>
-                    <div class="guide-item-desc">A personal playlist of everything you've added to Radarr or Sonarr through Tentacle. Each user gets their own.</div>
-                  </div>
-                </div>
-              </div>
-
-              <div class="guide-section">
-                <h4 class="guide-heading">Custom Playlists</h4>
-                <p class="guide-text">Create your own playlists with filters. Built from <strong>Jellyfin &rarr; Playlists &rarr; + Create</strong>.</p>
-                <div class="guide-grid">
-                  <div class="guide-item">
-                    <div class="guide-item-name">Native Filters</div>
-                    <div class="guide-item-desc">Genre, rating, and year filters query Jellyfin directly. A "Comedy Movies" playlist finds <em>all</em> comedies in your library, not just Tentacle-tagged ones.</div>
-                  </div>
-                  <div class="guide-item">
-                    <div class="guide-item-name">Source Filters</div>
-                    <div class="guide-item-desc">Filter by IPTV provider or source tag (e.g. "From Netflix"). These use Tentacle's tag system since Jellyfin doesn't know about providers.</div>
-                  </div>
-                  <div class="guide-item">
-                    <div class="guide-item-name">Mixed Filters</div>
-                    <div class="guide-item-desc">Combine native and source filters (e.g. "Netflix comedies rated 7+"). When mixed, all conditions are evaluated through Tentacle's tagger.</div>
-                  </div>
-                </div>
-              </div>
-
-              <div class="guide-section">
-                <h4 class="guide-heading">How It Works</h4>
-                <div class="guide-grid">
-                  <div class="guide-item">
-                    <div class="guide-item-name">Per-User</div>
-                    <div class="guide-item-desc">Each user has independent playlist toggles, custom playlists, and home screen layouts. Playlists are created as private Jellyfin playlists owned by your account.</div>
-                  </div>
-                  <div class="guide-item">
-                    <div class="guide-item-name">Auto Sync</div>
-                    <div class="guide-item-desc">Toggling a playlist or creating/editing one immediately syncs to Jellyfin. No manual sync needed. Content also refreshes on the nightly scheduled sync.</div>
-                  </div>
-                  <div class="guide-item">
-                    <div class="guide-item-name">Sort Order</div>
-                    <div class="guide-item-desc">Each playlist can have its own sort (release date, name, rating, recently added, random). Change it from the playlist's sort dropdown on the Playlists page.</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- ── LIBRARY ── -->
+      <!-- ── LIBRARY: content only ── -->
       <div class="page active" id="page-library">
-        <!-- Jellyfin connection warning -->
-        <div class="card" id="jellyfin-error-banner" style="display:none;margin-bottom:16px;border-left:3px solid var(--red)">
-          <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
-            <strong style="color:var(--red)" id="jellyfin-banner-title">Jellyfin Connection Failed</strong>
-            <p style="margin:4px 0 0" id="jellyfin-banner-msg">Check your API key in Settings → Connections</p>
-          </div>
-        </div>
-
-        <!-- Stale VOD files warning (moved from Dashboard) -->
-        <div class="card" id="stale-files-banner" style="display:none;margin-bottom:16px;border-left:3px solid var(--amber)">
-          <div class="card-header">
-            <div class="card-title" style="color:var(--amber)">Existing VOD Files Detected</div>
-          </div>
-          <div style="padding:0 16px 16px;font-size:13px;color:var(--text2);line-height:1.5">
-            <p style="margin:0 0 8px">Found <strong id="stale-strm-count">0</strong> existing .strm files in your VOD folders that weren't created by Tentacle.</p>
-            <p style="margin:0 0 12px">These files won't appear in your library. Delete them and let Tentacle recreate everything with proper metadata.</p>
-            <div style="display:flex;gap:8px">
-              <button class="btn btn-danger btn-sm" onclick="confirmDeleteStaleFiles()">Delete All &amp; Start Fresh</button>
-              <button class="btn btn-secondary btn-sm" onclick="dismissStaleFiles()">Keep &amp; Ignore</button>
-            </div>
-          </div>
-        </div>
-
-        <!-- New provider content notice (nightly discovery) -->
-        <div class="card" id="new-content-banner" style="display:none;margin-bottom:16px;border-left:3px solid var(--accent)">
-          <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
-            <strong style="color:var(--accent)">New provider content discovered</strong>
-            <p style="margin:4px 0 10px" id="new-content-msg"></p>
-            <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button class="btn btn-secondary btn-sm" id="new-content-vod-btn" style="display:none" onclick="showPage('vod')">View VOD Categories</button>
-              <button class="btn btn-secondary btn-sm" id="new-content-live-btn" style="display:none" onclick="showPage('live-tv')">View Live TV Groups</button>
-              <button class="btn btn-secondary btn-sm" onclick="dismissNewContentNotice()">Dismiss</button>
-            </div>
-          </div>
-        </div>
-        <!-- VOD titles that play a different film than their label -->
-        <div class="card" id="wrong-match-card" style="display:none;margin-bottom:16px;border-left:3px solid var(--amber)">
-          <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
-            <strong style="color:var(--amber)">Possible wrong movies</strong>
-            <p style="margin:4px 0 10px">These IPTV titles play much longer or shorter than the film they're labelled as — your provider probably put the wrong film under that name. Checked each night for titles that have been played.</p>
-            <div id="wrong-match-list"></div>
-            <div id="wrong-match-blocked" style="margin-top:10px"></div>
-          </div>
-        </div>
-        <div class="modal-overlay" id="stale-confirm-modal" style="display:none">
-          <div class="modal" style="max-width:440px">
-            <div class="modal-header">
-              <div class="modal-title" style="color:var(--amber)">Confirm Deletion</div>
-              <button class="modal-close" onclick="closeModal('stale-confirm-modal')">&times;</button>
-            </div>
-            <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
-              <p style="margin:0 0 12px">This will delete <strong id="stale-confirm-strm">0</strong> .strm files and <strong id="stale-confirm-nfo">0</strong> .nfo files from your VOD folders.</p>
-              <p style="margin:0 0 16px;color:var(--red)">This cannot be undone.</p>
-              <div style="display:flex;gap:8px;justify-content:flex-end">
-                <button class="btn btn-secondary btn-sm" onclick="closeModal('stale-confirm-modal')">Cancel</button>
-                <button class="btn btn-danger btn-sm" onclick="executeDeleteStaleFiles()">Delete All</button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Compact stats bar -->
-        <div id="lib-stats-bar" style="display:flex;flex-wrap:wrap;align-items:center;gap:16px;padding:8px 14px;margin-bottom:10px;background:var(--bg1);border:1px solid var(--border);border-radius:var(--radius);font-size:13px;font-family:'DM Mono',monospace;color:var(--text2)">
-          <span style="display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--accent);flex-shrink:0"></span><span id="lib-stat-movies">—</span> Movies</span>
-          <span style="color:var(--border2)">·</span>
-          <span style="display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--pink);flex-shrink:0"></span><span id="lib-stat-series">—</span> Series</span>
-          <span style="color:var(--border2)">·</span>
-          <span style="display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0"></span><span id="lib-stat-downloaded">—</span> Downloaded</span>
-          <span style="color:var(--border2)">·</span>
-          <span style="display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--amber);flex-shrink:0"></span><span id="lib-stat-vod">—</span> VOD</span>
-        </div>
-
-        <!-- Last Sync (clickable, opens detailed modal) -->
-        <div id="lib-sync-summary" style="display:none;margin-bottom:10px">
-          <div style="display:flex;align-items:center;gap:8px;padding:6px 14px;background:var(--bg1);border:1px solid var(--border);border-radius:var(--radius);font-size:12px;color:var(--text3);cursor:pointer" onclick="openSyncDetailModal()">
-            <span>Last sync: <span id="lib-sync-time" style="color:var(--text2);font-family:'DM Mono',monospace"></span></span>
-            <span id="lib-sync-brief" style="color:var(--text3);margin-left:4px"></span>
-            <span style="font-size:10px;margin-left:auto;color:var(--text3)">Details ▸</span>
-          </div>
-        </div>
-
-        <!-- Sync Detail Modal -->
-        <div class="modal-overlay" id="modal-sync-detail" style="display:none">
-          <div class="modal modal-wide" style="max-width:640px;max-height:80vh;overflow-y:auto">
-            <div class="modal-header">
-              <div class="modal-title">Nightly Sync Summary</div>
-              <button class="modal-close" onclick="closeSyncDetailModal()">✕</button>
-            </div>
-            <div id="sync-detail-body" style="font-size:13px;color:var(--text2)"></div>
-          </div>
-        </div>
-
-        <!-- Active Downloads (auto-hides when empty) -->
-        <div id="lib-downloads" style="display:none;margin-bottom:10px">
-          <div class="card" style="border-left:3px solid var(--accent)">
-            <div class="card-header" style="cursor:pointer" onclick="document.getElementById('lib-dl-body').style.display=document.getElementById('lib-dl-body').style.display==='none'?'':'none'">
-              <div class="card-title" style="display:flex;align-items:center;gap:8px">
-                <div class="dot dot-amber"></div>
-                Downloads <span id="lib-dl-count" style="font-weight:400;color:var(--text3)"></span>
-              </div>
-              <span style="font-size:11px;color:var(--text3)">click to collapse</span>
-            </div>
-            <div id="lib-dl-body"></div>
-          </div>
-        </div>
-
         <!-- Library tabs -->
         <div class="tabs-bar" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
           <button class="live-tab active" data-libtab="browse" onclick="showLibTab('browse')">Browse</button>
           <button class="live-tab" data-libtab="music" data-music-only onclick="showLibTab('music')">Music</button>
           <button class="live-tab" data-libtab="following" onclick="showLibTab('following')">Following <span class="nav-badge" id="lib-follow-badge" style="display:none;margin-left:6px">0</span></button>
-          <button class="live-tab" data-libtab="duplicates" data-admin-only onclick="showLibTab('duplicates')">Duplicates <span class="nav-badge" id="lib-dup-badge" style="display:none;margin-left:6px">0</span></button>
         </div>
 
         <div id="lib-tab-music" style="display:none">
@@ -2814,11 +1892,11 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <button class="filter-btn" data-libtype="movie" onclick="setLibType('movie',this)">Movies</button>
               <button class="filter-btn" data-libtype="series" onclick="setLibType('series',this)">Shows</button>
             </div>
-            <div class="filter-group" id="lib-src-group">
-              <button class="filter-btn active" data-libsrc="all" onclick="setLibSrc('all',this)">All Sources</button>
-              <button class="filter-btn" data-libsrc="vod" onclick="setLibSrc('vod',this)">VOD</button>
-              <button class="filter-btn" data-libsrc="radarr" onclick="setLibSrc('radarr',this)">Downloaded</button>
-            </div>
+            <select class="lib-sort-select" id="lib-source" aria-label="Source" onchange="setLibSource(this.value)">
+              <option value="all">All sources</option>
+              <option value="radarr">Downloaded</option>
+              <option value="vod">From IPTV providers</option>
+            </select>
           </div>
           <!-- Row 3: Scrollable list pills -->
           <div class="lib-filters-row" id="lib-list-row" style="display:none">
@@ -2839,8 +1917,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           </div>
         </div>
 
-        <!-- Source breakdown pills -->
-        <div id="lib-source-pills" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px"></div>
+        <div style="height:12px"></div>
 
         <!-- Library grid -->
         <div id="lib-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px"></div>
@@ -2855,45 +1932,57 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           <div id="following-empty" class="empty-state" style="display:none"><p>No shows being followed yet. Add a show to Sonarr with "All Episodes (including future)" or enable following from the show detail modal.</p></div>
         </div><!-- /lib-tab-following -->
 
-        <div id="lib-tab-duplicates" style="display:none">
-          <div id="dup-stats" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px"></div>
-          <div class="card">
-            <div class="card-header">
-              <div class="card-title">Duplicates</div>
-              <div style="display:flex;gap:8px;align-items:center">
-                <div class="filter-group">
-                  <button class="filter-btn active" data-dupfilter="pending" onclick="setDupFilter('pending',this)">Pending</button>
-                  <button class="filter-btn" data-dupfilter="resolved" onclick="setDupFilter('resolved',this)">Resolved</button>
-                  <button class="filter-btn" data-dupfilter="all" onclick="setDupFilter('all',this)">All</button>
-                </div>
-                <button class="btn btn-secondary btn-sm" onclick="resolveAllKeepRadarr()">Resolve All → Keep Downloaded</button>
-              </div>
-            </div>
-            <div id="dup-list"></div>
-          </div>
-        </div><!-- /lib-tab-duplicates -->
       </div>
 
-      <!-- History page removed — merged into Dashboard -->
+      <!-- ── DISCOVER PAGE ── -->
+      <div class="page" id="page-discover">
+        <!-- Discover tabs -->
+        <div class="discover-tabs-bar">
+          <button class="live-tab active" data-discovertab="browse" onclick="showDiscoverTab('browse')">Browse</button>
+          <button class="live-tab" data-discovertab="lists" onclick="showDiscoverTab('lists')">My Lists</button>
+          <button class="live-tab activity-tab" data-discovertab="activity" onclick="showDiscoverTab('activity')">Activity <span class="activity-badge" id="activity-tab-badge">0</span></button>
+        </div>
 
-      <!-- Lists page removed — merged into Discover tab -->
+        <div id="discover-tab-browse">
+          <div class="discover-toolbar" style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
+            <div class="discover-search-wrap" style="position:relative;display:flex;align-items:center">
+              <input type="text" id="discover-search-input" placeholder="Search TMDB…" autocomplete="off" style="padding:6px 30px 6px 10px;border-radius:4px;border:1px solid var(--border2);background:var(--bg2);color:var(--text);font-size:13px;width:200px;outline:none;font-family:'DM Sans',sans-serif" oninput="onDiscoverSearchInput(this)">
+              <button id="discover-search-clear" onclick="clearDiscoverSearch()" style="display:none;position:absolute;right:4px;border:none;background:transparent;color:var(--text3);font-size:16px;cursor:pointer;padding:2px 4px">&times;</button>
+            </div>
+            <div class="filter-group">
+              <button class="filter-btn active" data-disctype="movies" onclick="setDiscoverType('movies',this)">Movies</button>
+              <button class="filter-btn" data-disctype="series" onclick="setDiscoverType('series',this)">TV Shows</button>
+              <button class="filter-btn" data-disctype="music" data-music-only onclick="setDiscoverType('music',this)">Music</button>
+            </div>
+          </div>
+          <div id="discover-section-tabs" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px"></div>
+          <div id="discover-streaming-pills" style="display:none;gap:8px;flex-wrap:wrap;margin-bottom:16px"></div>
+          <div id="discover-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px"></div>
+        </div>
 
-      <!-- ── PLAYLISTS ── -->
-      <div class="page" id="page-jellyfin">
-        <div class="page-header">
-          <div class="page-header-row">
-            <div>
-              <div class="page-title">Jellyfin</div>
-              <div class="page-subtitle">Home screen & playlists</div>
-            </div>
-            <div id="jf-tab-actions" style="display:flex;gap:8px">
-            </div>
+        <div id="discover-tab-lists" style="display:none">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+            <p style="color:var(--text3);font-size:13px;margin:0">IMDb, Trakt & Letterboxd list subscriptions</p>
+            <button class="btn btn-primary" onclick="showAddList()">+ Add List</button>
+          </div>
+          <div id="lists-active">
+            <div class="loading-state"><div class="spinner"></div></div>
           </div>
         </div>
 
+        <div id="discover-tab-activity" style="display:none">
+          <div id="activity-content">
+            <div class="activity-empty">Loading…</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── MY HOME SCREEN (page id "jellyfin") ── -->
+      <div class="page" id="page-jellyfin">
+        <div id="jf-tab-actions" style="display:none"></div>
         <!-- Jellyfin tabs -->
-        <div style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
-          <button class="live-tab active" data-jftab="home" onclick="showJellyfinTab('home')">Home Screen</button>
+        <div class="tabs-bar" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
+          <button class="live-tab active" data-jftab="home" onclick="showJellyfinTab('home')">Home rows</button>
           <button class="live-tab" data-jftab="playlists" onclick="showJellyfinTab('playlists')">Playlists</button>
         </div>
 
@@ -2902,7 +1991,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           <!-- Hero picker -->
           <div class="card">
             <div class="card-header">
-              <div class="card-title">Hero Spotlight</div>
+              <div class="card-title">Spotlight <span style="font-weight:400;color:var(--text3);font-size:12px">&mdash; the big banner at the top</span></div>
             </div>
             <div style="padding:0 16px 16px">
               <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
@@ -2949,7 +2038,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           <!-- Notifications -->
           <div class="card" style="margin-top:16px">
             <div class="card-header">
-              <div class="card-title">Notifications</div>
+              <div class="card-title">Download notifications</div>
             </div>
             <div style="padding:0 16px 16px">
               <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
@@ -2969,8 +2058,8 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           <!-- Toolbar buttons -->
           <div class="card" style="margin-top:16px">
             <div class="card-header">
-              <div class="card-title">Toolbar Buttons</div>
-              <span style="font-size:11px;color:var(--text3)">Drag the handle to reorder. Applies to both Jellyfin and Android TV.</span>
+              <div class="card-title">Toolbar buttons</div>
+              <span class="card-header-hint">Drag the handle to reorder. Applies to Jellyfin and the Android TV app.</span>
             </div>
             <div style="padding:0 16px 16px">
               <div id="toolbar-buttons-list" style="display:flex;flex-direction:column;gap:6px"></div>
@@ -2980,7 +2069,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           <!-- Home rows -->
           <div class="card" style="margin-top:16px">
             <div class="card-header">
-              <div class="card-title">Home Rows</div>
+              <div class="card-title">Home rows</div>
               <button class="btn btn-secondary btn-sm" onclick="showAddHomeRow()" style="font-size:11px;padding:3px 10px">+ Add Row</button>
             </div>
             <div style="padding:0 16px 16px">
@@ -3024,19 +2113,22 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
         <!-- ── PLAYLISTS TAB ── -->
         <div id="jf-tab-playlists" style="display:none">
-          <!-- First-time info banner -->
-          <div id="auto-playlist-banner" style="display:none;padding:12px 16px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin-bottom:16px;font-size:13px;color:var(--text2)">
-            Playlists are created automatically from your synced content. Toggle on the ones you want in Jellyfin.
-            <button onclick="dismissAutoPlaylistBanner()" style="background:none;border:none;color:var(--text3);cursor:pointer;float:right;font-size:14px;padding:0 4px">&#10005;</button>
-          </div>
+          <details class="help-card">
+            <summary style="cursor:pointer;padding:12px 16px;font-size:13px;color:var(--text2)">How playlists work</summary>
+            <div style="padding:0 16px 14px;font-size:13px;color:var(--text2);line-height:1.6">
+              <p style="margin:0 0 8px"><strong>Your playlists are yours.</strong> Each person who signs in has their own playlists, home rows and lists; they are private Jellyfin playlists on your account. Switching one on, or creating or changing one, updates Jellyfin right away, and every night&rsquo;s sync refreshes what is in them.</p>
+              <p style="margin:0 0 8px"><strong>Ready-made playlists</strong> come from the library: Recently Added Movies and TV, Downloaded Movies and TV, one per IPTV source (such as &ldquo;Netflix Movies&rdquo;), one per list you follow under Discover &rarr; My Lists (only what is in the library), and My Downloads (everything you asked Radarr or Sonarr for).</p>
+              <p style="margin:0"><strong>Your own playlists</strong> (+ Create) pick titles by genre, rating and year from the whole Jellyfin library, by IPTV source, or both: &ldquo;Netflix comedies rated 7 or more&rdquo;. Each playlist has its own order (newest, A&ndash;Z, rating, recently added, random).</p>
+            </div>
+          </details>
 
           <!-- Auto Playlists -->
           <div class="card">
             <div class="card-header">
-              <div class="card-title">Auto Playlists</div>
+              <div class="card-title">Ready-made playlists</div>
               <div style="display:flex;align-items:center;gap:10px">
-                <span style="font-size:11px;color:var(--text3)">Generated from your synced content</span>
-                <button class="btn btn-secondary btn-sm" onclick="resyncAllPlaylists()" id="resync-all-btn" style="font-size:11px;padding:3px 10px">Resync All</button>
+                <span style="font-size:11px;color:var(--text3)">Made from the library</span>
+                <button class="btn btn-secondary btn-sm" onclick="resyncAllPlaylists()" id="resync-all-btn" style="font-size:11px;padding:3px 10px" title="Rebuild every playlist in Jellyfin now">Rebuild all</button>
               </div>
             </div>
             <div id="auto-playlists-list">
@@ -3047,7 +2139,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           <!-- Custom Playlists -->
           <div class="card" style="margin-top:16px">
             <div class="card-header">
-              <div class="card-title">Custom Playlists</div>
+              <div class="card-title">Your own playlists</div>
               <button class="btn btn-secondary btn-sm" onclick="showAddTagRule()" style="font-size:11px;padding:3px 10px">+ Create</button>
             </div>
             <div id="tag-rules-list">
@@ -3059,118 +2151,55 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <!-- Discover tab removed — now a standalone page -->
       </div>
 
-      <!-- Duplicates page removed — merged into Library tab -->
-
-      <!-- ── DISCOVER PAGE ── -->
-      <div class="page" id="page-discover">
-        <div class="page-header">
-          <div class="page-header-row">
-            <div>
-              <div class="page-title">Discover</div>
-              <div class="page-subtitle">Browse, search & add new content</div>
-            </div>
-          </div>
+      <!-- ── SOURCES (admins): where the library comes from ── -->
+      <div class="page" id="page-sources">
+        <div class="tabs-bar" id="sources-tabs" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
+          <button class="live-tab active" data-sourcestab="providers" onclick="showSourcesTab('providers')">IPTV providers</button>
+          <button class="live-tab" data-sourcestab="live" style="display:none" onclick="showSourcesTab('live')">Live TV</button>
+          <button class="live-tab" data-sourcestab="youtube" onclick="showSourcesTab('youtube')">YouTube</button>
+          <button class="live-tab" data-sourcestab="arr" onclick="showSourcesTab('arr')">Radarr &amp; Sonarr</button>
+          <button class="live-tab" data-sourcestab="music" onclick="showSourcesTab('music')">Music</button>
         </div>
 
-        <!-- Discover tabs -->
-        <div class="discover-tabs-bar">
-          <button class="live-tab active" data-discovertab="browse" onclick="showDiscoverTab('browse')">Browse</button>
-          <button class="live-tab" data-discovertab="lists" onclick="showDiscoverTab('lists')">My Lists</button>
-          <button class="live-tab activity-tab" data-discovertab="activity" onclick="showDiscoverTab('activity')">Activity <span class="activity-badge" id="activity-tab-badge">0</span></button>
-        </div>
-
-        <div id="discover-tab-browse">
-          <div class="discover-toolbar" style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
-            <div class="discover-search-wrap" style="position:relative;display:flex;align-items:center">
-              <input type="text" id="discover-search-input" placeholder="Search TMDB…" autocomplete="off" style="padding:6px 30px 6px 10px;border-radius:4px;border:1px solid var(--border2);background:var(--bg2);color:var(--text);font-size:13px;width:200px;outline:none;font-family:'DM Sans',sans-serif" oninput="onDiscoverSearchInput(this)">
-              <button id="discover-search-clear" onclick="clearDiscoverSearch()" style="display:none;position:absolute;right:4px;border:none;background:transparent;color:var(--text3);font-size:16px;cursor:pointer;padding:2px 4px">&times;</button>
-            </div>
-            <div class="filter-group">
-              <button class="filter-btn active" data-disctype="movies" onclick="setDiscoverType('movies',this)">Movies</button>
-              <button class="filter-btn" data-disctype="series" onclick="setDiscoverType('series',this)">TV Shows</button>
-              <button class="filter-btn" data-disctype="music" data-music-only onclick="setDiscoverType('music',this)">Music</button>
-            </div>
-          </div>
-          <div id="discover-section-tabs" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px"></div>
-          <div id="discover-streaming-pills" style="display:none;gap:8px;flex-wrap:wrap;margin-bottom:16px"></div>
-          <div id="discover-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px"></div>
-        </div>
-
-        <div id="discover-tab-lists" style="display:none">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
-            <p style="color:var(--text3);font-size:13px;margin:0">IMDb, Trakt & Letterboxd list subscriptions</p>
-            <button class="btn btn-primary" onclick="showAddList()">+ Add List</button>
-          </div>
-          <div id="lists-active">
-            <div class="loading-state"><div class="spinner"></div></div>
+        <div class="sources-panel" id="sources-tab-providers">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+          <p class="section-desc" style="margin:0;max-width:640px">An IPTV provider can give you movies and series, live channels, or both. Switch on what you want from each one.</p>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-secondary" id="migrate-btn" style="display:none" onclick="showMigrate()">&#8644; Move to another provider</button>
+            <button class="btn btn-primary" onclick="showAddProvider()">+ Add provider</button>
           </div>
         </div>
-
-        <div id="discover-tab-activity" style="display:none">
-          <div id="activity-content">
-            <div class="activity-empty">Loading…</div>
-          </div>
+        <div class="provider-list" id="provider-grid">
+          <div class="loading-state"><div class="spinner"></div> Loading...</div>
         </div>
-      </div>
-
-      <!-- ── LIVE TV PAGE ── -->
-      <div class="page" id="page-live-tv">
-        <div class="page-header">
-          <div class="page-header-row">
-            <div>
-              <div class="page-title">Live TV</div>
-              <div class="page-subtitle">Channels, groups & EPG</div>
-            </div>
-            <div style="display:flex;gap:8px;align-items:center">
-              <span id="live-sync-status" style="font-size:12px;color:var(--text3)"></span>
-            </div>
-          </div>
         </div>
 
+        <div class="sources-panel" id="sources-tab-live" style="display:none">
+          <div id="page-live-tv">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+          <div id="live-provider-pick" style="display:none;align-items:center;gap:8px">
+            <label class="form-label" for="live-provider-select" style="margin:0">Provider</label>
+            <select class="form-input" id="live-provider-select" style="width:220px;padding:5px 10px;font-size:13px" onchange="onLiveProviderChange(this.value)"></select>
+          </div>
+          <span id="live-sync-status" style="font-size:12px;color:var(--text3);margin-left:auto"></span>
+        </div>
         <!-- Stats row -->
         <div id="live-stats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px"></div>
 
         <!-- Tab bar -->
         <div class="live-tabs">
-          <button class="live-tab active" data-livetab="groups" onclick="showLiveTab('groups')">Groups</button>
-          <button class="live-tab" data-livetab="channels" onclick="showLiveTab('channels')">Channels</button>
-          <button class="live-tab" data-livetab="setup" onclick="showLiveTab('setup')">Jellyfin Setup</button>
+          <button class="live-tab active" data-livetab="channels" onclick="showLiveTab('channels')">Channels</button>
+          <button class="live-tab" data-livetab="recordings" onclick="showLiveTab('recordings')">Recordings</button>
+          <button class="live-tab" data-livetab="setup" onclick="showLiveTab('setup')">Jellyfin setup</button>
         </div>
 
         <!-- No provider warning -->
         <div id="live-no-provider" style="display:none;padding:20px;text-align:center;color:var(--text3);font-size:13px">
-          No IPTV provider configured. <a href="#" onclick="showPage('settings');showSettingsSection('providers');return false" style="color:var(--accent)">Add a provider</a> in Settings first.
+          No provider is used for Live TV. Switch on <strong>Use for Live TV</strong> on a provider&rsquo;s card in <a href="#" onclick="showSourcesTab('providers');return false" style="color:var(--accent)">IPTV providers</a>.
         </div>
 
-        <!-- Tab: Groups -->
-        <div class="live-tab-panel active" id="live-panel-groups">
-          <!-- Empty state: no groups yet -->
-          <div id="live-groups-empty" class="card" style="display:none">
-            <div style="padding:40px;text-align:center">
-              <p style="color:var(--text3);font-size:13px;margin-bottom:16px">No channel groups yet. Fetch groups from your provider to get started.</p>
-              <button class="btn btn-primary" onclick="liveSyncGroups()">Sync Groups</button>
-            </div>
-          </div>
-          <!-- Loaded state: groups exist -->
-          <div id="live-groups-loaded" class="card" style="display:none">
-            <div class="card-header">
-              <div class="card-title">Channel Groups <span id="live-groups-summary" style="color:var(--text3);font-weight:400"></span></div>
-              <div style="display:flex;gap:8px;align-items:center">
-                <input class="form-input" id="live-group-search" placeholder="Search groups..." style="width:200px;padding:5px 10px;font-size:12px" oninput="filterLiveGroups()">
-                <button class="btn btn-secondary btn-sm" onclick="toggleAllGroups(true)">Select All</button>
-                <button class="btn btn-secondary btn-sm" onclick="toggleAllGroups(false)">Deselect All</button>
-              </div>
-            </div>
-            <div id="live-groups" style="max-height:500px;overflow-y:auto"></div>
-            <div style="padding:12px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-              <button class="btn btn-secondary btn-sm" onclick="liveSyncGroups()">Refresh</button>
-              <button class="btn btn-primary btn-sm" onclick="saveLiveGroups()">Save &amp; Sync Channels</button>
-            </div>
-          </div>
-        </div>
 
-        <!-- Tab: Channels -->
-        <div class="live-tab-panel" id="live-panel-channels">
+        <div class="live-tab-panel active" id="live-panel-channels">
           <!-- YouTube channels are Live TV channels too. They come from the
                YouTube page, where Live TV is chosen when the channel is added;
                this is where they sit alongside everything else in the lineup,
@@ -3178,7 +2207,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           <div class="card" id="live-youtube-card" style="display:none;margin-bottom:16px">
             <div class="card-header">
               <div class="card-title">YouTube Channels <span id="live-youtube-count" style="color:var(--text3);font-weight:400"></span></div>
-              <span style="font-size:12px;color:var(--text3)">Live and upcoming streams appear in Jellyfin&rsquo;s guide on their own. Add channels on the YouTube page.</span>
+              <span style="font-size:12px;color:var(--text3)">Live and upcoming streams appear in Jellyfin&rsquo;s guide on their own. Add channels under Sources &rarr; YouTube.</span>
             </div>
             <div id="live-youtube-list"></div>
           </div>
@@ -3191,9 +2220,9 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                   <option value="">All Groups</option>
                 </select>
                 <select class="form-input" id="live-ch-epg-filter" aria-label="Filter channels by guide data" style="width:120px;padding:5px 10px;font-size:12px" onchange="filterLiveChannelsByEpg()">
-                  <option value="">All</option>
-                  <option value="has_epg">Has EPG</option>
-                  <option value="no_epg">No EPG</option>
+                  <option value="">Guide: all</option>
+                  <option value="has_epg">In the TV guide</option>
+                  <option value="no_epg">Not in the guide</option>
                 </select>
                 <button class="btn btn-secondary btn-sm" onclick="toggleAllChannels(true)">Select All</button>
                 <button class="btn btn-secondary btn-sm" onclick="toggleAllChannels(false)">Deselect All</button>
@@ -3205,36 +2234,50 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <span id="live-epg-status" style="font-size:12px;color:var(--text3)"></span>
               <div style="display:flex;gap:8px">
                 <button class="btn btn-primary btn-sm" id="live-save-ch-btn" onclick="saveLiveChannels()">Save Channels</button>
-                <button class="btn btn-secondary btn-sm" onclick="liveSyncEpg()">Sync EPG</button>
+                <button class="btn btn-secondary btn-sm" onclick="liveSyncEpg()">Update TV guide</button>
               </div>
             </div>
+          </div>
+        </div>
+
+        <!-- Tab: Recordings -->
+        <div class="live-tab-panel" id="live-panel-recordings">
+          <div class="card">
+            <h3 style="margin-bottom:4px">Recordings</h3>
+            <p style="color:var(--text3);font-size:13px;margin-bottom:12px">You schedule and watch recordings in Jellyfin (Live TV &rarr; Guide &rarr; Record; they appear under Live TV &rarr; Recordings). Tentacle is the tuner they record from.</p>
+            <ul style="font-size:13px;color:var(--text2);line-height:1.7;margin:0 0 0 18px">
+              <li>A recording keeps its connection to the provider: if the provider drops it, Tentacle reconnects and the recording carries on.</li>
+              <li>The number of channels you can record at once is <strong>Channels at once</strong> under <a href="#" onclick="showLiveTab('setup');return false" style="color:var(--accent)">Jellyfin setup</a>.</li>
+              <li>Problems with a recording (a damaged file, a channel the provider replaced with a placeholder) are listed on the <a href="#" onclick="showPage('health');return false" style="color:var(--accent)">Health</a> page.</li>
+            </ul>
           </div>
         </div>
 
         <!-- Tab: Jellyfin Setup -->
         <div class="live-tab-panel" id="live-panel-setup">
           <div class="card">
-            <h3 style="margin-bottom:4px">Jellyfin Live TV Setup</h3>
+            <h3 style="margin-bottom:4px">Jellyfin Live TV setup</h3>
             <p style="color:var(--text3);font-size:13px;margin-bottom:20px">Add these URLs in Jellyfin to connect your IPTV channels.</p>
 
-            <!-- Server base URL -->
+            <!-- Server base URL: Tentacle's address (Settings → Services), shown, not asked again -->
             <div style="margin-bottom:20px">
-              <div class="form-label">Server Address</div>
-              <!-- Edit mode -->
-              <div id="live-setup-edit" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-                <span style="color:var(--text3);font-size:13px;font-family:monospace">http://</span>
-                <input class="form-input" id="live-setup-host" placeholder="192.168.1.100" style="width:180px;font-family:monospace;font-size:13px" oninput="updateSetupUrls()">
-                <span style="color:var(--text3);font-size:13px;font-family:monospace">:</span>
-                <input class="form-input" id="live-setup-port" value="8888" style="width:70px;font-family:monospace;font-size:13px" oninput="updateSetupUrls()">
-                <button class="btn btn-primary" style="padding:5px 14px;font-size:12px" onclick="saveSetupAddress()">Save</button>
-              </div>
-              <!-- Locked mode -->
-              <div id="live-setup-locked" style="display:none;align-items:center;gap:8px">
-                <span id="live-setup-address-display" style="font-family:monospace;font-size:13px;padding:8px 12px;background:var(--bg2);border-radius:6px;color:var(--green);flex:1;min-width:0;overflow-wrap:anywhere"></span>
-                <button class="btn btn-secondary" style="padding:5px 12px;font-size:12px" onclick="editSetupAddress()">Edit</button>
+              <div class="form-label">Tentacle&rsquo;s address</div>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <span id="live-setup-address-display" style="font-family:monospace;font-size:13px;padding:8px 12px;background:var(--bg2);border-radius:6px;flex:1;min-width:0;overflow-wrap:anywhere"></span>
+                <button class="btn btn-secondary" style="padding:5px 12px;font-size:12px" onclick="showPage('settings','services')">Change</button>
               </div>
               <p id="live-setup-detected" style="color:var(--amber);font-size:11px;margin-top:4px"></p>
-              <p style="color:var(--text3);font-size:11px;margin-top:4px">The LAN IP and port of this Tentacle server (what Jellyfin can reach)</p>
+              <p style="color:var(--text3);font-size:11px;margin-top:4px">As your Jellyfin server reaches Tentacle. Set once, in Settings &rarr; Services.</p>
+            </div>
+
+            <!-- Connection limit: the provider account's, the tuner follows it -->
+            <div style="margin-bottom:24px">
+              <div class="form-label">Channels at once</div>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <input class="form-input" id="livetv_max_concurrent_streams" type="number" min="0" max="50" placeholder="6" style="width:100px">
+                <button class="btn btn-secondary" style="padding:5px 12px;font-size:12px" onclick="saveLiveStreamLimit()">Save</button>
+              </div>
+              <p style="color:var(--text3);font-size:11px;margin-top:4px">How many channels your provider lets you watch or record at the same time (its &ldquo;connections&rdquo;). Jellyfin gets this many tuners. 0 = no limit.</p>
             </div>
 
             <!-- Step 1: Tuner -->
@@ -3256,7 +2299,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
             <div style="margin-bottom:24px">
               <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
                 <span style="background:var(--accent);color:#fff;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">2</span>
-                <span style="font-weight:600;font-size:14px">Add TV Guide Data</span>
+                <span style="font-weight:600;font-size:14px">Add the TV guide</span>
               </div>
               <p style="color:var(--text3);font-size:13px;margin-bottom:8px">
                 Live TV → TV Guide Data Providers → <strong>Add</strong> → Type: <strong>XMLTV</strong>
@@ -3276,6 +2319,784 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <p style="color:var(--text3);font-size:13px">
                 After adding both, go to Live TV → <strong>Map Channels</strong> to match tuner channels with guide data. Jellyfin will auto-match most channels by name.
               </p>
+            </div>
+          </div>
+        </div>
+          </div>
+        </div>
+
+        <div class="sources-panel" id="sources-tab-youtube" style="display:none">
+          <div id="page-youtube">
+        <div id="yt-unavailable" class="card" style="display:none;margin-bottom:16px">
+          <div class="card-body" style="font-size:13px;color:var(--text2)"></div>
+        </div>
+
+        <div class="card" id="yt-add-card" style="margin-bottom:16px">
+          <div class="card-header"><h3>Add a channel</h3></div>
+          <div class="card-body">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+              <div style="flex:1;min-width:min(300px,100%)">
+                <label class="form-label">Channel or playlist URL</label>
+                <input type="text" id="yt-url" class="form-input" placeholder="https://www.youtube.com/@channel">
+              </div>
+              <div style="width:120px">
+                <label class="form-label">Keep newest</label>
+                <input type="number" id="yt-keep" class="form-input" value="10" min="1" max="100">
+              </div>
+              <button class="btn btn-primary" onclick="ytAddChannel()">Add</button>
+            </div>
+            <div style="margin-top:12px;font-size:13px;color:var(--text2);display:flex;gap:24px;flex-wrap:wrap">
+              <label><input type="checkbox" id="yt-inc-shorts"> Include Shorts</label>
+              <label><input type="checkbox" id="yt-live"> Live TV channel <span style="color:var(--text3)">&mdash; its live and upcoming streams appear in Jellyfin&rsquo;s Live TV</span></label>
+            </div>
+            <p style="font-size:12px;color:var(--text3);margin:12px 0 0">
+              That&rsquo;s it. The channel&rsquo;s newest videos are added to your library and its playlist
+              is created; from then on it is checked every hour and always holds the newest ones.
+              Put it on your home screen from the <strong>Home Screen</strong> tab. Nothing is downloaded &mdash;
+              videos stream from YouTube when played.
+            </p>
+          </div>
+        </div>
+
+        <!-- How Tentacle talks to YouTube. The defaults are safe for everyone:
+             a light, randomly timed check per channel and a pause after any
+             bot check. Everything here is optional. -->
+        <div class="card" id="yt-traffic-card" style="margin-bottom:16px">
+          <details>
+            <summary style="cursor:pointer;padding:12px 16px;font-size:13px;color:var(--text2)">Advanced: how Tentacle talks to YouTube <span id="yt-traffic-summary" style="color:var(--text3)"></span></summary>
+            <div class="card-body" style="padding-top:0;display:grid;gap:14px">
+              <div>
+                <label class="form-label" for="yt-api-key">YouTube Data API key <span style="font-weight:400;color:var(--text3)">&mdash; optional. With one, new uploads, video details and live status come from Google&rsquo;s official API instead of YouTube&rsquo;s pages. Free from the Google Cloud console.</span></label>
+                <input type="text" id="yt-api-key" class="form-input" placeholder="Not set" autocomplete="off" spellcheck="false">
+                <div id="yt-api-status" style="font-size:12px;margin-top:4px;color:var(--text3)"></div>
+              </div>
+              <div>
+                <label class="form-label" for="yt-proxy">Proxy for YouTube traffic <span style="font-weight:400;color:var(--text3)">&mdash; optional, for example <code>http://gluetun:8888</code> to send YouTube through a VPN. Watching YouTube videos then goes through it too.</span></label>
+                <input type="text" id="yt-proxy" class="form-input" placeholder="None" autocomplete="off" spellcheck="false">
+              </div>
+              <div id="yt-traffic-status" style="font-size:12px;color:var(--text3)"></div>
+              <div><button class="btn btn-secondary" onclick="ytSaveTraffic()">Save</button></div>
+            </div>
+          </details>
+        </div>
+
+        <div class="card" id="yt-diag-card" style="margin-bottom:16px;display:none">
+          <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+            <h3>Setup check</h3>
+            <button class="btn btn-secondary btn-sm" onclick="ytDiagnose()">Re-run</button>
+          </div>
+          <div class="card-body" id="yt-diag"></div>
+          <div style="padding:0 16px 14px;font-size:12px;color:var(--text3)">
+            Playlist empty although Jellyfin has the videos?
+            <a href="#" onclick="ytRefill();return false">Refill playlists now</a>
+            &mdash; it happens when Jellyfin takes longer to import than the add step waits; the refill also runs on its own in the background.
+          </div>
+          <div style="padding:0 16px 14px;font-size:12px;color:var(--text3)">
+            Everything checks out but a video still won&rsquo;t play?
+            <a href="#" onclick="ytReprobe();return false">Ask Jellyfin to re-read the videos</a>
+            &mdash; it keeps the first thing it learned about each one, and this makes it look again.
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+            <h3>Channels</h3>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-secondary btn-sm" onclick="ytDiagnose()">Why isn&rsquo;t it working?</button>
+              <button class="btn btn-secondary btn-sm" onclick="ytRefreshNow()" title="Runs every hour on its own. Press this to look for new videos right now.">Check for new videos</button>
+            </div>
+          </div>
+          <div class="card-body" id="yt-channels">
+            <div class="loading-state"><div class="spinner"></div></div>
+          </div>
+        </div>
+          </div>
+        </div>
+
+        <div class="sources-panel" id="sources-tab-arr" style="display:none">
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header">
+            <div class="card-title">Radarr &amp; Sonarr</div>
+            <button class="btn btn-secondary btn-sm" onclick="showPage('settings','services')">Addresses and keys</button>
+          </div>
+          <div>
+            <p style="font-size:13px;color:var(--text2);margin:0 0 12px">Movies you download with Radarr and series with Sonarr join the same library. Tentacle hears about each download from a webhook, and checks both apps every night.</p>
+            <div id="arr-status-list" style="display:grid;gap:8px"></div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header"><div class="card-title">Webhooks</div></div>
+          <div>
+            <p style="font-size:13px;color:var(--text2);margin:0 0 12px">In each app: Settings &rarr; Connect &rarr; + &rarr; Webhook, name it Tentacle and paste the address. Radarr triggers: <em>On File Import</em>, <em>On Movie Added</em>, <em>On Movie Delete</em>, <em>On Movie File Delete</em>. Sonarr: <em>On File Import</em>, <em>On Series Add</em>, <em>On Series Delete</em>, <em>On Episode File Delete</em>.</p>
+            <div class="form-group">
+              <div class="form-label">Radarr webhook</div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <input class="form-input mono" id="radarr-webhook-url" readonly style="flex:1;min-width:240px;font-size:12px;background:var(--bg3)">
+                <button class="btn btn-secondary" onclick="copyWebhookUrl()">Copy</button>
+                <button class="btn btn-secondary" onclick="testWebhookUrl()">Test</button>
+              </div>
+            </div>
+            <div class="form-group" style="margin-bottom:0">
+              <div class="form-label">Sonarr webhook</div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <input class="form-input mono" id="sonarr-webhook-url" readonly style="flex:1;min-width:240px;font-size:12px;background:var(--bg3)">
+                <button class="btn btn-secondary" onclick="copySonarrWebhookUrl()">Copy</button>
+                <button class="btn btn-secondary" onclick="testSonarrWebhookUrl()">Test</button>
+              </div>
+              <div class="form-hint" id="arr-webhook-hint">Built from Tentacle&rsquo;s address (Settings &rarr; Services).</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header"><div class="card-title">Check now</div></div>
+          <div>
+            <p style="font-size:13px;color:var(--text2);margin:0 0 12px">Brings in what Radarr and Sonarr have right away, instead of at the nightly sync.</p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn btn-secondary" id="radarr-scan-btn" onclick="scanRadarr()">&#11015; Check Radarr</button>
+              <button class="btn btn-secondary" id="sonarr-scan-btn" onclick="scanSonarr()">&#11015; Check Sonarr</button>
+            </div>
+          </div>
+        </div>
+        </div>
+
+        <div class="sources-panel" id="sources-tab-music" style="display:none">
+            <!-- Music (the module's own settings) -->
+            <div class="card" id="section-music">
+              <h3>Music</h3>
+              <p class="section-desc">Turn &ldquo;I like this song, album or artist&rdquo; into the original studio album in your library, through Lidarr. Off by default; while off, Tentacle has no music anywhere.</p>
+
+              <label class="settings-toggle"><input type="checkbox" id="music_enabled" onchange="onMusicEnabledChange()"> <span><strong>Enable the music module</strong></span></label>
+              <div id="music-status-line" class="form-hint" style="margin:-4px 0 8px 22px"></div>
+
+              <div id="music-settings-body">
+                <hr class="divider">
+                <div class="section-title">Original release</div>
+                <p class="form-hint" style="margin:-6px 0 12px">Tentacle pins the release with the album&rsquo;s original tracklist: the earliest year&rsquo;s most common track count. These break ties between releases with that tracklist.</p>
+                <div class="form-row">
+                  <div class="form-group">
+                    <div class="form-label">Preferred countries</div>
+                    <input class="form-input" id="music_preferred_countries" placeholder="US,GB,CA,XW">
+                    <div class="form-hint">Country codes, in order. XW = worldwide.</div>
+                  </div>
+                  <div class="form-group">
+                    <div class="form-label">Preferred formats</div>
+                    <input class="form-input" id="music_preferred_formats" placeholder="CD,Digital Media">
+                    <div class="form-hint">MusicBrainz format names, in order.</div>
+                  </div>
+                </div>
+                <div class="form-group">
+                  <div class="form-label">Words that mark a special edition</div>
+                  <input class="form-input" id="music_edition_words" placeholder="deluxe,expanded,anniversary,bonus,live,mono,stereo,box,collector,legacy,super">
+                  <div class="form-hint">A release whose title or disambiguation contains one of these is passed over when another release has the same tracklist.</div>
+                </div>
+
+                <hr class="divider">
+                <div class="section-title">Discover</div>
+                <div class="form-group">
+                  <div class="form-label">Chart country</div>
+                  <select class="form-input" id="music_chart_country" style="max-width:240px"><option value="us">United States</option><option value="ca">Canada</option><option value="gb">United Kingdom</option><option value="au">Australia</option><option value="ie">Ireland</option><option value="nz">New Zealand</option><option value="de">Germany</option><option value="fr">France</option><option value="es">Spain</option><option value="it">Italy</option><option value="nl">Netherlands</option><option value="be">Belgium</option><option value="se">Sweden</option><option value="no">Norway</option><option value="dk">Denmark</option><option value="fi">Finland</option><option value="pl">Poland</option><option value="pt">Portugal</option><option value="br">Brazil</option><option value="mx">Mexico</option><option value="ar">Argentina</option><option value="jp">Japan</option><option value="kr">South Korea</option><option value="in">India</option><option value="za">South Africa</option></select>
+                  <div class="form-hint">Whose Apple Music charts Discover &rarr; Music shows under Trending and New releases. Top of all time is worldwide.</div>
+                </div>
+
+                <hr class="divider">
+                <div class="section-title">Reconcile</div>
+                <div class="form-group">
+                  <div class="form-label">Daily check at</div>
+                  <input class="form-input" id="music_reconcile_time" type="time" value="04:00" style="max-width:160px">
+                  <div class="form-hint">Checks monitored albums once a day, at low priority. Anything that isn&rsquo;t right goes to review.</div>
+                </div>
+
+                <hr class="divider">
+                <div class="section-title">Lidarr webhook</div>
+                <p class="form-hint" style="margin:-6px 0 12px">Lidarr tells Tentacle when an artist is added or an album is imported, so originals are pinned right away. Add it in Lidarr &rarr; Settings &rarr; Connect &rarr; + &rarr; Webhook:</p>
+                <div class="form-group">
+                  <div class="form-label">Name</div>
+                  <code style="font-size:12px">Tentacle</code>
+                </div>
+                <div class="form-group">
+                  <div class="form-label">Triggers <span style="font-weight:400;color:var(--text3)">&mdash; leave the others off</span></div>
+                  <div id="music-webhook-triggers" style="font-size:13px">On Artist Add, On Release Import, On Upgrade</div>
+                </div>
+                <div class="form-group">
+                  <div class="form-label">Webhook URL <span style="font-weight:400;color:var(--text3)">&mdash; Method: POST; Username and Password empty</span></div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap">
+                    <input class="form-input mono" id="music-webhook-url" readonly style="flex:1;min-width:240px;font-size:12px;background:var(--bg3)">
+                    <button class="btn btn-secondary" onclick="copyMusicWebhookUrl()">Copy</button>
+                    <button class="btn btn-secondary" onclick="regenerateMusicWebhookSecret()">New secret</button>
+                  </div>
+                  <div class="form-hint" id="music-webhook-hint">The part after ?secret= proves the call comes from your Lidarr.</div>
+                </div>
+                <div class="form-group">
+                  <div class="form-label">Status for monitoring <span style="font-weight:400;color:var(--text3)">&mdash; last check, counts, needs review, last error, health; cheap to poll</span></div>
+                  <input class="form-input mono" id="music-status-url" readonly style="font-size:12px;background:var(--bg3)">
+                </div>
+                <button class="btn btn-secondary" onclick="testMusicWebhook()">Send test</button>
+                <span id="music-webhook-last" class="form-hint" style="margin-left:8px"></span>
+                <div class="svc-checks" id="checks-music-webhook"></div>
+              </div>
+
+              <div style="margin-top:20px">
+                <button class="btn btn-primary" onclick="saveSettings()">Save Music</button>
+              </div>
+            </div>
+
+        </div>
+      </div>
+
+      <!-- ── HEALTH (admins): what needs a look, then what happened ── -->
+      <div class="page" id="page-health">
+        <!-- Everything that needs an admin's attention. Library stays content only. -->
+        <div id="health-all-clear" class="card" style="display:none;margin-bottom:16px;border-left:3px solid var(--green)">
+          <div style="padding:14px 16px;font-size:13px;color:var(--text2)"><strong style="color:var(--green)">&#10003; Nothing needs a look.</strong> Radarr, Sonarr, Jellyfin and your providers all answer.</div>
+        </div>
+        <div id="health-problems">
+          <!-- Radarr/Sonarr problems: the usual cause of "it never downloads" -->
+          <div id="arr-problems-banner" class="arr-problems" style="display:none"></div>
+          <!-- IPTV provider failing: the hourly provider check -->
+          <div id="provider-problems-banner" class="arr-problems error provider-problems" style="display:none" role="alert"></div>
+        <!-- Jellyfin connection warning -->
+        <div class="card" id="jellyfin-error-banner" style="display:none;margin-bottom:16px;border-left:3px solid var(--red)">
+          <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
+            <strong style="color:var(--red)" id="jellyfin-banner-title">Jellyfin Connection Failed</strong>
+            <p style="margin:4px 0 0" id="jellyfin-banner-msg">Check your API key in Settings → Connections</p>
+          </div>
+        </div>
+
+        <!-- Stale VOD files warning (moved from Dashboard) -->
+        <div class="card" id="stale-files-banner" style="display:none;margin-bottom:16px;border-left:3px solid var(--amber)">
+          <div class="card-header">
+            <div class="card-title" style="color:var(--amber)">Existing VOD Files Detected</div>
+          </div>
+          <div style="padding:0 16px 16px;font-size:13px;color:var(--text2);line-height:1.5">
+            <p style="margin:0 0 8px">Found <strong id="stale-strm-count">0</strong> existing .strm files in your VOD folders that weren't created by Tentacle.</p>
+            <p style="margin:0 0 12px">These files won't appear in your library. Delete them and let Tentacle recreate everything with proper metadata.</p>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-danger btn-sm" onclick="confirmDeleteStaleFiles()">Delete All &amp; Start Fresh</button>
+              <button class="btn btn-secondary btn-sm" onclick="dismissStaleFiles()">Keep &amp; Ignore</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- New provider content notice (nightly discovery) -->
+        <div class="card" id="new-content-banner" style="display:none;margin-bottom:16px;border-left:3px solid var(--accent)">
+          <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
+            <strong style="color:var(--accent)">Your providers have something new</strong>
+            <p style="margin:4px 0 10px" id="new-content-msg"></p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn btn-secondary btn-sm" id="new-content-vod-btn" style="display:none" onclick="showPage('sources','providers')">Choose categories</button>
+              <button class="btn btn-secondary btn-sm" id="new-content-live-btn" style="display:none" onclick="showPage('sources','providers')">Choose channel groups</button>
+              <button class="btn btn-secondary btn-sm" onclick="dismissNewContentNotice()">Dismiss</button>
+            </div>
+          </div>
+        </div>
+        <!-- VOD titles that play a different film than their label -->
+        <div class="card" id="wrong-match-card" style="display:none;margin-bottom:16px;border-left:3px solid var(--amber)">
+          <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
+            <strong style="color:var(--amber)">Possible wrong movies</strong>
+            <p style="margin:4px 0 10px">These IPTV titles play much longer or shorter than the film they're labelled as — your provider probably put the wrong film under that name. Checked each night for titles that have been played.</p>
+            <div id="wrong-match-list"></div>
+            <div id="wrong-match-blocked" style="margin-top:10px"></div>
+          </div>
+        </div>
+        <div class="modal-overlay" id="stale-confirm-modal" style="display:none">
+          <div class="modal" style="max-width:440px">
+            <div class="modal-header">
+              <div class="modal-title" style="color:var(--amber)">Confirm Deletion</div>
+              <button class="modal-close" onclick="closeModal('stale-confirm-modal')">&times;</button>
+            </div>
+            <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
+              <p style="margin:0 0 12px">This will delete <strong id="stale-confirm-strm">0</strong> .strm files and <strong id="stale-confirm-nfo">0</strong> .nfo files from your VOD folders.</p>
+              <p style="margin:0 0 16px;color:var(--red)">This cannot be undone.</p>
+              <div style="display:flex;gap:8px;justify-content:flex-end">
+                <button class="btn btn-secondary btn-sm" onclick="closeModal('stale-confirm-modal')">Cancel</button>
+                <button class="btn btn-danger btn-sm" onclick="executeDeleteStaleFiles()">Delete All</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        </div>
+
+        <!-- Library at a glance and the last sync -->
+        <!-- Compact stats bar -->
+        <div id="lib-stats-bar" style="display:flex;flex-wrap:wrap;align-items:center;gap:16px;padding:8px 14px;margin-bottom:10px;background:var(--bg1);border:1px solid var(--border);border-radius:var(--radius);font-size:13px;font-family:'DM Mono',monospace;color:var(--text2)">
+          <span style="display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--accent);flex-shrink:0"></span><span id="lib-stat-movies">—</span> Movies</span>
+          <span style="color:var(--border2)">·</span>
+          <span style="display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--pink);flex-shrink:0"></span><span id="lib-stat-series">—</span> Series</span>
+          <span style="color:var(--border2)">·</span>
+          <span style="display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0"></span><span id="lib-stat-downloaded">—</span> Downloaded</span>
+          <span style="color:var(--border2)">·</span>
+          <span style="display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--amber);flex-shrink:0"></span><span id="lib-stat-vod">—</span> VOD</span>
+        </div>
+
+        <!-- Last Sync (clickable, opens detailed modal) -->
+        <div id="lib-sync-summary" style="display:none;margin-bottom:10px">
+          <div style="display:flex;align-items:center;gap:8px;padding:6px 14px;background:var(--bg1);border:1px solid var(--border);border-radius:var(--radius);font-size:12px;color:var(--text3);cursor:pointer" onclick="openSyncDetailModal()">
+            <span>Last sync: <span id="lib-sync-time" style="color:var(--text2);font-family:'DM Mono',monospace"></span></span>
+            <span id="lib-sync-brief" style="color:var(--text3);margin-left:4px"></span>
+            <span style="font-size:10px;margin-left:auto;color:var(--text3)">Details ▸</span>
+          </div>
+        </div>
+
+        <!-- Sync Detail Modal -->
+        <div class="modal-overlay" id="modal-sync-detail" style="display:none">
+          <div class="modal modal-wide" style="max-width:640px;max-height:80vh;overflow-y:auto">
+            <div class="modal-header">
+              <div class="modal-title">Nightly Sync Summary</div>
+              <button class="modal-close" onclick="closeSyncDetailModal()">✕</button>
+            </div>
+            <div id="sync-detail-body" style="font-size:13px;color:var(--text2)"></div>
+          </div>
+        </div>
+
+
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header">
+            <div class="card-title">Downloads</div>
+          </div>
+          <div id="health-downloads">
+            <div class="empty-state"><p>Loading…</p></div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header">
+            <div class="card-title">Missing <span id="health-missing-count" style="color:var(--text3);font-weight:400"></span></div>
+            <div style="display:flex;gap:6px">
+              <button class="btn btn-primary btn-sm" id="health-missing-tab-movies" onclick="showHealthMissingTab('movies')">Movies</button>
+              <button class="btn btn-secondary btn-sm" id="health-missing-tab-episodes" onclick="showHealthMissingTab('episodes')">Episodes</button>
+            </div>
+          </div>
+          <div id="health-missing">
+            <div class="empty-state"><p>Loading…</p></div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header">
+            <div class="card-title">Streams that don&rsquo;t play <span id="health-streams-count" style="color:var(--text3);font-weight:400"></span></div>
+            <div style="display:flex;gap:6px">
+              <button class="btn btn-secondary btn-sm" onclick="healthRecheckStreams(this)" title="Re-test all known-bad streams now; recovered ones are cleared">Recheck bad</button>
+              <button class="btn btn-secondary btn-sm" onclick="healthRunStreamSweep(this)" title="Probe the next batch of VOD streams now (also runs nightly)">Run sweep</button>
+            </div>
+          </div>
+          <div id="health-streams-summary" style="font-size:12px;color:var(--text3);margin-bottom:8px"></div>
+          <div id="health-streams">
+            <div class="empty-state"><p>Loading…</p></div>
+          </div>
+        </div>
+
+
+        <div id="lib-tab-duplicates">
+          <div class="card" style="margin-bottom:16px">
+            <div class="card-header">
+              <div class="card-title">Duplicates <span id="dup-stats" style="color:var(--text3);font-weight:400"></span></div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <div class="filter-group">
+                  <button class="filter-btn active" data-dupfilter="pending" onclick="setDupFilter('pending',this)">Pending</button>
+                  <button class="filter-btn" data-dupfilter="resolved" onclick="setDupFilter('resolved',this)">Resolved</button>
+                  <button class="filter-btn" data-dupfilter="all" onclick="setDupFilter('all',this)">All</button>
+                </div>
+                <button class="btn btn-secondary btn-sm" onclick="resolveAllKeepRadarr()">Resolve All → Keep Downloaded</button>
+              </div>
+            </div>
+            <div id="dup-list"></div>
+          </div>
+        </div><!-- /lib-tab-duplicates -->
+
+        <div class="card" style="margin-bottom:16px" id="health-paths-card">
+          <div class="card-header">
+            <div class="card-title">Media folders</div>
+            <span style="font-size:12px;color:var(--text3)">The folders Tentacle needs, as mounted into its container</span>
+          </div>
+          <div id="paths-status" style="padding:0 16px 8px">
+            <div class="loading-state"><div class="spinner"></div> Checking folders&hellip;</div>
+          </div>
+        </div>
+
+        <!-- What happened: one readable log, a week at a time -->
+        <div class="card" style="margin-bottom:16px" id="health-log-card">
+          <div class="card-header" style="flex-wrap:wrap;gap:8px">
+            <div class="card-title">What happened <span id="health-log-count" style="color:var(--text3);font-weight:400"></span></div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <div class="filter-group">
+                <button class="filter-btn active" data-healthlog="activity" onclick="setHealthLogKind('activity',this)">Activity</button>
+                <button class="filter-btn" data-healthlog="deletions" onclick="setHealthLogKind('deletions',this)">Removals</button>
+              </div>
+              <select class="form-input" id="health-log-days" aria-label="How far back" style="width:auto;padding:5px 10px;font-size:12px" onchange="loadHealthLog()">
+                <option value="1">Last 24 hours</option>
+                <option value="7" selected>Last 7 days</option>
+                <option value="30">Last 30 days</option>
+                <option value="0">Everything</option>
+              </select>
+              <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);cursor:pointer"><input type="checkbox" id="health-log-problems" onchange="renderHealthLog()"> Problems only</label>
+            </div>
+          </div>
+          <div id="health-log"><div class="empty-state"><p>Loading&hellip;</p></div></div>
+          <div id="health-log-more" style="display:none;text-align:center;padding:10px">
+            <button class="btn btn-secondary btn-sm" onclick="loadHealthLog(true)">Show older</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── SETTINGS (admins) ── -->
+      <div class="page" id="page-settings">
+        <div class="settings-grid">
+          <div class="settings-nav">
+            <button class="settings-nav-item active" data-section="services">Services</button>
+            <button class="settings-nav-item" data-section="schedule">Schedule &amp; notifications</button>
+            <button class="settings-nav-item" data-section="users">Users</button>
+            <button class="settings-nav-item" data-section="advanced">Advanced</button>
+          </div>
+
+          <div>
+            <!-- Services: every address and key, and Tentacle's own address once -->
+            <div class="settings-section active card" id="section-services">
+              <h3>Services</h3>
+              <p class="section-desc">The apps Tentacle works with. Keys are stored only in Tentacle&rsquo;s database.</p>
+
+              <div class="section-title">Jellyfin</div>
+              <div class="form-row">
+                <div class="form-group">
+                  <div class="form-label">Jellyfin address <span id="conn-status-jellyfin" style="display:none;font-size:11px;padding:2px 8px;border-radius:4px;margin-left:4px"></span></div>
+                  <input class="form-input" id="jellyfin_url" placeholder="http://localhost:8096">
+                </div>
+                <div class="form-group">
+                  <div class="form-label">Jellyfin API Key</div>
+                  <div style="display:flex;gap:8px">
+                    <input class="form-input mono" id="jellyfin_api_key" type="password" placeholder="abc123...">
+                    <button class="btn btn-secondary" onclick="testConnection('jellyfin')">Test</button>
+                  </div>
+                </div>
+              </div>
+              <div class="form-group" style="margin-top:12px">
+                <div class="form-label">Jellyfin address for your browser (optional)</div>
+                <input class="form-input" id="jellyfin_public_url" placeholder="https://jellyfin.example.com">
+                <div class="form-hint">Where your browser opens Jellyfin, used by "Watch in Jellyfin". Leave empty if the Jellyfin URL above already works in your browser (it usually doesn't when it is a Docker name like http://jellyfin:8096).</div>
+              </div>
+
+
+
+              <hr class="divider">
+
+              <div class="section-title">Tentacle</div>
+              <div class="form-group">
+                <div class="form-label">Tentacle&rsquo;s address <span style="font-weight:400;color:var(--text3)">&mdash; as your Jellyfin server (and Radarr, Sonarr, Lidarr) reach this dashboard</span></div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                  <input class="form-input" id="settings-tentacle-address" placeholder="http://192.168.1.10:8888" style="flex:1;min-width:min(260px,100%)">
+                  <button class="btn btn-secondary" onclick="ytDetectAddress('settings-tentacle-address')">Detect</button>
+                  <button class="btn btn-secondary" onclick="saveTentacleAddress('settings-tentacle-address')">Save</button>
+                </div>
+                <div id="settings-tentacle-address-status" style="font-size:12px;margin-top:4px;color:var(--text3)"></div>
+                <div class="form-hint">Used everywhere Tentacle hands out its own address: YouTube and IPTV video files, the Live TV tuner and guide, and the Radarr, Sonarr and Lidarr webhooks (shown ready to copy under Sources).</div>
+              </div>
+
+              <hr class="divider">
+
+              <div class="section-title">Radarr</div>
+              <div class="form-row">
+                <div class="form-group">
+                  <div class="form-label">Radarr address <span id="conn-status-radarr" style="display:none;font-size:11px;padding:2px 8px;border-radius:4px;margin-left:4px"></span></div>
+                  <input class="form-input" id="radarr_url" placeholder="http://localhost:7878">
+                </div>
+                <div class="form-group">
+                  <div class="form-label">Radarr API Key</div>
+                  <div style="display:flex;gap:8px">
+                    <input class="form-input mono" id="radarr_api_key" type="password" placeholder="abc123...">
+                    <button class="btn btn-secondary" onclick="testService('radarr')">Test</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <div class="form-label">Default quality profile</div>
+                  <select class="form-input" id="radarr_quality_profile_id"><option value="">Enter the URL and key, then Test</option></select>
+                  <div class="form-hint">Used by every request: Tentacle, the Jellyfin plugin and Android TV. With none picked, requests are refused instead of guessed.</div>
+                </div>
+                <div class="form-group">
+                  <div class="form-label">Root folder</div>
+                  <select class="form-input" id="radarr_root_folder"><option value="">Automatic (first folder that isn't a VOD folder)</option></select>
+                </div>
+              </div>
+              <div class="svc-checks" id="checks-radarr"></div>
+
+
+              <hr class="divider">
+
+              <div class="section-title">Sonarr</div>
+              <div class="form-row">
+                <div class="form-group">
+                  <div class="form-label">Sonarr address <span id="conn-status-sonarr" style="display:none;font-size:11px;padding:2px 8px;border-radius:4px;margin-left:4px"></span></div>
+                  <input class="form-input" id="sonarr_url" placeholder="http://localhost:8989">
+                </div>
+                <div class="form-group">
+                  <div class="form-label">Sonarr API Key</div>
+                  <div style="display:flex;gap:8px">
+                    <input class="form-input mono" id="sonarr_api_key" type="password" placeholder="abc123...">
+                    <button class="btn btn-secondary" onclick="testService('sonarr')">Test</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <div class="form-label">Default quality profile</div>
+                  <select class="form-input" id="sonarr_quality_profile_id"><option value="">Enter the URL and key, then Test</option></select>
+                  <div class="form-hint">Used by every request: Tentacle, the Jellyfin plugin and Android TV. With none picked, requests are refused instead of guessed.</div>
+                </div>
+                <div class="form-group">
+                  <div class="form-label">Root folder</div>
+                  <select class="form-input" id="sonarr_root_folder"><option value="">Automatic (first folder that isn't a VOD folder)</option></select>
+                </div>
+              </div>
+              <div class="svc-checks" id="checks-sonarr"></div>
+
+
+              <hr class="divider">
+
+              <div class="section-title">Movie and TV information</div>
+              <div class="form-group">
+                <div class="form-label">TMDB Bearer Token <span style="color:var(--text3);font-size:12px">(optional)</span></div>
+                <div style="display:flex;gap:8px">
+                  <input class="form-input mono" id="tmdb_bearer_token" type="password" placeholder="Using built-in key">
+                  <button class="btn btn-secondary" onclick="testConnection('tmdb')">Test</button>
+                </div>
+                <div class="form-hint">Built-in key works out of the box. Override with your own from themoviedb.org/settings/api</div>
+              </div>
+
+              <div class="form-group">
+                <div class="form-label">MDBList API Key <span style="color:var(--text3);font-size:12px">(optional)</span></div>
+                <div style="display:flex;gap:8px">
+                  <input class="form-input mono" id="mdblist_api_key" type="password" placeholder="Enter MDBList API key">
+                  <button class="btn btn-secondary" onclick="testConnection('mdblist')">Test</button>
+                </div>
+                <div class="form-hint">Enables MDBList ratings on item details in Jellyfin. Get a key from mdblist.com/preferences</div>
+              </div>
+
+              <div class="form-group">
+                <div class="form-label">Trakt Client ID</div>
+                <input class="form-input mono" id="trakt_client_id" type="password" placeholder="Enter Trakt API client ID">
+                <div class="form-hint">Required for Trakt list subscriptions. Create an app at trakt.tv/oauth/applications to get a Client ID.</div>
+              </div>
+
+              <div class="form-group">
+                <div class="form-label">Logo.dev API Key</div>
+                <input class="form-input mono" id="logodev_api_key" type="password" placeholder="pk_...">
+                <div class="form-hint">Optional. Enables streaming service logos on playlist artwork. Get a key at logo.dev</div>
+              </div>
+
+              <!-- Music services: shown only while the Music module is on -->
+              <div id="music-connections" style="display:none">
+                <hr class="divider">
+                <div class="section-title">Music</div>
+                <p class="form-hint" style="margin:-6px 0 14px">Used by the Music module (Sources &rarr; Music). Lidarr finds, downloads and tags the music; your player plays it.</p>
+
+                <div class="form-row">
+                  <div class="form-group">
+                    <div class="form-label">Lidarr address</div>
+                    <input class="form-input" id="lidarr_url" placeholder="http://localhost:8686">
+                  </div>
+                  <div class="form-group">
+                    <div class="form-label">Lidarr API Key</div>
+                    <div style="display:flex;gap:8px">
+                      <input class="form-input mono" id="lidarr_api_key" type="password" placeholder="abc123...">
+                      <button class="btn btn-secondary" onclick="testService('lidarr')">Test</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <div class="form-label">Root folder</div>
+                    <select class="form-input" id="lidarr_root_folder"><option value="">Enter the URL and key, then Test</option></select>
+                  </div>
+                  <div class="form-group">
+                    <div class="form-label">Quality profile</div>
+                    <select class="form-input" id="lidarr_quality_profile_id"><option value="">Enter the URL and key, then Test</option></select>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <div class="form-label">Metadata profile</div>
+                    <select class="form-input" id="lidarr_metadata_profile_id"><option value="">Enter the URL and key, then Test</option></select>
+                  </div>
+                  <div class="form-hint" style="align-self:end;margin-bottom:16px">Artists Tentacle adds to Lidarr get these, with only the requested album monitored.</div>
+                </div>
+                <div class="svc-checks" id="checks-lidarr"></div>
+
+                <hr class="divider">
+
+                <label class="settings-toggle"><input type="checkbox" id="navidrome_enabled"> <span>Navidrome <span style="color:var(--text3)">&mdash; set artist pictures, rescan after imports, &ldquo;Open in Navidrome&rdquo; links</span></span></label>
+                <div class="form-row">
+                  <div class="form-group">
+                    <div class="form-label">Navidrome address</div>
+                    <input class="form-input" id="navidrome_url" placeholder="http://localhost:4533">
+                  </div>
+                  <div class="form-group">
+                    <div class="form-label">Username</div>
+                    <input class="form-input" id="navidrome_username" autocomplete="off">
+                  </div>
+                </div>
+                <div class="form-group">
+                  <div class="form-label">Navidrome address for your browser (optional)</div>
+                  <input class="form-input" id="navidrome_public_url" placeholder="https://music.example.com">
+                  <div class="form-hint">Where your browser opens Navidrome, for &ldquo;Open in Navidrome&rdquo;. Leave empty if the URL above works in your browser.</div>
+                </div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <div class="form-label">Password</div>
+                    <div style="display:flex;gap:8px">
+                      <input class="form-input mono" id="navidrome_password" type="password" autocomplete="new-password">
+                      <button class="btn btn-secondary" onclick="testService('navidrome')">Test</button>
+                    </div>
+                  </div>
+                  <div class="form-hint" style="align-self:end;margin-bottom:16px">Navidrome has no API tokens, so Tentacle signs in with a user. An admin, or any user if EnableArtworkUpload is on, can upload artist pictures.</div>
+                </div>
+                <div class="svc-checks" id="checks-navidrome"></div>
+
+                <hr class="divider">
+
+                <label class="settings-toggle"><input type="checkbox" id="jellyfin_music_enabled"> <span>Jellyfin as a music player <span style="color:var(--text3)">&mdash; uses the Jellyfin connection above; also shows music search and requests inside Jellyfin</span></span></label>
+                <div class="form-group">
+                  <div class="form-label">Music library</div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap">
+                    <select class="form-input" id="jellyfin_music_library_id" style="flex:1;min-width:200px"><option value="">Loading…</option></select>
+                    <button class="btn btn-secondary" onclick="toggleCreateMusicLibrary()">Create one</button>
+                    <button class="btn btn-secondary" onclick="testService('jellyfin_music')">Test</button>
+                  </div>
+                  <div id="jf-music-create" style="display:none;margin-top:10px">
+                    <div class="form-row">
+                      <input class="form-input" id="jf-music-create-name" value="Music" placeholder="Library name">
+                      <input class="form-input mono" id="jf-music-create-path" placeholder="Folder as Jellyfin sees it, e.g. /data/music">
+                    </div>
+                    <div class="form-hint">Starts as Lidarr&rsquo;s root folder. Change it if Jellyfin mounts that folder at a different path.</div>
+                    <button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="createMusicLibrary()">Create library</button>
+                  </div>
+                </div>
+                <div class="svc-checks" id="checks-jellyfin_music"></div>
+
+                <hr class="divider">
+
+                <div class="form-row">
+                  <div class="form-group">
+                    <div class="form-label">MusicBrainz contact email</div>
+                    <div style="display:flex;gap:8px">
+                      <input class="form-input" id="musicbrainz_contact" type="email" placeholder="you@example.com">
+                      <button class="btn btn-secondary" onclick="testService('musicbrainz')">Test</button>
+                    </div>
+                    <div class="form-hint">MusicBrainz requires a contact in every request&rsquo;s User-Agent. It is sent only to MusicBrainz.</div>
+                  </div>
+                </div>
+                <div class="svc-checks" id="checks-musicbrainz"></div>
+
+                <div class="form-group" style="margin-top:6px">
+                  <div class="form-label">Music folder as Tentacle sees it (optional)</div>
+                  <input class="form-input mono" id="music_library_path" placeholder="/media/music">
+                  <div class="form-hint">Lidarr&rsquo;s root folder, mounted read-only into Tentacle, so an existing artist.jpg can be reused for artist pictures. Leave empty to take pictures from Deezer. Tentacle never writes here.</div>
+                </div>
+              </div>
+
+
+              <div style="margin-top:20px">
+                <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+              </div>
+            </div>
+
+            <!-- Schedule & notifications: one sync, one button -->
+            <div class="settings-section card" id="section-schedule">
+              <h3>Schedule &amp; notifications</h3>
+              <p class="section-desc">Once a day Tentacle syncs everything: your IPTV providers&rsquo; movies and series, Radarr and Sonarr, your lists, the TV guide, then Jellyfin&rsquo;s library and playlists.</p>
+
+              <div class="form-group">
+                <div class="form-label">Sync every day at</div>
+                <input class="form-input" id="sync_schedule_time" type="time" value="03:00" style="max-width:160px">
+                <div class="form-hint" id="sync_schedule_hint">Runs every day at this time.</div>
+              </div>
+
+              <div class="form-group">
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                  <button class="btn btn-primary" id="sync-now-btn" onclick="syncEverythingNow()">Sync now</button>
+                  <button class="btn btn-danger" id="sync-cancel-btn" onclick="cancelSync()" style="display:none">Cancel</button>
+                  <span id="sync-now-status" style="font-size:12px;color:var(--text3)"></span>
+                </div>
+                <!-- Sync progress (hidden by default) -->
+                <div class="dash-progress" id="vod-sync-progress" style="display:none;margin-top:12px">
+                  <div class="dash-progress-header">
+                    <div class="dot dot-amber"></div>
+                    <span id="vod-progress-label">Syncing...</span>
+                  </div>
+                  <div class="dash-progress-bar-track">
+                    <div class="dash-progress-bar-fill" id="vod-progress-fill"></div>
+                  </div>
+                  <div class="dash-progress-detail" id="vod-progress-detail"></div>
+                </div>
+              </div>
+
+              <hr class="divider">
+
+              <div class="section-title">Pushover</div>
+              <div class="form-hint" style="margin-bottom:10px">Tentacle checks every IPTV provider each hour. When one starts failing, the Health page says so (with a red count in the sidebar) and Pushover sends one message to your phone, and one more when it works again. Create an application at pushover.net for the app token; the user key is on your Pushover home page.</div>
+              <div class="form-group">
+                <div class="form-label">Pushover App Token</div>
+                <input class="form-input mono" id="pushover_app_token" type="password" placeholder="Application API token" autocomplete="off">
+              </div>
+              <div class="form-group">
+                <div class="form-label">Pushover User Key</div>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <input class="form-input mono" id="pushover_user_key" type="password" placeholder="Your user key" autocomplete="off">
+                  <button class="btn btn-secondary" onclick="testPushover()">Send test</button>
+                </div>
+                <div class="form-hint">Leave both empty for no messages; Health shows it either way.</div>
+              </div>
+
+
+              <div style="margin-top:20px">
+                <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+              </div>
+            </div>
+
+            <!-- Users Section -->
+            <div class="settings-section card" id="section-users">
+              <h3>Users</h3>
+              <p class="section-desc">Manage Jellyfin user permissions. Admin users get full access to Tentacle. Non-admin users can only browse the library and customize their home screen.</p>
+              <div id="users-list" style="margin-top:16px">
+                <div style="color:var(--text3);font-size:13px">Loading users...</div>
+              </div>
+            </div>
+
+
+            <!-- Advanced: the few things that really differ between installs -->
+            <div class="settings-section card" id="section-advanced">
+              <h3>Advanced</h3>
+              <p class="section-desc">Most installs never change these.</p>
+
+              <div class="form-group">
+                <div class="form-label">&ldquo;Recently added&rdquo; means the last (days)</div>
+                <input class="form-input" id="recently_added_days" placeholder="30" type="number" min="1" max="365" style="max-width:160px">
+                <div class="form-hint">How long a title stays in the Recently Added playlists.</div>
+              </div>
+
+              <div class="form-group">
+                <div class="form-label">How sure a title match must be (0.1&ndash;1.0)</div>
+                <input class="form-input" id="tmdb_match_threshold" placeholder="0.7" type="number" min="0.1" max="1.0" step="0.05" style="max-width:160px">
+                <div class="form-hint">An IPTV title is added only when it matches a TMDB movie or series at least this well. Higher: fewer wrong matches, more titles skipped.</div>
+              </div>
+
+              <div class="form-group">
+                <div class="form-label">Where extra episodes of an IPTV series go</div>
+                <select class="form-input" id="hybrid_series_layout" style="max-width:460px">
+                  <option value="vod_root">Download into the VOD folder (needs a VOD root folder in Sonarr)</option>
+                  <option value="shared_library">Shared Jellyfin library — same folder name, separate roots</option>
+                </select>
+                <div class="form-hint">How VOD (.strm) + downloaded episodes combine into one Jellyfin series when using "Download More Episodes". Shared library: your VOD shows folder and Sonarr's shows folder must both be folders of ONE Jellyfin library — Sonarr then needs no VOD root folder.</div>
+              </div>
+
+
+              <div style="margin-top:20px">
+                <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+              </div>
             </div>
           </div>
         </div>
@@ -3338,9 +3159,9 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
     </div>
 
     <div class="form-group">
-      <div class="form-label">Priority</div>
+      <div class="form-label">Order</div>
       <input class="form-input" id="p-priority" type="number" value="1" min="1" max="10">
-      <div class="form-hint">Lower number = higher priority when deduplicating</div>
+      <div class="form-hint">When two providers have the same title, the one with the lower number is used.</div>
     </div>
 
     <div class="form-group" style="display:flex;align-items:center;gap:10px">
@@ -3482,11 +3303,8 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
     <input type="hidden" id="l-type" value="imdb_rss">
 
-    <div class="form-group">
-      <div class="form-label">Tag</div>
-      <input class="form-input" id="l-tag" placeholder="Auto-filled from name" oninput="document.getElementById('l-tag').dataset.manualEdit='1'">
-      <div class="form-hint">Jellyfin collection/playlist name — auto-fills from name above</div>
-    </div>
+    <!-- The playlist name follows the list's name: no separate field to fill in -->
+    <input type="hidden" id="l-tag">
 
     <div class="form-group" style="display:flex;align-items:center;gap:10px">
       <input type="checkbox" id="l-auto-fetch" checked style="width:15px;height:15px;accent-color:var(--accent)">
@@ -4010,6 +3828,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="/static/js/app.js?v=42"></script>
+<script src="/static/js/sources.js?v=42"></script>
 <script src="/static/js/pages.js?v=42"></script>
 <script src="/static/js/music.js?v=42"></script>
 <script>

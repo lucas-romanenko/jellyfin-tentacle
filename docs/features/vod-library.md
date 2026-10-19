@@ -15,7 +15,7 @@ The result: your provider's content appears in Jellyfin as if it were a native l
 
 ## Adding a Provider
 
-Go to **Settings → Providers** in Tentacle and click **+ Add Provider**. The same provider also serves [Live TV](live-tv.md) when it is an Xtream provider whose account has live channels.
+Go to **Sources → IPTV providers** in Tentacle and click **+ Add Provider**. The same provider also serves [Live TV](live-tv.md) when it is an Xtream provider whose account has live channels.
 
 ### Xtream API (Recommended)
 
@@ -41,11 +41,11 @@ For locally hosted M3U files:
 - **M3U File** — Path to the M3U file
 
 !!! tip "Test first"
-    Click the **Test** button on the provider's card in Settings → Providers to verify the connection before syncing. This only tests connectivity — it doesn't download any content.
+    Click the **Test** button on the provider's card in Sources → IPTV providers to verify the connection before syncing. This only tests connectivity — it doesn't download any content.
 
 ## Selecting Categories
 
-After adding a provider, go to the **Categories** tab. Tentacle will automatically fetch available categories on your first visit.
+After adding a provider, switch on **Use for Movies & Series** on its card (Sources → IPTV providers) and click **Choose** next to **Categories**. Tentacle fetches the provider's categories the first time.
 
 Categories are grouped by type — movies and series. Each category shows its content count. Toggle on the categories you want to sync.
 
@@ -120,7 +120,7 @@ These tags are written into the NFO files and are what power the [auto playlists
 
 ### Manual Sync
 
-Click **Sync All** on the VOD page to trigger a sync immediately. A progress indicator shows the current status.
+Click **Sync now** in Settings → Schedule & notifications to run the sync immediately. A progress indicator shows the current status.
 
 ### Scheduled Sync
 
@@ -179,7 +179,7 @@ a storage hiccup must never be able to wipe a library:
   mergerfs, unionfs, NFS, SMB and rclone, where a branch dropping out makes
   every file report as missing while the mount itself stays up.
 
-Blocked removals are recorded in the deletion log (Health → Deletion Log) as
+Blocked removals are recorded in the deletion log (Health → What happened → Removals) as
 "refused": nothing is deleted.
 
 ## Opting a Title Out of `.strm` Management
@@ -201,7 +201,7 @@ If you're migrating from another tool (like xtream-sync) and Tentacle detects ex
 ## Changing Your Provider's Address or Login
 
 When your provider gives you a new server URL (or a new username or
-password) for the same account, edit the provider in **Settings → Providers**
+password) for the same account, edit the provider in **Sources → IPTV providers**
 and save. The films and episodes already in your library are updated to the
 new address in the background, Jellyfin rescans, and an entry in Activity
 says how many moved. Live TV channels follow at once. Every sync also
@@ -233,7 +233,7 @@ that is a new provider: add it and use Migrate (below).
 
 ## Provider Migration
 
-When you switch to another provider, **Settings → Providers → ⇄ Migrate**
+When you switch to another provider, **Sources → IPTV providers → ⇄ Move to another provider**
 moves your films to it without re-syncing everything:
 
 1. Add the new provider and choose its movie categories first. Migrate refuses

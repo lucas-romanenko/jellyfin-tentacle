@@ -10,7 +10,7 @@ Tentacle finds and requests music; it never plays it or touches the files.
 player (Navidrome, or Jellyfin) plays it.
 
 !!! warning "Off by default"
-    Until you turn it on in **Settings → Music**, Tentacle shows no music
+    Until you turn it on in **Sources → Music**, Tentacle shows no music
     anywhere and changes nothing.
 
 ## What you need
@@ -27,8 +27,8 @@ come from free, public sources.
 
 ## Setup
 
-**1. Turn it on** in **Settings → Music** (tick *Enable the music module*).
-A **Music** section appears at the bottom of **Settings → Connections**.
+**1. Turn it on** in **Sources → Music** (tick *Enable the music module*).
+A **Music** section appears at the bottom of **Settings → Services**.
 
 **2. Connect Lidarr** there: its URL and API key, then **Test**. Pick:
 
@@ -55,7 +55,7 @@ ten minutes for a few hundred albums; MusicBrainz allows one request a second).
 **Library → Music → Check library now** runs it again any time.
 
 **6. Optional: add the Lidarr webhook** so new downloads show up in Tentacle
-right away instead of at the daily check. **Settings → Music** shows the URL.
+right away instead of at the daily check. **Sources → Music** shows the URL.
 In Lidarr, go to *Settings → Connect → + → Webhook*, paste it, and tick
 *On Artist Add*, *On Release Import* and *On Upgrade*. **Send test** confirms
 it arrives.
@@ -79,7 +79,7 @@ Without a search there are five tabs:
   genre. *Hide albums I have* narrows it to what's missing (Lists have it too).
 - **From Spotify:** your imported playlists (below).
 
-The chart country is **Settings → Music → Chart country**. Everything is
+The chart country is **Sources → Music → Chart country**. Everything is
 built in the background: the charts once a day, Top of all time and the Lists
 once a month. The first build takes a few minutes.
 
@@ -155,14 +155,13 @@ Nothing changes until you press **Apply**, per album or per group. Each album
 is checked again with fresh data first. Extra tracks are only removed when
 Lidarr matched every original track and exactly the expected number is left
 over; anything else stops with nothing deleted. Every deletion goes to the
-Deletion Log on the Health page.
+Removals log on the Health page (What happened → Removals).
 
 !!! tip "Set a recycle bin in Lidarr first"
     Removed tracks go to Lidarr's recycle bin (*Settings → Media Management*).
     Without one they are deleted for good, and the page says so.
 
-**Settings → Music → Apply automatically** can apply the re-pin groups after
-each daily check. All three are off by default.
+Re-pins always wait for your click: the daily check only finds them.
 
 ## Artist pictures
 
@@ -185,6 +184,4 @@ photo or upload one.
 | Preferred countries / formats | US, GB, CA, XW / CD, Digital Media | Break ties between releases with the original tracklist |
 | Words that mark a special edition | deluxe, expanded, anniversary… | Releases with these are passed over when another has the same tracklist |
 | Daily check at | 04:00 | |
-| Apply automatically | All off | |
 | Music folder as Tentacle sees it | Empty | Lidarr's root folder mounted read-only into Tentacle, to reuse `artist.jpg` files |
-| Deezer as a source of artist pictures | On | |

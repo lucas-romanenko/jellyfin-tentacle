@@ -26,9 +26,11 @@ class LiveTvNames(unittest.TestCase):
         self.assertEqual([], missing_text(values, html))
 
     def test_provider_card(self):
-        src = ESC + functions("app.js", ["renderProviderCard"])
+        src = ESC + "const srcState = {open: {}};\n" + functions(
+            "sources.js", ["renderProviderCard", "_providerAddress", "_switchRow", "_providerSection"])
         for i, name in enumerate(NAMES):
-            p = {"id": 1, "name": name, "server_url": f"http://prov.test/{i}?a=1&b=2", "status": "ok"}
+            p = {"id": 1, "name": name, "server_url": f"http://prov.test/{i}?a=1&b=2", "status": "ok",
+                 "has_vod": True, "has_live": True, "active": True, "live_tv_enabled": True}
             html = render(src, "", "written.card = [renderProviderCard(%s)]" % json.dumps(p))
             self.assertShown([name, p["server_url"]], html)
 
@@ -43,18 +45,18 @@ class LiveTvNames(unittest.TestCase):
 
     def test_groups_filter_and_channels(self):
         src = ESC + "const liveState = {dirtyChannels: {}};\n" + functions(
-            "pages.js", ["renderLiveGroups", "updateGroupsSummary", "populateGroupFilter",
-                         "renderLiveChannels", "_liveGuideTitle"])
+            "pages.js", ["populateGroupFilter", "renderLiveChannels", "_liveGuideTitle"]) + \
+            "const srcState = {groups: {}};\n" + functions("sources.js", ["renderProvGroups", "_provGroupsShown"])
         groups = [{"id": i, "name": n, "enabled": True, "channel_count": 3} for i, n in enumerate(NAMES)]
         chans = [{"id": i, "name": n, "group_title": n, "logo_url": f"http://logo.test/{i}.png?s=1&t=2",
                   "enabled": True, "has_epg_data": False} for i, n in enumerate(NAMES)]
-        html = render(src, "", "renderLiveGroups(%s); populateGroupFilter(%s); renderLiveChannels(%s, 5)"
+        html = render(src, "", "srcState.groups[7] = %s; renderProvGroups(7); populateGroupFilter(%s); renderLiveChannels(%s, 5)"
                       % (json.dumps(groups), json.dumps(groups), json.dumps(chans)))
-        self.assertShown(NAMES, {"g": html["live-groups"]})
+        self.assertShown(NAMES, {"g": html["prov-groups-list-7"]})
         options = Page(html["live-ch-group-filter"][-1]).attrs("value")
         self.assertEqual(sorted(NAMES, key=lambda s: s), sorted(options[1:]))
-        rows = Page(html["live-groups"][-1]).attrs("data-group-name")
-        self.assertEqual([n.lower() for n in NAMES], rows)
+        labels = Page(html["prov-groups-list-7"][-1]).attrs("aria-label")
+        self.assertEqual([n + " in Live TV" for n in NAMES], labels)
         logos = Page(html["live-channels"][-1]).attrs("src")
         self.assertEqual([c["logo_url"] for c in chans], logos)
 

@@ -66,7 +66,7 @@ Add your streaming provider and your Jellyfin home screen fills with curated row
 ### 👥 Multi-User Support
 - Netflix-style Jellyfin user picker on login
 - Per-user playlists, auto-playlist toggles, list subscriptions, and home screen layout
-- Admin / non-admin roles synced from Jellyfin — non-admins see Library + Jellyfin pages only
+- Admin / non-admin roles synced from Jellyfin — non-admins see Library, Discover and My Home Screen only
 - Owner protection — the first user can't have admin removed
 
 ### 📥 Radarr & Sonarr Integration
@@ -114,18 +114,18 @@ Open `http://localhost:8888` — the setup wizard will guide you through connect
 > - `./tentacle-data:/data` is the only required volume. The other four are optional depending on which features you use.
 > - Only mount what you need — skip `/media/movies` and `/media/shows` if you don't use Radarr/Sonarr, skip `/media/vod/...` if you don't have a streaming provider.
 > - The right side of each mount (`/data`, `/media/...`) is fixed — don't change these. Only change the left side to match your host paths.
-> - Settings → Library Paths shows which mounts Tentacle can see. Green = mounted, red = missing.
+> - Health → Media folders shows which mounts Tentacle can see. Green = mounted, red = missing.
 
 ### After Starting
 
 The [setup wizard](https://lucas-romanenko.github.io/jellyfin-tentacle/getting-started/setup-wizard/) walks through the first four:
 
 1. **Jellyfin** — URL + API key (Dashboard → API Keys → +), then sign in with your Jellyfin admin account — *required*
-2. **Radarr / Sonarr** — URL + API key and a default quality profile (optional; later in Settings → Connections). The wizard then shows the webhook URLs to add in Radarr/Sonarr: `http://<tentacle-ip>:8888/api/radarr/webhook` and `/api/sonarr/webhook`, for real-time updates.
+2. **Radarr / Sonarr** — URL + API key and a default quality profile (optional; later in Settings → Services). The wizard then shows the webhook URLs to add in Radarr/Sonarr: `http://<tentacle-ip>:8888/api/radarr/webhook` and `/api/sonarr/webhook`, for real-time updates.
 3. **TMDB** — works automatically with the built-in key, or override with your own from [themoviedb.org](https://www.themoviedb.org/settings/api)
 4. **Plugin** — install the Tentacle plugin in Jellyfin (optional)
-5. **Streaming Provider** — Settings → Providers → + Add Provider (optional). One provider serves VOD and, when the account has live channels, Live TV.
-6. **Check paths** — Settings → Library Paths to verify your volume mounts are correct
+5. **Streaming Provider** — Sources → IPTV providers → + Add Provider (optional). One provider serves VOD and, when the account has live channels, Live TV.
+6. **Check paths** — Health → Media folders to verify your volume mounts are correct
 7. **Playlists** — go to Jellyfin → Playlists tab to enable auto playlists from your synced content
 8. **Home Screen** — go to Jellyfin → Home Screen tab to set up the hero spotlight and playlist rows
 

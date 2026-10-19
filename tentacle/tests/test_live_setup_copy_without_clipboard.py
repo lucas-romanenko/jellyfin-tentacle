@@ -28,8 +28,7 @@ def _fn(name):
 SCRIPT = """
 const els = {};
 function el(id) { return els[id] || (els[id] = { id, value: '', textContent: '', style: {} }); }
-el('live-setup-host').value = '192.0.2.10';
-el('live-setup-port').value = '8888';
+const liveState = { setupBase: 'http://192.0.2.10:8888' };
 const document = { getElementById: el };
 const location = { hostname: '192.0.2.10', port: '8888', href: 'http://192.0.2.10:8888/' };
 const copied = [];
