@@ -268,8 +268,13 @@ read that row.
   share is not mounted: the run fails before writing anything
   (`_check_vod_root_before_sync()`, #439). Writing there put the files on
   the container's disk, made the root non-empty for the VOD sweep's own
-  check, and the sweep deleted every title not written back. A new install
-  (no rows) syncs; a deliberately empty folder needs any file in it.
+  check, and the sweep deleted every title not written back. A root that
+  holds none of the recorded titles' files counts as unmounted too
+  (`_vod_root_holds_none()`, #698): in a merged setup a Radarr/Sonarr import
+  onto the bare mount point makes it non-empty. The sync and the sweep both
+  check it. A new install (no rows) syncs; a library emptied on purpose (a
+  new disk) needs an empty `.tentacle-library` file in the root
+  (`VOD_LIBRARY_MARKER`).
   `_repair_movie_strm()` and the show-folder rebuild check the root too.
   A root that raises `OSError` when read (a stale NFS/SMB/FUSE mount) counts
   as unmounted (#440).

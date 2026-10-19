@@ -71,6 +71,57 @@ class ImportOntoUnmountedRoot(NightlyHarness):
         self.assertIsNotNone(self.movie(2000), "Ronin deleted while the movies folder was unmounted")
         self.assertEqual([], [d.kind for d in self.db.query(DeletionLog).all()])
 
+    def _arr_import(self, name, folder, file):
+        """Radarr/Sonarr import into the same folder (a merged setup, #698)."""
+        (self.vod / name / folder).mkdir(parents=True)
+        (self.vod / name / folder / file).write_bytes(b"video")
+
+    def test_an_arr_import_onto_the_unmounted_movies_root(self):
+        """The bare mount point is not empty, but none of the recorded films is there (#698)."""
+        self.add_category("1")
+        self.add_category("2")
+        self.catalogue_movies("1", ["Heat"], first_tmdb=1000)
+        self.catalogue_movies("2", ["Ronin"], first_tmdb=2000)
+        self.night()
+        self._unmount("movies")
+        self._arr_import("movies", "Thief (1981)", "Thief (1981).mkv")
+        self.client.raise_for = {"2"}
+        self._unmounted_night("full")
+        self.assertEqual(["Thief (1981)", "Thief (1981)/Thief (1981).mkv"], _files(self.vod / "movies"),
+                         "written onto the unmounted movies root")
+        self._unmounted_night("full")
+        self.assertIsNotNone(self.movie(2000), "Ronin deleted while the movies folder was unmounted")
+        self.assertEqual([], [d.kind for d in self.db.query(DeletionLog).all()])
+
+    def test_an_arr_import_onto_the_unmounted_shows_root(self):
+        self.add_category("11", type_="series")
+        self.add_category("12", type_="series")
+        self.catalogue_series("11", ["Heat Show"], first_tmdb=5000)
+        self.catalogue_series("12", ["Ronin Show"], first_tmdb=6000)
+        self.night()
+        self._unmount("shows")
+        self._arr_import("shows", "Thief Show (2010)/Season 01", "Thief Show S01E01.mkv")
+        self.client.raise_for = {"12"}
+        self._unmounted_night("series")
+        self._unmounted_night("series")
+        self.assertIsNotNone(self.series_row(6000), "Ronin Show deleted while the shows folder was unmounted")
+        self.assertIsNotNone(self.series_row(5000))
+        self.assertFalse((self.vod / "shows" / "Heat Show (2010)").exists(),
+                         "written onto the unmounted shows root")
+        self.assertEqual([], [d.kind for d in self.db.query(DeletionLog).all()])
+
+    def test_a_library_emptied_on_purpose_syncs_with_the_marker(self):
+        """The way out for a new disk: an empty .tentacle-library file in the root."""
+        self.add_category("1")
+        self.catalogue_movies("1", ["Heat"], first_tmdb=1000)
+        self.night()
+        self._unmount("movies")
+        (self.vod / "movies" / "notes.txt").write_text("new disk")
+        self._unmounted_night("full")
+        (self.vod / "movies" / ".tentacle-library").touch()
+        self.night()
+        self.assertTrue((self.vod / "movies" / "Heat (2010)").is_dir(), "Heat not written back")
+
     def test_a_stale_mount_counts_as_unmounted(self):
         """A stale NFS/SMB/FUSE mount raises OSError on read: no sync, no sweep."""
         self.add_category("1")
