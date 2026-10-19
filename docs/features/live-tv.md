@@ -103,6 +103,8 @@ Tentacle proxies live streams between Jellyfin and your provider. This handles:
 - **HLS to MPEG-TS conversion** — Converts HLS streams to MPEG-TS format for Jellyfin compatibility
 - **User-Agent forwarding** — Uses the configured User-Agent when connecting to the provider
 
+Xtream channels are pulled as one continuous MPEG-TS stream each, which is what lets several channels run at once on an account with a connection limit. If your provider does not serve a channel that way, Tentacle opens it as HLS instead, automatically.
+
 When a provider drops a raw MPEG-TS stream, Tentacle reconnects. Many providers start the new connection with the last 20 seconds or so again; Tentacle recognises those seconds and skips them, so the recording goes on where it stopped, without repeated seconds. An interruption covered that way is not counted as damage.
 
 A recording also waits out a provider refusing it (HTTP 401/403, for example a short IP block or flood protection) for up to three minutes before it ends; a viewer's stream still ends at once.

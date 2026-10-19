@@ -226,6 +226,28 @@ needs no sign-in and answers 200 `{"status": "ok"}`, or 503 with the
 reasons while a provider is failing. It names no provider and carries no
 URL or login.
 
+### An episode stops, shows the backdrop and jumps to the next one
+
+The provider dropped the connection mid-episode. A `.strm` that points
+straight at the provider is read by Jellyfin's ffmpeg in one long
+connection; when the provider closes it early, ffmpeg logs `partial file`
+or `Stream ends prematurely`, then exits as if the file had ended.
+Jellyfin takes that as the end of the episode and autoplays the next one.
+
+Tentacle prevents this by default: films and episodes play through
+Tentacle (`/api/vod/...` in the `.strm` files), which reconnects to the
+provider and carries on from the byte where it stopped, so the player never
+sees the drop. If it still happens:
+
+- Open a `.strm` file: if it holds the provider's address instead of
+  `/api/vod/`, Tentacle did not know an address Jellyfin can reach it at.
+  The log says so (`VOD keeps direct provider links`). Check the Jellyfin
+  plugin's Tentacle URL, or set `vod_base_url`; the files are rewritten a
+  minute and a half after Tentacle starts, and at every sync.
+- The setting `vod_via_tentacle_enabled` set to `false` turns this off on
+  purpose.
+- Only Xtream providers play through Tentacle; M3U ones keep their own links.
+
 ### VOD content missing metadata
 
 If titles appear without posters or proper names:
