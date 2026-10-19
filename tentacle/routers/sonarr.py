@@ -308,7 +308,8 @@ def _after_scan(db, tmdb_id, title, event_type, first_episode=None, episode_coun
     """What one series' webhook event does once the Sonarr scan has run:
     download bookkeeping, list tags, the Jellyfin tag push, playlists and the
     ready-to-watch notification (not for quality upgrades only: notify=False,
-    unless a bad copy is being replaced)."""
+    unless a bad copy is being replaced). True when the series is in Jellyfin
+    and its notification step ran: ready to watch (services.download_readiness)."""
     import time
     from models.database import get_setting
     from services.jellyfin import JellyfinService
@@ -508,6 +509,7 @@ def _after_scan(db, tmdb_id, title, event_type, first_episode=None, episode_coun
                                 notified_user_ids.add(uid)
             except Exception as e:
                 logger.warning(f"[Sonarr webhook] Notification creation failed: {e}")
+        ready = bool(jf_item)
 
         # Activity log
         from models.database import log_activity as _log_act
@@ -524,11 +526,13 @@ def _after_scan(db, tmdb_id, title, event_type, first_episode=None, episode_coun
             "media_type": "series",
             "in_library": True,
         })
+        return ready
     except Exception as e:
         logger.error(f"[Sonarr webhook] Background processing failed: {e}", exc_info=True)
         # The batch's other series share this session: a failed flush must not
         # fail every one after it.
         db.rollback()
+    return False
 
 
 # ── Webhook coalescing (#182) ─────────────────────────────────────────────
@@ -542,13 +546,23 @@ def _after_scan(db, tmdb_id, title, event_type, first_episode=None, episode_coun
 WEBHOOK_QUIET_SECONDS = 10
 WEBHOOK_MAX_WAIT_SECONDS = 30
 _webhook_lock = threading.Lock()
-_webhook_pending: dict = {}      # series key -> {"tmdb_id", "title", "event_type", "episodes", "notify"}
+_webhook_pending: dict = {}      # series key -> {"tmdb_id", "title", "event_type", "episodes", "notify", "readiness"}
 _webhook_state: dict = {"worker": None, "first": 0.0, "last": 0.0}
 
 
 def _queue_webhook_event(tmdb_id, title, event_type, episodes, is_upgrade=False) -> None:
     import time
+    from services import download_readiness
     key = tmdb_id or f"title:{title}"
+    # Activity shows a downloaded episode as "importing" from now (the queue
+    # has dropped it) until it can be watched, and only then under "Recently
+    # downloaded" -- the moment its notification goes out. The batch ends it.
+    pub = None
+    if event_type == "Download":
+        ep = (episodes or [None])[0] or {}
+        pub = download_readiness.begin(
+            "series", tmdb_id, title,
+            f"S{ep.get('seasonNumber', 0):02d}E{ep.get('episodeNumber', 0):02d}" if ep else "", "sonarr")
     # A quality upgrade replaced a file the user already had: not a new
     # episode, no "ready to watch" (#380). Its scan and Jellyfin pass still run.
     new_download = event_type == "Download" and not is_upgrade
@@ -560,8 +574,10 @@ def _queue_webhook_event(tmdb_id, title, event_type, episodes, is_upgrade=False)
         if entry is None:
             _webhook_pending[key] = {"tmdb_id": tmdb_id, "title": title, "event_type": event_type,
                                      "episodes": list(episodes or []) if new_download else [],
-                                     "notify": new_download}
+                                     "notify": new_download, "readiness": [pub] if pub else []}
         else:
+            if pub:
+                entry["readiness"].append(pub)
             # A Download outranks the others: it carries the episodes and the
             # ready-to-watch notification. Only a Download's episodes count: a
             # deleted episode is not a new one.
@@ -611,6 +627,7 @@ def _drain_webhook_batches() -> None:
             time.sleep(wait)
             continue
         db = None
+        ready = {}       # id(entry) -> ready to watch
         try:
             db = SessionLocal()
             logger.info(f"[Sonarr webhook] One scan for {len(batch)} series")
@@ -624,11 +641,15 @@ def _drain_webhook_batches() -> None:
                     logger.info(f"[Sonarr webhook] {entry['event_type']} for '{entry['title']}': library rescanned")
                     continue
                 eps = entry["episodes"]
-                _after_scan(db, entry["tmdb_id"], entry["title"], entry["event_type"],
-                            eps[0] if eps else None, episode_count=max(1, len(eps)),
-                            notify=entry["notify"])
+                ready[id(entry)] = _after_scan(db, entry["tmdb_id"], entry["title"], entry["event_type"],
+                                               eps[0] if eps else None, episode_count=max(1, len(eps)),
+                                               notify=entry["notify"])
         except Exception as e:
             logger.error(f"[Sonarr webhook] Processing failed: {e}", exc_info=True)
         finally:
+            from services import download_readiness
+            for entry in batch:
+                for pub in entry.get("readiness", []):
+                    download_readiness.end(pub, bool(ready.get(id(entry))))
             if db is not None:
                 db.close()

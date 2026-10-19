@@ -482,8 +482,14 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
         from models.database import SessionLocal, get_setting
         from pathlib import Path
         from services.jellyfin import JellyfinService
+        from services import download_readiness
 
         db = SessionLocal()
+        # Activity shows the film as "importing" until it can be watched, and
+        # only then under "Recently downloaded" -- the moment its notification
+        # goes out (services.download_readiness). end() in `finally` says which.
+        pub = download_readiness.begin("movie", tmdb_id, title, "", "radarr") if event_type == "Download" else None
+        ready = False
         try:
             scan_radarr_library(db)
 
@@ -674,6 +680,7 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                         )
                 except Exception as e:
                     logger.warning(f"[Radarr webhook] Notification creation failed: {e}")
+            ready = bool(jf_item)
 
             # Activity log
             from models.database import log_activity as _log_act
@@ -694,6 +701,7 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
         except Exception as e:
             logger.error(f"[Radarr webhook] Background processing failed: {e}", exc_info=True)
         finally:
+            download_readiness.end(pub, ready)
             db.close()
 
     is_upgrade = event_type == "Download" and payload.get("isUpgrade") is True
