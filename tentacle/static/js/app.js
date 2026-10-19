@@ -1333,6 +1333,9 @@ const SETTINGS_PICKER_FIELDS = [
 async function loadSettings() {
   try {
     const settings = await api('/api/settings/raw');
+    // Tentacle's address shows at once; its check (loadTentacleAddress) follows
+    const ta = document.getElementById('settings-tentacle-address');
+    if (ta && !ta.value && settings.youtube_base_url) ta.value = settings.youtube_base_url;
     if (typeof loadTentacleAddress === 'function') loadTentacleAddress();
     SETTINGS_TEXT_FIELDS.forEach(key => {
       const el = document.getElementById(key);

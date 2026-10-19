@@ -76,6 +76,11 @@ class SetupAddress(unittest.TestCase):
         self.assertEqual("http://192.0.2.10:8888/hdhr/xmltv.xml", out["xmltv"])
         self.assertEqual("", out["hint"])
 
+    def test_the_saved_address_in_the_settings_needs_no_status_call(self):
+        out = self._run({"youtube_base_url": "http://192.0.2.10:8888"}, None)
+        self.assertEqual("http://192.0.2.10:8888", out["tuner"])
+        self.assertNotIn("/api/youtube/status", out["calls"])
+
     def test_a_worked_out_address_is_shown_as_not_saved(self):
         out = self._run({}, {"base_url": "", "detected": {"url": "http://192.0.2.10:8888"}})
         self.assertEqual("http://192.0.2.10:8888", out["tuner"])

@@ -5929,7 +5929,10 @@ async function fillSetupUrls() {
   let base = '', note = '';
   let settings = {};
   try { settings = await api('/api/settings/raw'); } catch (e) { settings = {}; }
-  try {
+  // The saved address is in the settings: no need for the status call, which
+  // checks the address over the network and can take a while.
+  if (settings['youtube_base_url']) base = settings['youtube_base_url'];
+  else try {
     const st = await api('/api/youtube/status');
     if (st && st.base_url) base = st.base_url;
     else if (st && st.detected && st.detected.url) {

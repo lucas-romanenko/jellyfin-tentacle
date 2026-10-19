@@ -545,6 +545,12 @@ async function loadArrSources() {
 // Tentacle's own address, as Jellyfin and the Arr apps reach it: the one
 // saved in Settings → Services, else the one worked out (not saved yet).
 async function tentacleBaseUrl() {
+  // The saved one is in the settings; the status call (which also works one
+  // out) checks addresses over the network and can take a while.
+  try {
+    const saved = ((await api('/api/settings/raw')).youtube_base_url || '').trim();
+    if (saved) return { base: saved.replace(/\/+$/, ''), saved: true };
+  } catch (e) { /* ask the status below */ }
   try {
     const st = await api('/api/youtube/status');
     const base = st.base_url || (st.detected && st.detected.url) || '';
