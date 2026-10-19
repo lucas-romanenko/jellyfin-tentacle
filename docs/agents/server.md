@@ -306,6 +306,38 @@ user_id)` computes them every time from source tags, list subscriptions
   `*-blocked` kinds record removals a safety limit refused (nothing
   deleted): label "… refused", gray badge.
 
+## VOD through Tentacle (`routers/vod.py`)
+
+- The default: Xtream `.strm` files point at
+  `/api/vod/{movie|series}/{provider}.{id}.{sig}.{ext}` (`services/vod_tokens.py`).
+  `vod_via_tentacle_enabled` is only an opt-out ("false", no dashboard
+  switch); unset is on (`vod_enabled`). Opted out, files play straight from
+  the provider and a drop mid-episode ends the episode.
+- The address (`sync.vod_base_url_for`): `vod_base_url` as saved, else the
+  Jellyfin plugin's TentacleUrl, then the YouTube Tentacle address; the
+  first that is not loopback or a one-word (container) name and answers
+  `check_base_url` is saved as `vod_base_url`, so files never flip. None:
+  direct links stay, with a warning in the log.
+- Existing files move over without a sync: `provider_relink.start_vod_route_relink()`
+  runs 90 s after start-up (main.py) and after a save that flips the
+  setting; it waits for running syncs, rewrites each Xtream provider's own
+  direct/`/api/vod` files to the wanted form (`relink_vod_route`,
+  idempotent), then a Jellyfin scan and a `vod_route_relinked` Activity
+  entry when anything changed. Every sync applies the same rule
+  (`_strm_needs_rewrite`).
+- The relay: a drop or a body that ends cleanly short of its
+  Content-Length/range ("Stream ends prematurely" in ffmpeg) is resumed
+  with Range from the byte reached; a connection that delivered 8 MB or
+  lasted 30 s resets the reconnect budget. One provider connection per
+  playback (title + client address): Jellyfin's parallel requests for it
+  (subtitle extraction, transcode restarts, seeks) share it. The newest
+  request takes it (`_Playback.take`: the old one closed before the new one
+  opens, under `open_lock`), the parked ones wait and carry on from their
+  own byte when the holder ends or has had it `QUANTUM_SECONDS` (8 s); a
+  holder stuck on a paused player is taken from after 2 s more. A HEAD
+  during a playback is answered from it. Different titles or clients are
+  separate playbacks (separate connections, counted by the lease broker).
+
 ## Provider health (`services/provider_health.py`)
 
 - Hourly (job `provider_health`, plus once 2 min after start), per provider
@@ -397,6 +429,17 @@ guide at `/api/live/xmltv.xml`, streams through `/api/live/stream/{id}`
 (follows provider redirects with the provider's user agent, HLS → MPEG-TS).
 User docs: `docs/features/live-tv.md`.
 
+- Stream format: Xtream channels open as continuous MPEG-TS (`.ts`) by
+  default, HLS only when the account's `allowed_output_formats` lacks ts or
+  the channel's ts open is refused outright (then remembered per channel
+  until restart). Chosen at open time (`_live_open_urls`), so no channel sync
+  is needed; `livetv_stream_format` = `m3u8`/`ts` overrides. Why: the comment
+  above `_LIVE_STREAM_FORMATS`.
+- `discover.json` `TunerCount` is at least the stream ceiling
+  (`_hdhr_tuner_count`). Jellyfin 10.11 enforces the count saved with its
+  tuner: copied from TunerCount only when it discovers the device on the
+  network; a tuner added by URL saves 0 (no limit; the field is hidden for
+  HDHomeRun). Jellyfin lists TunerCount tuners either way.
 - Raw MPEG-TS streams re-dial from the channel URL when the provider drops
   them (`stream_generator()` in `_stream_proxy_inner`). Waited out like a
   509 (the viewer budget; no limit while a recording is attached): transport

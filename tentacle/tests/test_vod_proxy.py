@@ -51,11 +51,18 @@ class _Client:
         return queue[0] if len(queue) == 1 else queue.pop(0)
 
 
-def _file(status, pieces, then=None, url=PANEL, total=1000, start=0, ct="video/x-matroska"):
+def _file(status, pieces, then=None, url=PANEL, total=None, start=0, ct="video/x-matroska", last=None):
+    """A provider answer. Its Content-Length/Range is what the pieces fill
+    (`total` defaults to the end of the pieces), unless the body breaks
+    (`then`), or `total`/`last` say the file goes on: the relay treats a body
+    that ends short of what it declared as a drop."""
+    if total is None:
+        total = start + sum(len(p) for p in pieces) if then is None else 1000
+    last = total - 1 if last is None else last
     headers = {"content-type": ct, "accept-ranges": "bytes"}
     if status == 206:
-        headers["content-range"] = f"bytes {start}-{total - 1}/{total}"
-        headers["content-length"] = str(total - start)
+        headers["content-range"] = f"bytes {start}-{last}/{total}"
+        headers["content-length"] = str(last - start + 1)
     else:
         headers["content-length"] = str(total)
     return httpx.Response(status, headers=headers, stream=_Body(pieces, then), request=httpx.Request("GET", url))
@@ -195,27 +202,27 @@ class RangesAndResume(_Base):
         status, headers, body = self._play(script, range_header="bytes=100-")
         self.assertEqual(206, status)
         self.assertEqual(b"AAAABBBB", body)
-        self.assertEqual("bytes 100-999/1000", headers.get("content-range"))
+        self.assertEqual("bytes 100-107/108", headers.get("content-range"))
         self.assertEqual([("GET", self.upstream, "bytes=100-")], self.log)
 
     def test_a_dropped_upstream_is_resumed_from_the_byte_it_stopped_at(self):
-        script = {self.upstream: [_file(206, [b"AAAA"], then=_dropped(), start=100),
+        script = {self.upstream: [_file(206, [b"AAAA"], then=_dropped(), start=100, total=108),
                                   _file(206, [b"BBBB"], start=104)]}
         status, headers, body = self._play(script, range_header="bytes=100-")
         self.assertEqual(b"AAAABBBB", body, "the film would have stopped at the drop")
-        self.assertEqual("bytes=104-999", self.log[1][2],
+        self.assertEqual("bytes=104-107", self.log[1][2],
                          "resume from start + bytes already sent, to the end the provider named")
         self.assertGreaterEqual(len(self.slept), 1, "the resume is paced, not immediate")
 
     def test_a_bounded_range_is_resumed_to_its_end_not_beyond(self):
-        """`bytes=100-199` dropped after four bytes: the resume asks for
-        104-199. Asking for 104- would fetch the rest of the file into a
-        response the player sized at 100 bytes."""
-        script = {self.upstream: [_file(206, [b"AAAA"], then=_dropped(), start=100, total=200),
-                                  _file(206, [b"BBBB"], start=104, total=200)]}
-        status, headers, body = self._play(script, range_header="bytes=100-199")
+        """`bytes=100-107` of a 200-byte file dropped after four bytes: the
+        resume asks for 104-107. Asking for 104- would fetch the rest of the
+        file into a response the player sized at 8 bytes."""
+        script = {self.upstream: [_file(206, [b"AAAA"], then=_dropped(), start=100, total=200, last=107),
+                                  _file(206, [b"BBBB"], start=104, total=200, last=107)]}
+        status, headers, body = self._play(script, range_header="bytes=100-107")
         self.assertEqual(b"AAAABBBB", body)
-        self.assertEqual("bytes=104-199", self.log[1][2])
+        self.assertEqual("bytes=104-107", self.log[1][2])
 
     def test_a_bounded_range_delivered_in_full_is_not_resumed(self):
         script = {self.upstream: [_file(206, [b"AAAA"], then=_dropped(), start=100, total=104)]}
@@ -225,11 +232,11 @@ class RangesAndResume(_Base):
 
     def test_a_suffix_range_resumes_from_where_the_provider_said_it_started(self):
         """`bytes=-500` has no start until the 206's Content-Range names it."""
-        script = {self.upstream: [_file(206, [b"AAAA"], then=_dropped(), start=500),
+        script = {self.upstream: [_file(206, [b"AAAA"], then=_dropped(), start=500, total=508),
                                   _file(206, [b"BBBB"], start=504)]}
         status, headers, body = self._play(script, range_header="bytes=-500")
         self.assertEqual(b"AAAABBBB", body)
-        self.assertEqual("bytes=504-999", self.log[1][2])
+        self.assertEqual("bytes=504-507", self.log[1][2])
 
     def test_a_provider_that_ignores_the_range_is_not_resumed_from_the_wrong_offset(self):
         """200 to a Range request = the provider sent byte 0 and cannot be
@@ -472,28 +479,6 @@ class OnePlaybackOneLease(_Base):
         asyncio.run(go())
         self.assertEqual(1, len(self.log), "only the refused attempt reached the provider")
 
-    def test_a_newer_range_closes_the_older_ones_connection_at_once(self):
-        """One playback, one provider connection -- even for a player that
-        opens the next range before closing the previous one."""
-        from models.database import set_setting
-        vod = self.vod
-        script = {self.upstream: [_file(206, [b"A"] * 50, start=0), _file(206, [b"B"] * 50, start=500)]}
-
-        async def go():
-            with mock.patch("httpx.AsyncClient", lambda **kw: _Client(script, self.log, **kw)), \
-                    mock.patch("routers.vod.lan_origin_guard", lambda *a, **k: (lambda u: True)):
-                first = await vod.vod_stream("movie", self.token_file, _request("bytes=0-"), self.db)
-                it1 = first.body_iterator.__aiter__()
-                await it1.__anext__()
-                old = next(iter(vod._playbacks.values())).upstream
-                second = await vod.vod_stream("movie", self.token_file, _request("bytes=500-"), self.db)
-                await asyncio.sleep(0.01)
-                self.assertTrue(old.is_closed)
-                self.assertLessEqual(len([c async for c in it1]), 1, "the replaced range ends quietly")
-                self.assertEqual(b"B" * 50, b"".join([c async for c in second.body_iterator]))
-                self.assertEqual(2, len(self.log), "no resume of the replaced range")
-        asyncio.run(go())
-
     def test_two_tvs_on_the_same_title_are_two_playbacks(self):
         """Keyed by title alone, the second TV would take over the first
         one's playback and each new range from either would end the other's
@@ -518,44 +503,6 @@ class OnePlaybackOneLease(_Base):
         self.assertEqual(1, len(vods))
         self.assertEqual("vod:movie:%d:2141622" % self.provider.id, vods[0]["channel"])
         self.assertIn(vods[0]["state"], ("idle", "streaming"))
-
-    def test_a_seek_ends_the_previous_range_so_one_playback_holds_one_connection(self):
-        vod, livetv = self.vod, self.livetv
-
-        class _Endless(httpx.AsyncByteStream):
-            async def __aiter__(self):
-                while True:
-                    yield b"X"
-                    await asyncio.sleep(0)
-
-            async def aclose(self):
-                pass
-
-        def endless():
-            return httpx.Response(206, headers={"content-type": "video/x-matroska", "accept-ranges": "bytes",
-                                                "content-range": "bytes 0-999/1000", "content-length": "1000"},
-                                  stream=_Endless(), request=httpx.Request("GET", self.upstream))
-        script = {self.upstream: [endless(), endless()]}
-
-        async def go():
-            with mock.patch("httpx.AsyncClient", lambda **kw: _Client(script, self.log, **kw)), \
-                    mock.patch("routers.vod.lan_origin_guard", lambda *a, **k: (lambda u: True)):
-                first = await vod.vod_stream("movie", self.token_file, _request("bytes=0-"), self.db)
-                it1 = first.body_iterator
-                self.assertTrue((await it1.__anext__()).startswith(b"X"))
-                second = await vod.vod_stream("movie", self.token_file, _request("bytes=500-"), self.db)
-                it2 = second.body_iterator
-                self.assertTrue((await it2.__anext__()).startswith(b"X"))
-                for _ in range(200):
-                    try:
-                        await asyncio.wait_for(it1.__anext__(), 1.0)
-                    except StopAsyncIteration:
-                        break
-                else:
-                    self.fail("the superseded range kept streaming alongside the seek")
-                self.assertEqual(1, livetv._stream_slots.active)
-                await it2.aclose()
-        asyncio.run(go())
 
     def test_an_idle_playback_is_released_and_a_stopped_one_too(self):
         script = {self.upstream: [_file(206, [b"AAAA"], start=0)]}
@@ -619,6 +566,318 @@ class OnePlaybackOneLease(_Base):
                 self.assertEqual(0, vod._sweep_once(asyncio.get_running_loop().time()))
                 self.assertEqual({"channel:9"}, {l.owner for l in livetv._stream_slots.leases.values()})
         asyncio.run(go())
+
+
+class _RangeFake:
+    """httpx.AsyncClient stand-in for a provider that honours Range on one
+    file, sends it 10 bytes at a time, and keeps count of the connections
+    open at once (a closed response is no longer open)."""
+
+    def __init__(self, data: bytes, log: list):
+        self.data, self.log = data, log
+        self.responses = []
+        self.most_open = 0
+
+    def __call__(self, **kw):
+        return self
+
+    async def aclose(self):
+        pass
+
+    def build_request(self, method, url, headers=None):
+        return httpx.Request(method, url, headers=headers)
+
+    def open_now(self):
+        return sum(1 for r in self.responses if not r.is_closed)
+
+    async def send(self, request, stream=False):
+        rng = request.headers.get("range")
+        self.log.append((request.method, rng, self.open_now()))
+        total = len(self.data)
+        a, b = (rng[len("bytes="):].split("-") if rng else ("0", ""))
+        first, last = int(a), (int(b) if b else total - 1)
+        data = self.data[first:last + 1]
+
+        class _Stream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                for k in range(0, len(data), 10):
+                    yield data[k:k + 10]
+                    await asyncio.sleep(0)
+
+            async def aclose(self):
+                pass
+        resp = httpx.Response(206, headers={"content-type": "video/mp4", "accept-ranges": "bytes",
+                                            "content-range": f"bytes {first}-{last}/{total}",
+                                            "content-length": str(len(data))},
+                              stream=_Stream(), request=request)
+        self.responses.append(resp)
+        self.most_open = max(self.most_open, self.open_now())
+        return resp
+
+
+class JellyfinsParallelRequestsShareOneConnection(_Base):
+    """Jellyfin opens more than one request for the title it plays: a
+    subtitle extraction next to the playback, a restart 0.1 s after a stop,
+    two transcodes at once, ffmpeg's seeks. The provider cuts an account
+    with two connections open (and counts one that just closed for a few
+    seconds), so they share the playback's one connection: the old one is
+    closed before a new one opens, a parked request carries on from its own
+    byte, and nobody gets an early end."""
+
+    DATA = bytes(range(256)) * 4      # 1024 bytes, 10 per piece
+
+    def _run(self, scenario):
+        fake = _RangeFake(self.DATA, self.log)
+        self.fake = fake
+
+        async def go():
+            with mock.patch("httpx.AsyncClient", fake), \
+                    mock.patch("routers.vod.lan_origin_guard", lambda *a, **k: (lambda u: True)), \
+                    mock.patch.object(self.vod, "QUANTUM_SECONDS", 0.02), \
+                    mock.patch.object(self.vod, "PREEMPT_GRACE_SECONDS", 0.02):
+                return await scenario()
+        return asyncio.run(go())
+
+    async def _open(self, range_header):
+        return await self.vod.vod_stream("movie", self.token_file, _request(range_header), self.db)
+
+    async def _read(self, resp):
+        return b"".join([c async for c in resp.body_iterator])
+
+    def test_a_subtitle_extraction_next_to_the_playback_gets_its_turns_and_both_get_the_whole_file(self):
+        async def scenario():
+            playback = await self._open("bytes=0-")
+            subtitles = await self._open("bytes=0-")
+            return await asyncio.gather(self._read(playback), self._read(subtitles))
+        a, b = self._run(scenario)
+        self.assertEqual(self.DATA, a, "the playback ended early")
+        self.assertEqual(self.DATA, b)
+        self.assertEqual(1, self.fake.most_open, "never two provider connections at once")
+        self.assertTrue(all(open_before == 0 for _, _, open_before in self.log),
+                        "every connection opened after the previous one was closed")
+        self.assertGreater(len(self.log), 2, "they took turns")
+        self.assertEqual(1, self.livetv._stream_slots.active, "one playback, one slot")
+
+    def test_a_seek_takes_the_connection_and_the_range_it_left_waits_without_ending(self):
+        async def scenario():
+            first = await self._open("bytes=0-")
+            it1 = first.body_iterator.__aiter__()
+            got = await it1.__anext__()
+            seek = await self._open("bytes=500-")
+            self.assertEqual(0, self.log[-1][2], "the old connection was closed before the seek opened")
+            rest = await self._read(seek)
+            # The player let go of the old range (ffmpeg closes it after a seek).
+            await it1.aclose()
+            return got, rest
+        got, rest = self._run(scenario)
+        self.assertEqual(self.DATA[:10], got)
+        self.assertEqual(self.DATA[500:], rest)
+        self.assertEqual(1, self.fake.most_open)
+
+    def test_the_range_a_newer_request_parked_goes_on_from_its_own_byte(self):
+        async def scenario():
+            first = await self._open("bytes=0-")
+            it1 = first.body_iterator.__aiter__()
+            head = await it1.__anext__()
+            second = await self._open("bytes=1000-")
+            tail = await self._read(second)           # the newer one finishes...
+            rest = b"".join([c async for c in it1])  # ...and the parked one carries on
+            return head + rest, tail
+        whole, tail = self._run(scenario)
+        self.assertEqual(self.DATA, whole, "the parked range ended early or skipped bytes")
+        self.assertEqual(self.DATA[1000:], tail)
+        self.assertEqual("bytes=10-1023", self.log[-1][1], "resumed from the byte it had reached")
+        self.assertEqual(1, self.fake.most_open)
+
+    def test_a_restart_right_after_a_stop_waits_for_the_old_connection_to_close(self):
+        async def scenario():
+            first = await self._open("bytes=0-")
+            it1 = first.body_iterator.__aiter__()
+            await it1.__anext__()
+            await it1.aclose()                         # "q": the transcode stopped
+            again = await self._open("bytes=0-")       # and restarts 0.1 s later
+            return await self._read(again)
+        body = self._run(scenario)
+        self.assertEqual(self.DATA, body)
+        self.assertEqual(0, self.log[-1][2], "the stopped one's connection was closed first")
+        self.assertEqual(1, self.fake.most_open)
+
+    def test_a_paused_holder_does_not_starve_a_waiting_request(self):
+        """The holder's player stopped reading (paused): its body cannot
+        notice its turn is over, so the waiting request takes it."""
+        async def scenario():
+            paused = await self._open("bytes=0-")
+            itp = paused.body_iterator.__aiter__()
+            other = await self._open("bytes=0-")
+            ito = other.body_iterator.__aiter__()
+            await ito.__anext__()                      # `other` holds it, then its player pauses
+            got = await asyncio.wait_for(itp.__anext__(), 5)   # the first one is not stuck behind it
+            await itp.aclose()
+            await ito.aclose()
+            return got
+        self.assertEqual(self.DATA[:10], self._run(scenario))
+
+    def test_a_head_during_the_playback_opens_no_connection(self):
+        async def scenario():
+            playing = await self._open("bytes=0-")
+            it = playing.body_iterator.__aiter__()
+            await it.__anext__()
+            before = len(self.log)
+            head = await self.vod.vod_head("movie", self.token_file, _request(method="HEAD"), self.db)
+            await it.aclose()
+            return head, len(self.log) - before
+        head, opened = self._run(scenario)
+        self.assertEqual(0, opened)
+        self.assertEqual(200, head.status_code)
+        self.assertEqual(str(len(self.DATA)), head.headers["content-length"])
+
+
+class ABodyThatEndsShortIsADrop(_Base):
+    """`Stream ends prematurely at X, should be Y`: the provider ends the
+    body cleanly (no error, no reset) before its Content-Length. That is a
+    drop, resumed from the byte reached, never a normal end."""
+
+    def test_a_clean_short_end_is_resumed(self):
+        script = {self.upstream: [_file(206, [b"AAAA"], start=0, total=8),
+                                  _file(206, [b"BBBB"], start=4, total=8)]}
+        status, headers, body = self._play(script, range_header="bytes=0-")
+        self.assertEqual(b"AAAABBBB", body)
+        self.assertEqual("bytes=4-7", self.log[1][2])
+
+    def test_a_200_that_ends_short_of_its_length_is_resumed(self):
+        script = {self.upstream: [_file(200, [b"AAAA"], total=8), _file(206, [b"BBBB"], start=4, total=8)]}
+        status, headers, body = self._play(script)
+        self.assertEqual(200, status)
+        self.assertEqual(b"AAAABBBB", body)
+        self.assertEqual("bytes=4-", self.log[1][2])
+
+    def test_dozens_of_drops_that_each_deliver_are_all_resumed(self):
+        """The provider cuts every 5-20 s after 60-160 MB: a film is dozens
+        of drops. Each connection that delivered resets the budget."""
+        pieces = 30
+        script = {self.upstream: [_file(206, [bytes([65 + k])] * 1, start=k, total=pieces) for k in range(pieces)]}
+        with mock.patch.object(self.vod, "PROGRESS_RESET_BYTES", 1):
+            status, headers, body = self._play(script, range_header="bytes=0-")
+        self.assertEqual(bytes(65 + k for k in range(pieces)), body)
+        self.assertEqual(pieces, len(self.log))
+
+
+class _DroppingProvider:
+    """A provider on 127.0.0.1 that serves one file with byte ranges and, for
+    its first `drops` connections, closes the socket cleanly after `cut`
+    bytes, short of its Content-Length: what Jellyfin's ffmpeg logged as
+    "partial file" before it took the episode as finished."""
+
+    def __init__(self, data: bytes, drops: int, cut: int):
+        self.data, self.drops, self.cut = data, drops, cut
+        self.requests = []          # (path, Range header)
+        self.open = self.most_open = 0
+
+    async def handle(self, reader, writer):
+        self.open += 1
+        self.most_open = max(self.most_open, self.open)
+        try:
+            await self._serve(reader, writer)
+        finally:
+            self.open -= 1
+
+    async def _serve(self, reader, writer):
+        head = (await reader.readuntil(b"\r\n\r\n")).decode("latin-1").split("\r\n")
+        path = head[0].split(" ")[1]
+        rng = next((h.split(":", 1)[1].strip() for h in head[1:] if h.lower().startswith("range:")), None)
+        self.requests.append((path, rng))
+        total = len(self.data)
+        start, end = 0, total - 1
+        if rng:
+            a, b = rng[len("bytes="):].split("-")
+            start, end = int(a), (int(b) if b else total - 1)
+        body = self.data[start:end + 1]
+        status = "206 Partial Content" if rng else "200 OK"
+        head_out = (f"HTTP/1.1 {status}\r\nContent-Type: video/mp4\r\nAccept-Ranges: bytes\r\n"
+                    f"Content-Length: {len(body)}\r\n")
+        if rng:
+            head_out += f"Content-Range: bytes {start}-{end}/{total}\r\n"
+        writer.write((head_out + "Connection: close\r\n\r\n").encode())
+        if self.drops > 0:
+            self.drops -= 1
+            body = body[:self.cut]
+        try:
+            writer.write(body)
+            await writer.drain()
+        except ConnectionError:
+            pass                    # the relay closed it (handed to another request)
+        writer.close()
+
+
+class AProviderThatDropsTheConnection(_Base):
+    """Through a real socket and the real httpx: the provider ends the
+    connection mid-episode (a clean close short of its Content-Length), and
+    Jellyfin's ffmpeg, which asks `Range: bytes=0-` and then seeks with
+    `bytes=N-`, still gets every byte of the file, with no early end."""
+
+    DATA = bytes(range(256)) * 1200       # 307200 bytes
+
+    def _play_real(self, provider, range_header, readers=1):
+        vod, real_sleep = self.vod, asyncio.sleep
+        stream_id = 800506
+        url = self.vod_tokens.url("http://tentacle:8888", "s" * 64, self.provider.id, "series", stream_id, "mp4")
+
+        async def fast_sleep(d):
+            await real_sleep(0)
+
+        async def go():
+            server = await asyncio.start_server(provider.handle, "127.0.0.1", 0)
+            port = server.sockets[0].getsockname()[1]
+            self.provider.server_url = f"http://127.0.0.1:{port}"
+            self.db.commit()
+            try:
+                with mock.patch("routers.vod.lan_origin_guard", lambda *a, **k: (lambda u: True)), \
+                        mock.patch("routers.vod.asyncio.sleep", fast_sleep), \
+                        mock.patch.object(vod, "QUANTUM_SECONDS", 0.01):
+                    resps = [await vod.vod_stream("series", url.rsplit("/", 1)[1], _request(range_header), self.db)
+                             for _ in range(readers)]
+
+                    async def read(resp):
+                        return b"".join([piece async for piece in resp.body_iterator])
+                    bodies = await asyncio.gather(*(read(r) for r in resps))
+                    if readers > 1:
+                        return bodies
+                    return resps[0].status_code, dict(resps[0].headers), bodies[0]
+            finally:
+                server.close()
+                await server.wait_closed()
+        return asyncio.run(go())
+
+    def setUp(self):
+        super().setUp()
+        from services import vod_tokens
+        self.vod_tokens = vod_tokens
+
+    def test_the_first_request_gets_the_whole_file_across_two_drops(self):
+        provider = _DroppingProvider(self.DATA, drops=2, cut=100_000)
+        status, headers, body = self._play_real(provider, "bytes=0-")
+        self.assertEqual(206, status)
+        self.assertEqual(str(len(self.DATA)), headers.get("content-length"))
+        self.assertEqual(len(self.DATA), len(body), "the episode would have ended at the drop")
+        self.assertEqual(self.DATA, body)
+        self.assertEqual([("/series/u/p/800506.mp4", "bytes=0-"),
+                          ("/series/u/p/800506.mp4", "bytes=100000-307199"),
+                          ("/series/u/p/800506.mp4", "bytes=200000-307199")], provider.requests)
+
+    def test_a_playback_and_a_subtitle_extraction_share_one_connection_through_drops(self):
+        provider = _DroppingProvider(self.DATA, drops=3, cut=60_000)
+        playback, subtitles = self._play_real(provider, "bytes=0-", readers=2)
+        self.assertEqual(self.DATA, playback, "the episode ended early")
+        self.assertEqual(self.DATA, subtitles)
+        self.assertEqual(1, provider.most_open, "the provider saw two connections at once")
+
+    def test_a_seek_gets_the_rest_of_the_file_across_a_drop(self):
+        provider = _DroppingProvider(self.DATA, drops=1, cut=50_000)
+        status, headers, body = self._play_real(provider, "bytes=150000-")
+        self.assertEqual(206, status)
+        self.assertEqual(f"bytes 150000-307199/{len(self.DATA)}", headers.get("content-range"))
+        self.assertEqual(self.DATA[150000:], body)
+        self.assertEqual(["bytes=150000-", "bytes=200000-307199"], [r for _, r in provider.requests])
 
 
 if __name__ == "__main__":
