@@ -1043,18 +1043,25 @@ def _reconnect_budget(db) -> float:
 
 # Which stream an Xtream channel URL asks the provider for.
 #
-# "m3u8" (the default, unchanged behaviour) is HLS: the pump reloads the
-# playlist every few seconds and fetches every segment -- about 3,600 short
-# requests over a three-hour game -- and on a connection-limited account
-# every one of them is a chance for the provider to answer 509 because
-# something else opened a connection meanwhile. "ts" is the continuous
-# MPEG-TS stream most panels also serve: ONE connection for the whole
-# programme, taken through the raw-TS path (#103) with its re-dial. "auto"
-# picks ts when the account advertises it (user_info.allowed_output_formats,
-# remembered at sync time), else m3u8. Changing the setting takes effect at
-# the next channel sync, which rewrites every channel's URL in place.
+# "m3u8" is HLS: the pump reloads the playlist every few seconds and fetches
+# every segment -- about 3,600 short requests over a three-hour game -- and
+# on a connection-limited account every one of them is a chance for the
+# provider to answer 509 because something else opened a connection
+# meanwhile (seen live: two of three concurrent HLS channels on a
+# 1-connection account died on playlist refreshes within 30 s). "ts" is the
+# continuous MPEG-TS stream Xtream panels serve at /live/.../<id>.ts: ONE
+# connection for the whole programme, taken through the raw-TS path (#103)
+# with its re-dial; many concurrent streams on such an account run for
+# hours (#87, #184). "auto" (the default) takes ts unless the account says
+# it cannot serve it (user_info.allowed_output_formats, remembered at sync
+# time); and since a panel that does not advertise its formats almost
+# always serves ts anyway, a channel whose ts open is refused outright is
+# opened as m3u8 instead (_live_open_urls). "m3u8" and "ts" are overrides.
+# The format is applied when a channel is opened, so a change (or this
+# default) takes effect at once, without a channel sync; a sync writes it
+# into the stored URLs too.
 _LIVE_STREAM_FORMATS = ("auto", "m3u8", "ts")
-_DEFAULT_LIVE_STREAM_FORMAT = "m3u8"
+_DEFAULT_LIVE_STREAM_FORMAT = "auto"
 
 
 def _live_stream_format(db) -> str:
@@ -1093,11 +1100,39 @@ def _remember_output_formats(db, provider_id: int, info: dict) -> None:
 
 
 def _live_extension(db, provider_id: int) -> str:
-    """The extension channel URLs are written with, per the setting above."""
+    """The extension channel URLs ask for, per the setting above: auto is ts
+    unless the account advertises formats without it."""
     fmt = _live_stream_format(db)
     if fmt in ("m3u8", "ts"):
         return fmt
-    return "ts" if "ts" in _remembered_output_formats(db, provider_id) else "m3u8"
+    formats = _remembered_output_formats(db, provider_id)
+    return "m3u8" if formats and "ts" not in formats else "ts"
+
+
+# Channels whose ts open was refused outright while m3u8 then opened: their
+# panel does not serve ts for them, so later opens go straight to m3u8.
+# In memory only: a restart tries ts again, at the cost of one refusal.
+_ts_refused_channels: "set[int]" = set()
+
+
+def _live_open_urls(db, provider, channel) -> "tuple[str, str | None]":
+    """The URL to open a channel with, and the one to fall back to if that
+    open is refused outright (or None). An Xtream channel's stored URL ends
+    in .<ext> as its last sync wrote it; the open asks for the format the
+    setting picks now. Under auto a ts open has m3u8 as its fallback."""
+    url = channel.stream_url or ""
+    if provider is None or (provider.provider_type or "xtream") != "xtream" or not channel.stream_id:
+        return url, None
+    m = re.search(rf"/live/.+/{re.escape(channel.stream_id)}\.(m3u8|ts)$", url)
+    if not m:
+        return url, None
+    base = url[:m.start(1)]
+    ext = _live_extension(db, provider.id)
+    if ext == "ts" and _live_stream_format(db) == "auto":
+        if channel.id in _ts_refused_channels:
+            return base + "m3u8", None
+        return base + "ts", base + "m3u8"
+    return base + ext, None
 
 
 # Which channels are being RECORDED right now. Jellyfin opens the same tuner
@@ -3951,11 +3986,24 @@ def refresh_jellyfin_guide(db: Session = Depends(get_db)):
 # ─── HDHomeRun Emulation ───────────────────────────────────────────────────
 
 
+def _hdhr_tuner_count(db) -> int:
+    """How many tuners the device reports: at least the stream ceiling, so
+    Jellyfin (which takes this count when it discovers the device, and lists
+    that many tuners) never refuses a stream Tentacle would carry. The real
+    cap is livetv_max_concurrent_streams; hdhr_tuner_count only raises it,
+    or sets it when there is no ceiling (0)."""
+    try:
+        configured = max(1, int(get_setting(db, "hdhr_tuner_count", "3")))
+    except (ValueError, TypeError):
+        configured = 3
+    return max(configured, _max_concurrent_streams(db))
+
+
 @router.get("/discover.json")
 @router.get("/hdhr/discover.json")
 def hdhr_discover(request: Request, db: Session = Depends(get_db)):
     """HDHomeRun device discovery endpoint."""
-    tuner_count = int(get_setting(db, "hdhr_tuner_count", "3"))
+    tuner_count = _hdhr_tuner_count(db)
     device_id = get_setting(db, "hdhr_device_id", "TENTACLE1")
 
     # Use explicit setting if configured, otherwise derive from request
@@ -4287,7 +4335,7 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
         lease.provider_id, lease.channel_id = channel.provider_id, channel_id
         lease.account = _account_key(provider)
 
-        stream_url = channel.stream_url
+        stream_url, fallback_url = _live_open_urls(db, provider, channel)
         logger.info(f"[LiveTV] Stream request for channel {channel_id} ({channel.name}): {stream_url}")
 
         # SSRF guard: this endpoint is public, so refuse to fetch anything that
@@ -4311,7 +4359,8 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
                                              failure_budget=_reconnect_budget(db),
                                              is_recording=lambda: lease.kind == "recording",
                                              rival_delivering=lambda: _rival_delivering(lease),
-                                             refresh_recordings=_refresh_recordings_bounded)
+                                             refresh_recordings=_refresh_recordings_bounded,
+                                             fallback_url=fallback_url)
         if lease.preempted:
             # A recording took this slot while the open was still in flight
             # (there was no pump yet to stop). Going on would run one more
@@ -4348,7 +4397,8 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
 
 async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str, _release_sem,
                               guard=None, failure_budget: float = _DEFAULT_RECONNECT_BUDGET,
-                              is_recording=None, rival_delivering=None, refresh_recordings=None):
+                              is_recording=None, rival_delivering=None, refresh_recordings=None,
+                              fallback_url=None):
     """Inner stream proxy logic. `_release_sem()` is called when the concurrency
     slot can be freed: immediately on early-exit paths, or by the streaming
     generator's `finally` once the long-lived stream ends.
@@ -4370,7 +4420,11 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
     re-resolves the channel URL only when it returns None (#184). Without
     it nothing is re-resolved on a refusal -- the safe default.
     `refresh_recordings`, when given, is awaited before such a decision so
-    it is taken on a fresh answer from Jellyfin about what is recording."""
+    it is taken on a fresh answer from Jellyfin about what is recording.
+
+    `fallback_url`, when given, is opened instead if `stream_url` is refused
+    with a status that will not fix itself (a panel that does not serve the
+    channel as .ts: see _live_open_urls); the stream then runs on it."""
     guard = guard or is_safe_url
 
     def _budget_spent(waited: float, extra: float = 0.0) -> bool:
@@ -4411,6 +4465,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         open_url = stream_url
         open_reresolved = False
         refused_token_url = None
+        fell_back = False
         while True:
             resp = None
             if refused_token_url is not None:
@@ -4461,6 +4516,14 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 # Whichever is larger: wall clock (slow connects count) or the waits
                 # we chose (so the bound holds even if the clock is not advancing).
                 waited = max(loop.time() - open_started, open_slept)
+                if (fallback_url is not None and not retryable
+                        and isinstance(e, httpx.HTTPStatusError)):
+                    logger.warning(f"[LiveTV] Opening channel {channel_id}: the provider answered "
+                                   f"{e.response.status_code} for the continuous stream; opening it as HLS")
+                    stream_url = open_url = fallback_url
+                    fallback_url = None
+                    fell_back = True
+                    continue
                 if not retryable or waited + open_backoff > _OPEN_RETRY_BUDGET:
                     logger.error(f"[LiveTV] Tokenized URL failed for channel {channel_id}"
                                  f"{f' after {waited:.0f}s of retries' if waited >= 1 else ''}: {e}")
@@ -4494,6 +4557,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 await asyncio.sleep(delay)
                 open_backoff = min(open_backoff * 2, 5.0)
 
+        if fell_back:
+            _ts_refused_channels.add(channel_id)
         tokenized_url = str(resp.url)
         logger.info(f"[LiveTV] Resolved tokenized URL for channel {channel_id}: {tokenized_url}")
 
