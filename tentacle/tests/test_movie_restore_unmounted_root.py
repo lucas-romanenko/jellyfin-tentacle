@@ -69,7 +69,9 @@ class MovieRestoreOnUnmountedRoot(NightlyHarness):
 
     def test_films_come_back_once_the_share_is_mounted(self):
         self.unmounted_night()
-        (self.root / "Other (2001)").mkdir()  # the share is back: the root has files
+        heat = self.root / self.movie(HEAT).strm_path.split("/")[-2]
+        heat.mkdir()                          # the share is back, with Heat on it
+        (heat / "Heat (2010).strm").write_text("http://provider/movie/u/p/1000.mp4")
         self.client.raise_for = set()
         self.night()
         for tmdb_id in (HEAT, RONIN):

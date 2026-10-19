@@ -211,7 +211,7 @@ def detect_base_url(db: Session, request_host: str = None, request_scheme: str =
     return {"url": None, "tried": tried}
 
 
-UNPLAYABLE_REASON = indexer.UNAVAILABLE_REASON
+UNPLAYABLE_REASON = indexer.PLAYBACK_REASON
 
 
 def _retire_unplayable(db: Session, channel: YouTubeChannel) -> int:

@@ -1840,20 +1840,45 @@ def _swept_rows(db: Session, Model):
     )
 
 
+# An empty file the user puts in a library root emptied on purpose (a new
+# disk): the root is used although none of the recorded titles is in it.
+VOD_LIBRARY_MARKER = ".tentacle-library"
+
+
+def _vod_root_holds_none(db: Session, Model, root: Path) -> bool:
+    """Titles are recorded in the root, and none of their files is there.
+
+    In a merged setup (VOD and Radarr/Sonarr in one folder) an import onto the
+    bare mount point of an unmounted share makes the root non-empty, so
+    _vod_root_unavailable() passes it (#698). Unless the root carries
+    VOD_LIBRARY_MARKER."""
+    paths = [p for (p,) in _swept_rows(db, Model).with_entities(Model.strm_path)]
+    if not paths or (root / VOD_LIBRARY_MARKER).exists():
+        return False
+    return not any(Path(p).exists() for p in paths)
+
+
 def _check_vod_root_before_sync(db: Session, Model, root: Path, what: str):
     """Raise SyncError when the library root is missing or empty while titles
-    are recorded in it (#439). Writing there put the provider's titles on the
-    container's own disk, hidden again once the share was mounted, and the
-    root was no longer empty, so the VOD sweep deleted every title the sync
-    had not written back. A new install has no rows, so it syncs."""
-    if not _vod_root_unavailable(root):
-        return
-    count = _swept_rows(db, Model).count()
-    if count:
+    are recorded in it (#439), or holds none of them (#698). Writing there put
+    the provider's titles on the container's own disk, hidden again once the
+    share was mounted, and the root was no longer empty, so the VOD sweep
+    deleted every title the sync had not written back. A new install has no
+    rows, so it syncs."""
+    way_out = (f"If the library really is new (a new disk), put an empty file named "
+               f"{VOD_LIBRARY_MARKER} in it and sync again.")
+    if _vod_root_unavailable(root):
+        count = _swept_rows(db, Model).count()
+        if count:
+            raise SyncError(
+                f"{root} is missing or empty, but {count} {what} are recorded there: the storage "
+                f"looks unmounted, so nothing was synced. Mount it and sync again. {way_out}"
+            )
+    elif _vod_root_holds_none(db, Model, root):
         raise SyncError(
-            f"{root} is missing or empty, but {count} {what} are recorded there: the storage "
-            f"looks unmounted, so nothing was synced. Mount it and sync again. If the folder "
-            f"really is empty now (a new disk), put any file in it and sync again."
+            f"{root} holds none of the {_swept_rows(db, Model).count()} {what} recorded there: "
+            f"the storage looks unmounted (a Radarr or Sonarr import may have written onto the "
+            f"bare mount point), so nothing was synced. Mount it and sync again. {way_out}"
         )
 
 
@@ -1863,12 +1888,12 @@ def _sweep_one_type(db: Session, Model, media_type: str, root: Path, now: dateti
     if not rows:
         return 0, []
 
-    # A mount that is missing or empty means the storage is unavailable, not
-    # that every title was deleted.
-    if _vod_root_unavailable(root):
+    # A mount that is missing or empty, or holds none of the recorded titles
+    # (#698), means the storage is unavailable, not that every title was deleted.
+    if _vod_root_unavailable(root) or _vod_root_holds_none(db, Model, root):
         logger.error(
-            f"[VOD sweep] {root} is missing or empty — storage looks unavailable. "
-            f"Skipping the {media_type} sweep rather than deleting "
+            f"[VOD sweep] {root} is missing, empty or holds none of the recorded titles — "
+            f"storage looks unavailable. Skipping the {media_type} sweep rather than deleting "
             f"{len(rows)} record(s)."
         )
         return 0, []
