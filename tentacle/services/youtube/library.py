@@ -6,7 +6,9 @@ endpoint, plus an NFO. Nothing is downloaded.
 Two rules worth keeping:
   * The .strm content never changes once written. It is a stable Tentacle URL,
     so there is nothing to rewrite — and rewriting would reset the file's mtime,
-    which wipes any media segments Jellyfin has scanned for it.
+    which wipes any media segments Jellyfin has scanned for it. Only a blank
+    or cut-short file (a write cut short, #629) or a changed base URL
+    (rewrite_strm) is written again, always through sync._write_strm.
   * Files live under their own media root, and removal only ever touches a
     single video's own folder. Nothing here recurses over a shared parent.
 """
@@ -148,16 +150,22 @@ def _download(url: str) -> bytes:
     without having to reach into the HTTP client.
     """
     try:
-        import httpx
-        with httpx.Client(timeout=15, follow_redirects=True) as c:
-            r = c.get(url)
-            r.raise_for_status()
-            # A 404 page or a placeholder is not artwork. maxresdefault is
-            # missing for plenty of uploads, and the next candidate handles it.
-            return r.content if len(r.content) > 1024 else b""
+        from services.youtube import traffic
+        with traffic.purpose("artwork"):
+            r = traffic.http_client().get(url, timeout=15)
+        r.raise_for_status()
+        # A 404 page or a placeholder is not artwork. maxresdefault is
+        # missing for plenty of uploads, and the next candidate handles it.
+        return r.content if len(r.content) > 1024 else b""
     except Exception as e:                      # network, DNS, HTTP, anything
         logger.debug(f"[YouTube] Could not fetch {url}: {e}")
         return b""
+
+
+# Videos whose artwork could not be fetched from any source, and when to try
+# again: missing artwork was retried on every scheduled check.
+ARTWORK_RETRY_SECONDS = 24 * 3600
+_artwork_retry_at: dict = {}
 
 
 def fetch_artwork(video, folder: Path) -> int:
@@ -175,6 +183,9 @@ def fetch_artwork(video, folder: Path) -> int:
                for n in ("poster", "fanart", "landscape")):
             return 0
 
+    import time
+    if _artwork_retry_at.get(video.video_id, 0) > time.time():
+        return 0
     data = b""
     for url in artwork_candidates(video):
         data = _download(url)
@@ -184,7 +195,9 @@ def fetch_artwork(video, folder: Path) -> int:
     if not ext:
         if data:
             logger.debug(f"[YouTube] Artwork for {video.video_id} was not an image")
+        _artwork_retry_at[video.video_id] = time.time() + ARTWORK_RETRY_SECONDS
         return 0
+    _artwork_retry_at.pop(video.video_id, None)
 
     written = 0
     # One 16:9 image, written under each name Jellyfin reads a different image
@@ -197,6 +210,7 @@ def fetch_artwork(video, folder: Path) -> int:
         if not path.exists():
             try:
                 path.write_bytes(data)
+                _owned(path)
                 written += 1
             except OSError as e:
                 logger.warning(f"[YouTube] Could not write {path.name}: {e}")
@@ -212,26 +226,83 @@ def strm_url(base_url: str, video_id: str) -> str:
     return f"{base_url.rstrip('/')}/api/youtube/v/{video_id}/master.m3u8"
 
 
+def _owned(path) -> None:
+    """Give a path just created the library's owner, as VOD files get (#239):
+    PUID/PGID when set, else the owner of the folder it was made in."""
+    from services.sync import chown_path
+    chown_path(path)
+
+
+def _strm_missing_or_cut_short(strm: Path, wanted: str) -> bool:
+    """True when the .strm is missing, blank, or holds only the start of its
+    address: a write cut short (#629). A whole file, or anything else in it
+    (an old base URL is rewrite_strm's job), is left alone, as is one that
+    can't be read."""
+    if not strm.exists():
+        return True
+    try:
+        current = strm.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+    return current != wanted and wanted.startswith(current)
+
+
 def write_video(video, channel, base_url: str, root: Path = None) -> dict:
     """Create the folder, .strm and NFO for one video. Idempotent."""
     folder = video_folder(channel.title, video, root)
+    created = []
+    p = folder
+    while not p.exists() and p != p.parent:
+        created.append(p)
+        p = p.parent
     folder.mkdir(parents=True, exist_ok=True)
+    for d in reversed(created):     # outermost first: each takes its parent's owner
+        _owned(d)
     stem = folder.name
     strm = folder / f"{stem}.strm"
     nfo = folder / "movie.nfo"
 
     wrote_strm = False
-    if not strm.exists():
-        strm.write_text(strm_url(base_url, video.video_id), encoding="utf-8")
+    wanted = strm_url(base_url, video.video_id)
+    if _strm_missing_or_cut_short(strm, wanted):
+        from services.sync import _write_strm
+        _write_strm(strm, wanted)
+        _owned(strm)
         wrote_strm = True
 
     # The NFO is safe to refresh — only the .strm's mtime matters for segments.
+    new_nfo = not nfo.exists()
     nfo.write_text(build_nfo(video, channel, base_url), encoding="utf-8")
+    if new_nfo:
+        _owned(nfo)
     art = fetch_artwork(video, folder)
 
     video.folder_path = str(folder)
     video.strm_path = str(strm)
     return {"folder": str(folder), "strm_written": wrote_strm, "artwork": art}
+
+
+def rewrite_nfo(video, channel, base_url: str) -> bool:
+    """Rewrite an existing video's NFO in place, e.g. after its title was repaired.
+
+    The folder keeps its name. Renaming it would give Jellyfin a new path, and
+    so a new item: watched state, favourites and playlist entries would be lost
+    for a cosmetic change. The .strm is not touched. Jellyfin does not re-read
+    a locked item's NFO, so an item it already has is renamed through its API
+    as well (sync.retitle_in_jellyfin); this keeps the NFO truthful for a
+    re-import or a library rebuild.
+    """
+    if not video.folder_path:
+        return False
+    folder = Path(video.folder_path)
+    if not folder.is_dir():
+        return False
+    try:
+        (folder / "movie.nfo").write_text(build_nfo(video, channel, base_url), encoding="utf-8")
+        return True
+    except OSError as e:
+        logger.warning(f"[YouTube] Could not rewrite the NFO in {folder}: {e}")
+        return False
 
 
 def rewrite_strm(video, base_url: str) -> bool:
@@ -250,7 +321,8 @@ def rewrite_strm(video, base_url: str) -> bool:
     try:
         if path.read_text(encoding="utf-8").strip() == wanted:
             return False
-        path.write_text(wanted, encoding="utf-8")
+        from services.sync import _write_strm
+        _write_strm(path, wanted)   # temp file + rename: a write cut short keeps the old file (#629)
         return True
     except OSError as e:
         logger.warning(f"[YouTube] Could not rewrite {path}: {e}")
@@ -313,8 +385,13 @@ def touch_strm(video) -> bool:
 
 def remove_video(video) -> int:
     """Delete one video's own folder. Never touches a shared parent."""
+    return remove_folder(video.folder_path)
+
+
+def remove_folder(folder_path) -> int:
+    """Delete one video folder by its path (see remove_video)."""
     deleted = 0
-    folder = Path(video.folder_path) if video.folder_path else None
+    folder = Path(folder_path) if folder_path else None
     if not folder or not folder.is_dir():
         return 0
     try:

@@ -9,7 +9,6 @@ Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import logging
 import shutil
-import tempfile
 import unittest
 from unittest import mock
 
@@ -17,8 +16,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
+from services.jellyfin import JellyfinService as _RealJellyfin
 from models.database import Movie, Series, Setting, ListSubscription, TagRule, TentacleUser
 from services.tagger import tentacle_owned_tags, merge_owned_tags
+from tmp_dirs import temp_dir
 
 
 def setUpModule():
@@ -46,18 +47,29 @@ class FakeJellyfin:
         }
         cls.written = {}
 
-    def get_tmdb_lookup_with_fallback(self, media_type="Movie"):
+    def get_tmdb_lookup_with_fallback(self, media_type="Movie", with_counts=False):
         wanted = 603 if media_type == "Movie" else 1399
-        return {wanted: self.items[wanted]}, {}
+        lookup = {wanted: self.items[wanted]}
+        return (lookup, {}, {wanted: 1}) if with_counts else (lookup, {})
 
-    def set_item_tags(self, item_id, tags):
-        self.written[item_id] = list(tags)
+    # The real write rule (a fresh GET of the item, then merge) over this
+    # fake's items: only the HTTP layer is faked.
+    set_item_owned_tags = _RealJellyfin.set_item_owned_tags
+
+    def _item_path(self, item_id):
+        return item_id
+
+    def _get(self, path):
+        return next((dict(it) for it in self.items.values() if it["Id"] == path), None)
+
+    def _post_item_update(self, item, payload, what):
+        type(self).written[item["Id"]] = list(payload["Tags"])
         return True
 
 
 class TestRefreshTagsKeepsForeignTags(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, tmp, True)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
@@ -100,6 +112,29 @@ class TestRefreshTagsKeepsForeignTags(unittest.TestCase):
             sync_router.refresh_tags(db=self.db)
         self.assertEqual(FakeJellyfin.written["m1"], ["youtube", "Netflix Movies", "Downloaded Movies"])
         self.assertEqual(FakeJellyfin.written["s1"], ["hand-added", "Netflix TV"])
+
+    def test_a_title_whose_tags_all_expired_loses_its_stale_tentacle_tags(self):
+        """A row whose tag list is now EMPTY (its "Recently Added" window ran out
+        and nothing else applies) was skipped outright, so the expired tag stayed
+        on the Jellyfin item for ever. Empty means "no Tentacle tags", not "leave
+        it alone" -- and a tag Tentacle does not own still stays."""
+        import routers.sync as sync_router
+        self.db.query(Movie).filter_by(tmdb_id=603).one().tags = []
+        self.db.commit()
+        with mock.patch("services.jellyfin.JellyfinService", FakeJellyfin), \
+                mock.patch.object(sync_router, "refresh_recently_added_tags", lambda db: (0, 0)):
+            sync_router.refresh_tags(db=self.db)
+        self.assertEqual(FakeJellyfin.written["m1"], ["youtube"])
+
+    def test_an_untagged_title_with_no_tentacle_tags_is_not_written(self):
+        import routers.sync as sync_router
+        self.db.query(Movie).filter_by(tmdb_id=603).one().tags = []
+        self.db.commit()
+        FakeJellyfin.items[603]["Tags"] = ["youtube"]
+        with mock.patch("services.jellyfin.JellyfinService", FakeJellyfin), \
+                mock.patch.object(sync_router, "refresh_recently_added_tags", lambda db: (0, 0)):
+            sync_router.refresh_tags(db=self.db)
+        self.assertNotIn("m1", FakeJellyfin.written, "a POST for an item that needed nothing")
 
 
 if __name__ == "__main__":

@@ -5,19 +5,25 @@ and writes NFO files with tags for Jellyfin.
 """
 
 import logging
+import threading
+import time
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 import requests
 from sqlalchemy.orm import Session
 
-from models.database import Series, Duplicate, DownloadRequest, TentacleUser, get_setting, DeletionLog
-from services.radarr import file_loss_looks_like_an_outage
+from models.database import Series, Duplicate, DownloadRequest, TentacleUser, get_setting, DeletionLog, get_recently_added_days
+from services.radarr import download_loss_looks_like_an_outage
+from services.duplicates import series_has_real_download, droppable_duplicates
 
 DOWNLOADED_TV_TAG = "Downloaded TV"
 RECENTLY_ADDED_TV_TAG = "Recently Added TV"
 from services.tmdb import TMDBService
-from services.nfo import write_series_nfo
+from services.nfo import write_series_nfo, refresh_arr_nfo
+from services import media_files
+from services.media_files import is_vod_arr_path
 from services.tagger import apply_tag_rules, get_list_tags_for_tmdb_id, detect_source_tag_from_studios
 from services.exceptions import SonarrConnectionError
 from services.logstream import emit_library_event
@@ -28,6 +34,15 @@ from services.arr_add import (
 logger = logging.getLogger(__name__)
 
 DOWNLOADED_TV_TAG = "Downloaded TV"
+
+# Sonarr answers POST /series before it has set the series up: the refresh
+# that creates the episodes and the scan that applies addOptions (a whole-row
+# write of the series) run later, minutes later on a busy Sonarr. Picked
+# episodes are monitored only after that, within this many seconds of the add
+# being sent, and the calls after it finish within PICK_DONE_SECONDS, so the
+# answer still reaches the Jellyfin plugin's 240 s add client.
+SETUP_WAIT_SECONDS = 180
+PICK_DONE_SECONDS = 220
 
 
 class SonarrService:
@@ -94,6 +109,24 @@ class SonarrService:
         except Exception as e:
             logger.error(f"Failed to delete series tmdb:{tmdb_id} from Sonarr: {e}")
             return False
+
+    def get_episode_files(self, series_id: int) -> list:
+        """Sonarr's episode files for one series. Sonarr 4 lists Tentacle's
+        .strm files here too. Raises on failure: callers decide "downloaded"
+        and delete files by this list, so "couldn't read" must not look like
+        "none"."""
+        r = self.session.get(f"{self.url}/api/v3/episodefile", params={"seriesId": series_id}, timeout=15)
+        r.raise_for_status()
+        return r.json()
+
+    def delete_episode_files(self, file_ids: list) -> None:
+        """Delete these episode files (only the files, not their folders).
+        Raises on failure."""
+        if not file_ids:
+            return
+        r = self.session.delete(f"{self.url}/api/v3/episodefile/bulk",
+                                json={"episodeFileIds": list(file_ids)}, timeout=60)
+        r.raise_for_status()
 
     def get_quality_profiles(self) -> list:
         try:
@@ -167,7 +200,7 @@ class SonarrService:
             logger.error(f"Sonarr text lookup failed for '{query}': {e}")
             return []
 
-    def add_series(self, tmdb_id: int = None, quality_profile_id: int = 1, root_folder: str = "",
+    def add_series(self, tmdb_id: int = None, quality_profile_id: int = None, root_folder: str = "",
                    monitor: str = "all", season_folder: bool = True,
                    selected_episodes: list = None,
                    series_path: str = None,
@@ -176,6 +209,11 @@ class SonarrService:
         # Prefer the exact TVDB lookup — Sonarr/Skyhook is TVDB-native, so it's
         # immune to the tmdb: term mis-resolution that can return the wrong show.
         self.last_error = None
+        if not quality_profile_id:
+            # No silent profile 1 ("Any"): callers go through services.media_requests,
+            # which picks the configured default or refuses.
+            self.last_error = "No quality profile was chosen for this request."
+            return None
         lookup = None
         if tvdb_id:
             lookup = self.lookup_by_tvdb(tvdb_id)
@@ -192,6 +230,9 @@ class SonarrService:
                 + ". It may be too new or not on TheTVDB yet."
             )
             return None
+        # A failed TVDB lookup may have left a reason behind; the TMDB lookup
+        # found the show, so it no longer applies.
+        self.last_error = None
         payload = lookup
         payload["qualityProfileId"] = quality_profile_id
         if series_path:
@@ -200,7 +241,8 @@ class SonarrService:
             payload["rootFolderPath"] = root_folder
         payload["seasonFolder"] = season_folder
 
-        # Custom episode selection: add with nothing monitored, then toggle specific episodes
+        # Custom episode selection: add with nothing monitored, then toggle
+        # specific episodes once Sonarr has set the series up
         if selected_episodes:
             payload["monitored"] = True
             payload["monitorNewItems"] = "all" if monitor_new else "none"
@@ -209,16 +251,18 @@ class SonarrService:
                 "searchForMissingEpisodes": False,
             }
         else:
-            # "all"/"future" want ongoing monitoring; everything else is a one-time grab
+            # "all"/"future" want new seasons too; for the other presets
+            # addOptions.monitor picks the episodes and Sonarr's post-add search
+            # grabs them. The series stays monitored: that search rejects
+            # every release of an unmonitored series.
             ongoing = monitor in ("all", "future")
-            payload["monitored"] = True  # Must be true for initial search to work
+            payload["monitored"] = True
             payload["monitorNewItems"] = "all" if ongoing else "none"
             payload["addOptions"] = {
                 "monitor": monitor,
                 "searchForMissingEpisodes": True,
             }
 
-        import time
         sent_at = time.monotonic()
         try:
             r = self.session.post(
@@ -237,7 +281,7 @@ class SonarrService:
                 # The 2xx path below applies the episode selection; reaching the
                 # series this way skipped it, so the user was told "downloading
                 # N episodes" with nothing monitored or searched.
-                self._apply_monitoring(existing, monitor, selected_episodes, monitor_new)
+                self._apply_monitoring(existing, selected_episodes, monitor_new, sent_at)
                 return existing
             self.last_error = (
                 f"Sonarr did not finish adding within {ADD_TIMEOUT}s and the series is not in "
@@ -280,7 +324,7 @@ class SonarrService:
                                    "Check whether a proxy sits in front of it.")
                 return None
 
-            self._apply_monitoring(series_data, monitor, selected_episodes, monitor_new)
+            self._apply_monitoring(series_data, selected_episodes, monitor_new, sent_at)
             return series_data
 
         # Sonarr says clearly when it already has the series. That is the
@@ -294,20 +338,23 @@ class SonarrService:
         self.last_error = explain_arr_error(r.status_code, r.text, "Sonarr")
         return None
 
-    def _apply_monitoring(self, series_data: dict, monitor: str,
-                          selected_episodes: list, monitor_new: bool) -> None:
-        """Apply the requested episode monitoring to a freshly added series."""
+    def _apply_monitoring(self, series_data: dict, selected_episodes: list, monitor_new: bool,
+                          sent_at: Optional[float] = None) -> None:
+        """Monitor and search the picked episodes of a freshly added series.
+
+        Presets need nothing here: addOptions.monitor already makes Sonarr
+        monitor and search only the chosen episodes. When the picks could not
+        be applied, last_error says why (the series is in Sonarr either way).
+        """
         series_id = series_data.get("id")
-        if not series_id:
+        if not series_id or not selected_episodes:
             return
-        if selected_episodes:
-            # Custom episode selection: monitor + search specific episodes
-            self._monitor_selected_episodes(series_id, selected_episodes)
-            if not monitor_new:
-                self._unmonitor_series(series_id)
-        elif monitor not in ("all", "future"):
-            # Preset partial monitor: unmonitor series after initial search
-            self._unmonitor_series(series_id)
+        reason = self._monitor_selected_episodes(series_id, selected_episodes, sent_at=sent_at)
+        if reason:
+            logger.warning(f"Sonarr: series {series_id}: {reason}")
+            self.last_error = reason
+        elif not monitor_new:
+            self._unmonitor_series(series_id, timeout=self._pick_timeout(sent_at))
 
     def _await_added_series(self, tvdb_id, sent_at: Optional[float] = None) -> Optional[dict]:
         """Poll for a series after an add timed out.
@@ -338,50 +385,81 @@ class SonarrService:
             return found.get("series")
         return None
 
-    def _monitor_selected_episodes(self, series_id: int, selected_episodes: list):
-        """Monitor and search specific episodes after adding a series."""
-        import time
-        # Sonarr needs a moment to populate episodes after adding
-        time.sleep(1)
+    @staticmethod
+    def _pick_timeout(sent_at: Optional[float]) -> float:
+        """Timeout for a call after the setup wait: what is left of
+        PICK_DONE_SECONDS, at most 10 s, at least 1 s."""
+        if sent_at is None:
+            return 10.0
+        return max(1.0, min(10.0, sent_at + PICK_DONE_SECONDS - time.monotonic()))
 
-        sonarr_episodes = self.get_episodes(series_id)
-        if not sonarr_episodes:
-            # Retry once after a longer delay
-            time.sleep(2)
-            sonarr_episodes = self.get_episodes(series_id)
+    def _await_series_setup(self, series_id: int, sent_at: Optional[float]) -> tuple:
+        """Wait until Sonarr has set a new series up: its scan cleared
+        addOptions (applied the add's monitor, queued its search) and the
+        episodes exist. Returns (episodes, setup_done); episodes is None when
+        the wait ran out."""
+        seen = {"setup_done": False}
 
-        if not sonarr_episodes:
-            logger.warning(f"Sonarr: no episodes found for series {series_id} — cannot set custom monitoring")
-            return
+        def _probe(timeout: float) -> bool:
+            r = self.session.get(f"{self.url}/api/v3/series/{series_id}", timeout=timeout)
+            r.raise_for_status()
+            series = r.json()
+            if not isinstance(series, dict) or series.get("addOptions") is not None:
+                return False
+            seen["setup_done"] = True
+            episodes = self.get_episodes(series_id, raise_errors=True, timeout=timeout)
+            if not episodes:
+                return False
+            seen["episodes"] = episodes
+            return True
 
-        # Build lookup: (season, episode) → sonarr episode ID
-        ep_lookup = {}
-        for ep in sonarr_episodes:
-            key = (ep["seasonNumber"], ep["episodeNumber"])
-            ep_lookup[key] = ep["id"]
+        if _poll_until_present(_probe, f"sonarr series {series_id} setup",
+                               total_seconds=SETUP_WAIT_SECONDS, sent_at=sent_at):
+            return seen["episodes"], True
+        return None, seen["setup_done"]
 
-        # Match selected episodes to Sonarr IDs
-        matched_ids = []
-        for sel in selected_episodes:
-            key = (sel.get("season"), sel.get("episode"))
-            sonarr_id = ep_lookup.get(key)
-            if sonarr_id:
-                matched_ids.append(sonarr_id)
+    def _monitor_selected_episodes(self, series_id: int, selected_episodes: list,
+                                   sent_at: Optional[float] = None) -> Optional[str]:
+        """Monitor and search specific episodes after adding a series.
 
-        if matched_ids:
-            self.set_episode_monitoring(matched_ids, True)
-            self.search_episodes(matched_ids)
-            logger.info(f"Sonarr: monitored and searching {len(matched_ids)} episodes for series {series_id}")
-        else:
-            logger.warning(f"Sonarr: no episodes matched for series {series_id}")
+        Waits for Sonarr's setup first: before it the episodes don't exist, and
+        the scan's write of the add's `monitor: none` would undo the pick.
+        Returns why the picks were not applied, or None.
+        """
+        sonarr_episodes, setup_done = self._await_series_setup(series_id, sent_at)
+        if sonarr_episodes is None:
+            if setup_done:
+                return ("Added to Sonarr, but Sonarr has no episodes for this show, so the picked "
+                        "episodes are not monitored or searched. Pick them in Manage Episodes "
+                        "once Sonarr lists them.")
+            return (f"Added to Sonarr, but Sonarr had not finished setting the show up after "
+                    f"{SETUP_WAIT_SECONDS // 60} minutes, so the picked episodes are not monitored "
+                    f"or searched. Pick them in Manage Episodes once it has.")
 
-    def get_episodes(self, series_id: int, raise_errors: bool = False) -> list:
+        ep_lookup = {(ep["seasonNumber"], ep["episodeNumber"]): ep["id"] for ep in sonarr_episodes}
+        matched_ids = [ep_lookup[key] for key in
+                       ((sel.get("season"), sel.get("episode")) for sel in selected_episodes)
+                       if key in ep_lookup]
+        if not matched_ids:
+            return ("Added to Sonarr, but none of the picked episodes are in Sonarr's episode list, "
+                    "so nothing is monitored or searched. Pick them in Manage Episodes.")
+
+        if not self.set_episode_monitoring(matched_ids, True, timeout=self._pick_timeout(sent_at)):
+            return ("Added to Sonarr, but Sonarr did not accept monitoring the picked episodes. "
+                    "Pick them in Manage Episodes.")
+        if not self.search_episodes(matched_ids, timeout=self._pick_timeout(sent_at)):
+            return ("Added to Sonarr and the picked episodes are monitored, but Sonarr did not "
+                    "start their search. Search them from Sonarr.")
+        logger.info(f"Sonarr: monitored and searching {len(matched_ids)} episodes for series {series_id}")
+        return None
+
+    def get_episodes(self, series_id: int, raise_errors: bool = False, timeout: float = 10) -> list:
         """Fetch all episodes for a series from Sonarr."""
         try:
             r = self.session.get(
                 f"{self.url}/api/v3/episode",
                 params={"seriesId": series_id},
-                timeout=10,
+                timeout=timeout,
             )
             if raise_errors:
                 r.raise_for_status()
@@ -405,26 +483,26 @@ class SonarrService:
                 raise
             return []
 
-    def set_episode_monitoring(self, episode_ids: list, monitored: bool) -> bool:
+    def set_episode_monitoring(self, episode_ids: list, monitored: bool, timeout: float = 10) -> bool:
         """Bulk-set monitored state for specific episodes."""
         try:
             r = self.session.put(
                 f"{self.url}/api/v3/episode/monitor",
                 json={"episodeIds": episode_ids, "monitored": monitored},
-                timeout=10,
+                timeout=timeout,
             )
             return r.status_code < 400
         except Exception as e:
             logger.warning(f"Sonarr: failed to set episode monitoring: {e}")
             return False
 
-    def search_episodes(self, episode_ids: list) -> bool:
+    def search_episodes(self, episode_ids: list, timeout: float = 10) -> bool:
         """Trigger search for specific episodes."""
         try:
             r = self.session.post(
                 f"{self.url}/api/v3/command",
                 json={"name": "EpisodeSearch", "episodeIds": episode_ids},
-                timeout=10,
+                timeout=timeout,
             )
             return r.status_code < 400
         except Exception as e:
@@ -459,10 +537,10 @@ class SonarrService:
             logger.error(f"Failed to delete series sonarr id:{series_id} from Sonarr: {e}")
             return False
 
-    def _unmonitor_series(self, series_id: int):
+    def _unmonitor_series(self, series_id: int, timeout: float = 10):
         """Set series monitored=false so Sonarr stops watching for new episodes."""
         try:
-            r = self.session.get(f"{self.url}/api/v3/series/{series_id}", timeout=10)
+            r = self.session.get(f"{self.url}/api/v3/series/{series_id}", timeout=timeout)
             if r.status_code >= 400:
                 logger.warning(f"Sonarr: failed to fetch series {series_id} for unmonitor")
                 return
@@ -471,7 +549,7 @@ class SonarrService:
             r = self.session.put(
                 f"{self.url}/api/v3/series/{series_id}",
                 json=series,
-                timeout=10,
+                timeout=timeout,
             )
             if r.status_code < 400:
                 logger.info(f"Sonarr: unmonitored series {series_id} ({series.get('title', '?')})")
@@ -526,6 +604,86 @@ class SonarrService:
             return []
 
 
+# One Sonarr scan at a time, like Radarr's (#268): the webhook worker, the
+# nightly scan and "Scan now" could overlap and both insert a new series.
+_scan_lock = threading.Lock()
+
+
+def _dismiss_strm_only_duplicates(db: Session, sonarr: "SonarrService", all_series: list) -> int:
+    """Dismiss (keep_both) pending series duplicates that Sonarr only holds
+    Tentacle's .strm files for: nothing was downloaded, and Keep Downloaded
+    would delete the whole VOD show. Recorded by scans before this check
+    existed. Nothing is deleted; a duplicate Sonarr can't be asked about
+    stays pending."""
+    pending = db.query(Duplicate).filter(Duplicate.media_type == "series",
+                                         Duplicate.resolution == "pending").all()
+    if not pending:
+        return 0
+    by_tmdb = {s.get("tmdbId"): s for s in all_series if s.get("tmdbId")}
+    dismissed = 0
+    for dup in pending:
+        show = by_tmdb.get(dup.tmdb_id)
+        if not show or series_has_real_download(sonarr, show.get("id")) is not False:
+            continue
+        dup.resolution = "keep_both"
+        dup.resolved_at = datetime.utcnow()
+        dismissed += 1
+        logger.info(f"Sonarr scan: dismissed the duplicate of '{show.get('title')}' (tmdb:{dup.tmdb_id}): "
+                    f"Sonarr only lists Tentacle's VOD .strm files for it, nothing was downloaded")
+    return dismissed
+
+
+def series_download_kind(series) -> str:
+    """The kind of download a row holds: "sonarr" (downloaded-only) or "vod"
+    (a VOD show Sonarr downloaded too), keyed like services.radarr.download_kind."""
+    return "sonarr" if series.source == "sonarr" else "vod"
+
+
+def downloaded_series_rows(db: Session):
+    """Rows that hold a Sonarr download: the downloaded-only ones, and VOD
+    shows Sonarr downloaded too (#617). A VOD show counts by its download
+    date, not its sonarr_path: Add to Sonarr sets the path before anything is
+    downloaded, and only a Sonarr download dates a VOD row. That also finds
+    rows an older SeriesDelete left with the date but no path."""
+    from sqlalchemy import or_
+    return db.query(Series).filter(or_(Series.source == "sonarr", Series.downloaded_at.isnot(None)))
+
+
+def holds_series_download(row) -> bool:
+    """True when a VOD show's row claims a Sonarr download (its date, or the
+    "Downloaded TV" tag), not only a request Sonarr is still searching for."""
+    return row.downloaded_at is not None or DOWNLOADED_TV_TAG in (row.tags or [])
+
+
+def release_vod_series_download(db: Session, row: Series, owned: Optional[set] = None,
+                                keep_sonarr_path: bool = False, drop_duplicate: bool = True) -> None:
+    """A VOD show's Sonarr download is gone: the row goes back to a plain VOD
+    show, as services.radarr.release_vod_download does for films (#617). Its
+    download date and the download's Jellyfin item id go, its NFO is the VOD
+    show's tvshow.nfo again, and "Downloaded TV" and "<name>'s Downloads" come
+    off the row and that NFO, so the next tag push takes them off the VOD show
+    in Jellyfin. keep_sonarr_path: Sonarr still lists the show, so it stays an
+    intentional add (a later download is no duplicate). A pending duplicate
+    for the pair is dismissed (drop_duplicate=False: Keep VOD, which records
+    it itself). The VOD files stay. Does not commit."""
+    from services.tagger import set_row_tags, tentacle_owned_tags, current_downloads_tags
+    drop = {DOWNLOADED_TV_TAG} | current_downloads_tags(db)
+    if not keep_sonarr_path:
+        row.sonarr_path = None
+    row.downloaded_at = None
+    row.last_downloaded_episode = None
+    row.jellyfin_item_id = None   # the deleted download's item; re-matched on use
+    if row.strm_path:             # a VOD show's folder; the scan pointed nfo_path at the download's
+        row.nfo_path = str(Path(row.strm_path) / "tvshow.nfo")
+    row.date_updated = datetime.utcnow()
+    set_row_tags(row, [t for t in (row.tags or []) if t not in drop],
+                 owned if owned is not None else tentacle_owned_tags(db))
+    if not drop_duplicate:
+        return
+    droppable_duplicates(db, "series", row.tmdb_id).filter(
+        Duplicate.resolution == "pending").delete(synchronize_session=False)
+
+
 def scan_sonarr_library(db: Session) -> dict:
     """
     Scan Sonarr library and:
@@ -533,6 +691,11 @@ def scan_sonarr_library(db: Session) -> dict:
     2. Write NFO files with tags for Jellyfin to read
     3. Detect duplicates with VOD content
     """
+    with _scan_lock:
+        return _scan_sonarr_library(db)
+
+
+def _scan_sonarr_library(db: Session) -> dict:
     sonarr_url = get_setting(db, "sonarr_url")
     sonarr_key = get_setting(db, "sonarr_api_key")
 
@@ -582,6 +745,11 @@ def scan_sonarr_library(db: Session) -> dict:
 
     # Map resolved tmdb_id -> Sonarr tvdbId so the NFO writer can include <tvdbid>.
     series_tvdb_by_tmdb: dict = {}
+    # Every show with episode files, by its resolved tmdb id.
+    resolved_tmdb_ids: set = set()
+    stats["strm_only"] = 0
+    stats["strm_only_released"] = 0
+    owned_tags = None
 
     for show in downloaded:
         tmdb_id = show.get("tmdbId") or 0
@@ -605,6 +773,7 @@ def scan_sonarr_library(db: Session) -> dict:
         if not tmdb_id:
             logger.debug(f"Sonarr: skipping '{title}' — no TMDB ID (tvdb:{show.get('tvdbId')})")
             continue
+        resolved_tmdb_ids.add(tmdb_id)
 
         # Remember the TVDB id for this resolved series (for <tvdbid> in the NFO).
         if show.get("tvdbId"):
@@ -628,6 +797,14 @@ def scan_sonarr_library(db: Session) -> dict:
             if series_path and existing.sonarr_path != series_path:
                 existing.sonarr_path = series_path
                 changed = True
+            # Sonarr 4 counts Tentacle's own .strm files as episode files, so
+            # a VOD show Sonarr holds at its VOD folder has episodeFileCount > 0
+            # without a single download (#255, #682). Asked once, for VOD rows
+            # only; None (Sonarr didn't answer) keeps the download path below.
+            real = None
+            is_vod_row = bool(existing.source and existing.source.startswith("provider_"))
+            if is_vod_row:
+                real = series_has_real_download(sonarr, show.get("id"))
             sonarr_date = None
             if show.get("added"):
                 try:
@@ -642,12 +819,17 @@ def scan_sonarr_library(db: Session) -> dict:
             # added to Sonarr). Never moved BACK: the Download webhook bumps it
             # to the newest episode import, which is what a "recently
             # downloaded" row should sort by.
-            if sonarr_date and existing.downloaded_at is None:
+            if sonarr_date and existing.downloaded_at is None and real is not False:
                 existing.downloaded_at = sonarr_date
                 changed = True
             # If this was a VOD-only row, create a duplicate record
-            # Skip if sonarr_path already set (intentional add via "Download More Episodes")
-            if existing.source and existing.source.startswith("provider_") and not had_sonarr_path and tmdb_id not in existing_dup_tmdb_ids:
+            # Skip if sonarr_path already set (intentional add via "Download More Episodes").
+            # Only .strm files: no duplicate (Keep Downloaded would delete the
+            # whole VOD show). Unknown (Sonarr didn't answer) is recorded as
+            # before; resolving it checks again.
+            if (is_vod_row and not had_sonarr_path
+                    and tmdb_id not in existing_dup_tmdb_ids
+                    and real is not False):
                 db.add(Duplicate(
                     tmdb_id=tmdb_id,
                     media_type="series",
@@ -680,9 +862,32 @@ def scan_sonarr_library(db: Session) -> dict:
                     if detected:
                         existing.source_tag = detected
                         changed = True
+            if real is False:
+                # No download: the tag/NFO step below would give it "Downloaded
+                # TV" and write that into its NFO. Take off what an older scan
+                # gave it; "Recently Added TV" follows the VOD row's own date,
+                # as the nightly recency pass has it.
+                stats["strm_only"] += 1
+                if holds_series_download(existing):
+                    from services.tagger import set_row_tags, tentacle_owned_tags
+                    if owned_tags is None:
+                        owned_tags = tentacle_owned_tags(db)
+                    release_vod_series_download(db, existing, owned_tags,
+                                                keep_sonarr_path=True, drop_duplicate=False)
+                    cutoff = datetime.utcnow() - timedelta(days=get_recently_added_days(db))
+                    if not (existing.date_added and existing.date_added >= cutoff):
+                        set_row_tags(existing, [t for t in (existing.tags or []) if t != RECENTLY_ADDED_TV_TAG],
+                                     owned_tags)
+                    stats["strm_only_released"] += 1
+                    logger.info(f"Sonarr scan: '{existing.title}' (tmdb:{tmdb_id}) is no download any more: "
+                                f"Sonarr only lists Tentacle's VOD .strm files for it; its download tags "
+                                f"and date came off")
+                    changed = True
             if changed:
                 existing.date_updated = datetime.utcnow()
                 stats["updated"] += 1
+            if real is False:
+                continue
 
             series_needing_nfo.append((tmdb_id, existing))
         else:
@@ -739,20 +944,23 @@ def scan_sonarr_library(db: Session) -> dict:
 
             series_needing_nfo.append((tmdb_id, new_series))
 
-    # Remove series no longer in Sonarr
-    sonarr_tmdb_ids = set()
-    for s in downloaded:
-        tid = s.get("tmdbId") or 0
-        if tid:
-            sonarr_tmdb_ids.add(tid)
-    listed_tmdb_ids = {s.get("tmdbId") for s in all_series if s.get("tmdbId")}
-    rows = db.query(Series).filter(Series.source == "sonarr").all()
+    stats["false_duplicates_dismissed"] = _dismiss_strm_only_duplicates(db, sonarr, all_series)
+
+    # Remove series no longer in Sonarr. "With files" by the ids the loop
+    # above resolved: a show Sonarr lists without a tmdbId (found by TVDB or
+    # title) would otherwise lose the row the same scan just tagged.
+    sonarr_tmdb_ids = resolved_tmdb_ids
+    listed_tmdb_ids = {s.get("tmdbId") for s in all_series if s.get("tmdbId")} | sonarr_tmdb_ids
+    # VOD shows with a download count too: they lose it the same way (#617).
+    rows = downloaded_series_rows(db).all()
     # Still in Sonarr, but Sonarr says it has no episode files (see
-    # services.radarr.file_loss_looks_like_an_outage).
+    # services.radarr.file_loss_looks_like_an_outage), judged over all of
+    # them and over each kind alone (#505).
     lost_file = [r for r in rows if r.tmdb_id not in sonarr_tmdb_ids and r.tmdb_id in listed_tmdb_ids]
     refused = 0
     keep = set()
-    if file_loss_looks_like_an_outage(len(lost_file), len(rows)):
+    if download_loss_looks_like_an_outage(Counter(series_download_kind(r) for r in lost_file),
+                                          Counter(series_download_kind(r) for r in rows)):
         refused = len(lost_file)
         keep = {r.tmdb_id for r in lost_file}
         logger.error(
@@ -761,28 +969,62 @@ def scan_sonarr_library(db: Session) -> dict:
             f"like Sonarr's media storage being unavailable, not a clean-up. Rows kept; if the "
             f"files really are gone, remove the series from Sonarr.")
     removed = 0
+    released = 0
+    owned = None
     for series in rows:
-        if series.tmdb_id not in sonarr_tmdb_ids and series.tmdb_id not in keep:
-            emit_library_event("series_removed", {
-                "tmdb_id": series.tmdb_id,
-                "title": series.title,
-                "media_type": "series",
-            })
-            # Same transaction as the delete: the scan commits once, at the end.
-            db.add(DeletionLog(
-                kind="sonarr-scan", media_type="series", reason="removed-from-sonarr", name=series.title,
-                detail="no longer in Sonarr" if series.tmdb_id not in listed_tmdb_ids
-                else "Sonarr reports no episode files"))
+        if series.tmdb_id in sonarr_tmdb_ids or series.tmdb_id in keep:
+            continue
+        if series.source != "sonarr":
+            # A VOD show: only its download goes, the row stays. Its request
+            # and duplicate tombstones go as below. While Sonarr still lists
+            # the show it keeps sonarr_path: an intentional add, as when it
+            # was requested and nothing was downloaded yet.
             db.query(DownloadRequest).filter(
                 DownloadRequest.tmdb_id == series.tmdb_id,
                 DownloadRequest.media_type == "series",
             ).delete()
-            db.delete(series)
-            removed += 1
+            droppable_duplicates(db, "series", series.tmdb_id).delete(synchronize_session=False)
+            if owned is None:
+                from services.tagger import tentacle_owned_tags
+                owned = tentacle_owned_tags(db)
+            release_vod_series_download(db, series, owned,
+                                        keep_sonarr_path=series.tmdb_id in listed_tmdb_ids)
+            released += 1
+            logger.info(f"Sonarr scan: '{series.title}' (tmdb:{series.tmdb_id}) lost its download "
+                        f"({'no episode files' if series.tmdb_id in listed_tmdb_ids else 'no longer in Sonarr'}); "
+                        f"the VOD show stays")
+            continue
+        emit_library_event("series_removed", {
+            "tmdb_id": series.tmdb_id,
+            "title": series.title,
+            "media_type": "series",
+        })
+        # Same transaction as the delete: the scan commits once, at the end.
+        db.add(DeletionLog(
+            kind="sonarr-scan", media_type="series", reason="removed-from-sonarr", name=series.title,
+            detail="no longer in Sonarr" if series.tmdb_id not in listed_tmdb_ids
+            else "Sonarr reports no episode files"))
+        db.query(DownloadRequest).filter(
+            DownloadRequest.tmdb_id == series.tmdb_id,
+            DownloadRequest.media_type == "series",
+        ).delete()
+        # Its duplicate tombstones too, as SeriesDelete does: a "keep
+        # downloaded" one would keep the VOD episodes away for good (#334).
+        # Not while Keep VOD holds them, nor one holding saved watched
+        # state (#515).
+        droppable_duplicates(db, "series", series.tmdb_id).delete(synchronize_session=False)
+        db.delete(series)
+        removed += 1
     if removed:
         logger.info(f"Sonarr scan: removed {removed} series no longer in Sonarr")
     stats["removed"] = removed
+    stats["released"] = released
     stats["removals_refused"] = refused
+    from services.duplicates import drop_orphan_tombstones
+    stats["tombstones_dropped"] = drop_orphan_tombstones(db, "series")
+    if stats["tombstones_dropped"]:
+        logger.info(f"Sonarr scan: dropped {stats['tombstones_dropped']} keep-downloaded resolutions "
+                    f"whose download is gone; the VOD episodes can come back")
 
     # Sync monitoring state for ALL series in DB (not just those processed above)
     # Covers: VOD series added to Sonarr, series with no downloads yet, etc.
@@ -802,13 +1044,17 @@ def scan_sonarr_library(db: Session) -> dict:
     db.commit()
 
     # Compute tags and write NFO files for all downloaded series
+    from services.tagger import tentacle_owned_tags
+    owned = tentacle_owned_tags(db)
+    recently_added_days = get_recently_added_days(db)
+    not_found = 0
+    first_not_found = ""
     for tmdb_id, db_series in series_needing_nfo:
         try:
             # Build tag list: built-in + source tag + rule tags + list tags + user attribution
             tags = [DOWNLOADED_TV_TAG]
 
             # Recently added (within rolling window)
-            recently_added_days = int(get_setting(db, "recently_added_days", "30") or "30")
             cutoff = datetime.utcnow() - timedelta(days=recently_added_days)
             if db_series.date_added and db_series.date_added >= cutoff:
                 tags.append(RECENTLY_ADDED_TV_TAG)
@@ -851,10 +1097,12 @@ def scan_sonarr_library(db: Session) -> dict:
             # Write NFO if series folder exists on disk
             if not db_series.sonarr_path:
                 continue
-            # Remap Sonarr's container path to Tentacle's mount
-            local_path = db_series.sonarr_path.replace("/data/shows", "/media/shows", 1)
-            series_folder = Path(local_path)
-            if not series_folder.exists():
+            # Sonarr's folder under Tentacle's mount, by path or by name (#649)
+            series_folder = media_files.local_arr_folder(db_series.sonarr_path, media_files.SONARR_MEDIA_ROOT, "/data/shows")
+            if series_folder is None:
+                if not is_vod_arr_path(db_series.sonarr_path):
+                    not_found += 1
+                    first_not_found = first_not_found or db_series.sonarr_path
                 continue
 
             # Build NFO metadata from DB record
@@ -869,16 +1117,26 @@ def scan_sonarr_library(db: Session) -> dict:
                 "poster_path": db_series.poster_path,
                 "backdrop_path": db_series.backdrop_path,
                 "status": db_series.status,
+                # A new NFO for an old download keeps its date (#266)
+                "date_added": db_series.downloaded_at or db_series.date_added,
             }
 
             # tvshow.nfo goes in the series root folder
             nfo_path = series_folder / "tvshow.nfo"
-            if write_series_nfo(nfo_path, nfo_metadata, tags):
-                db_series.nfo_path = str(nfo_path)
+            if refresh_arr_nfo(nfo_path, write_series_nfo, nfo_metadata, tags, owned):
                 stats["nfo_written"] += 1
+            if nfo_path.exists():
+                db_series.nfo_path = str(nfo_path)
 
         except Exception as e:
             logger.debug(f"NFO/tag processing failed for {db_series.title}: {e}")
+
+    if not_found:
+        root = media_files.SONARR_MEDIA_ROOT
+        logger.warning(
+            f"Sonarr scan: {not_found} downloads not found under {root} (first: Sonarr's "
+            f"{first_not_found}); no NFO or tags written beside them. Mount the folder Sonarr "
+            f"downloads to at {root} (Settings → Library Paths).")
 
     db.commit()
 
@@ -890,7 +1148,7 @@ def scan_sonarr_library(db: Session) -> dict:
         from services.jellyfin import JellyfinService
         jf = JellyfinService(jellyfin_url, jellyfin_key, jellyfin_uid)
 
-        if stats["nfo_written"] > 0 or stats["new"] > 0:
+        if stats["nfo_written"] > 0 or stats["new"] > 0 or stats["strm_only_released"] > 0:
             try:
                 jf.trigger_library_scan()
                 logger.info("Triggered Jellyfin library scan after Sonarr NFO updates")
@@ -901,8 +1159,12 @@ def scan_sonarr_library(db: Session) -> dict:
         # NFO tags are ignored by Jellyfin for real video files — API is the only way.
         try:
             jf_lookup, jf_title_lookup = jf.get_tmdb_lookup_with_fallback("Series")
+            if not jf_lookup and not jf_title_lookup:
+                logger.warning("Jellyfin tag sync (series): Jellyfin's series listing came back empty, "
+                               "no tags pushed")
             tags_pushed = 0
-            tags_failed = 0
+            tags_failed = 0       # writes Jellyfin refused
+            tags_not_found = 0    # tagged titles Jellyfin hasn't listed (not scanned yet)
             for tmdb_id, db_series in all_series_by_tmdb.items():
                 if not db_series.tags:
                     continue
@@ -927,11 +1189,13 @@ def scan_sonarr_library(db: Session) -> dict:
                         if jf.refresh_item_metadata(jf_item["Id"]):
                             logger.info(f"Triggered metadata refresh for '{db_series.title}' (missing poster)")
                 else:
-                    tags_failed += 1
+                    tags_not_found += 1
             stats["jf_tags_pushed"] = tags_pushed
             stats["jf_tags_failed"] = tags_failed
+            stats["jf_tags_not_found"] = tags_not_found
             logger.info(
                 f"Jellyfin tag sync (series): {tags_pushed} pushed, {tags_failed} failed, "
+                f"{tags_not_found} not in Jellyfin yet, "
                 f"{len(all_series_by_tmdb)} total series checked"
             )
         except Exception as e:

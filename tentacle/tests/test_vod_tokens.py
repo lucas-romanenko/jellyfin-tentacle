@@ -2,17 +2,17 @@
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
-import tempfile
 import unittest
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from tmp_dirs import temp_dir
 
 
 class Tokens(unittest.TestCase):
     def setUp(self):
         import models.database as mdb
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db",
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db",
                                connect_args={"check_same_thread": False})
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()

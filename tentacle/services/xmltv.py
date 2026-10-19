@@ -11,7 +11,8 @@ import logging
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
-from typing import Optional
+from typing import Iterable, Iterator, Optional
+from xml.sax.saxutils import escape as xml_escape
 
 import requests
 
@@ -54,46 +55,141 @@ def _reject_doctype_bytes(head: bytes):
         )
 
 
-def generate_xmltv(channels: list[dict], programs: list[dict]) -> str:
+# Characters XML 1.0 does not allow, even escaped. ElementTree writes them
+# through unchanged, and one in any channel name or programme text made the
+# served guide not well-formed: Jellyfin then dropped the guide of EVERY
+# channel (#260). Stripped at output, so every source (Xtream and M3U names,
+# admin custom names, YouTube text) is covered; valid text is unchanged.
+_INVALID_XML_CHARS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff\ud800-\udfff]")
+
+
+def _clean(text):
+    return _INVALID_XML_CHARS.sub("", text) if isinstance(text, str) else text
+
+
+# A programme's categories, all kept in the one epg_programs.category column,
+# joined by U+001F: a character XML 1.0 can't carry (not even as &#31;), so
+# the parser never returns it inside a category text. A comma or newline is
+# not safe: category text can contain both. Jellyfin flags a programme as
+# sports/news/kids/movie when ANY category is in its lists, so serving only
+# the first lost "Hockey" + "Sports" (#521).
+CATEGORY_SEP = "\x1f"
+
+
+# What ElementTree escapes in an attribute value, beyond & < >.
+_ATTR_ENTITIES = {'"': "&quot;", "\r": "&#13;", "\n": "&#10;", "\t": "&#09;"}
+
+
+def _xml_text(tag: str, text) -> str:
+    """One element with text, written as ElementTree writes it (empty = <tag />)."""
+    text = _clean(text) if text else ""
+    if not text:
+        return f"<{tag} />"
+    return f"<{tag}>{xml_escape(text)}</{tag}>"
+
+
+def _xml_attr(value) -> str:
+    return xml_escape(_clean(value), _ATTR_ENTITIES)
+
+
+def iter_xmltv(channels: Iterable[dict], programs: Iterable[dict], chunk_chars: int = 64 * 1024) -> Iterator[bytes]:
     """
-    Generate XMLTV XML string from channel and program data.
+    The XMLTV guide as UTF-8 chunks of about `chunk_chars`, written as it is read.
 
     channels: [{"id": "TSN1.ca", "name": "TSN 1 HD", "logo_url": "http://..."}]
-    programs: [{"channel_id": "TSN1.ca", "title": "...", "description": "...",
+    programs: [{"channel_id": "TSN1.ca", "title": "...", "sub_title": "...", "description": "...",
                 "start": datetime, "stop": datetime, "category": "...", "icon_url": "..."}]
-    """
-    root = ET.Element("tv", attrib={"generator-name": "Tentacle"})
+    category: one or more, joined by CATEGORY_SEP; each is one <category>.
 
+    Both may be generators. The whole guide used to be built as one element
+    tree and one string, about 2 KB per programme, so a large lineup with a
+    long guide took gigabytes on every guide download. The output is the same
+    bytes ElementTree wrote (same elements, attributes, order and escaping,
+    XML-illegal characters stripped as before).
+    """
+    parts: list[str] = []
+    size = 0
+    empty = True
+    for item in _xmltv_elements(channels, programs):
+        if empty:
+            parts.append('<?xml version="1.0" encoding="UTF-8"?>\n<tv generator-name="Tentacle">')
+            empty = False
+        parts.append(item)
+        size += len(item)
+        if size >= chunk_chars:
+            yield "".join(parts).encode("utf-8")
+            parts, size = [], 0
+    if empty:
+        parts.append('<?xml version="1.0" encoding="UTF-8"?>\n<tv generator-name="Tentacle" />')
+    else:
+        parts.append("</tv>")
+    yield "".join(parts).encode("utf-8")
+
+
+def _xmltv_elements(channels: Iterable[dict], programs: Iterable[dict]) -> Iterator[str]:
     for ch in channels:
-        channel_el = ET.SubElement(root, "channel", attrib={"id": ch["id"]})
-        name_el = ET.SubElement(channel_el, "display-name")
-        name_el.text = ch["name"]
-        if ch.get("logo_url"):
-            ET.SubElement(channel_el, "icon", attrib={"src": ch["logo_url"]})
+        icon = f'<icon src="{_xml_attr(ch["logo_url"])}" />' if ch.get("logo_url") else ""
+        yield (f'<channel id="{_xml_attr(ch["id"])}">'
+               f'{_xml_text("display-name", ch["name"])}{icon}</channel>')
 
     for prog in programs:
-        start_str = prog["start"].strftime("%Y%m%d%H%M%S +0000")
-        stop_str = prog["stop"].strftime("%Y%m%d%H%M%S +0000")
-        prog_el = ET.SubElement(
-            root, "programme",
-            attrib={
-                "start": start_str,
-                "stop": stop_str,
-                "channel": prog["channel_id"],
-            },
-        )
-        title_el = ET.SubElement(prog_el, "title")
-        title_el.text = prog.get("title", "")
+        out = [
+            f'<programme start="{prog["start"].strftime("%Y%m%d%H%M%S +0000")}" '
+            f'stop="{prog["stop"].strftime("%Y%m%d%H%M%S +0000")}" '
+            f'channel="{_xml_attr(prog["channel_id"])}">',
+            _xml_text("title", prog.get("title")),
+        ]
+        if prog.get("sub_title"):
+            out.append(_xml_text("sub-title", prog["sub_title"]))
         if prog.get("description"):
-            desc_el = ET.SubElement(prog_el, "desc")
-            desc_el.text = prog["description"]
+            out.append(_xml_text("desc", prog["description"]))
         if prog.get("category"):
-            cat_el = ET.SubElement(prog_el, "category")
-            cat_el.text = prog["category"]
+            # Split before _xml_text: _clean strips the separator. A row an
+            # older build stored holds one category and serves as one.
+            out.extend(_xml_text("category", c) for c in prog["category"].split(CATEGORY_SEP) if c)
         if prog.get("icon_url"):
-            ET.SubElement(prog_el, "icon", attrib={"src": prog["icon_url"]})
+            out.append(f'<icon src="{_xml_attr(prog["icon_url"])}" />')
+        out.append("</programme>")
+        yield "".join(out)
 
-    return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode")
+
+def generate_xmltv(channels: list[dict], programs: list[dict]) -> str:
+    """The whole XMLTV guide as one string (see iter_xmltv, which the route streams)."""
+    return b"".join(iter_xmltv(channels, programs)).decode("utf-8")
+
+
+def _programme_dict(prog_el, channel_id: str) -> Optional[dict]:
+    """One <programme> element as a dict, or None when its times are unusable.
+
+    `<title></title>` has text None, and epg_programs.title is NOT NULL: one
+    such programme in a feed failed the whole EPG sync for every channel of the
+    provider (#176), so an empty title stays an empty string. The provider's
+    <sub-title> and programme <icon> are kept (#148): Jellyfin shows the
+    sub-title as the episode title and saves the icon as the programme's art.
+    """
+    start = _parse_xmltv_time(prog_el.get("start", ""))
+    stop = _parse_xmltv_time(prog_el.get("stop", ""))
+    if not (start and stop):
+        return None
+    title_el = prog_el.find("title")
+    sub_el = prog_el.find("sub-title")
+    desc_el = prog_el.find("desc")
+    # Every non-empty category in feed order, an exact repeat once (#521).
+    categories = dict.fromkeys(t for t in ((c.text or "").strip() for c in prog_el.findall("category")) if t)
+    # The first web (http/https) icon: a feed can list others first
+    # (file:, data:), which are never art Jellyfin can fetch.
+    icon_url = next((src for src in ((i.get("src") or "").strip() for i in prog_el.findall("icon"))
+                     if src.lower().startswith(("http://", "https://"))), None)
+    return {
+        "channel_id": channel_id,
+        "title": (title_el.text if title_el is not None else "") or "",
+        "sub_title": ((sub_el.text or "").strip() or None) if sub_el is not None else None,
+        "description": desc_el.text if desc_el is not None else None,
+        "start": start,
+        "stop": stop,
+        "category": CATEGORY_SEP.join(categories) or None,
+        "icon_url": icon_url,
+    }
 
 
 def parse_xmltv(content: str) -> tuple[list[dict], list[dict]]:
@@ -102,8 +198,10 @@ def parse_xmltv(content: str) -> tuple[list[dict], list[dict]]:
 
     Returns (channels, programs) where:
         channels: [{"id": str, "name": str, "logo_url": str|None}]
-        programs: [{"channel_id": str, "title": str, "description": str|None,
-                     "start": datetime, "stop": datetime, "category": str|None}]
+        programs: [{"channel_id": str, "title": str, "sub_title": str|None,
+                     "description": str|None, "start": datetime, "stop": datetime,
+                     "category": str|None, "icon_url": str|None}]
+        category: one or more, joined by CATEGORY_SEP.
     """
     # Harden against XXE / entity-expansion: reject DOCTYPE/ENTITY in prologue.
     _reject_doctype_bytes(content[:4096].encode("utf-8", errors="ignore"))
@@ -122,22 +220,9 @@ def parse_xmltv(content: str) -> tuple[list[dict], list[dict]]:
         })
 
     for prog_el in root.findall("programme"):
-        title_el = prog_el.find("title")
-        desc_el = prog_el.find("desc")
-        cat_el = prog_el.find("category")
-
-        start = _parse_xmltv_time(prog_el.get("start", ""))
-        stop = _parse_xmltv_time(prog_el.get("stop", ""))
-
-        if start and stop:
-            programs.append({
-                "channel_id": prog_el.get("channel", ""),
-                "title": title_el.text if title_el is not None else "",
-                "description": desc_el.text if desc_el is not None else None,
-                "start": start,
-                "stop": stop,
-                "category": cat_el.text if cat_el is not None else None,
-            })
+        prog = _programme_dict(prog_el, prog_el.get("channel", ""))
+        if prog:
+            programs.append(prog)
 
     return channels, programs
 
@@ -170,10 +255,15 @@ def stream_parse_xmltv(
     timeout: int = 600,
     on_progress: callable = None,
     force_download: bool = False,
+    resolve_channels: callable = None,
 ) -> list[dict]:
     """
     Download XMLTV (cached to disk for 8h), then stream-parse for matching channels.
     Uses iterparse to avoid loading full XML tree into memory.
+
+    `resolve_channels`, when given, is called with the feed's own channel list
+    ([{"id", "names"}], see read_feed_channels) before any programme is read,
+    and returns further channel ids to keep: how channels are matched by name.
     """
     import os, time
 
@@ -269,35 +359,36 @@ def stream_parse_xmltv(
     with open(cache_path, "rb") as f:
         _reject_doctype_bytes(f.read(4096))
 
+    if resolve_channels is not None:
+        channel_ids = set(channel_ids) | set(resolve_channels(read_feed_channels(cache_path)) or ())
+
     # Stream-parse from cached file — only keep matching channels
     programs = []
     total_seen = 0
     parse_start = time.time()
 
     with open(cache_path, "rb") as f:
-        for event, elem in ET.iterparse(f, events=("end",)):
+        # A cleared element is still a child of <tv>, so clearing only the
+        # programme kept one empty element per programme read (plus every
+        # <channel> whole) and memory grew with the feed (#178). The root comes
+        # from the first "start" event and is emptied after each programme.
+        root = None
+        for event, elem in ET.iterparse(f, events=("start", "end")):
+            if event == "start":
+                if root is None:
+                    root = elem
+                continue
             if elem.tag == "programme":
                 total_seen += 1
                 ch_id = elem.get("channel", "")
 
                 if ch_id in channel_ids:
-                    title_el = elem.find("title")
-                    desc_el = elem.find("desc")
-                    cat_el = elem.find("category")
-                    start = _parse_xmltv_time(elem.get("start", ""))
-                    stop = _parse_xmltv_time(elem.get("stop", ""))
-
-                    if start and stop:
-                        programs.append({
-                            "channel_id": ch_id,
-                            "title": title_el.text if title_el is not None else "",
-                            "description": desc_el.text if desc_el is not None else None,
-                            "start": start,
-                            "stop": stop,
-                            "category": cat_el.text if cat_el is not None else None,
-                        })
+                    prog = _programme_dict(elem, ch_id)
+                    if prog:
+                        programs.append(prog)
 
                 elem.clear()
+                root.clear()
 
                 if total_seen % 50000 == 0:
                     logger.info(f"[XMLTV] Parsed {total_seen} programmes, {len(programs)} matched")
@@ -307,6 +398,29 @@ def stream_parse_xmltv(
     elapsed = time.time() - parse_start
     logger.info(f"[XMLTV] Done: {total_seen} total, kept {len(programs)} for {len(channel_ids)} channels in {elapsed:.1f}s")
     return programs
+
+
+def read_feed_channels(path: str) -> list[dict]:
+    """The <channel> elements of a cached feed: [{"id", "names": [display-names]}].
+
+    The DTD puts every <channel> before the first <programme>, so reading stops
+    there: a pass over the head of the file, not the whole guide.
+    """
+    out = []
+    root = None
+    with open(path, "rb") as f:
+        for event, elem in ET.iterparse(f, events=("start", "end")):
+            if event == "start":
+                if root is None:
+                    root = elem
+                elif elem.tag == "programme":
+                    break
+                continue
+            if elem.tag == "channel":
+                names = [(n.text or "").strip() for n in elem.findall("display-name")]
+                out.append({"id": elem.get("id", ""), "names": [n for n in names if n]})
+                root.clear()
+    return out
 
 
 def download_xmltv(
@@ -370,23 +484,48 @@ def download_xmltv(
     return content.decode("utf-8", errors="replace")
 
 
+_XMLTV_TIME_RE = re.compile(r"^\s*(\d{4,14})\s*(?:([+-])(\d{2}):?(\d{2})?)?")
+# What may follow the digits: nothing, an offset (+0100, -05:00, +01) or Z,
+# then optionally a zone name ("+0100 BST", or a name alone).
+_XMLTV_TZ_TAIL = re.compile(r"^\s*(?:[+-]\d{2}(?::?\d{2})?|Z)?(?:\s+[A-Za-z][A-Za-z0-9/_+-]*)?\s*$")
+
+
 def _parse_xmltv_time(time_str: str) -> Optional[datetime]:
-    """Parse XMLTV time format: 20260324060000 +0100 → convert to UTC."""
+    """Parse an XMLTV time ("20260324060000 +0100") into naive UTC.
+
+    The XMLTV DTD allows any initial substring of YYYYMMDDhhmmss (its own
+    example is "200007281733 BST"), and some generators write minute
+    precision. Slicing a fixed 14 characters turned "202609241800 +0200" into
+    "202609241800 +", which failed to parse, so such a guide came out empty
+    (#177). Missing digits are padded as Jellyfin's own XMLTV reader does
+    (from 20000101000000), and a zone that is not a numeric offset counts as
+    UTC, as it does there.
+    """
     if not time_str:
         return None
-    try:
-        clean = time_str.strip()
-        # Parse the datetime portion
-        dt = datetime.strptime(clean[:14], "%Y%m%d%H%M%S")
-        # Parse timezone offset if present (e.g. +0100, -0500)
-        rest = clean[14:].strip()
-        if rest:
-            sign = 1 if rest[0] == '+' else -1
-            offset_str = rest[1:].replace(":", "")
-            offset_hours = int(offset_str[:2])
-            offset_minutes = int(offset_str[2:4]) if len(offset_str) >= 4 else 0
-            from datetime import timedelta
-            dt = dt - timedelta(hours=sign * offset_hours, minutes=sign * offset_minutes)
-        return dt
-    except (ValueError, IndexError):
+    m = _XMLTV_TIME_RE.match(time_str)
+    if not m:
         return None
+    digits, sign, hh, mm = m.groups()
+    # Whole fields only (YYYY, YYYYMM, ... YYYYMMDDhhmmss), and nothing after
+    # them but a zone: a cut field ("2026092") would be padded into another
+    # date, and an ISO "2026-09-25T18:00:00Z" read as 1 January plus an
+    # offset. A time that cannot be read exactly is dropped, never stored
+    # wrong (#177).
+    rest = time_str.strip()[len(digits):]
+    if len(digits) % 2 or not _XMLTV_TZ_TAIL.match(rest):
+        return None
+    # No zone on Earth is further than 14:00 from UTC, and an offset's
+    # minutes are under 60: anything else is a broken feed.
+    if sign and (int(mm or 0) >= 60 or int(hh) * 60 + int(mm or 0) > 14 * 60):
+        return None
+    digits += "20000101000000"[len(digits):]
+    try:
+        dt = datetime.strptime(digits, "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+    if sign:
+        from datetime import timedelta
+        offset = timedelta(hours=int(hh), minutes=int(mm or 0))
+        dt = dt - offset if sign == "+" else dt + offset
+    return dt

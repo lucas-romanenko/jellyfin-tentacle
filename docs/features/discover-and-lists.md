@@ -33,8 +33,7 @@ Click a title to see its full details (plot, cast, genres, rating). From the det
 **Movies:**
 
 - Click **Add to Radarr** to add it to your Radarr download queue
-- Select a quality profile before adding (the button cycles through available profiles)
-- Your last selected profile is remembered
+- The quality profile starts on **Default** (picked in Settings → Connections); cycle to another profile for this one request
 
 **TV Series:**
 
@@ -44,7 +43,7 @@ Click a title to see its full details (plot, cast, genres, rating). From the det
     - Last Season
     - Pilot
     - Pick Episodes (opens the episode picker)
-- Select a quality profile before adding
+- The quality profile starts on **Default**; pick another for this one request if you want
 
 ### Search
 

@@ -6,7 +6,6 @@ These pin the routes an unauthenticated caller must NOT be able to read. They
 build a minimal app around the router under test and override get_db, so no
 scheduler or real database is started.
 """
-import tempfile
 import unittest
 from unittest import mock
 
@@ -14,11 +13,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from tmp_dirs import temp_dir
 
 
 def _make_db():
     import models.database as mdb
-    engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db",
+    engine = create_engine(f"sqlite:///{temp_dir()}/t.db",
                            connect_args={"check_same_thread": False})
     mdb.Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()
@@ -45,7 +45,7 @@ class LibraryRouteAuthTests(unittest.TestCase):
                           source="radarr"))
         set_setting(self.db, "session_secret", "test-secret")
         # Keep TMDBService's on-disk cache inside the test's own tmpdir.
-        set_setting(self.db, "data_dir", tempfile.mkdtemp())
+        set_setting(self.db, "data_dir", temp_dir(self))
         self.db.commit()
 
         app = FastAPI()

@@ -30,6 +30,19 @@ public class TentacleHomeController : ControllerBase
     private readonly IDtoService _dtoService;
     private readonly IAuthorizationContext _authContext;
     private readonly ILogger<TentacleHomeController> _logger;
+
+    // Which titles a home row shows, per (playlist + its last save, user, limit, sort).
+    // Jellyfin walks every entry of a playlist whenever it is read — a 56k-entry playlist
+    // took 13 s per row request and 26 s just to fetch the playlist's own details (test
+    // stack), and on a live server Disney+ TV (16.7k entries) took 5.6 s alone and 20-26 s
+    // when the Android app loads all rows at once, next to its 30 s timeout. The ids are
+    // cached, not the DTOs, so played/progress state is still read fresh per request, and the
+    // key carries the playlist's DateLastSaved so any change to the playlist misses the cache.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime Expiry, List<Guid> Ids)> _sectionCache = new();
+    private static readonly TimeSpan SectionCacheDuration = TimeSpan.FromMinutes(5);
+
+    /// <summary>Drops cached home-row contents (called by POST /Tentacle/Refresh).</summary>
+    public static void ClearSectionCache() => _sectionCache.Clear();
     private static readonly HttpClient ProxyClient = new() { Timeout = TimeSpan.FromSeconds(15) };
 
     // The home JS polls Version every 5 s without waiting for the previous answer.
@@ -119,7 +132,16 @@ public class TentacleHomeController : ControllerBase
         }
 
         userId = caller.UserId;
-        var config = _homeScreenManager.GetHomeConfig(userId, GetApiKey());
+        var home = await _homeScreenManager.GetHomeConfigResultAsync(userId, GetApiKey(), HttpContext.RequestAborted).ConfigureAwait(false);
+        if (home.Failed)
+        {
+            // Could not read the config (backend restarting, slow, 5xx): not "home
+            // disabled". An error lets clients keep the rows they show; the web home
+            // used to empty them on a live refresh, until the next version change (#257).
+            return StatusCode(503, new { enabled = false, error = "Tentacle did not answer", sections = Array.Empty<object>() });
+        }
+
+        var config = home.Config;
         if (config == null)
         {
             return Ok(new { enabled = false, sections = Array.Empty<object>() });
@@ -170,6 +192,11 @@ public class TentacleHomeController : ControllerBase
                         displayText = row.DisplayName,
                         playlistId = row.PlaylistId,
                         shape = string.IsNullOrEmpty(row.Shape) ? "poster" : row.Shape,
+                        // The row's item limit, as GetSectionItems applies it. A client
+                        // refreshing a row in place can tell a complete answer (this many
+                        // items) from a playlist caught mid-rebuild, and so apply a row
+                        // the dashboard shortened (androidtv #54).
+                        maxItems = Math.Min(row.MaxItems is > 0 ? row.MaxItems.Value : 20, 30),
                     });
                 }
             }
@@ -180,7 +207,7 @@ public class TentacleHomeController : ControllerBase
             enabled = true,
             sections,
             mergeContinueWatching = config.MergeContinueWatching,
-            cardPreviews = string.IsNullOrEmpty(config.CardPreviews) ? "all" : config.CardPreviews,
+            cardPreviews = string.IsNullOrEmpty(config.CardPreviews) ? "local_only" : config.CardPreviews,
         });
     }
 
@@ -226,7 +253,7 @@ public class TentacleHomeController : ControllerBase
         // Read row config (max_items, sort) from home config
         var limit = 20;
         RowConfig? row = null;
-        var config = _homeScreenManager.GetHomeConfig(userId, GetApiKey());
+        var config = await _homeScreenManager.GetHomeConfigAsync(userId, GetApiKey(), HttpContext.RequestAborted).ConfigureAwait(false);
         if (config?.Rows != null)
         {
             row = config.Rows.FirstOrDefault(r => r.PlaylistId == playlistId);
@@ -242,12 +269,18 @@ public class TentacleHomeController : ControllerBase
 
         var dtoOptions = new DtoOptions
         {
+            // Path lets a client tell a local file from a provider .strm (the
+            // card-previews "local_only" policy); without it every row card
+            // counted as not local. It is the item's own file path, which any
+            // user can already read from /Items?Fields=Path; MediaSources is
+            // deliberately left out (for a .strm it carries the provider URL).
             Fields = new[]
             {
                 ItemFields.PrimaryImageAspectRatio,
                 ItemFields.MediaSourceCount,
                 ItemFields.Overview,
                 ItemFields.Genres,
+                ItemFields.Path,
             },
             ImageTypes = new[]
             {
@@ -258,49 +291,90 @@ public class TentacleHomeController : ControllerBase
             ImageTypeLimit = 1,
         };
 
-        // Group episodes by series
-        var grouped = playlist.GetManageableItems()
-            .Where(i => i.Item2.IsVisible(user))
-            .GroupBy(x => x.Item2 is Episode ep ? (BaseItem)ep.Series : x.Item2)
-            .Select(g => g.Key)
-            .Where(i => i != null)
-            .ToList();
-
-        // Apply sort from home config (same pattern as hero sort)
-        // For "datecreated", trust the playlist order set by the Python backend
-        // (which uses Tentacle's date_added — more reliable than Jellyfin's DateCreated
-        // which can shift after metadata refreshes or library rescans).
-        // No sort_by configured means "leave it as the backend populated it", the same
-        // as an explicit "random". Defaulting to releasedate here silently re-sorted
-        // every row that the dashboard had not given an explicit sort.
-        var sortBy = row?.SortBy?.ToLowerInvariant() ?? "none";
-        var descending = !string.Equals(row?.SortOrder, "Ascending", StringComparison.OrdinalIgnoreCase);
-        IEnumerable<BaseItem> sorted = sortBy switch
+        var sectionCacheKey = $"{playlist.Id:N}:{playlist.DateLastSaved.Ticks}:{userId:N}:{limit}:{row?.SortBy}:{row?.SortOrder}";
+        List<BaseItem> finalItems;
+        if (_sectionCache.TryGetValue(sectionCacheKey, out var cachedSection) && DateTime.UtcNow < cachedSection.Expiry)
         {
-            "communityrating" => descending
-                ? grouped.OrderByDescending(i => i.CommunityRating ?? 0)
-                : grouped.OrderBy(i => i.CommunityRating ?? 0),
-            "releasedate" => descending
-                ? grouped.OrderByDescending(i => i.PremiereDate ?? DateTime.MinValue)
-                : grouped.OrderBy(i => i.PremiereDate ?? DateTime.MinValue),
-            "name" => descending
-                ? grouped.OrderByDescending(i => i.SortName)
-                : grouped.OrderBy(i => i.SortName),
-            "datecreated" => grouped,
-            // "random" and any unspecified/unknown sort: trust the playlist order the
-            // Python backend already populated. It stores a STABLE order (including a
-            // fixed random shuffle applied once at populate time). Re-shuffling here on
-            // every request made rows swap items and re-order on each home refresh
-            // ("order changed while it was open" / "doesn't match Tentacle"), and the
-            // per-request .Take(limit) over a fresh shuffle also dropped items.
-            _ => grouped,
-        };
+            // Re-checked per request against the user's current access (library and
+            // parental), so a library taken away while the row is cached is hidden at once.
+            finalItems = cachedSection.Ids
+                .Select(id => _libraryManager.GetItemById(id))
+                .OfType<BaseItem>()
+                .Where(i => i.IsVisibleStandalone(user))
+                .ToList();
+        }
+        else
+        {
+            // Group episodes by series
+            var grouped = VisibleEntries(playlist, user)
+                .GroupBy(x => x is Episode ep ? (BaseItem)ep.Series : x)
+                .Select(g => g.Key)
+                .Where(i => i != null)
+                .ToList();
 
-        var finalItems = sorted.Take(limit).ToList();
+            // Apply sort from home config (same pattern as hero sort)
+            // For "datecreated", trust the playlist order set by the Python backend
+            // (which uses Tentacle's date_added — more reliable than Jellyfin's DateCreated
+            // which can shift after metadata refreshes or library rescans).
+            // No sort_by configured means "leave it as the backend populated it", the same
+            // as an explicit "random". Defaulting to releasedate here silently re-sorted
+            // every row that the dashboard had not given an explicit sort.
+            var sortBy = row?.SortBy?.ToLowerInvariant() ?? "none";
+            var descending = !string.Equals(row?.SortOrder, "Ascending", StringComparison.OrdinalIgnoreCase);
+            IEnumerable<BaseItem> sorted = sortBy switch
+            {
+                "communityrating" => descending
+                    ? grouped.OrderByDescending(i => i.CommunityRating ?? 0)
+                    : grouped.OrderBy(i => i.CommunityRating ?? 0),
+                "releasedate" => descending
+                    ? grouped.OrderByDescending(i => i.PremiereDate ?? DateTime.MinValue)
+                    : grouped.OrderBy(i => i.PremiereDate ?? DateTime.MinValue),
+                "name" => descending
+                    ? grouped.OrderByDescending(i => i.SortName)
+                    : grouped.OrderBy(i => i.SortName),
+                "datecreated" => grouped,
+                // "random" and any unspecified/unknown sort: trust the playlist order the
+                // Python backend already populated. It stores a STABLE order (including a
+                // fixed random shuffle applied once at populate time). Re-shuffling here on
+                // every request made rows swap items and re-order on each home refresh
+                // ("order changed while it was open" / "doesn't match Tentacle"), and the
+                // per-request .Take(limit) over a fresh shuffle also dropped items.
+                _ => grouped,
+            };
+
+            finalItems = sorted.Take(limit).ToList();
+            // Every save of a playlist makes a new key, and /Tentacle/Refresh is the only
+            // other thing that clears the cache, so drop expired entries as new ones come in.
+            if (_sectionCache.Count > 256)
+            {
+                var now = DateTime.UtcNow;
+                foreach (var entry in _sectionCache)
+                {
+                    if (entry.Value.Expiry <= now)
+                    {
+                        _sectionCache.TryRemove(entry.Key, out _);
+                    }
+                }
+            }
+
+            _sectionCache[sectionCacheKey] = (DateTime.UtcNow.Add(SectionCacheDuration), finalItems.Select(i => i.Id).ToList());
+        }
+
         var dtos = _dtoService.GetBaseItemDtos(finalItems, dtoOptions, user);
 
         return Ok(new QueryResult<BaseItemDto>(dtos));
     }
+
+    /// <summary>
+    /// A playlist's entries this user may see, in playlist order: the same filter as
+    /// Jellyfin's <c>/Items?ParentId={playlist}</c>. <c>GetLinkedChildren(user)</c> keeps
+    /// only items from libraries the user has access to; <c>IsVisible</c> adds parental
+    /// rating and tags. <c>IsVisible</c> alone does not check library access, so a
+    /// shared or public playlist, or a list holding titles from a library the user
+    /// can't open, showed those titles in the row.
+    /// </summary>
+    private static IEnumerable<BaseItem> VisibleEntries(Playlist playlist, Jellyfin.Database.Implementations.Entities.User user)
+        => playlist.GetLinkedChildren(user).Where(i => i.IsVisible(user));
 
     /// <summary>
     /// Returns a version counter that increments whenever playlists are modified.
@@ -354,7 +428,7 @@ public class TentacleHomeController : ControllerBase
         }
 
         userId = caller.UserId;
-        var config = _homeScreenManager.GetHomeConfig(userId, GetApiKey());
+        var config = await _homeScreenManager.GetHomeConfigAsync(userId, GetApiKey(), HttpContext.RequestAborted).ConfigureAwait(false);
         if (config?.Hero is not { Enabled: true } hero || string.IsNullOrEmpty(hero.PlaylistId))
         {
             return Ok(new QueryResult<BaseItemDto>());
@@ -377,6 +451,15 @@ public class TentacleHomeController : ControllerBase
             return Ok(new QueryResult<BaseItemDto>());
         }
 
+        // The hero's playlist id comes from the caller's own home config, which
+        // they can set to any GUID (POST /TentacleHome/Hero stores it as given).
+        // Same rule as a row: only a playlist this user may read. Empty rather
+        // than 403, like every other reason there is no hero to show.
+        if (!CallerIdentity.CanReadPlaylist(playlist, user))
+        {
+            return Ok(new QueryResult<BaseItemDto>());
+        }
+
         var dtoOptions = new DtoOptions
         {
             Fields = new[]
@@ -385,6 +468,7 @@ public class TentacleHomeController : ControllerBase
                 ItemFields.Overview,
                 ItemFields.Genres,
                 ItemFields.MediaSourceCount,
+                ItemFields.Path, // see GetSectionItems
             },
             ImageTypes = new[]
             {
@@ -397,13 +481,11 @@ public class TentacleHomeController : ControllerBase
             ImageTypeLimit = 3,
         };
 
-        var rawItems = playlist.GetManageableItems()
-            .Where(i => i.Item2.IsVisible(user))
-            .ToArray();
+        var rawItems = VisibleEntries(playlist, user).ToArray();
 
         // Group episodes by series, then optionally filter for polished hero look
         var grouped = rawItems
-            .GroupBy(x => x.Item2 is Episode ep ? (BaseItem)ep.Series : x.Item2)
+            .GroupBy(x => x is Episode ep ? (BaseItem)ep.Series : x)
             .Select(g => g.Key)
             .Where(i => i != null);
 
@@ -544,7 +626,7 @@ public class TentacleHomeController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Home] Failed to fetch playlists: {Error}", ex.Message);
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = TentacleDiscoverController.DescribeFailure(ex).Message });
         }
     }
 
@@ -561,16 +643,48 @@ public class TentacleHomeController : ControllerBase
             return Forbid();
         }
 
-        var homeConfig = _homeScreenManager.GetHomeConfig(caller.UserId, GetApiKey());
+        var home = await _homeScreenManager.GetHomeConfigResultAsync(caller.UserId, GetApiKey(), HttpContext.RequestAborted).ConfigureAwait(false);
+        if (home.Failed)
+        {
+            // Not "hero off": the media bar keeps what it shows on an error (#257).
+            return StatusCode(503, new { enabled = false, error = "Tentacle did not answer" });
+        }
+
+        var homeConfig = home.Config;
         if (homeConfig?.Hero is { Enabled: true } hero && !string.IsNullOrEmpty(hero.PlaylistId))
         {
-            return Ok(new { enabled = true, playlistId = hero.PlaylistId, displayName = hero.DisplayName, trailerAudio = hero.TrailerAudio, itemCount = hero.ItemCount });
+            // The sort and filters are here too so a client can tell that the
+            // hero's content changed, not only its playlist (a sort change used
+            // to reach the web home only after a full page reload).
+            return Ok(new
+            {
+                enabled = true,
+                playlistId = hero.PlaylistId,
+                displayName = hero.DisplayName,
+                trailerAudio = hero.TrailerAudio,
+                itemCount = hero.ItemCount,
+                sortBy = hero.SortBy,
+                sortOrder = hero.SortOrder,
+                requireLogo = hero.RequireLogo,
+                requireTrailer = hero.RequireTrailer,
+            });
         }
 
         // Return whatever the backend has — defaults are set by the Tentacle dashboard, not the plugin
         var fallbackHero = homeConfig?.Hero;
         return Ok(new { enabled = false, playlistId = "", displayName = "", trailerAudio = fallbackHero?.TrailerAudio ?? false, itemCount = fallbackHero?.ItemCount ?? 10 });
     }
+
+    private static readonly object[] DefaultToolbar =
+    {
+        new { id = "search", enabled = true },
+        new { id = "discover", enabled = true },
+        new { id = "activity", enabled = true },
+        new { id = "favorites", enabled = true },
+        new { id = "libraries", enabled = true },
+        new { id = "shuffle", enabled = false },
+        new { id = "genres", enabled = false },
+    };
 
     /// <summary>
     /// Returns toolbar button configuration (visibility and order).
@@ -587,18 +701,28 @@ public class TentacleHomeController : ControllerBase
             return Forbid();
         }
 
-        var homeConfig = _homeScreenManager.GetHomeConfig(caller.UserId, GetApiKey());
+        var home = await _homeScreenManager.GetHomeConfigResultAsync(caller.UserId, GetApiKey(), HttpContext.RequestAborted).ConfigureAwait(false);
+        var homeConfig = home.Config;
         // Every client fetches this at start-up, so it also carries the server's
-        // answer on focus previews (all / local_only / off); absent = all.
-        var cardPreviews = string.IsNullOrEmpty(homeConfig?.CardPreviews) ? "all" : homeConfig!.CardPreviews;
+        // answer on focus previews (all / local_only / off). Absent = local_only: a
+        // preview of a provider (.strm) title opens a provider connection per card
+        // scrolled over, which can cut a running recording (androidtv#47), so nobody
+        // gets that without choosing it.
+        var cardPreviews = string.IsNullOrEmpty(homeConfig?.CardPreviews) ? "local_only" : homeConfig!.CardPreviews;
         var toolbar = homeConfig?.Toolbar;
         if (toolbar != null && toolbar.Count > 0)
         {
             return Ok(new { buttons = toolbar, cardPreviews });
         }
 
-        // No local defaults — Tentacle backend always provides toolbar config via write_home_config()
-        return Ok(new { buttons = Array.Empty<object>(), cardPreviews });
+        // No toolbar in the user's home config yet. The backend's write_home_config() skips a
+        // user who has no smart playlists, so a new household member (or anyone Tentacle has
+        // not built playlists for) never gets one. The web navbar falls back to its own defaults
+        // on an empty list, but the Android TV app hid every button, Search and Libraries
+        // included. Answer with the same defaults write_home_config() uses (services/smartlists.py).
+        // When the config could not be read at all, the defaults are only a stand-in:
+        // `fallback` tells a client that already shows the user's own toolbar to keep it (#257).
+        return Ok(new { buttons = DefaultToolbar, cardPreviews, fallback = home.Failed });
     }
 
     /// <summary>
@@ -632,7 +756,7 @@ public class TentacleHomeController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Home] Failed to set hero: {Error}", ex.Message);
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = TentacleDiscoverController.DescribeFailure(ex).Message });
         }
     }
 
@@ -667,7 +791,7 @@ public class TentacleHomeController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Home] Failed to reorder: {Error}", ex.Message);
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = TentacleDiscoverController.DescribeFailure(ex).Message });
         }
     }
 

@@ -14,18 +14,18 @@ clients fed from it. Different channels are NOT shared: they genuinely need
 their own upstream.
 """
 import asyncio
-import tempfile
 import unittest
 from unittest import mock
 
 from fastapi.responses import StreamingResponse
+from tmp_dirs import temp_dir
 
 
 def _fresh_db():
     import models.database as mdb
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
-    engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db")
+    engine = create_engine(f"sqlite:///{temp_dir()}/t.db")
     mdb.Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()
 
@@ -36,6 +36,7 @@ class SharedUpstream(unittest.TestCase):
         self.livetv = livetv
         # These are bound to a running loop, and every test runs its own.
         livetv._stream_slots = livetv._StreamSlots()
+        self.addCleanup(lambda: setattr(livetv, "_stream_slots", livetv._StreamSlots()))
         livetv._shared_lock = None
         livetv._shared_streams.clear()
         self.db = _fresh_db()
@@ -49,7 +50,7 @@ class SharedUpstream(unittest.TestCase):
             self.db.add(prov)
             self.db.commit()
         ch = LiveChannel(provider_id=prov.id, name=name,
-                         stream_url="http://provider.test/live/u/p/1.m3u8")
+                         stream_url="http://provider.test/live/u/p/1.m3u8", enabled=True)
         self.db.add(ch)
         self.db.commit()
         return ch.id

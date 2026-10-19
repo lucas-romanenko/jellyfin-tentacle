@@ -11,12 +11,12 @@ every downloaded row in one pass -- no cap, no deletion-log entry -- taking
 date_added and tags with them and firing a removal event per title. This is the
 same shape as the provider-outage prune (#25/#26), on the downloaded side.
 """
-import tempfile
 import unittest
 from unittest import mock
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from tmp_dirs import temp_dir
 
 
 def _radarr_movie(i, has_file=True):
@@ -35,7 +35,7 @@ class _Base(unittest.TestCase):
     def setUp(self):
         import models.database as mdb
         self.mdb = mdb
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = temp_dir(self)
         engine = create_engine(f"sqlite:///{self.tmp}/t.db", connect_args={"check_same_thread": False})
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
@@ -44,6 +44,12 @@ class _Base(unittest.TestCase):
                      ("sonarr_url", "http://sonarr:8989"), ("sonarr_api_key", "k"), ("data_dir", self.tmp)):
             mdb.set_setting(self.db, k, v)
         self.db.commit()
+        # The scan enriches new titles from TMDB with the built-in token; keep the
+        # test offline instead of sending real requests to api.themoviedb.org.
+        import services.tmdb as tmdb
+        p = mock.patch.object(tmdb.TMDBService, "_request", lambda *a, **k: None)
+        p.start()
+        self.addCleanup(p.stop)
 
 
 class RadarrScan(_Base):

@@ -6,7 +6,6 @@ loaded; these tests pin the backend's side of the contract.
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import json
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -17,11 +16,12 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 import services.jellyfin as jellyfin
 import services.smartlists as sl
+from tmp_dirs import temp_dir
 
 
 class _Base(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(temp_dir(self))
         engine = create_engine(f"sqlite:///{self.tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
@@ -61,6 +61,10 @@ class TestPruneDeadEntries(_Base):
         self.answer = {"checkedPlaylists": 3, "prunedPlaylists": 2, "removed": 3,
                        "refused": False, "skipped": []}
         p = mock.patch.object(jellyfin.JellyfinService, "prune_dead_playlist_entries", prune)
+        p.start()
+        self.addCleanup(p.stop)
+        # Jellyfin idle (the hourly prune skips while it scans, #181).
+        p = mock.patch.object(jellyfin.JellyfinService, "running_library_tasks", return_value=[])
         p.start()
         self.addCleanup(p.stop)
 
@@ -117,7 +121,9 @@ class TestJellyfinServicePrune(unittest.TestCase):
         self.assertEqual({"removed": 2}, s.prune_dead_playlist_entries(["a", "b"]))
         url = s.session.post.call_args.args[0]
         self.assertTrue(url.endswith("/Tentacle/Playlists/PruneDead"))
-        self.assertEqual({"Ids": ["a", "b"]}, s.session.post.call_args.kwargs["json"])
+        # Async: a current plugin answers 202 with a run id to poll (#181);
+        # an old one ignores the flag and answers the summary, as here.
+        self.assertEqual({"Ids": ["a", "b"], "Async": True}, s.session.post.call_args.kwargs["json"])
 
     def test_old_plugin_is_none(self):
         self.assertIsNone(self.svc(404).prune_dead_playlist_entries(["a"]))

@@ -14,9 +14,29 @@ function escapeAttr(str) {
   if (!str) return '';
   return String(str).replace(/&/g,'&amp;').replace(/'/g,'&#39;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
+// For a value inside a quoted JS string in an inline handler:
+// onclick="f('${escapeJS(x)}')". The browser decodes character references in
+// the attribute before the JS runs, so & < > are escaped too (a title that
+// contains the text "&#39;" stays that text), and so are line breaks, which
+// would end the string.
 function escapeJS(str) {
   if (!str) return '';
-  return String(str).replace(/\\/g,'\\\\').replace(/'/g,'\\x27').replace(/"/g,'\\x22').replace(/`/g,'\\x60').replace(/\u2018/g,'\\x27').replace(/\u2019/g,'\\x27').replace(/\u201C/g,'\\x22').replace(/\u201D/g,'\\x22');
+  return String(str).replace(/\\/g,'\\\\').replace(/'/g,'\\x27').replace(/"/g,'\\x22').replace(/`/g,'\\x60').replace(/\u2018/g,'\\x27').replace(/\u2019/g,'\\x27').replace(/\u201C/g,'\\x22').replace(/\u201D/g,'\\x22')
+    .replace(/&/g,'\\x26').replace(/</g,'\\x3c').replace(/>/g,'\\x3e').replace(/\r/g,'\\r').replace(/\n/g,'\\n').replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029');
+}
+// Quality profile picker for an add. "Default" (the profile picked in
+// Settings) sends nothing; any other choice is sent as this request's
+// override. Never preselect the *arr's first profile: it is usually "Any".
+// Only an admin can open Settings, so anyone else is told an admin picks it.
+function _profileOptionsHtml(profiles) {
+  const def = (profiles || []).find(p => p.is_default);
+  const first = def
+    ? `<option value="">Default — ${escapeAttr(def.name)}</option>`
+    : state.currentUser?.is_admin
+      ? '<option value="">Default (none picked yet — set one in Settings)</option>'
+      : '<option value="">Default (none picked yet — an admin has to pick one)</option>';
+  return first + (profiles || []).filter(p => !p.is_default)
+    .map(p => `<option value="${escapeAttr(String(p.id))}">${escapeAttr(p.name)}</option>`).join('');
 }
 function _trailerBtn(url) {
   if (!url) return '';
@@ -91,7 +111,7 @@ function renderHistoryRuns(runs) {
     const date = run.started_at ? new Date(run.started_at) : null;
     const dateStr = date ? date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—';
     const duration = run.duration_seconds ? `${Math.round(run.duration_seconds/60)}m ${run.duration_seconds%60}s` : '—';
-    const statusColor = run.status === 'completed' ? 'green' : run.status === 'running' ? 'amber' : 'red';
+    const statusColor = run.status === 'completed' ? 'green' : (run.status === 'running' || run.status === 'finishing') ? 'amber' : 'red';
 
     const catStats = run.category_stats || {};
     const catPills = Object.entries(catStats)
@@ -99,15 +119,16 @@ function renderHistoryRuns(runs) {
       .slice(0, 8)
       .map(([name, stats]) => `
         <span class="run-cat-pill ${stats.new > 0 ? 'has-new' : ''}">
-          ${name.split(' - ').pop()} ${stats.new > 0 ? `+${stats.new}` : stats.total || ''}
+          ${escapeAttr(name.split(' - ').pop())} ${stats.new > 0 ? `+${Number(stats.new) || 0}` : escapeAttr(String(stats.total || ''))}
         </span>`).join('');
 
     return `
       <div class="run-row">
         <div class="run-header">
           <div class="dot dot-${statusColor}"></div>
-          <span style="font-size:13px;font-weight:500">${run.provider_name}</span>
-          <span class="badge badge-gray">${run.sync_type}</span>
+          <span style="font-size:13px;font-weight:500">${escapeAttr(run.provider_name)}</span>
+          <span class="badge badge-gray">${escapeAttr(run.sync_type)}</span>
+          ${run.status === 'finishing' ? '<span class="badge badge-amber" title="The VOD part is done; Jellyfin is still being updated (library scan, tags, playlists)">updating Jellyfin</span>' : ''}
           <span style="font-size:12px;color:var(--text3);font-family:'DM Mono',monospace">${dateStr}</span>
           <span style="font-size:11px;color:var(--text3);margin-left:auto">⏱ ${duration}</span>
         </div>
@@ -119,7 +140,7 @@ function renderHistoryRuns(runs) {
           ${run.movies_failed > 0 ? `<div class="run-number" style="color:var(--red)"><span>${run.movies_failed}</span>failed</div>` : ''}
         </div>
         ${catPills ? `<div class="run-cats">${catPills}</div>` : ''}
-        ${run.error_message ? `<div style="margin-top:8px;font-size:12px;color:var(--red);font-family:'DM Mono',monospace">${run.error_message}</div>` : ''}
+        ${run.error_message ? `<div style="margin-top:8px;font-size:12px;color:var(--red);font-family:'DM Mono',monospace">${escapeAttr(run.error_message)}</div>` : ''}
       </div>`;
   }).join('');
 }
@@ -262,7 +283,7 @@ function connectLibraryStream() {
     _libEventSource = null;
     // Reconnect after 5s if still on library page
     setTimeout(() => {
-      if (state.currentPage === 'library') connectLibraryStream();
+      if (state.currentPage === 'library' && !state.sessionExpired) connectLibraryStream();
     }, 5000);
   };
 }
@@ -342,7 +363,7 @@ let _dlPollActive = false;
 
 async function loadLibDownloads() {
   try {
-    const data = await api('/api/activity');
+    const data = await _fetchActivity();
     renderLibDownloads(data);
     // Start polling only if there are active downloads
     const hasActive = data.downloads && data.downloads.length > 0;
@@ -353,26 +374,121 @@ async function loadLibDownloads() {
       stopDownloadPolling();
     }
   } catch (e) {
-    // If endpoint not available, hide section silently
+    if (e && e.sessionExpired) return;
     const el = document.getElementById('lib-downloads');
+    // Gave up after POLL_STALE_MS, or the connection failed: say so and let the
+    // poller fill the panel in, instead of hiding it until the next visit.
+    if (e && (e.name === 'AbortError' || e.name === 'TypeError')) {
+      const body = document.getElementById('lib-dl-body');
+      const countEl = document.getElementById('lib-dl-count');
+      if (el) el.style.display = '';
+      if (countEl) countEl.textContent = '';
+      if (body) body.innerHTML = '<div class="dl-item" style="color:var(--text3)">Couldn\'t load downloads — retrying…</div>';
+      if (!_dlPollTimer && !state.sessionExpired) {
+        _dlPollActive = true;
+        _dlPollTimer = setInterval(pollLibDownloads, 5000);
+      }
+      return;
+    }
+    // Endpoint not available: hide the section silently
     if (el) el.style.display = 'none';
   }
 }
 
+// ── One request at a time, per poller ──
+// A slow Radarr/Sonarr can make one /api/activity answer take longer than the
+// poll interval, so a poller skips its tick while its last request is out.
+// api() has no timeout: a request still out after POLL_STALE_MS is given up on
+// and CANCELLED. Merely dropping its answer would leave the connection open,
+// and six open requests to one host (HTTP/1.1) block every other request the
+// page makes. Without AbortController (very old browsers) an abandoned request
+// can't be cancelled, so a poller keeps at most one of them.
+const POLL_STALE_MS = 90000;
+const _canAbort = typeof AbortController === 'function';
+// Monotonic where available: a wall-clock jump (NTP fixing the time after
+// boot) must not stall or rush the pollers.
+function _pollClock() {
+  return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+}
+// GET /api/activity. Never through the HTTP cache: while a request for a URL is
+// out, Chromium makes later identical GETs wait behind it (the cache lock), so
+// one stuck request stalled every poll after it. A call without its own signal
+// (a one-off refresh) gets one that gives up after POLL_STALE_MS.
+function _fetchActivity(signal) {
+  let timer = null;
+  if (!signal && _canAbort) {
+    const ctrl = new AbortController();
+    timer = setTimeout(() => ctrl.abort(), POLL_STALE_MS);
+    signal = ctrl.signal;
+  }
+  const opts = signal ? { signal, cache: 'no-store' } : { cache: 'no-store' };
+  return api('/api/activity', opts).finally(() => { if (timer) clearTimeout(timer); });
+}
+function _newPoller() { return { since: 0, token: 0, ctrl: null, current: null, abandoned: 0 }; }
+// A new request for this tick ({ req, signal }), or null to skip the tick.
+function _pollStart(p) {
+  if (p.current) {
+    if (_pollClock() - p.since < POLL_STALE_MS || !_pollAbandon(p)) return null;
+  }
+  const ctrl = _canAbort ? new AbortController() : null;
+  const req = { tok: ++p.token, abandoned: false };
+  p.current = req; p.ctrl = ctrl; p.since = _pollClock();
+  return { req, signal: ctrl ? ctrl.signal : undefined };
+}
+// Give up on the outstanding request. False when it can't be (no
+// AbortController and one abandoned request is already out).
+function _pollAbandon(p) {
+  if (!p.current) return true;
+  if (p.ctrl) p.ctrl.abort();
+  else if (p.abandoned >= 1) return false;
+  else { p.abandoned++; p.current.abandoned = true; }
+  p.current = null; p.ctrl = null; p.since = 0;
+  return true;
+}
+// A request finished (answer, error or abort). True when its answer is still wanted.
+function _pollEnd(p, req) {
+  if (req.abandoned) { p.abandoned--; return false; }
+  if (p.current === req) { p.current = null; p.ctrl = null; p.since = 0; }
+  return req.tok === p.token;
+}
+// Stop: an answer still on its way belongs to the stopped poller.
+function _pollStop(p) {
+  p.token++;
+  _pollAbandon(p);   // if it can't be abandoned it keeps the slot; its answer is ignored
+}
+
+const _dlPoller = _newPoller();
+let _dlPollErrors = 0;    // failed polls in a row
+let _dlPollRetryAt = 0;   // _pollClock() before which a tick is skipped after an error
 async function pollLibDownloads() {
   if (state.currentPage !== 'library') { stopDownloadPolling(); return; }
+  if (_dlPollErrors && _pollClock() < _dlPollRetryAt) return;
+  const start = _pollStart(_dlPoller);
+  if (!start) return;
+  let data = null, failed = false;
   try {
-    const data = await api('/api/activity');
-    renderLibDownloads(data);
-    if (!data.downloads || data.downloads.length === 0) {
-      stopDownloadPolling();
-    }
-  } catch (e) { stopDownloadPolling(); }
+    data = await _fetchActivity(start.signal);
+  } catch (e) { failed = true; if (e && e.sessionExpired) { stopDownloadPolling(); return; } }
+  if (!_pollEnd(_dlPoller, start.req)) return;   // given up on, or polling stopped
+  if (failed) {
+    // A backend restart or a dropped connection: keep polling, backing off to
+    // one try a minute, instead of freezing the panel until the next visit.
+    _dlPollErrors++;
+    _dlPollRetryAt = _pollClock() + Math.min(5000 * 2 ** (_dlPollErrors - 1), 60000);
+    return;
+  }
+  _dlPollErrors = 0;
+  renderLibDownloads(data);
+  if (!data.downloads || data.downloads.length === 0) {
+    stopDownloadPolling();
+  }
 }
 
 function stopDownloadPolling() {
   if (_dlPollTimer) { clearInterval(_dlPollTimer); _dlPollTimer = null; }
   _dlPollActive = false;
+  _dlPollErrors = 0;
+  _pollStop(_dlPoller);
 }
 
 function renderLibDownloads(data) {
@@ -400,13 +516,13 @@ function renderLibDownloads(data) {
     const statusClass = rawStatus === 'stuck' ? 'stuck' :
       rawStatus === 'import_blocked' ? 'blocked' :
       rawStatus.includes('import') ? 'importing' : rawStatus.includes('queue') ? 'queued' : 'downloading';
-    const eta = d.eta ? ` · ${d.eta}` : '';
-    const qual = d.quality ? ` · ${d.quality}` : '';
-    const reqBy = d.requested_by ? `<span class="dl-requested-by">${d.requested_by}</span>` : '';
+    const eta = d.eta ? ` · ${escapeAttr(d.eta)}` : '';
+    const qual = d.quality ? ` · ${escapeAttr(d.quality)}` : '';
+    const reqBy = d.requested_by ? `<span class="dl-requested-by">${escapeAttr(d.requested_by)}</span>` : '';
     return `<div class="dl-item">
-      <div class="dl-item-title">${d.title || 'Unknown'}${d.episode ? ' — ' + d.episode : ''}</div>
+      <div class="dl-item-title">${escapeAttr(d.title || 'Unknown')}${d.episode ? ' — ' + escapeAttr(d.episode) : ''}</div>
       ${reqBy}
-      <div class="dl-item-status ${statusClass}">${status}${qual}${eta}</div>
+      <div class="dl-item-status ${statusClass}">${escapeAttr(status)}${qual}${eta}</div>
       <div class="dl-item-bar"><div class="dl-item-bar-fill" style="width:${pct}%"></div></div>
       <div class="dl-item-pct">${pct}%</div>
     </div>`;
@@ -454,11 +570,11 @@ function openSyncDetailModal() {
   const body = document.getElementById('sync-detail-body');
   if (!overlay || !body) return;
   body.innerHTML = _buildSyncDetailHtml(_lastSyncData);
-  overlay.style.display = '';
+  showModal('modal-sync-detail');
 }
 
 function closeSyncDetailModal() {
-  document.getElementById('modal-sync-detail').style.display = 'none';
+  closeModal('modal-sync-detail');
 }
 
 function _syncStepHtml(icon, label, status, detail) {
@@ -490,7 +606,7 @@ function _buildSyncDetailHtml(d) {
       let ch = [];
       if (l.added > 0) ch.push(`<span style="color:var(--green)">+${l.added}</span>`);
       if (l.removed > 0) ch.push(`<span style="color:var(--red)">-${l.removed}</span>`);
-      return `${l.name} (${ch.join(', ')})`;
+      return `${escapeAttr(l.name)} (${ch.join(', ')})`;
     });
     html += _syncStepHtml('↻', 'List Refresh', 'ok', parts.join(' · '));
   } else {
@@ -502,7 +618,7 @@ function _buildSyncDetailHtml(d) {
   if (providers.length > 0) {
     providers.forEach(p => {
       if (p.status === 'failed') {
-        html += _syncStepHtml('⟳', `VOD: ${p.name}`, 'failed', p.error || 'Sync failed');
+        html += _syncStepHtml('⟳', `VOD: ${escapeAttr(p.name)}`, 'failed', escapeAttr(p.error || 'Sync failed'));
         return;
       }
       let lines = [];
@@ -530,17 +646,17 @@ function _buildSyncDetailHtml(d) {
       }
       // New titles
       if (p.movie_titles && p.movie_titles.length > 0) {
-        lines.push(`<span style="color:var(--text3)">New movies: ${p.movie_titles.join(', ')}</span>`);
+        lines.push(`<span style="color:var(--text3)">New movies: ${escapeAttr(p.movie_titles.join(', '))}</span>`);
       }
       if (p.series_titles && p.series_titles.length > 0) {
-        lines.push(`<span style="color:var(--text3)">New series: ${p.series_titles.join(', ')}</span>`);
+        lines.push(`<span style="color:var(--text3)">New series: ${escapeAttr(p.series_titles.join(', '))}</span>`);
       }
       // New categories
       if (p.new_categories && p.new_categories.length > 0) {
-        lines.push(`<span style="color:var(--amber)">${p.new_categories.length} new categories: ${p.new_categories.join(', ')}</span>`);
+        lines.push(`<span style="color:var(--amber)">${p.new_categories.length} new categories: ${escapeAttr(p.new_categories.join(', '))}</span>`);
       }
       const dur = p.duration_seconds ? ` (${_fmtDuration(p.duration_seconds)})` : '';
-      html += _syncStepHtml('⟳', `VOD: ${p.name}${dur}`, 'ok', lines.join('<br>') || 'No changes');
+      html += _syncStepHtml('⟳', `VOD: ${escapeAttr(p.name)}${dur}`, 'ok', lines.join('<br>') || 'No changes');
     });
   }
 
@@ -570,7 +686,7 @@ function _buildSyncDetailHtml(d) {
 
   // 6. EPG
   if (d.epg_synced) {
-    html += _syncStepHtml('📡', 'Live TV EPG', 'ok', d.epg_details || 'EPG data refreshed');
+    html += _syncStepHtml('📡', 'Live TV EPG', 'ok', escapeAttr(d.epg_details || 'EPG data refreshed'));
   }
 
   // 7. Cleanup
@@ -820,22 +936,22 @@ function renderLibCard(item) {
 
   // Normal in-library card
   const poster = item.poster_path
-    ? `<img src="https://image.tmdb.org/t/p/w185${item.poster_path}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
+    ? `<img alt="" src="https://image.tmdb.org/t/p/w185${escapeAttr(item.poster_path)}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
     : `<div class="lib-card-poster-placeholder">◫</div>`;
 
   let badges = '';
   if (item.source === 'radarr' || item.source === 'sonarr') badges += `<span class="badge badge-green" style="font-size:9px;padding:1px 5px">DL</span>`;
-  if (item.source_tag) badges += `<span class="badge badge-accent" style="font-size:9px;padding:1px 5px">${item.source_tag}</span>`;
+  if (item.source_tag) badges += `<span class="badge badge-accent" style="font-size:9px;padding:1px 5px">${escapeAttr(item.source_tag)}</span>`;
   const sourceBadge = badges ? `<div class="lib-card-source" style="display:flex;flex-direction:column;gap:3px;align-items:flex-end">${badges}</div>` : '';
 
   return `
-    <div class="lib-card" data-tmdb-id="${item.tmdb_id}" onclick="showMediaDetail(${item.tmdb_id}, '${escapeAttr(item.media_type)}')">
+    <div class="lib-card" data-tmdb-id="${item.tmdb_id}" onclick="showMediaDetail(${item.tmdb_id}, '${escapeJS(item.media_type)}')">
       <div class="lib-card-poster">
         ${poster}
         ${sourceBadge}
       </div>
       <div class="lib-card-info">
-        <div class="lib-card-title" title="${escapeAttr(item.title)}">${item.title}</div>
+        <div class="lib-card-title" title="${escapeAttr(item.title)}">${escapeAttr(item.title)}</div>
         <div class="lib-card-meta">${item.year || '—'} · ${item.media_type === 'movie' ? '🎬' : '📺'}</div>
       </div>
     </div>`;
@@ -846,6 +962,19 @@ let _addArrTvdbId = null;
 let _addArrMediaType = 'movie';
 let _epPickerSeasons = [];  // cached season list for current series
 let _epPickerLoaded = {};   // season_number -> episodes array
+// Add, Manage Episodes and Download More share one modal and one picker. Each
+// opening clears everything the picker knows about the last title and takes a
+// new token; an answer that arrives after the modal was opened again belongs to
+// the earlier title and is dropped.
+let _epPickerToken = 0;
+function _resetEpisodePicker() {
+  _epPickerSeasons = [];
+  _epPickerLoaded = {};
+  _vodEpisodes = {};
+  _dlEpisodes = {};
+  _unairedPerSeason = {};
+  return ++_epPickerToken;
+}
 
 // Helper: resolve poster/backdrop URLs (TVDB sends full URLs, TMDB sends relative paths)
 function _imgUrl(path, size) {
@@ -860,6 +989,7 @@ async function showAddToRadarrModal(tmdbId, title, year, posterPath) {
 
 async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType, tvdbId) {
   _resetManageMode(); // ensure modal is in add mode
+  const tok = _resetEpisodePicker();
   _addArrTmdbId = tmdbId;
   _addArrTvdbId = tvdbId || 0;
   _addArrMediaType = mediaType || 'movie';
@@ -874,18 +1004,20 @@ async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType, tvd
   const info = document.getElementById('add-radarr-movie-info');
   const posterSrc = _imgUrl(posterPath, 'w185');
   const posterImg = posterSrc
-    ? `<img src="${posterSrc}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
+    ? `<img alt="" src="${escapeAttr(posterSrc)}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
     : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
-  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${title || 'Unknown'}</div><div style="color:var(--text2);font-size:14px">${year || ''}</div></div>`;
+  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${escapeAttr(title || 'Unknown')}</div><div style="color:var(--text2);font-size:14px">${escapeAttr(year || '')}</div></div>`;
 
   const select = document.getElementById('add-radarr-quality');
   select.innerHTML = '<option value="">Loading...</option>';
   try {
     const endpoint = isSeries ? '/api/lists/sonarr-profiles' : '/api/lists/radarr-profiles';
     const profiles = await api(endpoint);
-    select.innerHTML = profiles.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+    if (tok !== _epPickerToken) return;
+    select.innerHTML = _profileOptionsHtml(profiles);
   } catch (e) {
-    select.innerHTML = '<option value="">Failed to load profiles</option>';
+    if (tok !== _epPickerToken) return;
+    select.innerHTML = '<option value="">Default (couldn\'t load the list)</option>';
   }
 
   document.getElementById('sonarr-extra-fields').style.display = isSeries ? 'block' : 'none';
@@ -893,8 +1025,6 @@ async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType, tvd
   if (monitorWrap) monitorWrap.style.display = 'none';
 
   // Reset episode picker state
-  _epPickerSeasons = [];
-  _epPickerLoaded = {};
   document.getElementById('episode-picker').style.display = 'none';
   document.getElementById('episode-picker-seasons').innerHTML = '';
   document.getElementById('add-sonarr-monitor').value = 'all';
@@ -915,7 +1045,7 @@ async function confirmAddToArr() {
   const qualityId = document.getElementById('add-radarr-quality').value;
   const isTvdbOnly = !_addArrTmdbId && _addArrTvdbId;
   const body = isTvdbOnly ? { tvdb_ids: [_addArrTvdbId] } : { tmdb_ids: [_addArrTmdbId] };
-  if (qualityId) body.quality_profile_id = parseInt(qualityId);
+  if (qualityId) body.quality_profile_override = parseInt(qualityId);
   if (isSeries) {
     const monitorVal = document.getElementById('add-sonarr-monitor').value;
     body.season_folder = document.getElementById('add-sonarr-season-folder').checked;
@@ -976,6 +1106,7 @@ async function onMonitorPresetChange(val) {
   picker.style.display = 'block';
   modalBox.classList.add('ep-expanded');
   if (_epPickerSeasons.length > 0) return; // already loaded
+  const tok = _epPickerToken;
   const loading = document.getElementById('episode-picker-loading');
   loading.style.display = 'block';
   try {
@@ -984,9 +1115,11 @@ async function onMonitorPresetChange(val) {
       ? `/api/discover/seasons-tvdb/${_addArrTvdbId}`
       : `/api/discover/seasons/${_addArrTmdbId}`;
     const data = await api(seasonsUrl);
+    if (tok !== _epPickerToken) return;
     _epPickerSeasons = (data.seasons || []).filter(s => s.season_number > 0);
     _renderSeasons();
   } catch (e) {
+    if (tok !== _epPickerToken) return;
     document.getElementById('episode-picker-seasons').innerHTML = '<div style="padding:12px;color:var(--text3)">Failed to load seasons</div>';
   }
   loading.style.display = 'none';
@@ -1000,7 +1133,7 @@ function _renderSeasons() {
       <div class="ep-picker-season-header" onclick="toggleSeasonAccordion(${s.season_number})">
         <span class="ep-arrow" id="ep-arrow-${s.season_number}">▶</span>
         <input type="checkbox" class="ep-picker-season-check" onclick="event.stopPropagation();toggleSeasonAll(${s.season_number}, this.checked)">
-        <span>${s.name || 'Season ' + s.season_number}${airYear}</span>
+        <span>${escapeAttr(s.name || 'Season ' + s.season_number)}${airYear}</span>
         <span class="ep-count">${s.episode_count} ep</span>
       </div>
       <div class="ep-picker-episodes" id="ep-list-${s.season_number}"></div>
@@ -1020,6 +1153,7 @@ async function toggleSeasonAccordion(seasonNum) {
   list.classList.add('open');
   arrow.classList.add('open');
   if (!_epPickerLoaded[seasonNum]) {
+    const tok = _epPickerToken;
     const tmdbId = _downloadMoreTmdbId || _addArrTmdbId;
     const isTvdbOnly = !tmdbId && _addArrTvdbId;
     list.innerHTML = '<div style="padding:8px 28px;color:var(--text3);font-size:12px">Loading...</div>';
@@ -1028,9 +1162,11 @@ async function toggleSeasonAccordion(seasonNum) {
         ? `/api/discover/season-tvdb/${_addArrTvdbId}/${seasonNum}`
         : `/api/discover/season/${tmdbId}/${seasonNum}`;
       const data = await api(epUrl);
+      if (tok !== _epPickerToken) return;
       _epPickerLoaded[seasonNum] = data.episodes || [];
       _renderEpisodes(seasonNum);
     } catch (e) {
+      if (tok !== _epPickerToken) return;
       list.innerHTML = '<div style="padding:8px 28px;color:var(--text3);font-size:12px">Failed to load</div>';
     }
   }
@@ -1053,15 +1189,15 @@ function _renderEpisodes(seasonNum) {
       return `<label class="ep-picker-ep ep-have">
         <input type="checkbox" checked disabled data-season="${seasonNum}" data-episode="${ep.episode_number}">
         <span class="ep-num">${epNum}</span>
-        <span class="ep-title" title="${escapeAttr(title)}">${title}</span>
+        <span class="ep-title" title="${escapeAttr(title)}">${escapeAttr(title)}</span>
         <span class="ep-dl-badge ${badgeClass}">${badgeText}</span>
       </label>`;
     }
     return `<label class="ep-picker-ep">
       <input type="checkbox" data-season="${seasonNum}" data-episode="${ep.episode_number}" onchange="updateSeasonCheckbox(${seasonNum})">
       <span class="ep-num">${epNum}</span>
-      <span class="ep-title" title="${escapeAttr(title)}">${title}</span>
-      <span class="ep-date">${airDate}</span>
+      <span class="ep-title" title="${escapeAttr(title)}">${escapeAttr(title)}</span>
+      <span class="ep-date">${escapeAttr(airDate)}</span>
     </label>`;
   }).join('');
   _updateSeasonStatus(seasonNum, eps.length);
@@ -1152,8 +1288,7 @@ let _manageTmdbId = null;
 
 async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
   _manageTmdbId = tmdbId;
-  _epPickerSeasons = [];
-  _epPickerLoaded = {};
+  const tok = _resetEpisodePicker();
 
   const modalBox = document.getElementById('add-arr-modal-box');
   modalBox.className = 'modal modal-arr ep-expanded';
@@ -1163,9 +1298,9 @@ async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
   const info = document.getElementById('add-radarr-movie-info');
   const managePosterSrc = _imgUrl(posterPath, 'w185');
   const posterImg = managePosterSrc
-    ? `<img src="${managePosterSrc}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
+    ? `<img alt="" src="${escapeAttr(managePosterSrc)}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
     : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
-  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${title || 'Unknown'}</div><div style="color:var(--text2);font-size:14px">${year || ''}</div></div>`;
+  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${escapeAttr(title || 'Unknown')}</div><div style="color:var(--text2);font-size:14px">${escapeAttr(year || '')}</div></div>`;
 
   // Hide add-specific fields
   document.getElementById('add-radarr-quality').parentElement.style.display = 'none';
@@ -1189,6 +1324,7 @@ async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
   // Load episodes from Sonarr
   try {
     const data = await api(`/api/discover/sonarr-episodes/${tmdbId}`);
+    if (tok !== _epPickerToken) return;
     if (!data.in_sonarr) {
       container.innerHTML = '<div style="padding:12px;color:var(--text3)">Series not found in Sonarr</div>';
       loading.style.display = 'none';
@@ -1228,12 +1364,13 @@ async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
         return `<label class="ep-picker-ep">
           <input type="checkbox" ${ep.monitored ? 'checked' : ''} data-season="${sn}" data-episode="${ep.episodeNumber}" onchange="updateSeasonCheckbox(${sn})">
           <span class="ep-num">${epNum}</span>
-          <span class="ep-title" title="${escapeAttr(ep.title || '')}">${ep.title || ''}</span>
+          <span class="ep-title" title="${escapeAttr(ep.title || '')}">${escapeAttr(ep.title || '')}</span>
           ${dlBadge}
         </label>`;
       }).join('');
     }
   } catch (e) {
+    if (tok !== _epPickerToken) return;
     container.innerHTML = '<div style="padding:12px;color:var(--text3)">Failed to load episodes</div>';
   }
   loading.style.display = 'none';
@@ -1273,11 +1410,7 @@ let _unairedPerSeason = {};  // {season: count} unaired episodes from Sonarr
 
 async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
   _downloadMoreTmdbId = tmdbId;
-  _vodEpisodes = {};
-  _dlEpisodes = {};
-  _unairedPerSeason = {};
-  _epPickerSeasons = [];
-  _epPickerLoaded = {};
+  const tok = _resetEpisodePicker();
 
   const modalBox = document.getElementById('add-arr-modal-box');
   modalBox.className = 'modal modal-arr ep-expanded';
@@ -1287,9 +1420,9 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
   const info = document.getElementById('add-radarr-movie-info');
   const dlMorePosterSrc = _imgUrl(posterPath, 'w185');
   const posterImg = dlMorePosterSrc
-    ? `<img src="${dlMorePosterSrc}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
+    ? `<img alt="" src="${escapeAttr(dlMorePosterSrc)}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
     : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
-  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${title || 'Unknown'}</div><div style="color:var(--text2);font-size:14px">${year || ''}</div></div>`;
+  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${escapeAttr(title || 'Unknown')}</div><div style="color:var(--text2);font-size:14px">${escapeAttr(year || '')}</div></div>`;
 
   // Show quality profile selector (needed for Sonarr add)
   document.getElementById('add-radarr-quality').parentElement.style.display = '';
@@ -1300,9 +1433,11 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
   select.innerHTML = '<option value="">Loading...</option>';
   try {
     const profiles = await api('/api/lists/sonarr-profiles');
-    select.innerHTML = profiles.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+    if (tok !== _epPickerToken) return;
+    select.innerHTML = _profileOptionsHtml(profiles);
   } catch (e) {
-    select.innerHTML = '<option value="">Failed to load profiles</option>';
+    if (tok !== _epPickerToken) return;
+    select.innerHTML = '<option value="">Default (couldn\'t load the list)</option>';
   }
 
   // Show monitor new episodes toggle
@@ -1340,6 +1475,7 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
       api(`/api/discover/vod-episodes/${tmdbId}`),
       api(`/api/discover/sonarr-episodes/${tmdbId}`).catch(() => ({ in_sonarr: false })),
     ]);
+    if (tok !== _epPickerToken) return;
 
     if (vodData.has_episodes) {
       _vodEpisodes = vodData.episodes;
@@ -1369,6 +1505,7 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
     _epPickerSeasons = (seasonsData.seasons || []).filter(s => s.season_number > 0);
     _renderSeasonsWithVod();
   } catch (e) {
+    if (tok !== _epPickerToken) return;
     container.innerHTML = '<div style="padding:12px;color:var(--text3)">Failed to load seasons</div>';
   }
   loading.style.display = 'none';
@@ -1430,7 +1567,7 @@ async function confirmDownloadMore() {
       method: 'POST',
       body: {
         tmdb_ids: [_downloadMoreTmdbId],
-        quality_profile_id: qualityId ? parseInt(qualityId) : undefined,
+        quality_profile_override: qualityId ? parseInt(qualityId) : undefined,
         selected_episodes: selected,
         monitor_new: document.getElementById('dl-more-monitor-new')?.checked || false,
       },
@@ -1532,8 +1669,8 @@ function renderSourcePills(breakdown) {
     .sort((a,b) => b[1]-a[1])
     .map(([tag, count]) => `
       <button class="badge ${active === tag ? 'badge-accent' : 'badge-gray'}" style="cursor:pointer;font-size:12px;padding:4px 10px"
-        onclick="filterByTag('${escapeAttr(tag)}')">
-        ${tag} <span style="opacity:0.6;margin-left:4px">${count}</span>
+        onclick="filterByTag('${escapeJS(tag)}')">
+        ${escapeAttr(tag)} <span style="opacity:0.6;margin-left:4px">${count}</span>
       </button>`).join('');
   el.innerHTML = allBtn + pills;
 }
@@ -1551,33 +1688,47 @@ function filterByTag(tag) {
   loadLibrary();
 }
 
+// Which opening of the shared title-detail modal an answer belongs to (#170).
+// The modal showed whichever answer arrived LAST: a slow detail for an
+// earlier title replaced the one clicked, and a series' episode state from an
+// earlier title fed the next one's "Bad copy?" buttons, which then asked to
+// replace an episode of the wrong show. Every opener takes a new number and
+// every await checks it.
+let _detailSeq = 0;
+function _detailOpening() {
+  _detailEpState = {};
+  return ++_detailSeq;
+}
+
 async function showMediaDetail(tmdbId, mediaType) {
+  const seq = _detailOpening();
   showModal('modal-media-detail');
   document.getElementById('detail-title').textContent = 'Loading...';
   document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
 
   try {
     const data = await api(`/api/library/item/${mediaType}/${tmdbId}`);
+    if (seq !== _detailSeq) return;
     document.getElementById('detail-title').textContent = data.title;
     const isSeries = mediaType === 'series';
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
-        ${data.poster_path ? `<img src="${_imgUrl(data.poster_path, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        ${data.poster_path ? `<img alt="" src="${escapeAttr(_imgUrl(data.poster_path, 'w185'))}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
-          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || '—'} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${data.rating || '—'}</div>
-          <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
+          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(data.year || '—')} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${escapeAttr(data.rating || '—')}</div>
+          <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${escapeAttr(data.overview || 'No overview available.')}</p>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
-            ${(data.genres||[]).map(g => `<span class="badge badge-gray">${g}</span>`).join('')}
+            ${(data.genres||[]).map(g => `<span class="badge badge-gray">${escapeAttr(g)}</span>`).join('')}
           </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap">
-            ${(data.tags||[]).map(t => `<span class="badge badge-accent">${t}</span>`).join('')}
+            ${(data.tags||[]).map(t => `<span class="badge badge-accent">${escapeAttr(t)}</span>`).join('')}
           </div>
           <div style="margin-top:16px;font-size:11px;color:var(--text3);font-family:'DM Mono',monospace">
-            Source: ${data.source} · Added: ${data.date_added ? new Date(data.date_added).toLocaleDateString() : '—'}
-            ${data.strm_path ? `<br>Path: ${data.strm_path}` : ''}
+            Source: ${escapeAttr(data.source)} · Added: ${data.date_added ? new Date(data.date_added).toLocaleDateString() : '—'}
+            ${data.strm_path ? `<br>Path: ${escapeAttr(data.strm_path)}` : ''}
           </div>
           ${data.is_vod ? `<label class="detail-follow-toggle" style="margin-top:10px" title="Turn this off to keep the title in the catalog but stop Tentacle writing or repairing its .strm files — for shows you have switched to downloaded copies">
-            <input type="checkbox" ${data.strm_managed ? 'checked' : ''} onchange="toggleStrmManaged('${mediaType}', ${tmdbId}, this.checked)">
+            <input type="checkbox" ${data.strm_managed ? 'checked' : ''} onchange="toggleStrmManaged('${escapeJS(mediaType)}', ${tmdbId}, this.checked)">
             <span class="detail-follow-label">Manage .strm files</span>
           </label>` : ''}
           ${data.source === 'radarr' ? `<div style="margin-top:10px">
@@ -1593,14 +1744,16 @@ async function showMediaDetail(tmdbId, mediaType) {
       ${isSeries ? '<div id="detail-episodes" style="margin-top:20px"><div class="loading-state" style="padding:16px 0"><div class="spinner"></div></div></div>' : ''}`;
 
     // For series, load episode breakdown
-    if (isSeries) _loadSeriesEpisodes(tmdbId, data);
+    if (isSeries) _loadSeriesEpisodes(tmdbId, data, seq);
 
     // Fetch trailer URL from TMDB in background
     api(`/api/library/tmdb/${mediaType}/${tmdbId}`).then(tmdbData => {
+      if (seq !== _detailSeq) return;
       const slot = document.getElementById('detail-trailer-slot');
       if (slot && tmdbData.trailer_url) slot.innerHTML = _trailerBtn(tmdbData.trailer_url);
     }).catch(() => {});
   } catch (e) {
+    if (seq !== _detailSeq) return;
     document.getElementById('detail-body').innerHTML = '<div class="empty-state"><p>Failed to load details</p></div>';
   }
 }
@@ -1689,11 +1842,18 @@ async function replaceCopy(mediaType, tmdbId, season, episode, btn) {
   }
 }
 
+let _fmSeq = 0;
 async function _fmLoad(q) {
   const list = document.getElementById('fm-list');
+  // Only the newest request may fill the list: an older answer (the previous
+  // title's, or an earlier search) arriving late would otherwise replace it,
+  // and picking from it would re-match THIS title to the other one's film.
+  const seq = ++_fmSeq, id = _fm.tmdbId;
+  const stale = () => seq !== _fmSeq || id !== _fm.tmdbId;
   list.innerHTML = `<div class="fm-note">${q ? 'Searching…' : 'Looking for likely matches…'}</div>`;
   try {
-    const d = await api(`/api/library/fix-match/movie/${_fm.tmdbId}/suggestions${q ? '?q=' + encodeURIComponent(q) : ''}`);
+    const d = await api(`/api/library/fix-match/movie/${id}/suggestions${q ? '?q=' + encodeURIComponent(q) : ''}`);
+    if (stale()) return;
     const langs = (d.audio_languages || []).map(l => l.name);
     const clues = [];
     if (d.actual_minutes) clues.push(`it plays ${d.actual_minutes} minutes`);
@@ -1704,7 +1864,7 @@ async function _fmLoad(q) {
     _fm.cands = d.candidates || [];
     list.innerHTML = _fm.cands.length ? _fm.cands.map((c, i) => `
       <button class="fm-cand" onclick="_fmPick(${i})">
-        ${c.poster_path ? `<img src="${_imgUrl(c.poster_path, 'w92')}" loading="lazy">` : '<div class="fm-noposter"></div>'}
+        ${c.poster_path ? `<img alt="" src="${escapeAttr(_imgUrl(c.poster_path, 'w92'))}" loading="lazy">` : '<div class="fm-noposter"></div>'}
         <span class="fm-cand-text"><span class="fm-cand-title">${escapeAttr(c.title)}</span>
           <span class="fm-cand-meta">${escapeAttr([c.year, c.runtime ? c.runtime + ' min' : '', c.language_name || ''].filter(Boolean).join(' · '))}
             ${c.runtime_matches ? '<span class="badge badge-green">same length</span>' : ''}
@@ -1713,6 +1873,7 @@ async function _fmLoad(q) {
           ${c.overview ? `<span class="fm-cand-ov">${escapeAttr(c.overview)}</span>` : ''}</span>
       </button>`).join('') : '<div class="fm-note">No matches found — try searching for the title you saw.</div>';
   } catch (e) {
+    if (stale()) return;
     list.innerHTML = `<div class="fm-note">${escapeAttr(e.message || 'Could not load suggestions')}</div>`;
   }
 }
@@ -1775,13 +1936,16 @@ async function loadMatchSuspects() {
     card.style.display = '';
     document.getElementById('wrong-match-list').innerHTML = suspects.length ? suspects.map(x => `
       <div class="wm-row">
-        ${x.poster_path ? `<img src="${_imgUrl(x.poster_path, 'w92')}" class="wm-poster" loading="lazy" onerror="this.style.visibility='hidden'">` : '<div class="wm-poster"></div>'}
+        ${x.poster_path ? `<img alt="" src="${escapeAttr(_imgUrl(x.poster_path, 'w92'))}" class="wm-poster" loading="lazy" onerror="this.style.visibility='hidden'">` : '<div class="wm-poster"></div>'}
         <div class="wm-info">
           <div class="wm-title">${escapeAttr(x.title || '')}</div>
-          <div class="wm-meta">Plays <strong>${x.actual_minutes} min</strong> — this film is ${x.expected_minutes} min</div>
+          <div class="wm-meta">${x.reason === 'relist_followed' ? 'Your provider re-listed its stream under a new id; your fix followed it'
+            : x.reason === 'relist_blocked' ? 'A re-listed stream, labelled like one you blocked as the wrong movie'
+            : `Plays <strong>${x.actual_minutes} min</strong> — this film is ${x.expected_minutes} min`}</div>
         </div>
         <div class="wm-actions">
-          <button class="btn btn-primary btn-sm" onclick="openFixMatch(${x.tmdb_id}, '${escapeJS(x.title || '')}')">Fix it</button>
+          ${x.reason === 'relist_followed' ? `<button class="btn btn-primary btn-sm" onclick="undoFollowedFix(${x.tmdb_id})">Undo</button>`
+            : `<button class="btn btn-primary btn-sm" onclick="openFixMatch(${x.tmdb_id}, '${escapeJS(x.title || '')}')">Fix it</button>`}
           <button class="btn btn-secondary btn-sm" onclick="dismissMatchSuspect(${x.tmdb_id})">It's fine</button>
         </div>
       </div>`).join('') : '<div class="wm-meta" style="padding:4px 0">Nothing flagged right now.</div>';
@@ -1794,6 +1958,12 @@ async function loadMatchSuspects() {
 
 async function dismissMatchSuspect(tmdbId) {
   try { await api(`/api/library/match-suspects/${tmdbId}/dismiss`, { method: 'POST' }); loadMatchSuspects(); }
+  catch (e) { toast(e.message, 'error'); }
+}
+
+async function undoFollowedFix(tmdbId) {
+  if (!confirm('The re-listed stream is not this film? Your fix goes back to the old stream, and the re-listed one is added by its own name on the next sync. If the old stream stays gone, this copy is removed after two syncs, like any film your provider dropped.')) return;
+  try { const r = await api(`/api/library/match-suspects/${tmdbId}/undo-follow`, { method: 'POST' }); toast(r.message || 'Undone'); loadMatchSuspects(); }
   catch (e) { toast(e.message, 'error'); }
 }
 
@@ -1831,7 +2001,7 @@ async function toggleStrmManaged(mediaType, tmdbId, enabled) {
 
 let _detailEpState = {}; // { vodEps, dlEps, tmdbId, loaded: {sn: true} }
 
-async function _loadSeriesEpisodes(tmdbId, seriesData) {
+async function _loadSeriesEpisodes(tmdbId, seriesData, seq = _detailSeq) {
   const container = document.getElementById('detail-episodes');
   if (!container) return;
 
@@ -1841,6 +2011,8 @@ async function _loadSeriesEpisodes(tmdbId, seriesData) {
       api(`/api/discover/vod-episodes/${tmdbId}`),
       api(`/api/discover/sonarr-episodes/${tmdbId}`).catch(() => ({ in_sonarr: false })),
     ]);
+    // Another title's detail since: its episode state must not become this one's.
+    if (seq !== _detailSeq) return;
 
     const seasons = (seasonsData.seasons || []).filter(s => s.season_number > 0);
     const vodEps = vodData.episodes || {};
@@ -1943,6 +2115,7 @@ async function _loadSeriesEpisodes(tmdbId, seriesData) {
 
     container.innerHTML = html;
   } catch (e) {
+    if (seq !== _detailSeq) return;
     container.innerHTML = '<div style="font-size:13px;color:var(--text3);padding:8px 0">Could not load episode data</div>';
   }
 }
@@ -1955,15 +2128,21 @@ async function detailToggleSeason(sn) {
   seasonEl.classList.add('open');
 
   const list = document.getElementById(`detail-ep-list-${sn}`);
-  if (_detailEpState.loaded[sn]) return; // already loaded
+  // The state of the title this season belongs to, taken now: everything
+  // below (the replace buttons included) is built from it, never from a
+  // later title's.
+  const epState = _detailEpState;
+  const seq = _detailSeq;
+  if (!epState.loaded || epState.loaded[sn]) return; // not ready, or already loaded
 
   list.innerHTML = '<div style="padding:8px 12px;color:var(--text3);font-size:12px">Loading...</div>';
   try {
-    const data = await api(`/api/discover/season/${_detailEpState.tmdbId}/${sn}`);
-    _detailEpState.loaded[sn] = true;
+    const data = await api(`/api/discover/season/${epState.tmdbId}/${sn}`);
+    if (seq !== _detailSeq || epState !== _detailEpState || !list.isConnected) return;
+    epState.loaded[sn] = true;
     const tmdbEps = data.episodes || [];
-    const vodEps = _detailEpState.vodEps;
-    const dlEps = _detailEpState.dlEps;
+    const vodEps = epState.vodEps;
+    const dlEps = epState.dlEps;
     const vod = vodEps[String(sn)] || vodEps[sn] || [];
     const dl = dlEps[String(sn)] || dlEps[sn] || [];
     const haveSet = new Set([...vod, ...dl]);
@@ -1976,7 +2155,7 @@ async function detailToggleSeason(sn) {
     for (const epNum of ownedNums) {
       if (!nameMap[epNum]) {
         const key = `${sn}-${epNum}`;
-        if (_detailEpState.sonarrEpMap[key]) nameMap[epNum] = _detailEpState.sonarrEpMap[key].title || '';
+        if (epState.sonarrEpMap[key]) nameMap[epNum] = epState.sonarrEpMap[key].title || '';
       }
     }
 
@@ -1997,10 +2176,10 @@ async function detailToggleSeason(sn) {
 
       rows += `<div class="detail-ep-row">
         <span class="ep-num">${epNum}</span>
-        <span class="detail-ep-name">${nameMap[epNum] || ''}</span>
+        <span class="detail-ep-name">${escapeAttr(nameMap[epNum] || '')}</span>
         ${badges.join('')}
         ${isDl && !isVod ? `<button class="ep-replace-btn" title="Bad copy? Get another one" aria-label="Bad copy? Get another one"
-          onclick="replaceCopy('series', ${_detailEpState.tmdbId}, ${sn}, ${epNum}, this)">↻</button>` : ''}
+          onclick="replaceCopy('series', ${epState.tmdbId}, ${sn}, ${epNum}, this)">↻</button>` : ''}
       </div>`;
     }
 
@@ -2012,74 +2191,80 @@ async function detailToggleSeason(sn) {
         const dateLabel = ep.air_date ? new Date(ep.air_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'TBA';
         rows += `<div class="detail-ep-row" style="opacity:0.5">
           <span class="ep-num">${ep.episode_number}</span>
-          <span class="detail-ep-name">${ep.name || ''}</span>
+          <span class="detail-ep-name">${escapeAttr(ep.name || '')}</span>
           <span class="ep-dl-badge" style="background:var(--bg3);color:var(--text3)">${dateLabel}</span>
         </div>`;
       }
     }
     list.innerHTML = rows;
   } catch {
+    if (seq !== _detailSeq) return;
     list.innerHTML = '<div style="padding:8px 12px;color:var(--text3);font-size:12px">Failed to load</div>';
   }
 }
 
 async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
+  const seq = _detailOpening();
   showModal('modal-media-detail');
   document.getElementById('detail-title').textContent = 'Loading...';
   document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
 
   try {
     const data = await api(`/api/library/item/${mediaType}/${tmdbId}`);
+    if (seq !== _detailSeq) return;
     document.getElementById('detail-title').textContent = data.title;
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
-        ${data.poster_path ? `<img src="${_imgUrl(data.poster_path, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        ${data.poster_path ? `<img alt="" src="${escapeAttr(_imgUrl(data.poster_path, 'w185'))}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
-          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || '—'} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${data.rating || '—'}</div>
-          <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
+          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(data.year || '—')} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${escapeAttr(data.rating || '—')}</div>
+          <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${escapeAttr(data.overview || 'No overview available.')}</p>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
-            ${(data.genres||[]).map(g => `<span class="badge badge-gray">${g}</span>`).join('')}
+            ${(data.genres||[]).map(g => `<span class="badge badge-gray">${escapeAttr(g)}</span>`).join('')}
           </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap">
-            ${(data.tags||[]).map(t => `<span class="badge badge-accent">${t}</span>`).join('')}
+            ${(data.tags||[]).map(t => `<span class="badge badge-accent">${escapeAttr(t)}</span>`).join('')}
           </div>
           <div style="margin-top:16px;font-size:11px;color:var(--text3);font-family:'DM Mono',monospace">
-            Source: ${data.source} · Added: ${data.date_added ? new Date(data.date_added).toLocaleDateString() : '—'}
-            ${data.strm_path ? `<br>Path: ${data.strm_path}` : ''}
+            Source: ${escapeAttr(data.source)} · Added: ${data.date_added ? new Date(data.date_added).toLocaleDateString() : '—'}
+            ${data.strm_path ? `<br>Path: ${escapeAttr(data.strm_path)}` : ''}
           </div>
         </div>
       </div>`;
   } catch {
+    if (seq !== _detailSeq) return;
     // Item not in library — fetch from TMDB for overview
     try {
       const data = await api(`/api/library/tmdb/${mediaType}/${tmdbId}`);
+      if (seq !== _detailSeq) return;
       const isSeries = mediaType === 'series';
       const arrLabel = isSeries ? 'Sonarr' : 'Radarr';
       document.getElementById('detail-title').textContent = data.title || title || 'Unknown';
       document.getElementById('detail-body').innerHTML = `
         <div class="detail-layout" style="display:flex;gap:20px">
-          ${data.poster_path ? `<img src="${_imgUrl(data.poster_path, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+          ${data.poster_path ? `<img alt="" src="${escapeAttr(_imgUrl(data.poster_path, 'w185'))}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
           <div style="flex:1">
-            <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || '—'} · ${data.runtime ? data.runtime+'m · ' : ''}★ ${data.rating || '—'}</div>
-            <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
+            <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(data.year || '—')} · ${data.runtime ? data.runtime+'m · ' : ''}★ ${escapeAttr(data.rating || '—')}</div>
+            <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${escapeAttr(data.overview || 'No overview available.')}</p>
             <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
-              ${(data.genres||[]).map(g => `<span class="badge badge-gray">${g}</span>`).join('')}
+              ${(data.genres||[]).map(g => `<span class="badge badge-gray">${escapeAttr(g)}</span>`).join('')}
             </div>
             <div style="margin-top:8px;padding-top:12px;border-top:1px solid var(--border)">
               <span class="badge" style="background:var(--red-dim);color:var(--red);margin-bottom:8px">Not in library</span>
               <div style="margin-top:8px">
-                <button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${tmdbId},'${escapeJS(data.title||'')}','${escapeJS(data.year||'')}','${escapeJS(data.poster_path||'')}','${mediaType}')">Add to ${arrLabel}</button>${_trailerBtn(data.trailer_url)}
+                <button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${tmdbId},'${escapeJS(data.title||'')}','${escapeJS(data.year||'')}','${escapeJS(data.poster_path||'')}','${escapeJS(mediaType)}')">Add to ${arrLabel}</button>${_trailerBtn(data.trailer_url)}
               </div>
             </div>
           </div>
         </div>`;
     } catch {
+      if (seq !== _detailSeq) return;
       document.getElementById('detail-title').textContent = title || 'Unknown';
       document.getElementById('detail-body').innerHTML = `
         <div class="detail-layout" style="display:flex;gap:20px">
-          ${posterPath ? `<img src="${_imgUrl(posterPath, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+          ${posterPath ? `<img alt="" src="${escapeAttr(_imgUrl(posterPath, 'w185'))}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
           <div style="flex:1">
-            <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${year || '—'}</div>
+            <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(year || '—')}</div>
             <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">Not in library yet.</p>
           </div>
         </div>`;
@@ -2120,7 +2305,7 @@ async function loadListCards() {
             <div style="width:36px;height:36px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">${icon}</div>
             <div style="flex:1;min-width:0">
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                <span style="font-size:15px;font-weight:600;color:var(--text)">${list.name}</span>
+                <span style="font-size:15px;font-weight:600;color:var(--text)">${escapeAttr(list.name)}</span>
                 ${list.auto_add_radarr ? '<span class="badge badge-green">Auto-grab</span>' : ''}
                 <div style="margin-left:auto;display:flex;gap:6px">
                   <button class="btn btn-secondary btn-sm" onclick="fetchList(${list.id})">Fetch</button>
@@ -2130,7 +2315,8 @@ async function loadListCards() {
               <div style="font-size:12px;color:var(--text3);margin-top:4px">
                 ${typeLabel} · Last fetched: ${lastFetched}${list.last_item_count ? ` · ${list.last_item_count} items` : ''}
               </div>
-              <div style="font-size:12px;color:var(--text3);margin-top:2px">Tag: ${list.tag}</div>
+              <div style="font-size:12px;color:var(--text3);margin-top:2px">Tag: ${escapeAttr(list.tag)}</div>
+              ${list.last_fetch_note ? `<div class="list-fetch-note" style="font-size:12px;color:var(--amber);margin-top:4px">⚠️ ${escapeHtml(list.last_fetch_note)}</div>` : ''}
             </div>
           </div>
           ${list.last_item_count ? `
@@ -2198,7 +2384,7 @@ async function loadListCoverageInline(listId) {
         ${addBtns}
       </div>`;
   } catch (e) {
-    el.innerHTML = `<div style="font-size:12px;color:var(--red)">${e.message}</div>`;
+    el.innerHTML = `<div style="font-size:12px;color:var(--red)">${escapeAttr(e.message)}</div>`;
   }
 }
 
@@ -2396,7 +2582,7 @@ async function loadAutoPlaylists() {
         const control = p.locked
           ? `<span title="Always on — remove the channel from the YouTube page to remove this" style="display:inline-block;width:36px;text-align:center;color:var(--green);font-size:14px;flex-shrink:0">&#10003;</span>`
           : `<label style="position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0;cursor:pointer">
-              <input type="checkbox" ${checked} onchange="toggleAutoPlaylist('${escapeAttr(p.key)}')"
+              <input type="checkbox" ${checked} aria-label="${escapeAttr(p.name || p.key)}" onchange="toggleAutoPlaylist('${escapeJS(p.key)}')"
                 style="opacity:0;width:0;height:0;position:absolute">
               <span style="position:absolute;top:0;left:0;right:0;bottom:0;background:${toggleBg};border-radius:10px;transition:0.2s"></span>
               <span style="position:absolute;top:2px;left:${togglePos};width:16px;height:16px;background:white;border-radius:50%;transition:0.2s"></span>
@@ -2405,8 +2591,8 @@ async function loadAutoPlaylists() {
           <div class="auto-pl-row">
             ${control}
             <div class="auto-pl-info">
-              <div style="font-size:13px;font-weight:500">${p.name}</div>
-              <div style="font-size:11px;color:var(--text3)">${p.origin}</div>
+              <div style="font-size:13px;font-weight:500">${escapeAttr(p.name)}</div>
+              <div style="font-size:11px;color:var(--text3)">${escapeAttr(p.origin)}</div>
             </div>
             <div class="auto-pl-actions">
               ${sortDrop}
@@ -2530,6 +2716,7 @@ async function pollResyncStatus() {
   try {
     s = await api('/api/smartlists/sync-status');
   } catch (e) {
+    if (e && e.sessionExpired) return;   // signing in reloads the page
     setTimeout(pollResyncStatus, 5000); // transient error — keep polling
     return;
   }
@@ -2664,7 +2851,8 @@ async function fetchList(id) {
     if (r.skipped_no_tmdb) msg += `, ${r.skipped_no_tmdb} skipped (no TMDB match)`;
     if (r.skipped_duplicate) msg += `, ${r.skipped_duplicate} skipped (duplicate)`;
     if (r.tagged) msg += `, ${r.tagged} tagged in library`;
-    toast(msg, 'success', 8000);
+    if (r.note) msg += `. ${r.note}`;
+    toast(msg, r.note ? 'info' : 'success', r.note ? 12000 : 8000);
     loadListCards();
   } catch (e) {
     loading.remove();
@@ -2699,7 +2887,7 @@ async function showListCoverage(listId, listName) {
     renderCoverage(data);
   } catch (e) {
     document.getElementById('coverage-loading').innerHTML =
-      `<div style="color:var(--red);font-size:13px">${e.message}</div>`;
+      `<div style="color:var(--red);font-size:13px">${escapeAttr(e.message)}</div>`;
   }
 }
 
@@ -2809,8 +2997,8 @@ function _applyCoverageFilter() {
   }
 
   if (showAdd) {
-    const missingMovies = data.missing_movies || data.missing.filter(m => m.media_type !== 'series').length;
-    const missingSeries = data.missing_series || data.missing.filter(m => m.media_type === 'series').length;
+    const missingMovies = data.missing_movies ?? data.missing.filter(m => m.media_type !== 'series').length;
+    const missingSeries = data.missing_series ?? data.missing.filter(m => m.media_type === 'series').length;
     let btnsHtml = '';
     if (missingMovies > 0) {
       btnsHtml += `<button class="btn btn-primary btn-sm coverage-add-all-action" data-target="radarr" onclick="addAllMissingToArr('radarr')">Add ${missingMovies} to Radarr</button>`;
@@ -2828,20 +3016,20 @@ function _applyCoverageFilter() {
 
 function coverageCard(item, showAdd = false) {
   const poster = item.poster_path
-    ? `<img src="${_imgUrl(item.poster_path, 'w200')}" alt="" loading="lazy">`
+    ? `<img src="${escapeAttr(_imgUrl(item.poster_path, 'w200'))}" alt="" loading="lazy">`
     : `<div class="no-poster">🎬</div>`;
   const year = item.year ? ` (${item.year})` : '';
   const isSeries = (item.media_type || 'movie') === 'series';
   const addBtn = showAdd
-    ? `<button class="card-add-btn" title="Add to ${isSeries ? 'Sonarr' : 'Radarr'}" data-tmdb="${item.tmdb_id}" onclick="event.stopPropagation();showAddToArrModal(${item.tmdb_id},'${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}','${isSeries ? 'series' : 'movie'}')">+</button>`
+    ? `<button class="card-add-btn" title="Add to ${isSeries ? 'Sonarr' : 'Radarr'}" data-tmdb="${item.tmdb_id}" onclick="event.stopPropagation();showAddToArrModal(${item.tmdb_id},'${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}','${escapeJS(isSeries ? 'series' : 'movie')}')">+</button>`
     : '';
   const mt = item.media_type || 'movie';
   const clickAttr = item.tmdb_id
-    ? `onclick="showCoverageDetail(${item.tmdb_id},'${mt}','${escapeJS(item.title||'')}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}')" style="cursor:pointer"`
+    ? `onclick="showCoverageDetail(${item.tmdb_id},'${escapeJS(mt)}','${escapeJS(item.title||'')}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}')" style="cursor:pointer"`
     : '';
   return `<div class="coverage-card" ${clickAttr}>
     ${poster}${addBtn}
-    <div class="card-title" title="${escapeAttr((item.title || '') + year)}">${item.title || 'Unknown'}${year}</div>
+    <div class="card-title" title="${escapeAttr((item.title || '') + year)}">${escapeAttr(item.title || 'Unknown')}${escapeAttr(year)}</div>
   </div>`;
 }
 
@@ -2894,6 +3082,7 @@ async function loadYouTubePage() {
     }
 
     await loadYouTubeChannels();
+    ytLoadTraffic();
 
     // An index started earlier may still be running — pick the progress back up.
     try {
@@ -2941,7 +3130,7 @@ function ytShowAddress(inputId, st) {
   // Offer what was worked out whenever the saved address is missing or does
   // not answer — one click, no LAN address to know.
   const offer = found && (!st.base_url || (r && !r.ok))
-    ? ` Detected <code>${escapeAttr(found)}</code> <a href="#" onclick="ytUseAddress('${inputId}', '${escapeJS(found)}');return false">use it</a>`
+    ? ` Detected <code>${escapeAttr(found)}</code> <a href="#" onclick="ytUseAddress('${escapeJS(inputId)}', '${escapeJS(found)}');return false">use it</a>`
     : '';
   if (!st.base_url) {
     status.innerHTML = 'Not set.' + offer;
@@ -3000,6 +3189,80 @@ async function ytSaveAddress(inputId) {
   }
 }
 
+// ── How Tentacle talks to YouTube ─────────────────────────────────────────
+function ytTrafficCounts(byPurpose) {
+  const parts = Object.entries(byPurpose || {}).map(([purpose, hosts]) =>
+    `${purpose} ${Object.values(hosts).reduce((a, b) => a + b, 0)}`);
+  const total = Object.values(byPurpose || {}).reduce(
+    (sum, hosts) => sum + Object.values(hosts).reduce((a, b) => a + b, 0), 0);
+  return parts.length ? `${total} (${parts.join(', ')})` : '0';
+}
+
+function ytShowTraffic(t) {
+  const summary = document.getElementById('yt-traffic-summary');
+  const status = document.getElementById('yt-traffic-status');
+  const apiStatus = document.getElementById('yt-api-status');
+  if (summary) {
+    summary.textContent = t.proxy_error ? "— held: the saved proxy can't be used"
+      : t.pause && t.pause.paused
+      ? `— paused after a bot check until ${String(t.pause.until || '').replace('T', ' ')}`
+      : (t.background_checks ? `— about every ${t.interval_minutes} min` : '— background checks off');
+    summary.style.color = t.proxy_error || (t.pause && t.pause.paused) ? 'var(--red)' : 'var(--text3)';
+  }
+  if (apiStatus) {
+    const api = t.api || {};
+    apiStatus.textContent = !api.configured ? 'Not set: RSS feeds are used for new uploads.'
+      : (api.off_for_seconds ? `Not in use right now (${api.reason}); RSS feeds and yt-dlp stand in.` : 'In use.');
+    apiStatus.style.color = api.configured && api.off_for_seconds ? 'var(--red)' : 'var(--text3)';
+  }
+  if (status) {
+    const lines = [`Requests to YouTube so far this hour: ${escapeAttr(ytTrafficCounts(t.this_hour))}`];
+    if (t.last_hour && t.last_hour.at) lines.push(`Last full hour: ${escapeAttr(ytTrafficCounts(t.last_hour.counts))}`);
+    if (t.proxy_error) {
+      // A saved proxy that can't be used holds every YouTube request, so
+      // nothing goes out from this network's own address by accident.
+      lines.push(`<span style="color:var(--red)">Nothing is sent to YouTube: the saved proxy can't be used ` +
+        `(${escapeAttr(t.proxy_error)}). Fix it below, or clear it to connect directly.</span>`);
+    }
+    if (t.pause && t.pause.paused) {
+      lines.push(`<span style="color:var(--red)">Paused after a bot check until ${escapeAttr(String(t.pause.until).replace('T', ' '))} ` +
+        `(block ${t.pause.blocks_in_a_row} in a row). Videos already found keep playing.</span>`);
+    }
+    status.innerHTML = lines.join('<br>');
+  }
+}
+
+async function ytLoadTraffic() {
+  try {
+    const t = await api('/api/youtube/traffic');
+    const set = (id, fn) => { const el = document.getElementById(id); if (el && document.activeElement !== el) fn(el); };
+    set('yt-bg-checks', el => { el.checked = !!t.background_checks; });
+    set('yt-interval', el => { el.value = t.interval_minutes; el.min = t.min_interval_minutes; });
+    set('yt-api-key', el => { el.value = t.api_key || ''; });
+    set('yt-proxy', el => { el.value = t.proxy || ''; });
+    ytShowTraffic(t);
+  } catch { /* the rest of the page does not depend on it */ }
+}
+
+async function ytSaveTraffic() {
+  const body = {
+    background_checks: !!document.getElementById('yt-bg-checks')?.checked,
+    interval_minutes: parseInt(document.getElementById('yt-interval')?.value || '60', 10) || 60,
+    api_key: (document.getElementById('yt-api-key')?.value || '').trim(),
+    proxy: (document.getElementById('yt-proxy')?.value || '').trim(),
+  };
+  try {
+    const t = await api('/api/youtube/traffic', { method: 'POST', body });
+    document.getElementById('yt-api-key').value = t.api_key || '';
+    document.getElementById('yt-interval').value = t.interval_minutes;
+    ytShowTraffic(t);
+    if (t.api_check && !t.api_check.ok) toast(`Saved, but the API key did not work: ${t.api_check.detail}`, 'error', 10000);
+    else toast('Saved', 'success');
+  } catch (e) {
+    toast(e.message, 'error', 10000);
+  }
+}
+
 async function loadTentacleAddress() {
   // Settings → Integrations: populate from the same source of truth.
   try {
@@ -3027,7 +3290,7 @@ async function loadYouTubeChannels() {
       : '';
     const checked = c.last_checked ? new Date(c.last_checked).toLocaleString() : 'not yet';
     return `<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
-      ${c.avatar_url ? `<img src="${escapeAttr(c.avatar_url)}" style="width:40px;height:40px;border-radius:50%;object-fit:cover">` : '<div style="width:40px;height:40px;border-radius:50%;background:var(--bg3)"></div>'}
+      ${c.avatar_url ? `<img alt="" src="${escapeAttr(c.avatar_url)}" style="width:40px;height:40px;border-radius:50%;object-fit:cover">` : '<div style="width:40px;height:40px;border-radius:50%;background:var(--bg3)"></div>'}
       <div style="flex:1">
         <div style="font-weight:600">${escapeAttr(c.title)} ${live} ${blocked}</div>
         <div style="font-size:12px;color:var(--text3)">${c.library_count} in library · keeps newest ${c.keep_count}${shorts}${replays} · checked ${escapeAttr(checked)}</div>
@@ -3164,6 +3427,7 @@ async function ytRefreshNow() {
 }
 
 let _ytPoll = null;   // the progress poll's interval handle, while an index runs
+function stopYouTubePolling() { if (_ytPoll) { clearInterval(_ytPoll); _ytPoll = null; } }
 
 function ytStartPolling() {
   if (_ytPoll) clearInterval(_ytPoll);
@@ -3189,7 +3453,7 @@ function ytStartPolling() {
     }
     clearInterval(_ytPoll); _ytPoll = null; t.remove();
     if (st.errors) {
-      toast(`Indexed with ${st.errors} error(s): ${escapeAttr(st.error_detail || '')}`, 'error', 10000);
+      toast(`Indexed with ${st.errors} error(s): ${st.error_detail || ''}`, 'error', 10000);
     } else {
       // "filling" means Jellyfin is still importing: the playlist is topped
       // up in the background as videos land, and the row appears on its own.
@@ -3215,8 +3479,8 @@ async function loadSmartLists() {
     const lists = data.smartlists || [];
 
     statusEl.innerHTML = data.path_accessible
-      ? `<span style="color:var(--green)">${data.path}</span>`
-      : `<span style="color:var(--red)">${data.path} (not accessible)</span>`;
+      ? `<span style="color:var(--green)">${escapeAttr(data.path)}</span>`
+      : `<span style="color:var(--red)">${escapeAttr(data.path)} (not accessible)</span>`;
 
     if (!lists.length) {
       el.innerHTML = '<div class="empty-state" style="padding:24px"><p>No SmartLists to manage yet. Run a sync first.</p></div>';
@@ -3238,9 +3502,9 @@ async function loadSmartLists() {
         : '<span class="badge" style="background:var(--amber-dim);color:var(--amber)">Missing</span>';
 
       html += `<tr style="border-bottom:1px solid var(--border)">
-        <td style="padding:8px 12px;color:var(--text)">${sl.name}</td>
-        <td style="padding:8px 12px"><span class="badge badge-accent">${sl.tag}</span></td>
-        <td style="padding:8px 12px;color:var(--text2)">${mediaLabel}</td>
+        <td style="padding:8px 12px;color:var(--text)">${escapeAttr(sl.name)}</td>
+        <td style="padding:8px 12px"><span class="badge badge-accent">${escapeAttr(sl.tag)}</span></td>
+        <td style="padding:8px 12px;color:var(--text2)">${escapeAttr(mediaLabel)}</td>
         <td style="padding:8px 12px;text-align:center">${statusBadge}</td>
       </tr>`;
     }
@@ -3292,14 +3556,14 @@ async function loadHomeScreen() {
       heroSelect.innerHTML = '<option value="">-- disabled --</option>';
       for (const p of playlists) {
         const selected = config.hero && config.hero.playlist_id === p.playlist_id ? ' selected' : '';
-        heroSelect.innerHTML += `<option value="${p.playlist_id}"${selected}>${p.name}</option>`;
+        heroSelect.innerHTML += `<option value="${escapeAttr(p.playlist_id)}"${selected}>${escapeAttr(p.name)}</option>`;
       }
     } catch (_) {
       // Fallback to home rows if endpoint fails
       heroSelect.innerHTML = '<option value="">-- disabled --</option>';
       for (const r of homeRows) {
         const selected = config.hero && config.hero.playlist_id === r.playlist_id ? ' selected' : '';
-        heroSelect.innerHTML += `<option value="${r.playlist_id}"${selected}>${r.display_name}</option>`;
+        heroSelect.innerHTML += `<option value="${escapeAttr(r.playlist_id)}"${selected}>${escapeAttr(r.display_name)}</option>`;
       }
     }
 
@@ -3324,7 +3588,7 @@ async function loadHomeScreen() {
     }
     const trailerAudioCheckbox = document.getElementById('home-hero-trailer-audio');
     if (trailerAudioCheckbox && config.hero) {
-      trailerAudioCheckbox.checked = config.hero.trailer_audio !== false;
+      trailerAudioCheckbox.checked = config.hero.trailer_audio === true;
     }
 
     // Merge Continue Watching + Next Up toggle
@@ -3335,10 +3599,10 @@ async function loadHomeScreen() {
       updateMergeContinueSlider(mergeOn);
     }
 
-    // Card focus previews: all / local_only / off (absent = all)
+    // Card focus previews: all / local_only / off (absent = local_only, androidtv#47)
     const previewsSelect = document.getElementById('card-previews-select');
     if (previewsSelect) {
-      previewsSelect.value = ['all', 'local_only', 'off'].includes(config.card_previews) ? config.card_previews : 'all';
+      previewsSelect.value = ['all', 'local_only', 'off'].includes(config.card_previews) ? config.card_previews : 'local_only';
     }
 
     if (!homeRows.length) {
@@ -3458,7 +3722,7 @@ function renderToolbarButtons(buttons) {
       <span style="display:flex;align-items:center;color:var(--text2);flex-shrink:0">${TOOLBAR_ICONS[btn.id] || ''}</span>
       <span class="row-name">${TOOLBAR_LABELS[btn.id] || btn.id}</span>
       <label style="position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0;margin-left:auto">
-        <input type="checkbox" ${btn.enabled ? 'checked' : ''} onchange="toggleToolbarButton(${i}, this.checked)" style="opacity:0;width:0;height:0">
+        <input type="checkbox" ${btn.enabled ? 'checked' : ''} aria-label="Show the ${escapeAttr(TOOLBAR_LABELS[btn.id] || btn.id)} button" onchange="toggleToolbarButton(${i}, this.checked)" style="opacity:0;width:0;height:0">
         <span style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:${btn.enabled ? 'var(--accent)' : 'var(--bg3)'};border-radius:10px;transition:.2s"></span>
         <span style="position:absolute;height:14px;width:14px;left:${btn.enabled ? '19px' : '3px'};bottom:3px;background:white;border-radius:50%;transition:.2s"></span>
       </label>
@@ -3508,14 +3772,14 @@ function renderHomeRows() {
     const maxItemsInput = isBuiltin ? '' : `
       <input type="number" min="5" max="30" value="${Math.min(row.max_items || 20, 30)}"
         onclick="event.stopPropagation()" onmousedown="event.stopPropagation()"
-        onchange="saveRowMaxItemsByKey('${key}', this.value)"
+        onchange="saveRowMaxItemsByKey('${escapeJS(key)}', this.value)"
         style="width:52px;padding:3px 4px;font-size:11px;text-align:center;background:var(--bg1);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:text"
         title="Max items in this row">`;
     // Card shape. Some content has no portrait artwork — a YouTube thumbnail
     // in a poster slot is cropped to a strip of its middle — so each row picks.
     const shapeSelect = isBuiltin ? '' : `
       <select onclick="event.stopPropagation()" onmousedown="event.stopPropagation()"
-        onchange="saveRowShapeByKey('${key}', this.value)"
+        onchange="saveRowShapeByKey('${escapeJS(key)}', this.value)"
         style="padding:3px 4px;font-size:11px;background:var(--bg1);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:pointer"
         title="Card shape for this row">
         <option value="poster" ${row.shape !== 'wide' ? 'selected' : ''}>Poster</option>
@@ -3525,12 +3789,12 @@ function renderHomeRows() {
     <div class="home-row-item" data-idx="${i}">
       <span style="color:var(--text3);font-size:11px;width:20px;text-align:center;flex-shrink:0">${i + 1}</span>
       <span class="row-grip" aria-label="Drag to reorder" title="Drag to reorder">&#x2630;</span>
-      <span class="row-name">${row.display_name}</span>
+      <span class="row-name">${escapeAttr(row.display_name)}</span>
       <div class="row-controls">
         ${shapeSelect}
         ${maxItemsInput}
         ${badge}
-        <button onclick="event.stopPropagation();removeHomeRowByKey('${key}')"
+        <button onclick="event.stopPropagation();removeHomeRowByKey('${escapeJS(key)}')"
           style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;padding:6px 8px;border-radius:4px"
           onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text3)'"
           title="Remove row">&#10005;</button>
@@ -3580,7 +3844,7 @@ async function updateHeroSort() {
   const sortOrder = dir === 'asc' ? 'Ascending' : 'Descending';
   const requireLogo = document.getElementById('home-hero-require-logo')?.checked ?? true;
   const requireTrailer = document.getElementById('home-hero-require-trailer')?.checked ?? false;
-  const trailerAudio = document.getElementById('home-hero-trailer-audio')?.checked ?? true;
+  const trailerAudio = document.getElementById('home-hero-trailer-audio')?.checked ?? false;
   const itemCount = parseInt(document.getElementById('home-hero-item-count')?.value) || 10;
   try {
     const r = await api('/api/smartlists/hero-sort', {
@@ -3679,7 +3943,7 @@ async function showAddHomeRow() {
     if (builtins.length) {
       select.innerHTML += '<optgroup label="Jellyfin Sections">';
       for (const s of builtins) {
-        select.innerHTML += `<option value="builtin:${s.section_id}">${s.display_name}</option>`;
+        select.innerHTML += `<option value="builtin:${s.section_id}">${escapeAttr(s.display_name)}</option>`;
       }
       select.innerHTML += '</optgroup>';
     }
@@ -3688,14 +3952,14 @@ async function showAddHomeRow() {
     if (youtube.length) {
       select.innerHTML += '<optgroup label="YouTube Channels">';
       for (const p of youtube) {
-        select.innerHTML += `<option value="playlist:${p.playlist_id}">${p.name}</option>`;
+        select.innerHTML += `<option value="playlist:${escapeAttr(p.playlist_id)}">${escapeAttr(p.name)}</option>`;
       }
       select.innerHTML += '</optgroup>';
     }
     if (others.length) {
       select.innerHTML += '<optgroup label="Tentacle Playlists">';
       for (const p of others) {
-        select.innerHTML += `<option value="playlist:${p.playlist_id}">${p.name}</option>`;
+        select.innerHTML += `<option value="playlist:${escapeAttr(p.playlist_id)}">${escapeAttr(p.name)}</option>`;
       }
       select.innerHTML += '</optgroup>';
     }
@@ -3814,8 +4078,7 @@ function _sortDropdown(name) {
     ['datecreated_desc', 'Recently Added'],
     ['random_asc', 'Random'],
   ];
-  const escaped = name.replace(/'/g, "\\'");
-  return `<select onchange="setPlaylistSort('${escaped}', this.value)"
+  return `<select onchange="setPlaylistSort('${escapeJS(name)}', this.value)"
     style="font-size:11px;padding:3px 8px;background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:4px;cursor:pointer"
     title="Sort order">${opts.map(([v, l]) => `<option value="${v}"${v === val ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
 }
@@ -3843,13 +4106,13 @@ async function loadTagRules() {
         if (c.field === 'downloaded') display = c.value === 'yes' ? 'Downloaded (Radarr)' : 'VOD only';
         else if (c.field === 'list') display = `List: ${c.value}`;
         else if (c.field === 'source') display = `Provider: ${c.value}`;
-        return `<span class="badge badge-gray">${display}</span>`;
+        return `<span class="badge badge-gray">${escapeAttr(display)}</span>`;
       }).join(' ');
 
       return `
         <div class="list-item">
           <div class="list-info" style="flex:1">
-            <div class="list-name">${rule.name}</div>
+            <div class="list-name">${escapeAttr(rule.name)}</div>
             <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">
               <span class="badge badge-accent">${typeLabels[rule.apply_to] || rule.apply_to}</span>
               ${condStr}
@@ -3888,7 +4151,7 @@ function _renderGenreChips(selected = []) {
   const selSet = new Set(selected.map(s => s.toLowerCase()));
   container.innerHTML = genres.map(g => {
     const sel = selSet.has(g.toLowerCase()) ? ' selected' : '';
-    return `<span class="genre-chip${sel}" data-genre="${escapeAttr(g)}" onclick="toggleGenreChip(this)">${g}</span>`;
+    return `<span class="genre-chip${sel}" data-genre="${escapeAttr(g)}" onclick="toggleGenreChip(this)">${escapeAttr(g)}</span>`;
   }).join('');
   if (!genres.length) {
     container.innerHTML = '<span style="font-size:12px;color:var(--text3)">No genres found</span>';
@@ -3926,7 +4189,7 @@ async function _updateMatchCount() {
   try {
     const r = await api('/api/smartlists/preview-count', { method: 'POST', body: { apply_to, conditions } });
     if (r.count === -1) {
-      el.innerHTML = 'Preview not available for provider/list filters';
+      el.innerHTML = 'Preview not available for these filters';
       el.style.display = '';
     } else {
       el.innerHTML = `<span class="count-num">${r.count}</span> item${r.count !== 1 ? 's' : ''} match`;
@@ -3988,10 +4251,10 @@ async function showAddTagRule() {
   await _ensureConditionOptions();
   const srcPick = document.getElementById('tr-source-pick');
   srcPick.innerHTML = '<option value="">Select...</option>' +
-    (_conditionOptions?.sources || []).map(s => `<option value="${escapeAttr(s)}">${s}</option>`).join('');
+    (_conditionOptions?.sources || []).map(s => `<option value="${escapeAttr(s)}">${escapeAttr(s)}</option>`).join('');
   const listPick = document.getElementById('tr-list-pick');
   listPick.innerHTML = '<option value="">Select...</option>' +
-    (_conditionOptions?.lists || []).map(l => `<option value="${escapeAttr(l.tag)}">${l.name}</option>`).join('');
+    (_conditionOptions?.lists || []).map(l => `<option value="${escapeAttr(l.tag)}">${escapeAttr(l.name)}</option>`).join('');
   _renderGenreChips([]);
 
   showModal('modal-tag-rule');
@@ -4068,12 +4331,12 @@ async function editTagRule(id) {
     }
     const srcPick = document.getElementById('tr-source-pick');
     srcPick.innerHTML = '<option value="">Select...</option>' +
-      (_conditionOptions?.sources || []).map(s => `<option value="${escapeAttr(s)}">${s}</option>`).join('');
+      (_conditionOptions?.sources || []).map(s => `<option value="${escapeAttr(s)}">${escapeAttr(s)}</option>`).join('');
     if (srcCond) { srcPick.value = srcCond.value; srcPick.style.display = ''; }
     else srcPick.style.display = 'none';
     const listPick = document.getElementById('tr-list-pick');
     listPick.innerHTML = '<option value="">Select...</option>' +
-      (_conditionOptions?.lists || []).map(l => `<option value="${escapeAttr(l.tag)}">${l.name}</option>`).join('');
+      (_conditionOptions?.lists || []).map(l => `<option value="${escapeAttr(l.tag)}">${escapeAttr(l.name)}</option>`).join('');
     if (listCond) { listPick.value = listCond.value; listPick.style.display = ''; }
     else listPick.style.display = 'none';
 
@@ -4138,12 +4401,12 @@ function _renderCondValueInput(row, field, value) {
   const wrap = row.querySelector('[data-cond-val-wrap]');
   if (field === 'source') {
     const opts = (_conditionOptions?.sources || []).map(s =>
-      `<option value="${escapeAttr(s)}" ${s === value ? 'selected' : ''}>${s}</option>`
+      `<option value="${escapeAttr(s)}" ${s === value ? 'selected' : ''}>${escapeAttr(s)}</option>`
     ).join('');
     wrap.innerHTML = `<select class="form-input" data-cond-val><option value="">Select source...</option>${opts}</select>`;
   } else if (field === 'list') {
     const opts = (_conditionOptions?.lists || []).map(l =>
-      `<option value="${escapeAttr(l.tag)}" ${l.tag === value ? 'selected' : ''}>${l.name}</option>`
+      `<option value="${escapeAttr(l.tag)}" ${l.tag === value ? 'selected' : ''}>${escapeAttr(l.name)}</option>`
     ).join('');
     wrap.innerHTML = `<select class="form-input" data-cond-val><option value="">Select list...</option>${opts}</select>`;
   } else if (field === 'downloaded') {
@@ -4328,7 +4591,7 @@ function renderDupList() {
       return `
         <div class="dup-source-card" style="border-left:3px solid ${color}">
           <div style="font-size:12px;font-weight:500;margin-bottom:4px">${icon} ${sourceLabel}</div>
-          <div style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace;word-break:break-all">${s.path || '(path not recorded)'}</div>
+          <div style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace;word-break:break-all">${escapeAttr(s.path || '(path not recorded)')}</div>
         </div>`;
     }).join('');
 
@@ -4338,18 +4601,18 @@ function renderDupList() {
 
     return `
       <div class="dup-row" style="display:flex;gap:16px;align-items:flex-start">
-        ${poster ? `<img src="${poster}" style="width:48px;border-radius:6px;flex-shrink:0" alt="">` : ''}
+        ${poster ? `<img src="${escapeAttr(poster)}" style="width:48px;border-radius:6px;flex-shrink:0" alt="">` : ''}
         <div style="flex:1;min-width:0">
           <div class="dup-header">
             <span class="badge ${dup.resolution === 'pending' ? 'badge-amber' : 'badge-green'}">${dup.resolution === 'pending' ? 'Pending' : resLabel[dup.resolution] || dup.resolution}</span>
             <span class="badge badge-gray">${dup.media_type}</span>
-            <span style="font-size:13px;font-weight:500">${title}</span>
+            <span style="font-size:13px;font-weight:500">${escapeAttr(title)}</span>
           </div>
           <div class="dup-sources">${sourceCards}</div>
           ${dup.resolution === 'pending' ? `
             <div class="dup-actions">
               ${hasRadarr ? `<button class="btn btn-success btn-sm" onclick="resolveDup(${dup.id}, 'keep_radarr')">Keep Downloaded</button>` : ''}
-              ${hasVod ? `<button class="btn btn-secondary btn-sm" onclick="resolveDup(${dup.id}, 'keep_vod', '${dup.media_type}')">Keep VOD</button>` : ''}
+              ${hasVod ? `<button class="btn btn-secondary btn-sm" onclick="resolveDup(${dup.id}, 'keep_vod', '${escapeJS(dup.media_type)}')">Keep VOD</button>` : ''}
               <button class="btn btn-secondary btn-sm" onclick="resolveDup(${dup.id}, 'keep_both')">Keep Both</button>
             </div>` : ''}
         </div>
@@ -4393,6 +4656,8 @@ async function _executeResolveDup(id, resolution) {
     _updateDupBadges();
   } catch (e) {
     toast(e.message, 'error');
+    loadDuplicates();  // a stale tab: show what was resolved meanwhile
+    _updateDupBadges();
   }
 }
 
@@ -4413,7 +4678,9 @@ function resolveAllKeepRadarr() {
 async function _executeResolveAll() {
   try {
     const r = await api('/api/duplicates/resolve-all', { method: 'POST', body: { resolution: 'keep_radarr' } });
-    toast(`Resolved ${r.count} duplicates`);
+    toast(r.failed
+      ? `Resolved ${r.count} duplicates; ${r.failed} left pending (resolve them one by one to see why)`
+      : `Resolved ${r.count} duplicates`, r.failed ? 'warning' : undefined);
     loadDuplicates();
     _updateDupBadges();
   } catch (e) {
@@ -4458,7 +4725,12 @@ let _logAutoScroll = true;
 let _logEventSource = null;
 let _logLineCount = 0;
 
+function stopLogStream() {
+  if (_logEventSource) { _logEventSource.close(); _logEventSource = null; }
+}
+
 function initLogViewer() {
+  if (state.sessionExpired) return;
   if (_logEventSource) _logEventSource.close();
 
   const body = document.getElementById('log-body');
@@ -4491,8 +4763,8 @@ function appendLogLine(entry) {
   const line = document.createElement('div');
   line.className = 'log-line';
   line.innerHTML = `
-    <span class="log-ts">${ts}</span>
-    <span class="log-level ${entry.color}">${entry.level.substring(0,4)}</span>
+    <span class="log-ts">${escapeAttr(ts)}</span>
+    <span class="log-level ${entry.color}">${escapeAttr(entry.level.substring(0,4))}</span>
     <span class="log-msg ${isHighlight ? 'highlight' : isError ? 'error' : ''}">${escapeHtml(entry.msg)}</span>`;
 
   body.appendChild(line);
@@ -4503,7 +4775,8 @@ function appendLogLine(entry) {
 }
 
 function escapeHtml(str) {
-  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  if (str === null || str === undefined) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 function clearLogPanel() {
@@ -4567,7 +4840,7 @@ async function writeNfos(btn) {
 // ── PROVIDER MIGRATION ────────────────────────────────────────────────────
 async function showMigrate() {
   const providers = state.providers || await api('/api/providers').catch(() => []);
-  const opts = providers.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+  const opts = providers.map(p => `<option value="${escapeAttr(String(p.id))}">${escapeAttr(p.name)}</option>`).join('');
   document.getElementById('migrate-from').innerHTML = opts;
   document.getElementById('migrate-to').innerHTML = opts;
   document.getElementById('migrate-preview').style.display = 'none';
@@ -4582,10 +4855,21 @@ async function previewMigration() {
     const r = await api(`/api/radarr/migration/preview?from_id=${fromId}&to_id=${toId}`);
     const el = document.getElementById('migrate-preview');
     el.style.display = 'block';
-    el.innerHTML = `From: ${r.from_provider} (${r.current_movies} movies)<br>To: ${r.to_provider}<br>${r.note ? `<span style="color:var(--amber)">${r.note}</span>` : ''}${r.error ? `<span style="color:var(--red)">Error: ${r.error}</span>` : ''}`;
+    el.innerHTML = `From: ${escapeHtml(r.from_provider)} (${r.current_movies} movies, ${r.current_series} series)<br>To: ${escapeHtml(r.to_provider)}<br>`
+      + (r.error ? `<span style="color:var(--red)">Error: ${escapeHtml(r.error)}</span>`
+        : `${r.movies_rewritten} movies move${migrationKept(r)}`);
   } catch (e) {
     toast(e.message, 'error');
   }
+}
+
+// What stays with the old provider (#460): films the new one doesn't list,
+// films it can't safely take (namesakes, no .strm), and every series.
+function migrationKept(r) {
+  const films = (r.movies_not_found || 0) + (r.movies_skipped || 0);
+  const series = r.series_kept || 0;
+  if (!films && !series) return '';
+  return `; ${films} movies and ${series} series stay with ${escapeHtml(r.from_provider || 'the old provider')}`;
 }
 
 async function runMigration(dryRun) {
@@ -4595,7 +4879,7 @@ async function runMigration(dryRun) {
   if (!dryRun && !confirm('This will rewrite .strm files. Continue?')) return;
   try {
     const r = await api('/api/radarr/migration/run', { method: 'POST', body: { from_provider_id: fromId, to_provider_id: toId, dry_run: dryRun } });
-    toast(`Migration complete: ${r.movies_rewritten} movies rewritten, ${r.movies_not_found} not found`);
+    toast(`Migration complete: ${r.movies_rewritten} movies moved${migrationKept(r)}`);
     closeModal('modal-migrate');
     loadProviders();
   } catch (e) {
@@ -4609,8 +4893,21 @@ let _activityData = null;
 
 function startActivityPolling() {
   stopActivityPolling();
-  loadActivity();
-  _activityPollTimer = setInterval(loadActivity, 3000);
+  _pollActivity();
+  _activityPollTimer = setInterval(_pollActivity, 3000);
+}
+
+// The tab polls every 3 s, but with a slow Radarr/Sonarr one answer can take a
+// minute. Polls used to pile up behind it (a dozen requests in flight, which
+// also held the browser's connections every other page needs); now a poll is
+// skipped while the last one is out, and one out for POLL_STALE_MS is
+// cancelled and retried (see _pollStart). loadActivity() drops an answer older
+// than one already shown.
+const _activityPoller = _newPoller();
+function _pollActivity() {
+  const start = _pollStart(_activityPoller);
+  if (!start) return;
+  loadActivity(start.signal).finally(() => { _pollEnd(_activityPoller, start.req); });
 }
 
 function stopActivityPolling() {
@@ -4618,11 +4915,19 @@ function stopActivityPolling() {
     clearInterval(_activityPollTimer);
     _activityPollTimer = null;
   }
+  _pollStop(_activityPoller);
 }
 
-async function loadActivity() {
+// Answers can arrive out of order (a poll and a refresh after an action); an
+// older one must not replace a newer one already shown.
+let _activitySeq = 0;
+let _activityShownSeq = 0;
+async function loadActivity(signal) {
+  const seq = ++_activitySeq;
   try {
-    const data = await api('/api/activity');
+    const data = await _fetchActivity(signal);
+    if (seq < _activityShownSeq) return;
+    _activityShownSeq = seq;
     _activityData = data;
     // Always update badge count
     const count = (data.downloads || []).length + (data.searching || []).length + (data.unreleased || []).length;
@@ -4657,10 +4962,34 @@ function _morphNode(from, to) {
   for (const a of [...to.attributes]) if (from.getAttribute(a.name) !== a.value) from.setAttribute(a.name, a.value);
   _morphChildren(from, to);
 }
+// Cards carry data-morph-key: a card whose title moved (one arrived above it,
+// or one above it left) is moved, not rewritten — patching by position gave
+// every card below a new poster src, and each of those flashed.
+function _morphKey(n) { return n.nodeType === 1 ? n.getAttribute('data-morph-key') : null; }
 function _morphChildren(from, to) {
-  const fc = [...from.childNodes], tc = [...to.childNodes];
-  tc.forEach((n, i) => (i < fc.length ? _morphNode(fc[i], n) : from.appendChild(n)));
-  fc.slice(tc.length).forEach(n => from.removeChild(n));
+  const keyed = new Map();
+  [...from.childNodes].forEach(n => { const k = _morphKey(n); if (k && !keyed.has(k)) keyed.set(k, n); });
+  const tc = [...to.childNodes];
+  const wanted = new Set(tc.map(_morphKey).filter(Boolean));
+  tc.forEach((n, i) => {
+    let cur = from.childNodes[i] || null;
+    // A card that is gone: drop it here rather than moving every card after it.
+    while (cur && _morphKey(cur) && !wanted.has(_morphKey(cur))) {
+      from.removeChild(cur); cur = from.childNodes[i] || null;
+    }
+    const k = _morphKey(n);
+    const match = k ? keyed.get(k) : null;
+    if (match) {
+      keyed.delete(k);
+      if (match !== cur) from.insertBefore(match, cur);
+      _morphNode(match, n);
+    } else if (!k && cur && !_morphKey(cur)) {
+      _morphNode(cur, n);
+    } else {
+      from.insertBefore(n, cur);
+    }
+  });
+  while (from.childNodes.length > tc.length) from.removeChild(from.childNodes[tc.length]);
 }
 function _morphInto(el, html) {
   const tpl = document.createElement('div');
@@ -4678,7 +5007,7 @@ function _activityPosterFailed(img) {
 function _activityPoster(path) {
   const src = path ? _imgUrl(path, 'w185') : '';
   if (!src || _activityBadPosters.has(src)) return '<div class="activity-poster-placeholder">◫</div>';
-  return `<img src="${src}" loading="lazy" onerror="_activityPosterFailed(this)">`;
+  return `<img alt="" src="${escapeAttr(src)}" loading="lazy" onerror="_activityPosterFailed(this)">`;
 }
 
 // ── Search again / Remove on a Searching card ──────────────────────────
@@ -4712,14 +5041,19 @@ async function activityStopMissing(key) {
   if (!item || _actBusy[key]) return;
   const labels = item.missing_labels || [];
   if (labels.length > 1) { _openStopMissing(key, item); return; }
-  await _stopMissing(key, item, null);
+  // Always the labels shown, and the card's count: the server never widens
+  // "all" to episodes the card didn't count.
+  await _stopMissing(key, item, labels, item.missing_episodes || labels.length);
 }
 
-async function _stopMissing(key, item, episodes) {
+// episodes: the labels to stop; count: set when they are the whole card
+// (missing_labels is capped at 50, so the card's count says how many it meant).
+async function _stopMissing(key, item, episodes, count) {
   _actBusy[key] = 'stop'; renderActivity();
   try {
     const body = _actBody(item);
     if (episodes) body.episodes = episodes;
+    if (count != null) body.episode_count = count;
     const r = await api('/api/activity/arr/stop-missing', { method: 'POST', body });
     toast(r.message || 'Stopped looking');
     closeModal('modal-stop-missing');
@@ -4771,8 +5105,10 @@ function _smGo() {
   const item = _actItem(_smKey);
   if (!item) { closeModal('modal-stop-missing'); return; }
   const chosen = _smChosen();
-  // Everything ticked = "all missing": also covers episodes past the 50 listed.
-  _stopMissing(_smKey, item, chosen.length === (item.missing_labels || []).length ? null : chosen);
+  // Everything ticked = the whole card, even past the 50 listed: send the
+  // labels with the card's count (the server stops what the card counted).
+  const all = chosen.length === (item.missing_labels || []).length;
+  _stopMissing(_smKey, item, chosen, all ? (item.missing_episodes || chosen.length) : null);
 }
 
 // "Today 9 PM" / "Tomorrow" / "Thursday" for an air time, in the viewer's zone.
@@ -4902,9 +5238,34 @@ function _activityWaited(iso) {
   return Math.floor(hrs / 24) + 'd';
 }
 
+// A card opens the title's detail, the same one Discover shows. Movies need a
+// TMDB id; a show without one opens by its TVDB id.
+function _actOpenAttrs(item) {
+  const tmdb = parseInt(item.tmdb_id) || 0, tvdb = parseInt(item.tvdb_id) || 0;
+  const type = item.media_type === 'series' ? 'series' : 'movie';
+  if (!tmdb && !(type === 'series' && tvdb)) return '';
+  return ` role="button" tabindex="0" data-open="${type}:${tmdb}:${tvdb}"`;
+}
+// One listener for the whole tab: it re-renders every 3 seconds. The card's
+// own buttons and links keep their clicks.
+function _activityCardOpen(e) {
+  if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
+  const card = e.target.closest('.activity-card[data-open]');
+  if (!card) return;
+  if (e.type === 'keydown' ? e.target !== card : e.target.closest('button, a, input, label')) return;
+  e.preventDefault();
+  const [type, tmdb, tvdb] = card.dataset.open.split(':');
+  showDiscoverDetail(+tmdb, type, undefined, undefined, undefined, undefined, +tvdb);
+}
+
 function renderActivity(data) {
   const content = document.getElementById('activity-content');
   if (!content) return;
+  if (!content._actOpen) {
+    content._actOpen = true;
+    content.addEventListener('click', _activityCardOpen);
+    content.addEventListener('keydown', _activityCardOpen);
+  }
   if (!data) data = _activityData;
   if (!data) { content.innerHTML = '<div class="activity-empty">Loading…</div>'; return; }
 
@@ -4937,7 +5298,7 @@ function renderActivity(data) {
       const qualityLabel = dl.quality ? escapeAttr(dl.quality) : '';
       const reqByLabel = dl.requested_by ? `<span class="activity-requested-by">${escapeAttr(dl.requested_by)}</span>` : '';
       const metaParts = [qualityLabel, sizeLabel].filter(Boolean).join(' · ');
-      return `<div class="activity-card">
+      return `<div class="activity-card" data-morph-key="dl:${escapeAttr(String(dl.source || ''))}:${escapeAttr(String(dl.queue_id ?? dl.title ?? ''))}"${_actOpenAttrs(dl)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(dl.title)}${epLabel}</div>
@@ -4970,7 +5331,7 @@ function renderActivity(data) {
         : (disk ? 'Delete show' : 'Remove');
       const removeTitle = disk ? `Delete the whole show from ${arr}, including ${disk} downloaded episode${disk === 1 ? '' : 's'}`
         : `Remove from ${arr}, folder included`;
-      return `<div class="activity-card">
+      return `<div class="activity-card" data-morph-key="s:${escapeAttr(key)}"${_actOpenAttrs(item)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)}${item.episode ? ' · ' + escapeAttr(item.episode) : ''}</div>
@@ -4978,13 +5339,13 @@ function renderActivity(data) {
           ${item.check ? `<div class="activity-check ${escapeAttr(item.check.state)}" title="${escapeAttr(item.check.summary)}">${escapeAttr(item.check.short)}</div>` : ''}
           <div class="activity-countdown activity-searching">${waited ? 'Searching for ' + escapeAttr(waited) : 'Searching'}</div>
           <div class="activity-actions">
-            <button class="activity-act-btn" ${busy ? 'disabled' : ''} onclick="activitySearchAgain('${escapeAttr(key)}')">${busy === 'search' ? 'Searching…' : 'Search again'}</button>
+            <button class="activity-act-btn" ${busy ? 'disabled' : ''} onclick="activitySearchAgain('${escapeJS(key)}')">${busy === 'search' ? 'Searching…' : 'Search again'}</button>
             <button class="activity-act-btn" ${busy ? 'disabled' : ''} title="Check what your indexers have and why nothing downloaded; pick a release yourself"
-              onclick="openReleaseCheck('${escapeAttr(key)}')">Why? / Pick</button>
+              onclick="openReleaseCheck('${escapeJS(key)}')">Why? / Pick</button>
             ${isShow ? `<button class="activity-act-btn" ${busy ? 'disabled' : ''} title="Stop Sonarr looking for the missing episodes; keep everything downloaded"
-              onclick="activityStopMissing('${escapeAttr(key)}')">${busy === 'stop' ? 'Stopping…' : 'Stop looking'}</button>` : ''}
+              onclick="activityStopMissing('${escapeJS(key)}')">${busy === 'stop' ? 'Stopping…' : 'Stop looking'}</button>` : ''}
             <button class="activity-act-btn activity-act-remove${armed ? ' armed' : ''}" ${busy ? 'disabled' : ''} title="${escapeAttr(removeTitle)}"
-              onclick="activityRemove('${escapeAttr(key)}')">${removeText}</button>
+              onclick="activityRemove('${escapeJS(key)}')">${removeText}</button>
           </div>
         </div>
       </div>`;
@@ -4998,7 +5359,7 @@ function renderActivity(data) {
     html += recent.map(item => {
       const poster = _activityPoster(item.poster_path);
       const hrs = item.hours_remaining != null ? `${item.hours_remaining}h left` : '';
-      return `<div class="activity-card">
+      return `<div class="activity-card" data-morph-key="r:${escapeAttr(item.media_type || '')}:${escapeAttr(String(item.tmdb_id || 0))}:${escapeAttr(item.episode || '')}"${_actOpenAttrs(item)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)}${item.episode ? ' · ' + escapeAttr(item.episode) : ''}</div>
@@ -5013,7 +5374,7 @@ function renderActivity(data) {
   const coming = data.coming_up || [];
   if (coming.length > 0) {
     html += '<div class="activity-section-title">Coming up this week</div><div class="activity-grid">';
-    html += coming.map(item => `<div class="activity-card">
+    html += coming.map(item => `<div class="activity-card" data-morph-key="c:${escapeAttr(String(item.tmdb_id || item.tvdb_id || 0))}:${escapeAttr(item.episode || '')}"${_actOpenAttrs(item)}>
         <div class="activity-poster">${_activityPoster(item.poster_path)}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)} · ${escapeAttr(item.episode)}</div>
@@ -5035,7 +5396,7 @@ function renderActivity(data) {
         const diff = Math.ceil((rd - now) / 86400000);
         daysUntil = diff <= 0 ? 'Releasing soon' : diff === 1 ? 'Tomorrow' : diff + ' days';
       }
-      return `<div class="activity-card">
+      return `<div class="activity-card" data-morph-key="u:${escapeAttr(item.media_type || '')}:${escapeAttr(String(item.tmdb_id || item.tvdb_id || 0))}"${_actOpenAttrs(item)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)}</div>
@@ -5079,6 +5440,9 @@ let _missingLists = { movies: null, series: null };
 let _missingActiveList = 'all';
 
 async function loadDiscover() {
+  const view = ++_discoverView;
+  if (_discoverType === 'music' && typeof musicDiscoverHome === 'function') return musicDiscoverHome();
+  document.getElementById('discover-streaming-pills').classList.remove('music-pills');
   const grid = document.getElementById('discover-grid');
   const tabsEl = document.getElementById('discover-section-tabs');
   grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text3)"><span class="toast-spinner"></span> Loading…</div>';
@@ -5089,16 +5453,21 @@ async function loadDiscover() {
       api(`/api/discover?type=${_discoverType}`),
       _activityData ? Promise.resolve() : loadActivity().catch(() => {}),
     ]);
+    if (view !== _discoverView) return;
     _discoverSections = data.sections || [];
     if (!_discoverSections.length) {
       tabsEl.innerHTML = '';
-      grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>No content found. Check your TMDB bearer token in Settings.</p></div>';
+      const fallback = state.currentUser?.is_admin
+        ? 'No content found. Check your TMDB bearer token in Settings.'
+        : 'No content found. Discover needs a TMDB connection, which an admin sets up.';
+      grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>${escHtml(data.warning || fallback)}</p></div>`;
       return;
     }
+    if (data.warning) toast(data.warning, 'warning', 6000);
     // Render section tabs
     tabsEl.innerHTML = _discoverSections.map(sec => {
       const label = DISCOVER_SECTION_LABELS[sec.id] || sec.title;
-      return `<button class="discover-sec-tab" data-section="${sec.id}" onclick="switchDiscoverSection('${sec.id}')">${label}<span style="font-size:11px;background:var(--bg3);color:var(--text3);padding:1px 7px;border-radius:10px">${sec.items.length}</span></button>`;
+      return `<button class="discover-sec-tab" data-section="${sec.id}" onclick="switchDiscoverSection('${escapeJS(sec.id)}')">${escapeAttr(label)}<span style="font-size:11px;background:var(--bg3);color:var(--text3);padding:1px 7px;border-radius:10px">${sec.items.length}</span></button>`;
     }).join('') +
       `<button class="discover-sec-tab" data-section="streaming" onclick="switchDiscoverSection('streaming')">New on Streaming</button>` +
       `<button class="discover-sec-tab" data-section="genres" onclick="switchDiscoverSection('genres')">Genres</button>`;
@@ -5108,12 +5477,19 @@ async function loadDiscover() {
       ? _discoverActiveSection : _discoverSections[0].id;
     switchDiscoverSection(targetId);
   } catch (e) {
-    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load discover: ${e.message}</p></div>`;
+    if (view !== _discoverView) return;
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load discover: ${escapeAttr(e.message)}</p></div>`;
   }
 }
 
+// Bumped whenever the Discover grid is repainted for a different section, pill,
+// list or genre, a Movies/TV/Music switch or a search. A loader that answers after the user has moved on must not
+// paint its (now wrong) titles under the tab that is selected.
+let _discoverView = 0;
+
 function switchDiscoverSection(sectionId) {
   _discoverActiveSection = sectionId;
+  _discoverView++;
   document.querySelectorAll('.discover-sec-tab').forEach(btn => {
     const active = btn.getAttribute('data-section') === sectionId;
     btn.style.color = active ? 'var(--text)' : 'var(--text3)';
@@ -5132,12 +5508,19 @@ function switchDiscoverSection(sectionId) {
     loadGenreSection();
     return;
   }
+  if (sectionId === 'missing') {
+    // From My Lists: All plus one tab per list (the picker loadListsSection builds).
+    if (pills) pills.style.display = 'flex';
+    loadListsSection();
+    return;
+  }
   if (pills) pills.style.display = 'none';
   const section = _discoverSections.find(s => s.id === sectionId);
   if (section) renderDiscoverGrid(section.items);
 }
 
 async function loadStreamingSection() {
+  const view = ++_discoverView;
   const pills = document.getElementById('discover-streaming-pills');
   const grid = document.getElementById('discover-grid');
   if (!_streamingProviders) {
@@ -5145,6 +5528,7 @@ async function loadStreamingSection() {
       const r = await api('/api/discover/providers');
       _streamingProviders = r.providers || [];
     } catch (e) { _streamingProviders = []; }
+    if (view !== _discoverView) return;
   }
   if (!_streamingProviders.length) {
     if (pills) pills.innerHTML = '';
@@ -5157,16 +5541,18 @@ async function loadStreamingSection() {
   if (pills) {
     pills.innerHTML = _streamingProviders.map(p => {
       const active = p.slug === _streamingActiveProvider;
-      return `<button onclick="selectStreamingProvider('${p.slug}')" style="padding:6px 14px;border-radius:16px;border:1px solid ${active ? 'var(--accent)' : 'var(--border2)'};background:${active ? 'var(--accent)' : 'var(--bg2)'};color:${active ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif">${p.name}</button>`;
+      return `<button onclick="selectStreamingProvider('${escapeJS(p.slug)}')" style="padding:6px 14px;border-radius:16px;border:1px solid ${active ? 'var(--accent)' : 'var(--border2)'};background:${active ? 'var(--accent)' : 'var(--bg2)'};color:${active ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif">${escapeAttr(p.name)}</button>`;
     }).join('');
   }
   grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text3)"><span class="toast-spinner"></span> Loading…</div>';
   try {
     if (!_activityData) await loadActivity().catch(() => {});
     const data = await api(`/api/discover/streaming?provider=${_streamingActiveProvider}&type=${_discoverType}`);
+    if (view !== _discoverView) return;
     renderDiscoverGrid(data.items || []);
   } catch (e) {
-    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${e.message}</p></div>`;
+    if (view !== _discoverView) return;
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${escapeAttr(e.message)}</p></div>`;
   }
 }
 
@@ -5176,6 +5562,7 @@ function selectStreamingProvider(slug) {
 }
 
 async function loadGenreSection() {
+  const view = ++_discoverView;
   const pills = document.getElementById('discover-streaming-pills');
   const grid = document.getElementById('discover-grid');
   if (!_genreList[_discoverType]) {
@@ -5183,6 +5570,7 @@ async function loadGenreSection() {
       const r = await api(`/api/discover/genres?type=${_discoverType}`);
       _genreList[_discoverType] = r.genres || [];
     } catch (e) { _genreList[_discoverType] = []; }
+    if (view !== _discoverView) return;
   }
   const genres = _genreList[_discoverType];
   if (!genres.length) {
@@ -5194,11 +5582,11 @@ async function loadGenreSection() {
   if (pills) {
     const modeBtn = (m, label) => {
       const on = _genreMode === m;
-      return `<button onclick="setGenreMode('${m}')" style="padding:6px 14px;border-radius:16px;border:1px solid ${on ? 'var(--accent)' : 'var(--border2)'};background:${on ? 'var(--accent)' : 'var(--bg2)'};color:${on ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif">${label}</button>`;
+      return `<button onclick="setGenreMode('${escapeJS(m)}')" style="padding:6px 14px;border-radius:16px;border:1px solid ${on ? 'var(--accent)' : 'var(--border2)'};background:${on ? 'var(--accent)' : 'var(--bg2)'};color:${on ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif">${label}</button>`;
     };
     const genrePills = genres.map(g => {
       const active = g.id === _genreActive;
-      return `<button onclick="selectGenre(${g.id})" style="padding:6px 14px;border-radius:16px;border:1px solid ${active ? 'var(--accent)' : 'var(--border2)'};background:${active ? 'var(--accent)' : 'var(--bg2)'};color:${active ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif">${g.name}</button>`;
+      return `<button onclick="selectGenre(${g.id})" style="padding:6px 14px;border-radius:16px;border:1px solid ${active ? 'var(--accent)' : 'var(--border2)'};background:${active ? 'var(--accent)' : 'var(--bg2)'};color:${active ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif">${escapeAttr(g.name)}</button>`;
     }).join('');
     pills.innerHTML =
       `<div style="display:flex;gap:8px;width:100%;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border2)">${modeBtn('top_rated','Top Rated')}${modeBtn('new','Newly Released')}</div>` +
@@ -5208,9 +5596,11 @@ async function loadGenreSection() {
   try {
     if (!_activityData) await loadActivity().catch(() => {});
     const data = await api(`/api/discover/genre?genre_id=${_genreActive}&type=${_discoverType}&mode=${_genreMode}`);
+    if (view !== _discoverView) return;
     renderDiscoverGrid(data.items || []);
   } catch (e) {
-    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${e.message}</p></div>`;
+    if (view !== _discoverView) return;
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${escapeAttr(e.message)}</p></div>`;
   }
 }
 
@@ -5225,6 +5615,7 @@ function setGenreMode(m) {
 }
 
 async function loadListsSection() {
+  const view = ++_discoverView;
   const pills = document.getElementById('discover-streaming-pills');
   const grid = document.getElementById('discover-grid');
   if (!_missingLists[_discoverType]) {
@@ -5232,6 +5623,7 @@ async function loadListsSection() {
       const r = await api(`/api/discover/lists?type=${_discoverType}`);
       _missingLists[_discoverType] = r.lists || [];
     } catch (e) { _missingLists[_discoverType] = []; }
+    if (view !== _discoverView) return;
   }
   const lists = _missingLists[_discoverType];
   const tabs = [{ id: 'all', name: 'All' }].concat(lists.map(l => ({ id: String(l.id), name: l.name })));
@@ -5239,16 +5631,18 @@ async function loadListsSection() {
   if (pills) {
     pills.innerHTML = tabs.map(t => {
       const active = t.id === _missingActiveList;
-      return `<button onclick="selectList('${t.id}')" style="padding:6px 14px;border-radius:16px;border:1px solid ${active ? 'var(--accent)' : 'var(--border2)'};background:${active ? 'var(--accent)' : 'var(--bg2)'};color:${active ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif">${t.name}</button>`;
+      return `<button onclick="selectList('${escapeJS(t.id)}')" style="padding:6px 14px;border-radius:16px;border:1px solid ${active ? 'var(--accent)' : 'var(--border2)'};background:${active ? 'var(--accent)' : 'var(--bg2)'};color:${active ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif">${escapeAttr(t.name)}</button>`;
     }).join('');
   }
   grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text3)"><span class="toast-spinner"></span> Loading…</div>';
   try {
     if (!_activityData) await loadActivity().catch(() => {});
     const data = await api(`/api/discover/list-missing?list_id=${_missingActiveList}&type=${_discoverType}`);
+    if (view !== _discoverView) return;
     renderDiscoverGrid(data.items || []);
   } catch (e) {
-    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${e.message}</p></div>`;
+    if (view !== _discoverView) return;
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${escapeAttr(e.message)}</p></div>`;
   }
 }
 
@@ -5277,7 +5671,7 @@ function renderDiscoverGrid(items) {
   grid.innerHTML = items.map(item => {
     const posterSrc = _imgUrl(item.poster_path, 'w185');
     const poster = posterSrc
-      ? `<img src="${posterSrc}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
+      ? `<img alt="" src="${escapeAttr(posterSrc)}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
       : `<div class="lib-card-poster-placeholder">◫</div>`;
     const tvdbId = item.tvdb_id || 0;
     const tmdbId = item.tmdb_id || 0;
@@ -5298,9 +5692,9 @@ function renderDiscoverGrid(items) {
       badge = `<span class="badge badge-blue" style="font-size:9px;padding:1px 5px">In ${item.media_type === 'series' ? 'Sonarr' : 'Radarr'}</span>`;
     } else {
       badge = `<span class="badge" style="font-size:9px;padding:1px 5px;background:var(--bg3);color:var(--text3)">${item.media_type === 'movie' ? 'Movie' : 'Show'}</span>`;
-      addBtn = `<button onclick="event.stopPropagation();showAddToArrModal(${tmdbId},'${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}','${item.media_type}',${tvdbId})" class="lib-card-add-btn" title="Add to ${item.media_type === 'series' ? 'Sonarr' : 'Radarr'}">+</button>`;
+      addBtn = `<button onclick="event.stopPropagation();showAddToArrModal(${tmdbId},'${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}','${escapeJS(item.media_type)}',${tvdbId})" class="lib-card-add-btn" title="Add to ${item.media_type === 'series' ? 'Sonarr' : 'Radarr'}">+</button>`;
     }
-    const clickHandler = `onclick="showDiscoverDetail(${tmdbId},'${escapeAttr(item.media_type)}','${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}',${!!item.in_library},${tvdbId})"`;
+    const clickHandler = `onclick="showDiscoverDetail(${tmdbId},'${escapeJS(item.media_type)}','${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}',${!!item.in_library},${tvdbId})"`;
     const listTag = item.list_name ? `<div style="font-size:10px;color:var(--accent);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeAttr(item.list_name)}</div>` : '';
     return `
       <div class="lib-card" ${clickHandler}>
@@ -5310,8 +5704,8 @@ function renderDiscoverGrid(items) {
           ${addBtn}
         </div>
         <div class="lib-card-info">
-          <div class="lib-card-title" title="${escapeAttr(item.title)}">${item.title}</div>
-          <div class="lib-card-meta">${item.year || '—'} · ★ ${item.rating || '—'}</div>
+          <div class="lib-card-title" title="${escapeAttr(item.title)}">${escapeAttr(item.title)}</div>
+          <div class="lib-card-meta">${escapeAttr(item.year || '—')} · ★ ${escapeAttr(item.rating || '—')}</div>
           ${listTag}
         </div>
       </div>`;
@@ -5319,6 +5713,7 @@ function renderDiscoverGrid(items) {
 }
 
 async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, inLibrary, tvdbId) {
+  const seq = _detailOpening();
   showModal('modal-media-detail');
   document.getElementById('detail-title').textContent = 'Loading...';
   document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
@@ -5329,6 +5724,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
       ? `/api/discover/detail-tvdb/${tvdbId}`
       : `/api/discover/detail/${mediaType}/${tmdbId}`;
     const data = await api(detailUrl);
+    if (seq !== _detailSeq) return;
     const isSeries = mediaType === 'series';
     const arrLabel = isSeries ? 'Sonarr' : 'Radarr';
     const detailTvdbId = data.tvdb_id || tvdbId || 0;
@@ -5349,7 +5745,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
       const pct = (dlInfo.progress || 0).toFixed(0);
       const st = dlInfo.status === 'importing' ? 'Importing…' : dlInfo.status === 'queued' ? 'Queued' :
         dlInfo.status === 'stuck' ? 'Stuck' : dlInfo.status === 'import_blocked' ? 'Import blocked' : `Downloading ${pct}%`;
-      const eta = dlInfo.eta ? ` · ETA ${dlInfo.eta}` : '';
+      const eta = dlInfo.eta ? ` · ETA ${escapeAttr(dlInfo.eta)}` : '';
       actionBtn = `<span class="badge ${dlInfo.status === 'stuck' ? 'badge-red' : 'badge-accent'}" style="font-size:12px;padding:4px 10px">${st}${eta}</span>`;
     } else if (isInLibrary && isSeries && data.library_source === 'sonarr') {
       actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span>${watchBtn} <button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showManageEpisodesModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Manage Episodes</button>`;
@@ -5363,18 +5759,18 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
     } else if (data.requested) {
       actionBtn = `<span class="badge badge-blue" style="font-size:12px;padding:4px 10px">In ${isSeries ? 'Sonarr' : 'Radarr'} — searching for release</span>`;
     } else {
-      actionBtn = `<button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}','${mediaType}',${detailTvdbId})">Add to ${arrLabel}</button>`;
+      actionBtn = `<button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}','${escapeJS(mediaType)}',${detailTvdbId})">Add to ${arrLabel}</button>`;
     }
     document.getElementById('detail-title').textContent = data.title || title || 'Unknown';
     const detailPosterSrc = _imgUrl(data.poster_path, 'w185');
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
-        ${detailPosterSrc ? `<img src="${detailPosterSrc}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        ${detailPosterSrc ? `<img alt="" src="${escapeAttr(detailPosterSrc)}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
-          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || year || '—'} · ${data.runtime ? data.runtime+'m · ' : ''}★ ${data.rating || '—'}</div>
-          <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
+          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(data.year || year || '—')} · ${data.runtime ? data.runtime+'m · ' : ''}★ ${escapeAttr(data.rating || '—')}</div>
+          <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${escapeAttr(data.overview || 'No overview available.')}</p>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
-            ${(data.genres||[]).map(g => `<span class="badge badge-gray">${g}</span>`).join('')}
+            ${(data.genres||[]).map(g => `<span class="badge badge-gray">${escapeAttr(g)}</span>`).join('')}
           </div>
           <div style="margin-top:8px">
             ${actionBtn}${_trailerBtn(data.trailer_url)}
@@ -5382,12 +5778,13 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
         </div>
       </div>`;
   } catch {
+    if (seq !== _detailSeq) return;
     document.getElementById('detail-title').textContent = title || 'Unknown';
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
-        ${_imgUrl(posterPath, 'w185') ? `<img src="${_imgUrl(posterPath, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        ${_imgUrl(posterPath, 'w185') ? `<img alt="" src="${escapeAttr(_imgUrl(posterPath, 'w185'))}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
-          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${year || '—'}</div>
+          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(year || '—')}</div>
           <p style="font-size:13px;color:var(--text2)">Could not load details.</p>
         </div>
       </div>`;
@@ -5396,6 +5793,8 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
 
 function setDiscoverType(type, btn) {
   _discoverType = type;
+  const searchInput = document.getElementById('discover-search-input');
+  if (searchInput) searchInput.placeholder = type === 'music' ? 'Artist, album or song…' : 'Search TMDB…';
   // Reset server sections between Movies/TV, but keep the streaming section pinned.
   if (['streaming', 'genres', 'missing'].indexOf(_discoverActiveSection) === -1) _discoverActiveSection = null;
   document.querySelectorAll('#discover-tab-browse .filter-btn').forEach(b => b.classList.remove('active'));
@@ -5420,10 +5819,11 @@ function onDiscoverSearchInput(input) {
     loadDiscover();
     return;
   }
+  // Music searches go to MusicBrainz (one request per second), so wait for a pause in typing.
   _discoverSearchTimeout = setTimeout(() => {
     _discoverSearchQuery = q;
     doDiscoverSearch(q);
-  }, 400);
+  }, _discoverType === 'music' ? 800 : 400);
 }
 
 function clearDiscoverSearch() {
@@ -5436,20 +5836,24 @@ function clearDiscoverSearch() {
 }
 
 async function doDiscoverSearch(query) {
+  const view = ++_discoverView;
+  if (_discoverType === 'music' && typeof musicSearch === 'function') return musicSearch(query);
   const grid = document.getElementById('discover-grid');
   const tabsEl = document.getElementById('discover-section-tabs');
   if (tabsEl) tabsEl.innerHTML = '';
   grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text3)"><span class="toast-spinner"></span> Searching…</div>';
   try {
     const data = await api(`/api/discover/search?q=${encodeURIComponent(query)}&type=${_discoverType}`);
+    if (view !== _discoverView) return;
     const items = data.items || [];
     if (!items.length) {
-      grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>No results for "${query}"</p></div>`;
+      grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>No results for "${escapeAttr(query)}"</p></div>`;
       return;
     }
     renderDiscoverGrid(items);
   } catch (e) {
-    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Search failed: ${e.message}</p></div>`;
+    if (view !== _discoverView) return;
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Search failed: ${escapeAttr(e.message)}</p></div>`;
   }
 }
 
@@ -5506,7 +5910,7 @@ async function loadLiveTV() {
     }
   } catch (e) {
     if (statsEl) statsEl.innerHTML =
-      `<div style="grid-column:1/-1;color:var(--red);font-size:13px">Failed to load: ${e.message}</div>`;
+      `<div style="grid-column:1/-1;color:var(--red);font-size:13px">Failed to load: ${escapeAttr(e.message)}</div>`;
   }
 }
 
@@ -5533,6 +5937,29 @@ async function fillSetupUrls() {
       document.getElementById('live-setup-host').value = savedHost;
       document.getElementById('live-setup-port').value = savedPort || '8888';
       showSetupLocked();
+    } else if (!document.getElementById('live-setup-host').value) {
+      // Nothing saved: prefill (never save) the address Jellyfin reaches
+      // Tentacle on, as the YouTube page detects it, so the steps below
+      // never hand out http://localhost -- in Docker that is Jellyfin
+      // itself (#291). Saving stays the admin's click.
+      let detected = '';
+      try {
+        const st = await api('/api/youtube/status');
+        // A saved YouTube address that doesn't answer is still the YouTube
+        // page's suggestion; here offer only what answers, else the browser's.
+        detected = (st && st.reachable && st.reachable.ok === false)
+          ? ((st.detected && st.detected.url) || '')
+          : ((st && st.suggested_base_url) || '');
+      } catch (e) {}
+      let host = '', port = '';
+      try {
+        if (detected) { const u = new URL(detected); host = u.hostname; port = u.port; }
+      } catch (e) {}
+      if (!host) host = location.hostname;
+      document.getElementById('live-setup-host').value = host;
+      if (port) document.getElementById('live-setup-port').value = port;
+      document.getElementById('live-setup-detected').textContent =
+        detected ? 'Detected: check it, then Save' : 'From this browser: check it, then Save';
     }
   } catch (e) {}
   updateSetupUrls();
@@ -5544,6 +5971,7 @@ async function saveSetupAddress() {
   if (!host) { toast('Enter the server IP address', 'error'); return; }
   try {
     await api('/api/settings', { method: 'POST', body: { settings: { live_setup_host: host, live_setup_port: port } } });
+    document.getElementById('live-setup-detected').textContent = '';
     showSetupLocked();
     toast('Server address saved');
   } catch (e) { toast(e.message, 'error'); }
@@ -5563,7 +5991,7 @@ function showSetupLocked() {
 }
 
 function getSetupBase() {
-  const host = document.getElementById('live-setup-host').value || 'localhost';
+  const host = document.getElementById('live-setup-host').value || location.hostname || 'localhost';
   const port = document.getElementById('live-setup-port').value || '8888';
   return `http://${host}:${port}`;
 }
@@ -5574,74 +6002,18 @@ function updateSetupUrls() {
   document.getElementById('live-setup-xmltv-preview').textContent = `${base}/hdhr/xmltv.xml`;
 }
 
-function copyLiveSetup(type, btn) {
+async function copyLiveSetup(type, btn) {
   const base = getSetupBase();
   const url = type === 'tuner' ? base : `${base}/hdhr/xmltv.xml`;
-  navigator.clipboard.writeText(url).then(() => {
-    const orig = btn.textContent;
-    btn.textContent = 'Copied!';
-    setTimeout(() => btn.textContent = orig, 1500);
-  });
-}
-
-// ── Provider form ─────────────────────────────────────────────────────────
-
-function fillProviderForm(p) {
-  document.getElementById('live-provider-type').value = p.provider_type || 'xtream';
-  document.getElementById('live-server-url').value = p.server_url || '';
-  document.getElementById('live-username').value = p.username || '';
-  document.getElementById('live-password').value = p.password || '';
-  document.getElementById('live-m3u-url').value = p.m3u_url || '';
-  document.getElementById('live-epg-url').value = p.epg_url || '';
-  document.getElementById('live-user-agent').value = p.user_agent || '';
-  onLiveTypeChange();
-}
-
-function onLiveTypeChange() {
-  const type = document.getElementById('live-provider-type').value;
-  document.getElementById('live-xtream-fields').style.display = type === 'xtream' ? '' : 'none';
-  document.getElementById('live-m3u-fields').style.display = type !== 'xtream' ? '' : 'none';
-}
-
-async function saveLiveProvider() {
-  const type = document.getElementById('live-provider-type').value;
-  const body = {
-    provider_type: type,
-    server_url: document.getElementById('live-server-url').value,
-    username: document.getElementById('live-username').value,
-    password: document.getElementById('live-password').value,
-    m3u_url: document.getElementById('live-m3u-url').value,
-    epg_url: document.getElementById('live-epg-url').value,
-    user_agent: document.getElementById('live-user-agent').value,
-    live_tv_enabled: true,
-  };
-
   try {
-    const res = await api('/api/live/provider', { method: 'POST', body });
-    liveState.providerId = res.provider_id;
-    toast('Provider saved', 'success');
-  } catch (e) {
-    toast(`Save failed: ${e.message}`, 'error');
+    await navigator.clipboard.writeText(url);
+  } catch (_) {
+    toast('Copy failed — use HTTPS or copy manually', 'error');
+    return;
   }
-}
-
-async function testLiveProvider() {
-  const el = document.getElementById('live-test-result');
-  el.innerHTML = '<span style="color:var(--amber)">Testing...</span>';
-  try {
-    const res = await api('/api/live/provider/test', { method: 'POST' });
-    if (res.success) {
-      let info = '';
-      if (res.info) {
-        info = ` — ${res.info.status || ''}, max ${res.info.max_connections || '?'} connections`;
-      }
-      el.innerHTML = `<span style="color:var(--green)">Connected${info}</span>`;
-    } else {
-      el.innerHTML = `<span style="color:var(--red)">${res.message}</span>`;
-    }
-  } catch (e) {
-    el.innerHTML = `<span style="color:var(--red)">${e.message}</span>`;
-  }
+  const orig = btn.textContent;
+  btn.textContent = 'Copied!';
+  setTimeout(() => btn.textContent = orig, 1500);
 }
 
 function renderLiveStats(data) {
@@ -5701,10 +6073,10 @@ function renderLiveGroups(groups) {
   if (loadedEl) loadedEl.style.display = '';
 
   el.innerHTML = groups.map((g, i) => `
-    <div class="live-group-row" data-group-id="${g.id}" data-group-idx="${i}" data-group-name="${(g.name || '').toLowerCase()}">
-      <span class="group-name">${g.name}</span>
+    <div class="live-group-row" data-group-id="${g.id}" data-group-idx="${i}" data-group-name="${escapeAttr((g.name || '').toLowerCase())}">
+      <span class="group-name">${escapeAttr(g.name || '')}</span>
       <span class="group-count">${g.channel_count || 0} ch</span>
-      <button class="live-toggle ${g.enabled ? 'on' : ''}" onclick="toggleLiveGroup(${g.id}, this, event)"></button>
+      <button type="button" class="live-toggle ${g.enabled ? 'on' : ''}" aria-label="Show ${escapeAttr(g.name || '')} in Live TV" aria-pressed="${g.enabled ? 'true' : 'false'}" onclick="toggleLiveGroup(${g.id}, this, event)"></button>
     </div>`).join('');
   liveState.lastToggledIdx = null;
   updateGroupsSummary(groups);
@@ -5723,6 +6095,12 @@ function filterLiveGroups() {
     const name = row.dataset.groupName || '';
     row.style.display = name.includes(q) ? '' : 'none';
   });
+}
+
+// A Live TV on/off switch: its look and what a screen reader announces.
+function _setLiveToggle(btn, on) {
+  btn.classList.toggle('on', !!on);
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
 }
 
 function toggleLiveGroup(groupId, btn, evt) {
@@ -5745,7 +6123,7 @@ function toggleLiveGroup(groupId, btn, evt) {
   liveState.lastToggledIdx = idx;
   const g = liveState.groups.find(g => g.id === groupId);
   if (g) g.enabled = enabled;
-  if (enabled) btn.classList.add('on'); else btn.classList.remove('on');
+  _setLiveToggle(btn, enabled);
   updateGroupsSummary(liveState.groups);
 }
 
@@ -5777,7 +6155,7 @@ function populateGroupFilter(groups) {
   if (!sel) return;
   const enabledGroups = groups.filter(g => g.enabled).sort((a, b) => a.name.localeCompare(b.name));
   sel.innerHTML = '<option value="">All Groups</option>' +
-    enabledGroups.map(g => `<option value="${g.name}">${g.name} (${g.channel_count || 0})</option>`).join('');
+    enabledGroups.map(g => `<option value="${escapeAttr(g.name)}">${escapeAttr(g.name)} (${g.channel_count || 0})</option>`).join('');
 }
 
 // ── Channels ──────────────────────────────────────────────────────────────
@@ -5830,11 +6208,11 @@ async function loadLiveYouTubeChannels() {
   document.getElementById('live-youtube-count').textContent = `(${on.length} on Live TV)`;
   el.innerHTML = [...on, ...off].map(c => `
     <div class="live-ch-row">
-      ${c.avatar_url ? `<img class="live-ch-logo" src="${escapeAttr(c.avatar_url)}" loading="lazy" onerror="this.style.display='none'">` : '<div class="live-ch-logo"></div>'}
+      ${c.avatar_url ? `<img alt="" class="live-ch-logo" src="${escapeAttr(c.avatar_url)}" loading="lazy" onerror="this.style.display='none'">` : '<div class="live-ch-logo"></div>'}
       <span class="live-ch-name">${escapeAttr(c.title)}${c.live_enabled ? ytLiveState(c) : ''}</span>
       <span class="live-ch-group">${c.live_enabled ? `Channel ${escapeAttr(String(c.guide_number || ''))}` : 'not on Live TV'}</span>
       <span class="live-ch-epg-badge ${c.guide_programmes ? 'has-epg' : 'no-epg'}">${c.guide_programmes ? `${c.guide_programmes} in guide` : 'No guide entries'}</span>
-      <button class="live-toggle ${c.live_enabled ? 'on' : ''}" onclick="toggleLiveYouTube(${c.id}, ${!c.live_enabled})" style="flex-shrink:0"></button>
+      <button type="button" class="live-toggle ${c.live_enabled ? 'on' : ''}" aria-label="Show ${escapeAttr(c.title || '')} in Live TV" aria-pressed="${c.live_enabled ? 'true' : 'false'}" onclick="toggleLiveYouTube(${c.id}, ${!c.live_enabled})" style="flex-shrink:0"></button>
     </div>`).join('');
   return on.length;
 }
@@ -5872,12 +6250,57 @@ function renderLiveChannels(channels, total) {
 
   el.innerHTML = channels.map((ch, i) => `
     <div class="live-ch-row" data-ch-idx="${i}">
-      ${ch.logo_url ? `<img class="live-ch-logo" src="${ch.logo_url}" loading="lazy" onerror="this.style.display='none'">` : `<div class="live-ch-logo"></div>`}
-      <span class="live-ch-name">${ch.name}</span>
-      <span class="live-ch-group">${ch.group_title || ''}</span>
-      <span class="live-ch-epg-badge ${ch.has_epg_data ? 'has-epg' : 'no-epg'}">${ch.has_epg_data ? 'Has EPG' : 'No EPG'}</span>
-      <button class="live-toggle ${ch.enabled ? 'on' : ''}" onclick="toggleLiveChannel(${i}, this, event)" style="flex-shrink:0"></button>
+      ${ch.logo_url ? `<img alt="" class="live-ch-logo" src="${escapeAttr(ch.logo_url)}" loading="lazy" onerror="this.style.display='none'">` : `<div class="live-ch-logo"></div>`}
+      <span class="live-ch-name">${escapeAttr(ch.name)}${ch.custom_name ? ` <span style="color:var(--text3);font-size:11px">(${escapeAttr(ch.provider_name)})</span>` : ''}</span>
+      <span class="live-ch-group">${escapeAttr(ch.group_title || '')}</span>
+      <button type="button" class="live-ch-epg-badge ${ch.has_epg_data ? 'has-epg' : 'no-epg'}" title="${escapeAttr(_liveGuideTitle(ch))}" onclick="setLiveChannelGuideId(${i})">${ch.has_epg_data ? (ch.epg_match === 'name' ? 'EPG (by name)' : ch.epg_match === 'override' ? 'EPG (set)' : 'Has EPG') : 'No EPG'}</button>
+      <button class="btn btn-secondary btn-sm live-ch-rename" title="Rename this channel in Jellyfin's guide" onclick="renameLiveChannel(${i})" style="flex-shrink:0">Rename</button>
+      <button type="button" class="live-toggle ${ch.enabled ? 'on' : ''}" aria-label="Show ${escapeAttr(ch.name || '')} in Live TV" aria-pressed="${ch.enabled ? 'true' : 'false'}" onclick="toggleLiveChannel(${i}, this, event)" style="flex-shrink:0"></button>
     </div>`).join('');
+}
+
+// A custom name is kept across channel syncs (which rewrite the provider's
+// name every time) and is what Jellyfin's guide shows. Blank puts it back.
+// How the channel's guide was found (#141): the admin's own id, a match on
+// the channel's name, or the provider's tvg-id.
+function _liveGuideTitle(ch) {
+  const how = { override: 'set by you', name: 'matched by channel name', 'tvg-id': "the provider's tvg-id" };
+  const lines = [];
+  if (ch.guide_epg_id) lines.push(`Guide id: ${ch.guide_epg_id} (${how[ch.epg_match] || 'unknown'})`);
+  else lines.push(ch.epg_channel_id ? `tvg-id ${ch.epg_channel_id} is not in the guide feed` : 'No tvg-id and no match by name');
+  if (!ch.has_epg_data && ch.guide_epg_id) lines.push('No programmes stored for it yet');
+  lines.push('Click to set the guide id yourself');
+  return lines.join('\n');
+}
+
+// The XMLTV channel id to take this channel's guide from. Kept across channel
+// syncs; blank goes back to matching by tvg-id, then by name.
+async function setLiveChannelGuideId(idx) {
+  const ch = liveState.pageChannels[idx];
+  if (!ch) return;
+  const entered = prompt(`Guide id (XMLTV channel id) for "${ch.provider_name}".\nLeave blank to match automatically (tvg-id, then channel name):`, ch.epg_id_override || '');
+  if (entered === null) return;
+  try {
+    await api(`/api/live/channels/${ch.id}`, { method: 'PUT', body: { epg_id_override: entered } });
+    toast(entered.trim() ? `Guide id set — applied at the next guide sync` : 'Back to automatic matching — applied at the next guide sync', 'success');
+    loadLiveChannels();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function renameLiveChannel(idx) {
+  const ch = liveState.pageChannels[idx];
+  if (!ch) return;
+  const entered = prompt(`Name for "${ch.provider_name}" in the guide (leave blank to use the provider's name):`, ch.custom_name || '');
+  if (entered === null) return;
+  try {
+    await api(`/api/live/channels/${ch.id}`, { method: 'PUT', body: { custom_name: entered } });
+    toast(entered.trim() ? `Renamed to "${entered.trim()}" — Jellyfin shows it after its next guide refresh` : 'Provider name restored', 'success');
+    loadLiveChannels();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
 }
 
 function renderChPagination(total, page, perPage) {
@@ -5930,7 +6353,7 @@ function toggleLiveChannel(idx, btn, evt) {
       c.enabled = enabled;
       liveState.dirtyChannels[c.id] = enabled;
       const row = document.querySelector(`.live-ch-row[data-ch-idx="${i}"] .live-toggle`);
-      if (row) { if (enabled) row.classList.add('on'); else row.classList.remove('on'); }
+      if (row) _setLiveToggle(row, enabled);
     }
     liveState.lastToggledChIdx = idx;
     _updateDirtyBadge();
@@ -5940,7 +6363,7 @@ function toggleLiveChannel(idx, btn, evt) {
   liveState.lastToggledChIdx = idx;
   ch.enabled = enabled;
   liveState.dirtyChannels[ch.id] = enabled;
-  if (enabled) btn.classList.add('on'); else btn.classList.remove('on');
+  _setLiveToggle(btn, enabled);
   _updateDirtyBadge();
 }
 
@@ -5950,7 +6373,7 @@ function toggleAllChannels(enabled) {
     ch.enabled = enabled;
     liveState.dirtyChannels[ch.id] = enabled;
     const row = document.querySelector(`.live-ch-row[data-ch-idx="${i}"] .live-toggle`);
-    if (row) { if (enabled) row.classList.add('on'); else row.classList.remove('on'); }
+    if (row) _setLiveToggle(row, enabled);
   });
   _updateDirtyBadge();
 }
@@ -6014,6 +6437,11 @@ async function liveSyncEpg() {
   }
 }
 
+function stopLivePolling() {
+  if (liveState.epgPollTimer) { clearInterval(liveState.epgPollTimer); liveState.epgPollTimer = null; }
+  if (liveState.syncPollTimer) { clearInterval(liveState.syncPollTimer); liveState.syncPollTimer = null; }
+}
+
 function startEpgPoll() {
   if (liveState.epgPollTimer) clearInterval(liveState.epgPollTimer);
   const statusEl = document.getElementById('live-epg-status');
@@ -6022,12 +6450,12 @@ function startEpgPoll() {
     try {
       const s = await api(`/api/live/sync-status?provider_id=${liveState.providerId}`);
       if (s.phase !== 'epg') return; // different sync running
-      statusEl.innerHTML = `<span style="color:var(--amber)">${s.message || 'Syncing...'}</span>` +
+      statusEl.innerHTML = `<span style="color:var(--amber)">${escapeAttr(s.message || 'Syncing...')}</span>` +
         (s.progress != null ? ` <div class="live-progress" style="width:120px;display:inline-block;vertical-align:middle;margin-left:6px"><div class="live-progress-bar" style="width:${s.progress}%"></div></div>` : '');
 
       if (s.status === 'complete') {
         clearInterval(liveState.epgPollTimer);
-        statusEl.innerHTML = `<span style="color:var(--green)">${s.message}</span>`;
+        statusEl.innerHTML = `<span style="color:var(--green)">${escapeAttr(s.message)}</span>`;
         toast('EPG sync complete', 'success');
         refreshLiveStats();
         // Auto-refresh Jellyfin guide if server address is configured
@@ -6041,7 +6469,7 @@ function startEpgPoll() {
         } catch (e) {}
       } else if (s.status === 'error') {
         clearInterval(liveState.epgPollTimer);
-        statusEl.innerHTML = `<span style="color:var(--red)">${s.message}</span>`;
+        statusEl.innerHTML = `<span style="color:var(--red)">${escapeAttr(s.message)}</span>`;
         toast('EPG sync failed', 'error');
       }
     } catch (e) {
@@ -6057,7 +6485,7 @@ function startSyncPoll() {
   liveState.syncPollTimer = setInterval(async () => {
     try {
       const s = await api(`/api/live/sync-status?provider_id=${liveState.providerId}`);
-      statusEl.innerHTML = `${s.message || ''} ${s.progress != null ? `<div class="live-progress" style="width:120px;display:inline-block;vertical-align:middle;margin-left:6px"><div class="live-progress-bar" style="width:${s.progress}%"></div></div>` : ''}`;
+      statusEl.innerHTML = `${escapeAttr(s.message || '')} ${s.progress != null ? `<div class="live-progress" style="width:120px;display:inline-block;vertical-align:middle;margin-left:6px"><div class="live-progress-bar" style="width:${s.progress}%"></div></div>` : ''}`;
 
       // Channel sync chains into EPG sync automatically — handle EPG completion here too
       if (s.phase === 'epg' && s.status === 'complete') {
@@ -6402,6 +6830,7 @@ function loadHealthPage() {
   loadHealthDownloads();
   loadHealthMissing();
   loadHealthStreams();
+  loadHealthActivity();
   loadHealthDeletions();
   startHealthPolling();
 }
@@ -6456,8 +6885,15 @@ async function healthRecheckStreams(btn) {
   try {
     const r = await api('/api/health/streams/recheck', { method: 'POST' });
     const left = r.remaining ? ` — ${r.remaining} more to check, press again` : '';
-    toast(r.cleared.length ? `${r.cleared.length} stream(s) recovered and cleared${left}` : `${r.rechecked} rechecked — still dead${left}`,
-          r.cleared.length ? 'success' : 'info');
+    if (r.deferred && !r.rechecked) {
+      toast('Live TV or a recording is running — recheck again when it ends (each test opens a provider stream)', 'info');
+    } else if (r.provider_busy && !r.rechecked) {
+      toast('The provider is over its connection limit right now — try again in a few minutes', 'info');
+    } else {
+      const stopped = r.deferred ? ' — stopped: live TV started' : r.provider_busy ? ' — stopped: provider over its limit' : '';
+      toast(r.cleared.length ? `${r.cleared.length} stream(s) recovered and cleared${stopped || left}` : `${r.rechecked} rechecked — still dead${stopped || left}`,
+            r.cleared.length ? 'success' : 'info');
+    }
     loadHealthStreams();
   } catch (e) {
     toast(e.message || 'Recheck failed', 'error');
@@ -6469,7 +6905,11 @@ async function healthRecheckStreams(btn) {
 async function healthRunStreamSweep(btn) {
   if (btn) btn.disabled = true;
   try {
-    await api('/api/health/streams/sweep', { method: 'POST' });
+    const r = await api('/api/health/streams/sweep', { method: 'POST' });
+    if (r && r.started === false) {
+      toast('A sweep is already running — results appear here as it progresses', 'info');
+      return;
+    }
     toast('Sweep started — results appear here as it progresses', 'info');
     setTimeout(loadHealthStreams, 15000);
   } catch (e) {
@@ -6548,8 +6988,8 @@ async function loadHealthMissing() {
         <td>${name}</td>
         ${aired}
         <td style="white-space:nowrap;text-align:right"><div style="display:flex;gap:6px;justify-content:flex-end">
-          <button class="btn btn-secondary btn-sm" onclick="healthDiagnose('${kind}', ${it.id}, this)">Diagnose</button>
-          <button class="btn btn-secondary btn-sm" onclick="healthSearchMissing('${kind}', ${it.id}, this)">Search</button>
+          <button class="btn btn-secondary btn-sm" onclick="healthDiagnose('${escapeJS(kind)}', ${it.id}, this)">Diagnose</button>
+          <button class="btn btn-secondary btn-sm" onclick="healthSearchMissing('${escapeJS(kind)}', ${it.id}, this)">Search</button>
         </div></td>
       </tr>`;
     }).join('');
@@ -6587,7 +7027,7 @@ async function healthDiagnose(kind, id, btn) {
           <td style="font-size:12px;white-space:nowrap">${_fmtBytes(c.size_bytes)}</td>
           <td style="font-size:12px;white-space:nowrap">${c.protocol === 'torrent' ? (c.seeders ?? '?') + ' seeds' : escapeHtml(c.protocol || '')}</td>
           <td style="font-size:11px;color:var(--text3)">${c.rejected ? escapeHtml((c.rejections || []).join('; ')) : '<span class="badge badge-green" style="font-size:10px">Grabbable</span>'}</td>
-          <td style="text-align:right"><button class="btn ${c.rejected ? 'btn-secondary' : 'btn-primary'} btn-sm" onclick="healthGrabRelease('${kind}', '${escapeAttr(c.guid)}', ${c.indexer_id}, this)">Grab</button></td>
+          <td style="text-align:right"><button class="btn ${c.rejected ? 'btn-secondary' : 'btn-primary'} btn-sm" onclick="healthGrabRelease('${escapeJS(kind)}', '${escapeJS(c.guid)}', ${c.indexer_id}, this)">Grab</button></td>
         </tr>`).join('');
       inner = `
         <div style="font-size:12px;color:var(--text2);margin-bottom:6px">
@@ -6687,7 +7127,7 @@ async function loadHealthDownloads() {
   const el = document.getElementById('health-downloads');
   if (!el) return;
   try {
-    const data = await api('/api/activity');
+    const data = await _fetchActivity();
     const downloads = data.downloads || [];
     if (!downloads.length) {
       el.innerHTML = '<div class="empty-state"><p>No active downloads</p></div>';
@@ -6704,14 +7144,14 @@ async function loadHealthDownloads() {
         ? `<div style="font-size:12px;color:var(--amber);margin-top:2px">${escapeHtml(d.reason)}</div>` : '';
       let actions = '';
       if (d.queue_id != null && d.status === 'stuck') {
-        actions = `<button class="btn btn-primary btn-sm" onclick="healthFixDownload('${d.source}', ${d.queue_id}, this)">Fix</button>
-                   <button class="btn btn-secondary btn-sm" onclick="healthRemoveDownload('${d.source}', ${d.queue_id}, true, this)">Remove</button>`;
+        actions = `<button class="btn btn-primary btn-sm" onclick="healthFixDownload('${escapeJS(d.source)}', ${d.queue_id}, this)">Fix</button>
+                   <button class="btn btn-secondary btn-sm" onclick="healthRemoveDownload('${escapeJS(d.source)}', ${d.queue_id}, true, this)">Remove</button>`;
       } else if (d.queue_id != null && d.status === 'import_blocked') {
-        actions = `<button class="btn btn-primary btn-sm" onclick="healthImportDownload('${d.source}', '${escapeAttr(d.download_id || '')}', this)">Import</button>
-                   <button class="btn btn-secondary btn-sm" onclick="healthRemoveDownload('${d.source}', ${d.queue_id}, false, this)">Remove</button>`;
+        actions = `<button class="btn btn-primary btn-sm" onclick="healthImportDownload('${escapeJS(d.source)}', '${escapeJS(d.download_id || '')}', this)">Import</button>
+                   <button class="btn btn-secondary btn-sm" onclick="healthRemoveDownload('${escapeJS(d.source)}', ${d.queue_id}, false, this)">Remove</button>`;
       }
       return `<tr>
-        <td><span class="badge ${meta.cls}" style="font-size:10px">${meta.label}</span></td>
+        <td><span class="badge ${meta.cls}" style="font-size:10px">${escapeAttr(meta.label)}</span></td>
         <td>${name}${reason}${stallNote}</td>
         <td style="white-space:nowrap;color:var(--text3);font-size:12px">${sub || '—'}</td>
         <td style="white-space:nowrap">${prog}${d.eta ? ` <span style="color:var(--text3)">· ${escapeHtml(d.eta)}</span>` : ''}</td>
@@ -6732,8 +7172,11 @@ async function healthFixDownload(source, queueId, btn) {
   if (btn) btn.disabled = true;
   try {
     const r = await api('/api/health/downloads/fix', { method: 'POST', body: { source, queue_id: queueId } });
-    toast(r.replaced ? `Replaced with ${r.picked_protocol} release` : 'Cancelled — no alternative release found',
-          r.replaced ? 'success' : 'info');
+    const arr = source === 'radarr' ? 'Radarr' : 'Sonarr';
+    toast(r.replaced ? `Replaced with ${r.picked_protocol} release`
+          : r.searching ? `Cancelled — ${arr} is searching for a replacement`
+          : 'Cancelled — no alternative release found',
+          r.replaced || r.searching ? 'success' : 'info');
     loadHealthDownloads();
     loadHealthDeletions();
   } catch (e) {
@@ -6789,6 +7232,21 @@ const _DELETION_KIND_META = {
   'stale-cleanup':     { label: 'Stale cleanup', cls: 'badge-amber' },
   'download-fix':      { label: 'Download fix', cls: 'badge-amber' },
   'stream-health':     { label: 'Stream health', cls: 'badge-amber' },
+  'arr-remove':        { label: 'Removed from Radarr/Sonarr', cls: 'badge-red' },
+  'arr-unmonitor':     { label: 'Stopped searching', cls: 'badge-amber' },
+  'bad-copy':          { label: 'Bad copy', cls: 'badge-amber' },
+  'wrong-match':       { label: 'Wrong match', cls: 'badge-amber' },
+  'rematch':           { label: 'Rematch', cls: 'badge-amber' },
+  'strm-optout':       { label: '.strm opt-out', cls: 'badge-amber' },
+  'music-extra-track': { label: 'Extra track', cls: 'badge-amber' },
+  'radarr-scan':       { label: 'Gone from Radarr', cls: 'badge-accent' },
+  'sonarr-scan':       { label: 'Gone from Sonarr', cls: 'badge-accent' },
+  'sync-prune':        { label: 'Gone from provider', cls: 'badge-accent' },
+  'smartlist-orphan':  { label: 'Playlist cleanup', cls: 'badge-accent' },
+  // Removals a safety limit refused: nothing was deleted
+  'sync-prune-blocked':   { label: 'Prune refused', cls: 'badge-gray' },
+  'orphan-sweep-blocked': { label: 'Orphan sweep refused', cls: 'badge-gray' },
+  'vod-sweep-blocked':    { label: 'VOD sweep refused', cls: 'badge-gray' },
 };
 
 async function loadHealthDeletions() {
@@ -6801,13 +7259,15 @@ async function loadHealthDeletions() {
       return;
     }
     const rows = entries.map(e => {
-      const meta = _DELETION_KIND_META[e.kind] || { label: e.kind, cls: 'badge-accent' };
+      const meta = _DELETION_KIND_META[e.kind] || { label: escapeHtml(e.kind || ''), cls: 'badge-accent' };
+      const tip = (e.kind || '').endsWith('-blocked')
+        ? ' title="Nothing was deleted: a safety limit stopped this removal"' : '';
       const d = _healthDate(e.created_at);
       const when = d ? `<span title="${d.toLocaleString()}">${timeAgo(d)}</span>` : '—';
-      const who = e.reason === 'manual' && e.user_name ? escapeHtml(e.user_name) : e.reason;
+      const who = e.reason === 'manual' && e.user_name ? e.user_name : e.reason;
       return `<tr>
         <td style="white-space:nowrap">${when}</td>
-        <td><span class="badge ${meta.cls}" style="font-size:10px">${meta.label}</span></td>
+        <td><span class="badge ${meta.cls}" style="font-size:10px"${tip}>${meta.label}</span></td>
         <td>${escapeHtml(e.name || '')}</td>
         <td style="white-space:nowrap;color:var(--text3)">${escapeHtml(who || '')}</td>
         <td style="color:var(--text3);font-size:12px">${escapeHtml(e.detail || '')}</td>
@@ -6822,12 +7282,86 @@ async function loadHealthDeletions() {
   }
 }
 
+// ── Recent activity (the Activity feed: /api/sync/activity) ────────────────
+
+const _ACTIVITY_EVENT_META = {
+  'livetv_recording_damaged': { label: 'Recording damaged', cls: 'badge-red', problem: true },
+  'livetv_placeholder':       { label: 'Channel placeholder', cls: 'badge-amber', problem: true },
+  'epg_sync_failed':          { label: 'Guide failed', cls: 'badge-red', problem: true },
+  'rating_restore_failed':    { label: 'Rating restore', cls: 'badge-red', problem: true },
+  'download_fix_skipped':     { label: 'Download fix', cls: 'badge-amber', problem: true },
+  'wrong_match':              { label: 'Wrong movie?', cls: 'badge-amber', problem: true },
+  'stream_health':            { label: 'Stream health', cls: 'badge-amber' },
+  'download_fix':             { label: 'Download fix', cls: 'badge-accent' },
+  'livetv_sync':              { label: 'Live TV', cls: 'badge-blue' },
+  'livetv_config':            { label: 'Live TV', cls: 'badge-blue' },
+  'epg_sync':                 { label: 'Guide', cls: 'badge-blue' },
+  'new_live_groups':          { label: 'Live TV', cls: 'badge-blue' },
+  'vod_sync':                 { label: 'VOD sync', cls: 'badge-accent' },
+  'sync':                     { label: 'VOD sync', cls: 'badge-accent' },
+  'new_categories':           { label: 'VOD', cls: 'badge-accent' },
+  'vod_sweep':                { label: 'VOD sweep', cls: 'badge-accent' },
+  'orphan_sweep':             { label: 'Orphan sweep', cls: 'badge-accent' },
+  'radarr_scan':              { label: 'Radarr', cls: 'badge-gray' },
+  'radarr_remove':            { label: 'Radarr', cls: 'badge-gray' },
+  'sonarr_scan':              { label: 'Sonarr', cls: 'badge-gray' },
+  'sonarr_remove':            { label: 'Sonarr', cls: 'badge-gray' },
+  'jellyfin_push':            { label: 'Jellyfin', cls: 'badge-gray' },
+  'list_fetch':               { label: 'List', cls: 'badge-gray' },
+  'lists_refresh':            { label: 'List', cls: 'badge-gray' },
+  'new_playlists':            { label: 'Playlist', cls: 'badge-gray' },
+};
+
+function _activityMeta(e) {
+  const meta = _ACTIVITY_EVENT_META[e.event];
+  if (meta) return meta;
+  // An event this map doesn't know yet still shows, named after itself
+  const label = String(e.event || 'event').replace(/_/g, ' ');
+  return { label: label.charAt(0).toUpperCase() + label.slice(1), cls: 'badge-gray' };
+}
+
+function _activityIsProblem(e) {
+  return !!_activityMeta(e).problem || /_failed$/.test(e.event || '') || /\bfailed\b/i.test(e.message || '');
+}
+
+async function loadHealthActivity() {
+  const el = document.getElementById('health-activity');
+  if (!el) return;
+  try {
+    const entries = await api('/api/sync/activity?limit=100');
+    const countEl = document.getElementById('health-activity-count');
+    const problems = entries.filter(_activityIsProblem).length;
+    if (countEl) countEl.textContent = problems ? `(${problems} to look at)` : '';
+    if (!entries.length) {
+      el.innerHTML = '<div class="empty-state"><p>No activity recorded yet</p></div>';
+      return;
+    }
+    const rows = entries.map(e => {
+      const meta = _activityMeta(e);
+      const cls = _activityIsProblem(e) && !meta.problem ? 'badge-red' : meta.cls;
+      const d = _healthDate(e.created_at);
+      const when = d ? `<span title="${d.toLocaleString()}">${timeAgo(d)}</span>` : '—';
+      return `<tr>
+        <td style="white-space:nowrap">${when}</td>
+        <td><span class="badge ${cls}" style="font-size:10px">${escapeHtml(meta.label)}</span></td>
+        <td style="font-size:12px">${escapeHtml(e.message || '')}</td>
+      </tr>`;
+    }).join('');
+    el.innerHTML = `<div style="overflow-x:auto;max-height:420px;overflow-y:auto"><table>
+      <thead><tr><th>When</th><th>What</th><th>Detail</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+  } catch (e) {
+    el.innerHTML = '<div class="empty-state"><p>Failed to load activity</p></div>';
+  }
+}
+
 (function exposeGlobals() {
   const fns = [
     // Activity (inline handlers)
     _activityPosterFailed, activitySearchAgain, activityRemove, activityStopMissing, _smAll, _smCount, _smGo, openReleaseCheck, _rcLoad, _rcGrab, replaceCopy,
     // Wrong movie (mislabelled provider streams)
-    reportWrongMovie, dismissMatchSuspect, unblockStream, openFixMatch, _fmLoad, _fmFrames, _fmPick, _fmRemove,
+    reportWrongMovie, dismissMatchSuspect, undoFollowedFix, unblockStream, openFixMatch, _fmLoad, _fmFrames, _fmPick, _fmRemove,
     // Lists page
     loadLists, loadListCards,
     saveQuickList, onQuickListUrlInput, onQuickListNameInput, onModalUrlInput, onModalNameInput,
@@ -6851,7 +7385,7 @@ async function loadHealthDeletions() {
     showManageEpisodesModal, confirmManageEpisodes,
     showDownloadMoreModal, confirmDownloadMore, detailToggleSeason, toggleFollow,
     // YouTube
-    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytStartPolling, ytDiagnose, ytSkipNote, ytReprobe, ytRefill, loadLiveYouTubeChannels, toggleLiveYouTube, ytSaveAddress, ytShowAddress, loadTentacleAddress, ytUseAddress, ytDetectAddress,
+    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytStartPolling, ytDiagnose, ytSkipNote, ytReprobe, ytRefill, loadLiveYouTubeChannels, toggleLiveYouTube, ytSaveAddress, ytShowAddress, loadTentacleAddress, ytUseAddress, ytDetectAddress, ytLoadTraffic, ytSaveTraffic,
     // Following
     loadFollowing,
     toggleStrmManaged,
@@ -6870,7 +7404,7 @@ async function loadHealthDeletions() {
     // Activity
     loadActivity, startActivityPolling, stopActivityPolling,
     // Health
-    loadHealthPage, loadHealthDeletions, loadHealthDownloads, stopHealthPolling,
+    loadHealthPage, loadHealthActivity, loadHealthDeletions, loadHealthDownloads, stopHealthPolling,
     saveHealthDownloadSettings, healthFixDownload, healthRemoveDownload, healthImportDownload,
     showHealthMissingTab, loadHealthMissing, healthDiagnose, healthGrabRelease, healthSearchMissing,
     loadHealthStreams, healthRecheckStreams, healthRunStreamSweep, healthClearStream, healthRemoveStream,
@@ -6878,10 +7412,10 @@ async function loadHealthDeletions() {
     loadDiscoverPage, loadDiscover, setDiscoverType, switchDiscoverSection, selectStreamingProvider, selectGenre, setGenreMode, selectList, showDiscoverDetail,
     onDiscoverSearchInput, clearDiscoverSearch,
     // Live TV
-    loadLiveTV, showLiveTab, onLiveTypeChange, saveLiveProvider, testLiveProvider,
+    loadLiveTV, showLiveTab,
     liveSyncGroups, liveSyncChannels, liveSyncEpg, fillSetupUrls, updateSetupUrls, copyLiveSetup, saveSetupAddress, editSetupAddress,
     toggleLiveGroup, toggleAllGroups, saveLiveGroups, filterLiveGroups,
-    loadLiveChannels, toggleLiveChannel, toggleAllChannels, saveLiveChannels, searchLiveChannels, filterLiveChannels, filterLiveChannelsByEpg, liveChPage,
+    loadLiveChannels, toggleLiveChannel, renameLiveChannel, setLiveChannelGuideId, toggleAllChannels, saveLiveChannels, searchLiveChannels, filterLiveChannels, filterLiveChannelsByEpg, liveChPage,
   ];
   for (const fn of fns) {
     if (typeof fn === 'function') window[fn.name] = fn;

@@ -5,7 +5,7 @@ SQLAlchemy models for all entities
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Boolean, Float,
-    DateTime, Text, JSON, ForeignKey, UniqueConstraint
+    DateTime, Text, JSON, ForeignKey, UniqueConstraint, or_
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
@@ -219,6 +219,9 @@ class Series(Base):
     source_tag = Column(String, nullable=True)
     tags = Column(JSON, default=list)
     sonarr_monitored = Column(Boolean, default=False)  # True = following for new episodes
+    # The provider's series ids (strings) its listings placed on this row: a
+    # relabelled listing whose label no longer resolves is recognised by them (#621)
+    provider_series_ids = Column(JSON, nullable=True)
 
     # Jellyfin
     jellyfin_item_id = Column(String, nullable=True)
@@ -283,6 +286,17 @@ class YouTubeChannel(Base):
     live_enabled = Column(Boolean, default=False)
     channel_number = Column(String, nullable=True)
     last_checked = Column(DateTime, nullable=True)
+    # The last time the channel's tabs were listed in full. A scheduled check
+    # reads the channel's feed first and lists the tabs only when something is
+    # new, or when this is a day old (services.youtube.indexer._light_check).
+    last_full_check = Column(DateTime, nullable=True)
+    # The ids the feed showed when the tabs were last listed: already dealt
+    # with, so the next feed check reacts only to ids beyond these.
+    feed_ids = Column(JSON, nullable=True)
+    # A playlist source's item count (Data API) at its last full listing. New
+    # videos usually go to the bottom of a playlist, where its feed never shows
+    # them; a change in size is what tells the light check to list it (#544).
+    playlist_size = Column(Integer, nullable=True)
     last_error = Column(String, nullable=True)
     error_count = Column(Integer, default=0)
     # Why videos were passed over on the last index, as {reason: count}. Skips
@@ -323,6 +337,12 @@ class YouTubeVideo(Base):
     first_seen = Column(DateTime, default=datetime.utcnow)
     last_seen = Column(DateTime, default=datetime.utcnow)
     removed_at = Column(DateTime, nullable=True)
+    # When to read this video's details again, and how many reads failed in a
+    # row: a video that could not be read (members-only, private, a hiccup) is
+    # retried later, not on every check; a live or upcoming stream the listing no
+    # longer shows is re-read at most this often.
+    next_check_at = Column(DateTime, nullable=True)
+    check_failures = Column(Integer, default=0)
     # Why a video was passed over, recorded on the row so it is never detailed
     # again. Details are rate-limited to one every few seconds, and without this
     # a channel's excluded back catalogue was re-fetched on every single
@@ -343,6 +363,9 @@ class Duplicate(Base):
     resolution = Column(String, default="pending")  # pending | keep_radarr | keep_provider_1 | keep_both
     detected_at = Column(DateTime, default=datetime.utcnow)
     resolved_at = Column(DateTime, nullable=True)
+    # Users' watched state saved before a same-folder copy was deleted, waiting
+    # for the item Jellyfin creates for the kept copy (services/duplicates.py, #333)
+    pending_user_data = Column(JSON(none_as_null=True), nullable=True)
 
 
 # ─── Sync Runs ────────────────────────────────────────────────────────────────
@@ -397,6 +420,9 @@ class ListSubscription(Base):
     playlist_enabled = Column(Boolean, default=False)  # Generate a Jellyfin playlist from this list
     last_fetched = Column(DateTime, nullable=True)
     last_item_count = Column(Integer, default=0)
+    # What the user needs to know about the last refresh when it did not read
+    # the whole list (a movies-only fallback, a page that failed), else NULL.
+    last_fetch_note = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("TentacleUser", backref="list_subscriptions")
@@ -419,9 +445,18 @@ class ListItem(Base):
 
     list_subscription = relationship("ListSubscription", back_populates="items")
 
+    # TMDB numbers films and shows separately: movie/N and tv/N are two titles,
+    # and a mixed list may hold both (#365). Rows without a type are films.
     __table_args__ = (
-        UniqueConstraint("list_id", "tmdb_id", name="uq_list_item"),
+        UniqueConstraint("list_id", "tmdb_id", "media_type", name="uq_list_item"),
     )
+
+    @classmethod
+    def of_type(cls, media_type: str):
+        """Filter for the rows of one TMDB namespace ("series", else films)."""
+        if media_type == "series":
+            return cls.media_type == "series"
+        return or_(cls.media_type.is_(None), cls.media_type != "series")
 
 
 # ─── Tag Rules ────────────────────────────────────────────────────────────────
@@ -523,6 +558,83 @@ class DownloadRequest(Base):
     )
 
 
+class MusicArtist(Base):
+    """An artist in Lidarr, as Tentacle last saw it (music module)."""
+    __tablename__ = "music_artists"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    mbid = Column(String, nullable=False, unique=True, index=True)   # MusicBrainz artist id
+    lidarr_artist_id = Column(Integer, index=True)
+    name = Column(String, nullable=False, default="")
+    sort_name = Column(String, default="")
+    disambiguation = Column(String, default="")
+    path = Column(String, default="")          # the artist's folder, as Lidarr sees it
+    updated_at = Column(DateTime, default=datetime.utcnow)
+    # Artist picture (services/music/pictures.py): "" (not checked) | set | ok |
+    # waiting (the player hasn't scanned the artist yet) | review | error
+    picture_status = Column(String, default="", index=True)
+    picture_source = Column(String, default="")    # artist.jpg | deezer | upload
+    picture_note = Column(Text)                    # why it needs review / what failed
+    picture_candidates = Column(JSON)              # Deezer candidates for the review page
+    picture_checked_at = Column(DateTime)
+
+
+class MusicAlbum(Base):
+    """An album (MusicBrainz release group) in Lidarr, with Tentacle's verdict on
+    its pinned release. A snapshot kept by the music module; Lidarr is the truth."""
+    __tablename__ = "music_albums"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    mbid = Column(String, nullable=False, unique=True, index=True)   # release group id
+    lidarr_album_id = Column(Integer, index=True)
+    lidarr_artist_id = Column(Integer, index=True)
+    artist_mbid = Column(String, index=True, default="")
+    artist_name = Column(String, default="")
+    title = Column(String, nullable=False, default="")
+    album_type = Column(String, default="")          # Album | EP | Single | ...
+    secondary_types = Column(String, default="")     # comma-separated: Live, Compilation, ...
+    release_date = Column(String, default="")
+    monitored = Column(Boolean, default=False)
+    any_release_ok = Column(Boolean, default=True)
+    track_count = Column(Integer, default=0)         # of the pinned release
+    track_file_count = Column(Integer, default=0)
+    size_on_disk = Column(Integer, default=0)
+    cover_url = Column(String, default="")
+    # Tentacle's verdict (services/music/original.py): right | repin | repin_trim |
+    # repin_download | review; empty until checked.
+    category = Column(String, default="", index=True)
+    verdict = Column(JSON)
+    checked_at = Column(DateTime)
+    check_error = Column(Text)
+    requested_by = Column(Integer, ForeignKey("tentacle_users.id"))
+    requested_at = Column(DateTime)
+    # A request whose pin and search haven't happened yet (jobs.finish_request):
+    # kept in the database so a restart or a lost reply can't drop it (#242).
+    request_pending = Column(Boolean, default=False)
+    request_choice = Column(JSON)   # the user's pick of a tracklist, for that job
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MusicImport(Base):
+    """A Spotify playlist imported by a user (music module): its songs and the
+    original studio album each one resolved to (services/music/spotify.py)."""
+    __tablename__ = "music_imports"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("tentacle_users.id"), index=True)
+    name = Column(String, default="")
+    source = Column(String, default="")          # spotify_url | exportify_csv
+    url = Column(String, default="")             # the playlist link, for Refresh
+    status = Column(String, default="resolving")  # resolving | ready | error
+    done = Column(Integer, default=0)            # songs resolved so far
+    total = Column(Integer, default=0)
+    # [{title, artist, album, album_artist, result: {mbid, title, artist, artist_mbid,
+    #   year} | {reason}}]
+    tracks = Column(JSON)
+    outcomes = Column(JSON)                      # {release group id: "requested" | why not}
+    left_out = Column(Integer, default=0)        # songs past MAX_TRACKS, not imported (shown)
+    error = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
 # ─── Activity Log ─────────────────────────────────────────────────────────────
 
 class ActivityLog(Base):
@@ -555,6 +667,10 @@ class BlockedStream(Base):
     reason = Column(String, nullable=True)
     blocked_by = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # The provider's own label of the stream ("<name>\t<container>"), stored by
+    # the sync while it lists the stream: a stream re-listed under a new id
+    # with this exact label is held for the admin, never imported silently.
+    label = Column(String, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("provider_id", "media_type", "stream_key", name="uq_blocked_stream"),
@@ -575,6 +691,12 @@ class MatchOverride(Base):
     title = Column(String, nullable=True)
     set_by = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # The provider's label of the stream ("<name>\t<container>"), stored by the
+    # sync: when the provider re-lists the stream under a new id with this
+    # exact label, the fix follows it (moved_from = the key it had before, for
+    # the admin's Undo).
+    label = Column(String, nullable=True)
+    moved_from = Column(String, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("provider_id", "media_type", "stream_key", name="uq_match_override"),
@@ -595,6 +717,10 @@ class MatchSuspect(Base):
     jellyfin_item_id = Column(String, nullable=True)
     dismissed = Column(Boolean, default=False)
     detected_at = Column(DateTime, default=datetime.utcnow)
+    # None: flagged by its played length. "relist_followed": a fixed stream was
+    # re-listed and the fix followed it; "relist_blocked": a re-listed stream is
+    # labelled like one the admin blocked. The runtime check leaves these alone.
+    reason = Column(String, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("tmdb_id", "media_type", name="uq_match_suspect"),
@@ -652,8 +778,16 @@ class LiveChannel(Base):
 
     # Channel identity
     name = Column(String, nullable=False)
+    # The user's own name for the channel. Channel syncs rewrite `name` from
+    # the provider every time and never touch this, so a rename survives.
+    custom_name = Column(String, nullable=True)
     channel_number = Column(Integer, nullable=True)  # User-assignable
     stream_id = Column(String, nullable=True)  # Xtream stream_id or M3U index
+    # M3U only: the hash of the channel's CURRENT name + URL, what a sync
+    # matches the playlist by. stream_id is the GuideNumber Jellyfin keys the
+    # channel, its timers and favourites on, so it keeps its first value when
+    # the URL changes (#259). NULL (rows from before it existed) = stream_id.
+    m3u_key = Column(String, nullable=True)
 
     # Stream info
     stream_url = Column(String, nullable=False)
@@ -662,6 +796,13 @@ class LiveChannel(Base):
     logo_url = Column(String, nullable=True)
     group_title = Column(String, nullable=True)  # Category/group from provider
     epg_channel_id = Column(String, nullable=True)  # tvg-id for EPG matching
+    # The admin's own guide id for the channel. Channel syncs never touch it,
+    # and it wins over everything below (#141).
+    epg_id_override = Column(String, nullable=True)
+    # The feed channel the last EPG sync matched by NAME, because the tvg-id
+    # was missing or the feed did not carry it (#141), or the feed's spelling
+    # of a tvg-id it lists only in other case (#523). Recomputed every sync.
+    epg_name_match = Column(String, nullable=True)
 
     # Management
     enabled = Column(Boolean, default=False)  # User must enable channels
@@ -675,6 +816,29 @@ class LiveChannel(Base):
     __table_args__ = (
         UniqueConstraint("provider_id", "stream_id", name="uq_live_channel_stream"),
     )
+
+    @property
+    def guide_name(self) -> str:
+        """The name Jellyfin's guide shows: the user's name, else the provider's."""
+        return (self.custom_name or "").strip() or self.name
+
+    @property
+    def guide_epg_id(self):
+        """The guide id this channel's programmes are stored and served under:
+        the override, else a name match, else the provider's tvg-id."""
+        return ((self.epg_id_override or "").strip() or self.epg_name_match
+                or (self.epg_channel_id or "").strip() or None)
+
+    @property
+    def epg_match(self):
+        """How guide_epg_id was chosen: "override", "name", "tvg-id" or None.
+        A name match that is the tvg-id in other case is a tvg-id match (#523)."""
+        if (self.epg_id_override or "").strip():
+            return "override"
+        tvg = (self.epg_channel_id or "").strip()
+        if self.epg_name_match and self.epg_name_match.casefold() != tvg.casefold():
+            return "name"
+        return "tvg-id" if tvg else None
 
 
 class LiveChannelGroup(Base):
@@ -697,6 +861,8 @@ class EPGProgram(Base):
     channel_id = Column(String, nullable=False, index=True)  # Matches epg_channel_id
 
     title = Column(String, nullable=False)
+    # The provider's <sub-title>: an episode or match name ("TOR vs MTL").
+    sub_title = Column(String, nullable=True)
     description = Column(Text, nullable=True)
     start = Column(DateTime, nullable=False)
     stop = Column(DateTime, nullable=False)
@@ -710,7 +876,16 @@ class EPGProgram(Base):
 
 
 def log_activity(db, event: str, message: str, detail: dict = None):
-    """Write an activity log entry"""
+    """Write an activity log entry.
+
+    Messages often carry an exception's text, and httpx/requests put the whole
+    URL in it -- /live/<user>/<pass>/ or ?username=&password= for an Xtream
+    provider. The Activity feed is stored and served, so redact like the log."""
+    from services.log_redaction import redact
+    if isinstance(message, str):
+        message = redact(message)
+    if isinstance(detail, dict):
+        detail = {k: (redact(v) if isinstance(v, str) else v) for k, v in detail.items()}
     db.add(ActivityLog(event=event, message=message, detail=detail))
     db.commit()
 
@@ -748,10 +923,47 @@ def create_notification(db, user_id: int, tmdb_id: int, media_type: str,
     return notif
 
 
+# Settings whose readers parse or compare the stored value and need one: an
+# empty string is not "unset" to them (int("") raises). Seeded with these, and
+# a Save that sends an empty field stores these back instead of "".
+NON_EMPTY_DEFAULTS = {
+    "sync_schedule": "0 3 * * *",
+    "recently_added_days": "30",
+    "tmdb_match_threshold": "0.7",
+    "hybrid_series_layout": "vod_root",
+}
+from services.music.settings import NON_EMPTY as _MUSIC_NON_EMPTY  # noqa: E402
+NON_EMPTY_DEFAULTS.update(_MUSIC_NON_EMPTY)
+
+
 def get_setting(db, key: str, default: str = "") -> str:
     """Get a single setting value by key"""
     s = db.query(Setting).filter(Setting.key == key).first()
+    if s and key in NON_EMPTY_DEFAULTS and not (s.value or "").strip():
+        return default or NON_EMPTY_DEFAULTS[key]
     return s.value if s else default
+
+
+RECENTLY_ADDED_DAYS_MAX = 36500   # 100 years holds every title; timedelta overflows past year 1
+
+
+def parse_recently_added_days(value):
+    """Whole days from a stored or typed value, or None if no number can be read.
+
+    The field is <input type="number">: "14.5", "7.0" and "1e2" arrive as
+    typed, and a bare int() on them failed every sync and tag refresh (#536).
+    """
+    try:
+        days = int(float(str(value).strip()))
+    except (TypeError, ValueError, OverflowError):   # "abc"; nan, inf, 1e309 pass float() but not int()
+        return None
+    return min(max(days, 0), RECENTLY_ADDED_DAYS_MAX)
+
+
+def get_recently_added_days(db) -> int:
+    """The "Recently added" window in whole days, whatever an older save stored."""
+    days = parse_recently_added_days(get_setting(db, "recently_added_days"))
+    return int(NON_EMPTY_DEFAULTS["recently_added_days"]) if days is None else days
 
 
 def set_setting(db, key: str, value: str):
@@ -862,6 +1074,11 @@ def _migrate_columns():
         ("series", "last_downloaded_episode", "TEXT"),
         ("tentacle_users", "notifications_enabled", "BOOLEAN DEFAULT 1"),
     ]
+    # Recreate tables that need PK changes (HomeRowOrder, AutoPlaylistToggle)
+    # before the generic pass, which would otherwise give their old layout a
+    # user_id column and nothing else (#295).
+    _migrate_home_row_order(cursor, conn)
+    _migrate_auto_playlist_toggles(cursor, conn)
     for table, column, col_type in migrations:
         existing = _existing_columns(cursor, table)
         if not existing:
@@ -906,11 +1123,36 @@ def _migrate_columns():
                 continue
             _backfill_default(cursor, conn, table_name, col)
 
-    # Recreate tables that need PK changes (HomeRowOrder, AutoPlaylistToggle)
-    _migrate_home_row_order(cursor, conn)
-    _migrate_auto_playlist_toggles(cursor, conn)
+    _migrate_list_items_key(conn)
     _drop_retired_tables(cursor, conn)
+    _reset_guessed_made_for_kids(cursor, conn)
     conn.close()
+
+
+def _reset_guessed_made_for_kids(cursor, conn):
+    """Forget the Made for Kids values the age_limit guess wrote (#130).
+
+    Until this fix the indexer stored True for any unrestricted video whose
+    details came back without is_live, which is not what the designation
+    means, and never stored False. yt-dlp does not report the designation, so
+    none of the stored True values came from YouTube: reset them to NULL
+    ("unknown"). Runs once, recorded in settings, so values a later extractor
+    supplies for real are never touched.
+    """
+    import sqlite3
+    marker = "migrated_youtube_made_for_kids_reset"
+    try:
+        cursor.execute("SELECT 1 FROM settings WHERE key = ?", (marker,))
+        if cursor.fetchone():
+            return
+        cursor.execute("UPDATE youtube_videos SET is_made_for_kids = NULL "
+                       "WHERE is_made_for_kids IS NOT NULL")
+        if cursor.rowcount:
+            logger.info(f"[migrate] Cleared {cursor.rowcount} guessed youtube_videos.is_made_for_kids value(s)")
+        cursor.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (marker, "1"))
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        logger.error(f"[migrate] Could not reset youtube_videos.is_made_for_kids: {e}")
 
 
 def _drop_retired_tables(cursor, conn):
@@ -929,60 +1171,102 @@ def _drop_retired_tables(cursor, conn):
         logger.error(f"[migrate] Could not drop youtube_row_subscriptions: {e}")
 
 
+def _recreate_per_user_table(conn, table, old_name, columns):
+    """Recreate a pre-multi-user table with the model's id primary key (#295).
+
+    Before multi-user support home_row_order and auto_playlist_toggles were
+    keyed by playlist_id / key alone. The recreate is decided by the id
+    column: user_id is no proof, because the generic pass adds it on its own.
+    The whole copy is one transaction, and a copy left half done by an older
+    build (its data only in `old_name`) is finished from there.
+    """
+    import sqlite3
+    from sqlalchemy.schema import CreateIndex, CreateTable
+
+    cursor = conn.cursor()
+    model = Base.metadata.tables[table]
+    has_old = bool(cursor.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (old_name,)).fetchone())
+    existing = _existing_columns(cursor, table)
+    if not has_old and (not existing or "id" in existing):
+        return  # current schema, a fresh install, or no table yet
+    conn.commit()
+    try:
+        cursor.execute("BEGIN IMMEDIATE")
+        if existing and "id" not in existing:
+            if has_old:
+                raise RuntimeError(f"both {table} (old layout) and {old_name} exist")
+            cursor.execute(f"ALTER TABLE {table} RENAME TO {old_name}")
+            existing = set()
+        old_cols = _existing_columns(cursor, old_name)
+        if not existing:
+            cursor.execute(str(CreateTable(model).compile(dialect=engine.dialect)))
+        keep = [c for c in columns if c in old_cols]
+        cols = ", ".join(f'"{c}"' for c in keep)
+        cursor.execute(f"INSERT OR IGNORE INTO {table} ({cols}) SELECT {cols} FROM {old_name}")
+        copied = cursor.rowcount
+        cursor.execute(f"DROP TABLE {old_name}")
+        if not existing:
+            for index in model.indexes:
+                cursor.execute(str(CreateIndex(index).compile(dialect=engine.dialect)))
+        conn.commit()
+        logger.info(f"[migrate] Recreated {table} for per-user rows ({copied} row(s) kept)")
+    except (sqlite3.Error, RuntimeError) as e:
+        conn.rollback()
+        logger.error(f"[migrate] Could not recreate {table} with an id column: {e}")
+
+
+def _migrate_list_items_key(conn):
+    """Rebuild list_items with the unique key (list_id, tmdb_id, media_type) (#365).
+
+    The old key (list_id, tmdb_id) let a list hold only one of a film and a
+    show with the same TMDB number. SQLite can't change a constraint in place,
+    so the table is recreated in one transaction. Rows without a type are
+    copied as films: SQLite treats NULLs as distinct in a UNIQUE key, so an
+    untyped row would escape it. Existing rows already satisfy the new key.
+    """
+    import sqlite3
+    from sqlalchemy.schema import CreateIndex, CreateTable
+
+    cursor = conn.cursor()
+    old_key = False
+    for index in cursor.execute("PRAGMA index_list(list_items)").fetchall():
+        if index[2]:  # unique
+            cols = [r[2] for r in conn.execute(f'PRAGMA index_info("{index[1]}")')]
+            old_key = old_key or cols == ["list_id", "tmdb_id"]
+    if not old_key:
+        return  # current schema, a fresh install, or no table yet
+    model = Base.metadata.tables["list_items"]
+    old_cols = _existing_columns(cursor, "list_items")
+    cols = [c.name for c in model.columns if c.name in old_cols]
+    select = ", ".join("COALESCE(media_type, 'movie')" if c == "media_type" else f'"{c}"' for c in cols)
+    conn.commit()
+    try:
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute("ALTER TABLE list_items RENAME TO _list_items_old")
+        cursor.execute(str(CreateTable(model).compile(dialect=engine.dialect)))
+        cursor.execute(f"INSERT INTO list_items ({', '.join(cols)}) SELECT {select} FROM _list_items_old")
+        copied = cursor.rowcount
+        cursor.execute("DROP TABLE _list_items_old")
+        for index in model.indexes:
+            cursor.execute(str(CreateIndex(index).compile(dialect=engine.dialect)))
+        conn.commit()
+        logger.info(f"[migrate] Rebuilt list_items with a key per film/show ({copied} row(s) kept)")
+    except sqlite3.Error as e:
+        conn.rollback()
+        logger.error(f"[migrate] Could not rebuild list_items with a key per film/show: {e}")
+
+
 def _migrate_home_row_order(cursor, conn):
     """Recreate home_row_order with id PK + user_id column."""
-    try:
-        cursor.execute("SELECT user_id FROM home_row_order LIMIT 1")
-        return  # Already migrated
-    except Exception:
-        pass
-    try:
-        cursor.execute("ALTER TABLE home_row_order RENAME TO _home_row_order_old")
-        cursor.execute("""
-            CREATE TABLE home_row_order (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER REFERENCES tentacle_users(id),
-                playlist_id TEXT NOT NULL,
-                display_order INTEGER NOT NULL DEFAULT 0,
-                UNIQUE(user_id, playlist_id)
-            )
-        """)
-        cursor.execute("""
-            INSERT INTO home_row_order (playlist_id, display_order)
-            SELECT playlist_id, display_order FROM _home_row_order_old
-        """)
-        cursor.execute("DROP TABLE _home_row_order_old")
-        conn.commit()
-    except Exception:
-        pass
+    _recreate_per_user_table(conn, "home_row_order", "_home_row_order_old",
+                             ("user_id", "playlist_id", "display_order"))
 
 
 def _migrate_auto_playlist_toggles(cursor, conn):
     """Recreate auto_playlist_toggles with id PK + user_id column."""
-    try:
-        cursor.execute("SELECT user_id FROM auto_playlist_toggles LIMIT 1")
-        return  # Already migrated
-    except Exception:
-        pass
-    try:
-        cursor.execute("ALTER TABLE auto_playlist_toggles RENAME TO _auto_toggles_old")
-        cursor.execute("""
-            CREATE TABLE auto_playlist_toggles (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER REFERENCES tentacle_users(id),
-                key TEXT NOT NULL,
-                enabled BOOLEAN DEFAULT 0,
-                UNIQUE(user_id, key)
-            )
-        """)
-        cursor.execute("""
-            INSERT INTO auto_playlist_toggles (key, enabled)
-            SELECT key, enabled FROM _auto_toggles_old
-        """)
-        cursor.execute("DROP TABLE _auto_toggles_old")
-        conn.commit()
-    except Exception:
-        pass
+    _recreate_per_user_table(conn, "auto_playlist_toggles", "_auto_toggles_old",
+                             ("user_id", "key", "enabled"))
 
 
 def create_tables():
@@ -998,6 +1282,13 @@ def seed_defaults(db):
         "youtube_enabled": "false",
         "youtube_base_url": "",          # what goes in .strm; must be reachable BY Jellyfin
         "youtube_index_interval_minutes": "60",
+        # Scheduled checks for new uploads and live streams (on by default: the
+        # feature is about the latest uploads). Off: only "Refresh now".
+        "youtube_background_checks": "true",
+        # Optional: a YouTube Data API key (metadata from Google's API instead of
+        # YouTube's pages) and an HTTP proxy for YouTube traffic only.
+        "youtube_api_key": "",
+        "youtube_proxy": "",
         "tmdb_bearer_token": "",
         "tmdb_api_key": "",
         "radarr_url": "",
@@ -1006,9 +1297,9 @@ def seed_defaults(db):
         "sonarr_api_key": "",
         "jellyfin_url": "",
         "jellyfin_api_key": "",
-        "sync_schedule": "0 3 * * *",
-        "recently_added_days": "30",
-        "tmdb_match_threshold": "0.7",
+        "sync_schedule": NON_EMPTY_DEFAULTS["sync_schedule"],
+        "recently_added_days": NON_EMPTY_DEFAULTS["recently_added_days"],
+        "tmdb_match_threshold": NON_EMPTY_DEFAULTS["tmdb_match_threshold"],
         "smartlists_path": "/data/smartlists",
         "jellyfin_user_id": "",
         "jellyfin_user_name": "",
@@ -1021,7 +1312,7 @@ def seed_defaults(db):
         #   shared_library - Sonarr downloads to its own root using the SAME
         #                    folder name as the VOD show; Jellyfin merges the
         #                    two folders (both must be in ONE Jellyfin library)
-        "hybrid_series_layout": "vod_root",
+        "hybrid_series_layout": NON_EMPTY_DEFAULTS["hybrid_series_layout"],
         "setup_complete": "false",
         "data_dir": os.getenv("DATA_DIR", "/data"),
         "hdhr_tuner_count": "3",
@@ -1031,7 +1322,12 @@ def seed_defaults(db):
         # delete/plugin-keys calls, Radarr/Sonarr webhooks) that cannot present a
         # user session. Copied into the plugin config / webhook URL by the operator.
         "internal_secret": secrets.token_hex(32),
+        # Secret Lidarr's webhook presents (?secret=) to /api/music/webhook.
+        "music_webhook_secret": secrets.token_urlsafe(24),
     }
+    # The music module's settings: off by default, every value a setting.
+    from services.music.settings import DEFAULTS as MUSIC_DEFAULTS
+    defaults.update(MUSIC_DEFAULTS)
     # Insert each missing default in its own transaction so a concurrent
     # worker seeding the same key (IntegrityError on the PK) doesn't abort the
     # whole batch — we just roll back and move on (get-or-create semantics).
@@ -1045,6 +1341,26 @@ def seed_defaults(db):
             db.commit()
         except IntegrityError:
             db.rollback()  # another worker inserted it first — fine
+    _forget_stored_builtin_tmdb_token(db)
+
+
+def _forget_stored_builtin_tmdb_token(db):
+    """A stored tmdb_bearer_token equal to the built-in token means "none of
+    my own": until #383 any Settings save stored the built-in token that
+    GET /api/settings/raw filled into the field. Clear it, so the field shows
+    "Using built-in key" again and a later built-in token reaches this install.
+    The token every TMDB call uses stays the same (get_tmdb_token falls back
+    to the built-in one), and a token of the user's own is never equal to it.
+    """
+    from services.tmdb import TMDB_DEFAULT_TOKEN
+    row = db.query(Setting).filter(Setting.key == "tmdb_bearer_token",
+                                   Setting.value == TMDB_DEFAULT_TOKEN).first()
+    # With a v3 tmdb_api_key stored, /plugin-keys stops adding the built-in
+    # bearer once none is stored: the plugin would switch to that key. Keep it.
+    if row is not None and not get_setting(db, "tmdb_api_key"):
+        row.value = ""
+        db.commit()
+        logger.info("[migrate] Cleared a stored copy of the built-in TMDB token (Settings shows the built-in key again)")
 
 
 def migrate_orphaned_data_to_user(db, user_id: int):

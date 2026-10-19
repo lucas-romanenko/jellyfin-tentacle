@@ -11,7 +11,6 @@ Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import logging
 import shutil
-import tempfile
 import unittest
 
 from sqlalchemy import create_engine
@@ -20,6 +19,7 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 from models.database import Movie, Series, DownloadRequest, Setting, TentacleUser, DeletionLog
 import services.jellyfin as jellyfin
+from tmp_dirs import temp_dir
 
 def setUpModule():
     logging.disable(logging.CRITICAL)
@@ -59,7 +59,7 @@ class FakeJellyfinGet:
 
 class TestOrphanDownloadSweep(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, tmp, True)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
@@ -125,6 +125,19 @@ class TestOrphanDownloadSweep(unittest.TestCase):
         self.assertEqual(removed, 0)
         self.assertEqual(self.db.query(Movie).count(), 300)
 
+    def test_partial_fetch_under_the_cap_deletes_nothing(self):
+        """The completeness check on its own. A failed page that holds only 20 of the
+        300 downloaded titles is under the 50-row cap, so the cap does not stop it:
+        without `if not (movies_complete and series_complete)` those 20 rows and their
+        requests are deleted. The tests above all lose every download at once, which
+        the cap refuses anyway, so they stay green with the check removed."""
+        movies = self.radarr_ids[:280] + list(range(100000, 115000)) + self.radarr_ids[280:]
+        removed = self._run(FakeJellyfinGet(movies, self.jf_series,
+                                            fail_pages={("Movie", 10000)}))
+        self.assertEqual(removed, 0)
+        self.assertEqual(self.db.query(Movie).count(), 300)
+        self.assertEqual(self.db.query(DownloadRequest).count(), 300)
+
     def test_genuinely_removed_download_is_still_swept(self):
         """Must-not-change: a complete fetch that lacks one downloaded title removes it."""
         jf = [t for t in self.jf_movies if t != 7]
@@ -167,7 +180,7 @@ class TestOrphanSweepBlastRadius(TestOrphanDownloadSweep):
         fake = FakeJellyfinGet(self.jf_movies, self.jf_series)
         self._run(fake)
         for p in fake.params_seen:
-            self.assertEqual(p["Fields"], "ProviderIds")
+            self.assertEqual(p["Fields"], "ProviderIds,Path")  # path: #261
             self.assertEqual(p["EnableImages"], "false")
 
 

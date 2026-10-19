@@ -9,17 +9,17 @@ only trace is one WARNING naming a channel id -- which is how a scheduled
 recording turns into a zero-byte file nobody can explain.
 """
 import asyncio
-import tempfile
 import unittest
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from tmp_dirs import temp_dir
 
 
 class _Base(unittest.TestCase):
     def setUp(self):
         import models.database as mdb
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db",
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db",
                                connect_args={"check_same_thread": False})
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
@@ -106,7 +106,7 @@ class RefusalIsVisible(_Base):
         from routers import livetv
 
         self.db.add(Provider(id=1, name="p", server_url="http://example.com", username="u", password="p"))
-        self.db.add(LiveChannel(id=7, provider_id=1, name="TSN 4", stream_url="http://example.com/7.ts"))
+        self.db.add(LiveChannel(id=7, provider_id=1, name="TSN 4", stream_url="http://example.com/7.ts", enabled=True))
         set_setting(self.db, "livetv_max_concurrent_streams", "1")
         self.db.commit()
 
@@ -125,6 +125,8 @@ class RefusalIsVisible(_Base):
 
         exc, text = asyncio.run(go())
         self.assertEqual(503, exc.status_code)
+        # Answered with no body (#140): see test_tuner_refusal_empty_body.
+        self.assertIsInstance(exc, livetv._TunerRefusal)
         self.assertIn("TSN 4", text, "the refusal must name the channel, not just its id")
         self.assertEqual(1, slots.refused)
         self.assertEqual("TSN 4", slots.last_refused["channel"])

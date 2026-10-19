@@ -41,8 +41,14 @@ class _Base(unittest.TestCase):
         self.db.commit()
         self.radarr = mock.patch("services.radarr.RadarrService").start()
         self.sonarr = mock.patch("services.sonarr.SonarrService").start()
-        self.radarr.return_value.delete_movie.return_value = True
-        self.sonarr.return_value.delete_series.return_value = True
+        self.radarr.return_value.delete_movie_by_id.return_value = True
+        self.sonarr.return_value.delete_series_by_id.return_value = True
+        # Keep VOD deletes the imported files through the file API, then the title.
+        self.radarr.return_value.get_movie_by_tmdb.return_value = {"id": 3, "path": "/movies/Film"}
+        self.radarr.return_value.get_movie_files.return_value = [{"id": 30, "path": "/movies/Film/Film.mkv"}]
+        self.sonarr.return_value.get_series_by_tmdb.return_value = {"id": 5, "path": "/tv/Show (2010)"}
+        self.sonarr.return_value.get_episode_files.return_value = [
+            {"id": 50, "path": "/tv/Show (2010)/Season 01/Show - S01E02.mkv"}]
 
     def tearDown(self):
         mock.patch.stopall()
@@ -67,11 +73,14 @@ class TestSeriesDuplicates(_Base):
     def test_keep_vod_never_deletes_a_radarr_movie(self):
         duplicates._apply_resolution(self.dup, "keep_vod", self.db)
         self.radarr.return_value.delete_movie.assert_not_called()
+        self.radarr.return_value.delete_movie_by_id.assert_not_called()
 
     def test_keep_vod_removes_the_sonarr_copy(self):
         duplicates._apply_resolution(self.dup, "keep_vod", self.db)
-        self.sonarr.return_value.delete_series.assert_called_once()
-        self.assertEqual(self.sonarr.return_value.delete_series.call_args.args[0], 1418)
+        self.sonarr.return_value.get_series_by_tmdb.assert_called_once()
+        self.assertEqual(self.sonarr.return_value.get_series_by_tmdb.call_args.args[0], 1418)
+        self.sonarr.return_value.delete_episode_files.assert_called_once_with([50])
+        self.sonarr.return_value.delete_series_by_id.assert_called_once()
         self.assertIsNone(self.db.query(Series).one().sonarr_path)
 
     def test_keep_downloaded_removes_the_vod_episodes(self):
@@ -97,8 +106,10 @@ class TestMovieDuplicatesUnchanged(_Base):
 
     def test_keep_vod_deletes_from_radarr(self):
         duplicates._apply_resolution(self.dup, "keep_vod", self.db)
-        self.radarr.return_value.delete_movie.assert_called_once_with(603, delete_files=True)
+        self.radarr.return_value.delete_movie_file.assert_called_once_with(30)
+        self.radarr.return_value.delete_movie_by_id.assert_called_once_with(3, delete_files=True)
         self.sonarr.return_value.delete_series.assert_not_called()
+        self.sonarr.return_value.delete_series_by_id.assert_not_called()
 
     def test_keep_downloaded_deletes_the_strm(self):
         duplicates._apply_resolution(self.dup, "keep_radarr", self.db)

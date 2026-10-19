@@ -61,6 +61,13 @@ public class TentacleMdbListController : ControllerBase
             return BadRequest(new { error = "type must be 'movie' or 'show'" });
         }
 
+        // A TMDB id is a number (at most 10 digits); each new id costs one call
+        // on the MDBList key and a 7-day cache entry.
+        if (tmdbId.Trim().Length is 0 or > 10 || !tmdbId.Trim().All(char.IsAsciiDigit))
+        {
+            return BadRequest(new { error = "tmdbId must be a number" });
+        }
+
         var cacheKey = $"{type}:{tmdbId.Trim()}";
         if (MdbListCacheService.TryGet(cacheKey, CacheDuration, out var cached))
         {
@@ -124,7 +131,7 @@ public class TentacleMdbListController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle MdbList] Failed for {Type}:{TmdbId}: {Error}", type, tmdbId, ex.Message);
-            return Ok(new { success = false, error = ex.Message, ratings = Array.Empty<object>() });
+            return Ok(new { success = false, error = "MDBList ratings are not available right now.", ratings = Array.Empty<object>() });
         }
     }
 

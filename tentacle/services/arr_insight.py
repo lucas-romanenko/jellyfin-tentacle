@@ -33,9 +33,12 @@ AUTO_CHECK_AFTER = 45 * 60    # give the automatic search a chance first
 AUTO_CHECKS_PER_RUN = 2
 MAX_RELEASES = 40
 
-_checks: dict = {}            # title key -> {"at": ts, "data": {...}}
+_checks: dict = {}            # title key -> {"at": ts, "data": {...}, "ids": {...}}
 _checks_lock = threading.Lock()
 _running: set = set()
+_inflight: dict = {}          # title key -> {"done": Event, "error": InsightError|None} of the running search
+_auto_failed: dict = {}       # title key -> when its last automatic check failed
+AUTO_FAIL_BACKOFF = 2 * 3600  # don't retry a failing automatic check every run
 
 
 class InsightError(Exception):
@@ -62,25 +65,42 @@ def _get(url: str, key: str, path: str, timeout: float = 15, **params):
 # ── Release checks ─────────────────────────────────────────────────────────
 
 # Radarr/Sonarr word rejections precisely but tersely ("720p is not wanted in
-# profile"); group them into a few reasons a person can act on.
+# profile"); group them into a few reasons a person can act on. The patterns
+# are the fixed parts of their messages (DecisionEngine/Specifications in both
+# apps); the variable parts are taken out first (_VARIABLE), because a title or
+# a custom format name can contain any of these words — "(for Rampage)" is not
+# about age, "(for Super Size Me)" not about size.
 _REASONS = [
-    ("delay", r"delay", "waiting out your delay profile"),
+    ("delay", r"delay|waiting for better quality", "waiting out your delay profile"),
     ("blocklist", r"blocklist", "blocklisted"),
-    ("existing", r"existing file|not an upgrade|already meets cutoff|is not a .*upgrade", "not better than what you have"),
-    # Language before quality: both say "... is not wanted in profile".
-    ("language", r"language", "wrong language"),
-    ("quality", r"not wanted in profile|quality", "quality not in your profile"),
-    ("size", r"size|too large|too small", "wrong size"),
-    ("seeders", r"seeder|peers", "not enough seeders"),
+    ("existing", r"existing file|not an upgrade|already meets cutoff|is not a .*upgrade|in queue|in history"
+                 r"|already imported|same torrent hash|same release name", "not better than what you have"),
     ("format", r"custom format", "custom format score too low"),
-    ("age", r"retention|older than|minimum age|age", "too old or too new"),
+    # Language before quality: both say "... is not wanted in profile".
+    ("language", r"language|is wanted, but found", "wrong language"),
+    ("quality", r"not wanted in profile|quality", "quality not in your profile"),
+    # "10.8 GB is larger than maximum allowed 8.8 GB (for <title>)"
+    ("size", r"\bsize\b|too large|too small|larger than maximum|smaller than minimum", "wrong size"),
+    ("seeders", r"seeder|peers", "not enough seeders"),
+    # "Older than configured retention", "Only 5 minutes old, minimum age is 30 minutes"
+    ("age", r"retention|older than|minimum age|minutes old", "too old or too new"),
     ("match", r"unknown|wasn't requested|not requested|does not match|doesn't match|unable to|parse|wrong",
      "doesn't match this title"),
 ]
 
+_VARIABLE = [
+    (r"\s*\(for .*\)\s*$", ""),                                     # size: "(for <title>)" / "(for 45 minutes)"
+    (r"^movie .+? will only be considered available", "will only be considered available"),
+    (r"^custom formats? .+? have score", "custom formats have score"),
+    (r"^indexer .+? is blocked", "indexer is blocked"),
+    (r":.*$", ""),                                                      # term lists, names, qualities after ':'
+]
+
 
 def reason_of(text: str) -> tuple:
-    t = (text or "").lower()
+    t = (text or "").lower().strip()
+    for pattern, repl in _VARIABLE:
+        t = re.sub(pattern, repl, t)
     for key, pattern, label in _REASONS:
         if re.search(pattern, t):
             return key, label
@@ -140,8 +160,12 @@ def summarize(releases: list, arr: str) -> dict:
         summary = ("No releases found. Nobody seems to have uploaded it yet, "
                    "or your indexers didn't return it.")
     elif usable:
+        # Radarr/Sonarr never grab from an interactive search, and they don't
+        # search for missing titles again by themselves (only new uploads, via
+        # RSS), so a usable release found here stays put until someone acts.
         state, short = "usable", f"{_plural(len(usable), 'usable release')} found"
-        summary = f"{_plural(len(usable), 'usable release')} found. {arr} should grab one shortly."
+        summary = (f"{_plural(len(usable), 'usable release')} found. {arr} only picks up new uploads by itself, "
+                   "so download one below, or use Search again.")
     elif delayed and len(delayed) == len(entries):
         state, short = "delayed", "Waiting out your delay profile"
         summary = (f"Found {_plural(len(entries), 'release')}, held back by your delay profile. "
@@ -171,36 +195,74 @@ def summarize(releases: list, arr: str) -> dict:
     }
 
 
-def _target(db: Session, media_type: str, tmdb_id: int, tvdb_id: int) -> tuple:
-    """(app, url, key, release params, scope label, arr record)."""
+def _target(db: Session, media_type: str, tmdb_id: int, tvdb_id: int, strict: bool = False) -> tuple:
+    """(app, url, key, release params, scope label, arr record, grab ids)."""
     from routers.activity import ArrTitle, _find_arr_record, _missing_aired, _ep_label
     from fastapi import HTTPException
     try:
-        svc, rec = _find_arr_record(db, ArrTitle(media_type=media_type, tmdb_id=tmdb_id, tvdb_id=tvdb_id))
+        svc, rec = _find_arr_record(db, ArrTitle(media_type=media_type, tmdb_id=tmdb_id, tvdb_id=tvdb_id),
+                                    strict=strict)
     except HTTPException as e:
         raise InsightError(e.status_code, e.detail)
     if media_type == "movie":
         url, key = _conn(db, "radarr")
-        return "Radarr", url, key, {"movieId": rec["id"]}, rec.get("title", ""), rec
+        return "Radarr", url, key, {"movieId": rec["id"]}, rec.get("title", ""), rec, {"movieId": rec["id"]}
     url, key = _conn(db, "sonarr")
     missing = _missing_aired(svc.get_episodes(rec["id"]))
     if not missing:
         raise InsightError(409, "Sonarr isn't looking for any episodes of this show")
     # The newest missing episode: the one someone is most likely waiting for.
     ep = max(missing, key=lambda e: e.get("airDateUtc") or "")
-    return "Sonarr", url, key, {"episodeId": ep["id"]}, _ep_label(ep), rec
+    return ("Sonarr", url, key, {"episodeId": ep["id"]}, _ep_label(ep), rec,
+            {"seriesId": rec["id"], "episodeId": ep["id"]})
 
 
 def check(db: Session, media_type: str, tmdb_id: int = 0, tvdb_id: int = 0,
-          max_age: Optional[float] = None) -> dict:
-    """Search now (or reuse a check younger than max_age) and sum it up."""
+          max_age: Optional[float] = None, strict: bool = False) -> dict:
+    """Search now (or reuse a check younger than max_age) and sum it up.
+    strict: see routers.activity._find_arr_record (non-admin callers)."""
     k = title_key(media_type, tmdb_id, tvdb_id)
     ttl = CHECK_TTL if max_age is None else max_age
-    with _checks_lock:
-        hit = _checks.get(k)
-        if hit and time.time() - hit["at"] < ttl:
+    asked = time.time()
+    while True:
+        with _checks_lock:
+            hit = _checks.get(k)
+            if hit and time.time() - hit["at"] < ttl:
+                return hit["data"]
+            # One interactive search per title at a time: a second caller (a
+            # double click, another viewer, the automatic check) waits for the
+            # running one and shares its answer instead of asking every
+            # indexer again.
+            running = _inflight.get(k)
+            if running is None:
+                _inflight[k] = mine = {"done": threading.Event(), "error": None}
+                break
+        running["done"].wait(SEARCH_TIMEOUT + 15)
+        with _checks_lock:
+            hit = _checks.get(k)
+        if hit and hit["at"] >= asked:
             return hit["data"]
-    app, url, key, params, scope, rec = _target(db, media_type, tmdb_id, tvdb_id)
+        if running["done"].is_set() and running["error"] is not None:
+            # The search we waited for failed; asking every indexer again
+            # right away would fail the same way and make this caller wait
+            # twice as long (past the clients' timeouts).
+            raise running["error"]
+    try:
+        return _search(db, k, media_type, tmdb_id, tvdb_id, strict)
+    except InsightError as e:
+        mine["error"] = e
+        raise
+    except Exception:
+        mine["error"] = InsightError(502, "The release check failed")
+        raise
+    finally:
+        with _checks_lock:
+            _inflight.pop(k, None)
+        mine["done"].set()
+
+
+def _search(db: Session, k: str, media_type: str, tmdb_id: int, tvdb_id: int, strict: bool = False) -> dict:
+    app, url, key, params, scope, rec, ids = _target(db, media_type, tmdb_id, tvdb_id, strict=strict)
     started = time.time()
     try:
         releases = _get(url, key, "release", timeout=SEARCH_TIMEOUT, **params)
@@ -214,7 +276,7 @@ def check(db: Session, media_type: str, tmdb_id: int = 0, tvdb_id: int = 0,
                 checked_at=datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
                 took_seconds=round(time.time() - started, 1))
     with _checks_lock:
-        _checks[k] = {"at": time.time(), "data": data}
+        _checks[k] = {"at": time.time(), "data": data, "ids": ids}
     logger.info(f"[Insight] Checked '{rec.get('title')}' {scope}: {data['summary']}")
     return data
 
@@ -234,27 +296,48 @@ def forget(media_type: str, tmdb_id: int = 0, tvdb_id: int = 0) -> None:
         _checks.pop(title_key(media_type, tmdb_id, tvdb_id), None)
 
 
-def grab(db: Session, media_type: str, tmdb_id: int, tvdb_id: int, guid: str, indexer_id: int) -> dict:
-    """Download one release from a check, even one the profile rejected."""
+def grab(db: Session, media_type: str, tmdb_id: int, tvdb_id: int, guid: str, indexer_id: int,
+         strict: bool = False) -> dict:
+    """Download one release from a check, even one the profile rejected.
+
+    strict (non-admin callers): only a release listed by this title's own
+    current check. Radarr/Sonarr accept any guid in their release cache and,
+    with the ids added below, file even a release they could not map under
+    this title; the title is what the caller's permission was checked for.
+    """
+    with _checks_lock:
+        hit = _checks.get(title_key(media_type, tmdb_id, tvdb_id))
+    if strict:
+        listed = hit and time.time() - hit["at"] < CHECK_TTL and any(
+            r.get("guid") == guid and r.get("indexer_id") == indexer_id
+            for r in (hit["data"].get("releases") or []))
+        if not listed:
+            raise InsightError(409, "That list is too old to download from. Check again for a fresh one.")
     app = "radarr" if media_type == "movie" else "sonarr"
     url, key = _conn(db, app)
     if not (url and key):
         raise InsightError(503, f"{app.capitalize()} is not configured")
+    body = {"guid": guid, "indexerId": indexer_id}
+    # Name the title the check was for: Radarr/Sonarr use these only for a
+    # release they couldn't map by its name ("Download anyway" on an
+    # "Unknown Movie" rejection), and answer 404 for one without them.
+    body.update((hit or {}).get("ids") or {})
     try:
-        r = requests.post(f"{url}/api/v3/release", headers={"X-Api-Key": key},
-                          json={"guid": guid, "indexerId": indexer_id}, timeout=60)
+        r = requests.post(f"{url}/api/v3/release", headers={"X-Api-Key": key}, json=body, timeout=60)
     except Exception as e:
-        raise InsightError(502, f"Couldn't reach {app.capitalize()}: {e}")
-    if r.status_code == 404:
+        logger.warning(f"[Insight] Grab: couldn't reach {app}: {e}")
+        raise InsightError(502, f"Couldn't reach {app.capitalize()} ({type(e).__name__})")
+    detail = ""
+    if r.status_code >= 400:
+        try:
+            rb = r.json()
+            detail = rb.get("message") if isinstance(rb, dict) else (rb[0].get("errorMessage") if rb else "")
+        except Exception:
+            pass
+    if r.status_code == 404 and (not detail or "cache" in detail.lower()):
         forget(media_type, tmdb_id, tvdb_id)
         raise InsightError(409, "That list is too old to download from. Check again for a fresh one.")
     if r.status_code >= 400:
-        detail = ""
-        try:
-            body = r.json()
-            detail = body.get("message") if isinstance(body, dict) else (body[0].get("errorMessage") if body else "")
-        except Exception:
-            pass
         raise InsightError(502, f"{app.capitalize()} refused it" + (f": {detail}" if detail else ""))
     forget(media_type, tmdb_id, tvdb_id)
     return {"ok": True, "message": f"Sent to your download client. It will show under Downloading shortly."}
@@ -283,12 +366,20 @@ def run_auto_checks() -> None:
             k = title_key(mt, tmdb, tvdb)
             if k in _running:
                 continue
+            # A check that keeps failing (indexers timing out, Radarr erroring)
+            # would otherwise be retried first every run and hold back every
+            # title after it.
+            if time.time() - _auto_failed.get(k, 0) < AUTO_FAIL_BACKOFF:
+                continue
             _running.add(k)
             try:
                 check(db, mt, tmdb, tvdb)
+                _auto_failed.pop(k, None)
             except InsightError as e:
+                _auto_failed[k] = time.time()
                 logger.info(f"[Insight] Auto-check of '{item.get('title')}' skipped: {e}")
             except Exception as e:
+                _auto_failed[k] = time.time()
                 logger.warning(f"[Insight] Auto-check of '{item.get('title')}' failed: {e}")
             finally:
                 _running.discard(k)
@@ -303,6 +394,7 @@ PROBLEMS_TTL = 60
 LOW_DISK_BYTES = 20 * 1024 ** 3
 LOW_DISK_FRACTION = 0.05
 _problems_cache: dict = {"at": 0, "data": None}
+_problems_lock = threading.Lock()
 
 # Health sources that stop downloads from happening.
 _KINDS = [("indexer", "indexer"), ("downloadclient", "download_client"), ("rootfolder", "root_folder"),
@@ -321,13 +413,25 @@ def _gb(n: float) -> str:
     return f"{n / 1024 ** 3:.0f} GB" if n >= 1024 ** 3 else f"{n / 1024 ** 2:.0f} MB"
 
 
+def _norm_path(p: str) -> str:
+    """Compare paths the way the OS Radarr/Sonarr run on would: "D:\\Movies" on
+    Windows (case-insensitive, either slash), "/data/movies" elsewhere."""
+    p = (p or "").replace("\\", "/")
+    return p.lower() if re.match(r"^[A-Za-z]:(/|$)", p) else p
+
+
+def _on_disk(root: str, disk_path: str) -> bool:
+    r, d = _norm_path(root), _norm_path(disk_path)
+    return bool(d) and (r == d or r.rstrip("/") == d.rstrip("/") or r.startswith(d.rstrip("/") + "/"))
+
+
 def _disk_problems(url: str, key: str, app: str) -> list:
     out = []
     roots = [f.get("path") or "" for f in _get(url, key, "rootfolder")]
     disks = _get(url, key, "diskspace")
     for root in roots:
-        disk = max((d for d in disks if root.startswith((d.get("path") or "\0").rstrip("/") + "/")
-                    or root == d.get("path")), key=lambda d: len(d.get("path") or ""), default=None)
+        disk = max((d for d in disks if _on_disk(root, d.get("path"))),
+                   key=lambda d: len(d.get("path") or ""), default=None)
         if not disk or not disk.get("totalSpace"):
             continue
         free, total = disk.get("freeSpace") or 0, disk["totalSpace"]
@@ -338,11 +442,30 @@ def _disk_problems(url: str, key: str, app: str) -> list:
     return out
 
 
-def problems(db: Session) -> list:
-    """Warnings and errors from Radarr/Sonarr's health list, plus low disk space."""
-    now = time.time()
-    if _problems_cache["data"] is not None and now - _problems_cache["at"] < PROBLEMS_TTL:
+def _fresh_problems() -> Optional[list]:
+    if _problems_cache["data"] is not None and time.time() - _problems_cache["at"] < PROBLEMS_TTL:
         return _problems_cache["data"]
+    return None
+
+
+def problems(db: Session) -> list:
+    """Warnings and errors from Radarr/Sonarr's health list, plus low disk space.
+    Cached for PROBLEMS_TTL; concurrent callers share one pass."""
+    cached = _fresh_problems()
+    if cached is not None:
+        return cached
+    with _problems_lock:
+        cached = _fresh_problems()  # read by the request we waited for
+        if cached is not None:
+            return cached
+        out = _read_problems(db)
+        # Counted from when the apps were read, not from when the pass
+        # started: a pass slower than the TTL was stored already expired.
+        _problems_cache.update(at=time.time(), data=out)
+        return out
+
+
+def _read_problems(db: Session) -> list:
     out, seen_disks = [], set()
     for app_key, app in (("radarr", "Radarr"), ("sonarr", "Sonarr")):
         url, key = _conn(db, app_key)
@@ -370,7 +493,6 @@ def problems(db: Session) -> list:
                     out.append(p)
         except Exception as e:
             logger.debug(f"[Insight] {app} disk space check failed: {e}")
-    _problems_cache.update(at=now, data=out)
     return out
 
 
@@ -402,7 +524,10 @@ def coming_up(db: Session) -> list:
                    end=(start + timedelta(days=CALENDAR_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ"))
     except Exception as e:
         logger.debug(f"[Insight] Sonarr calendar failed: {e}")
-        return _calendar_cache["data"] or []
+        # Try again in a minute, not on every Activity poll: a slow calendar
+        # would otherwise add its whole timeout to each one.
+        _calendar_cache.update(at=now - CALENDAR_TTL + 60, data=_calendar_cache["data"] or [])
+        return _calendar_cache["data"]
     out = []
     for ep in eps or []:
         series = ep.get("series") or {}

@@ -3,6 +3,7 @@ using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -17,11 +18,15 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
 {
     private readonly ILibraryManager _libraryManager;
     private readonly ITaskManager _taskManager;
+    private readonly IProviderManager _providerManager;
     private readonly ILogger<LibraryDeleteHandler> _logger;
     private readonly HttpClient _httpClient;
     private Timer? _debounceTimer;
     private readonly object _lock = new();
-    private readonly List<(string mediaType, string tmdbId)> _pendingDeletes = new();
+    // The deleted item's own id and path go with its TMDB id: the same title can
+    // be in Jellyfin twice (a VOD .strm and a download), and the backend must act
+    // on the copy that was deleted, never on "the first item with this TMDB id".
+    private readonly List<(string mediaType, string tmdbId, string itemId, string path)> _pendingDeletes = new();
 
     /// <summary>Upper bound on in-flight DELETE notifications to the backend.</summary>
     private const int MaxConcurrentNotifications = 4;
@@ -38,10 +43,12 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
     public LibraryDeleteHandler(
         ILibraryManager libraryManager,
         ITaskManager taskManager,
+        IProviderManager providerManager,
         ILogger<LibraryDeleteHandler> logger)
     {
         _libraryManager = libraryManager;
         _taskManager = taskManager;
+        _providerManager = providerManager;
         _logger = logger;
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
     }
@@ -109,20 +116,6 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
             return;
         }
 
-        // A library scan removes every item whose file it cannot see — a provider
-        // sync that rewrote .strm files, an unreadable mount, a pool branch that
-        // dropped out. Those are not user deletions, and the path check above
-        // cannot tell them apart, because the file really is gone. While a scan
-        // is running, leave the catalogue alone; a deletion made in the UI during
-        // a scan is reconciled by the backend's nightly orphan sweep (downloaded
-        // rows; a VOD row simply comes back through the next sync's .strm repair).
-        if (IsLibraryScanRunning())
-        {
-            _logger.LogInformation("[Tentacle] {Type} '{Name}' removed during a library scan — not forwarding to the backend",
-                mediaType, item.Name);
-            return;
-        }
-
         // Extract TMDB provider ID
         if (!item.ProviderIds.TryGetValue("Tmdb", out var tmdbId) || string.IsNullOrEmpty(tmdbId))
         {
@@ -130,12 +123,30 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
             return;
         }
 
+        // A library re-read removes every item whose file it cannot see — a provider
+        // sync that rewrote .strm files, an unreadable mount, a pool branch that
+        // dropped out. Those are not user deletions, and the path check above
+        // cannot tell them apart, because the file really is gone. While a re-read
+        // is running, leave the catalogue alone; a deletion made in the UI during
+        // one is reconciled by the backend's nightly orphan sweep (downloaded
+        // rows; a VOD row simply comes back through the next sync's .strm repair).
+        if (IsLibraryScanRunning() || IsParentBeingValidated(e.Parent))
+        {
+            _logger.LogInformation("[Tentacle] {Type} '{Name}' removed during a library scan — not forwarding to the backend",
+                mediaType, item.Name);
+            return;
+        }
+
         // Debug, not Info: a bulk removal produced one Info line per item.
         _logger.LogDebug("[Tentacle] Detected deletion: {Type} '{Name}' (TMDB:{TmdbId})", mediaType, item.Name, tmdbId);
 
+        // The backend asks this server to confirm the deletion before it acts on
+        // the notification (#139); see RecentDeletions.
+        RecentDeletions.Record(mediaType, tmdbId);
+
         lock (_lock)
         {
-            _pendingDeletes.Add((mediaType, tmdbId));
+            _pendingDeletes.Add((mediaType, tmdbId, item.Id.ToString("N"), path ?? string.Empty));
 
             // Debounce 2 seconds to batch rapid deletions
             _debounceTimer?.Dispose();
@@ -172,13 +183,41 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
         return false;
     }
 
+    /// <summary>
+    /// True while Jellyfin is validating the folder the item was removed from.
+    /// The Scan Media Library task is only one way in: the library monitor
+    /// (real-time monitoring, /Library/Media/Updated from Radarr/Sonarr) and a
+    /// one-library "Scan library" (/Items/{id}/Refresh) validate folders with the
+    /// task idle. Folder.ValidateChildrenInternal registers the folder with
+    /// OnRefreshStart for as long as it runs and passes it as the removal's
+    /// parent. A delete from the UI passes the item's own parent too, which is
+    /// held back only if a re-read of that folder runs at that moment (#448).
+    /// </summary>
+    private bool IsParentBeingValidated(BaseItem? parent)
+    {
+        if (parent == null)
+        {
+            return false;
+        }
+
+        try
+        {
+            return _providerManager.GetRefreshProgress(parent.Id).HasValue;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "[Tentacle] Could not read refresh state of {Parent}", parent.Id);
+            return false;
+        }
+    }
+
     private void ProcessPendingDeletes()
     {
-        List<(string mediaType, string tmdbId)> batch;
+        List<(string mediaType, string tmdbId, string itemId, string path)> batch;
         lock (_lock)
         {
             if (_pendingDeletes.Count == 0) return;
-            batch = new List<(string, string)>(_pendingDeletes);
+            batch = new List<(string, string, string, string)>(_pendingDeletes);
             _pendingDeletes.Clear();
         }
 
@@ -211,7 +250,7 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
             TaskScheduler.Default);
     }
 
-    private async Task ProcessBatchAsync(List<(string mediaType, string tmdbId)> batch, string tentacleUrl)
+    private async Task ProcessBatchAsync(List<(string mediaType, string tmdbId, string itemId, string path)> batch, string tentacleUrl)
     {
         var gate = _gate;
         var failures = 0;
@@ -223,7 +262,8 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
             await gate.WaitAsync().ConfigureAwait(false);
             try
             {
-                var url = $"{tentacleUrl.TrimEnd('/')}/api/library/item/{entry.mediaType}/{entry.tmdbId}";
+                var url = $"{tentacleUrl.TrimEnd('/')}/api/library/item/{entry.mediaType}/{entry.tmdbId}"
+                    + $"?item_id={Uri.EscapeDataString(entry.itemId)}&path={Uri.EscapeDataString(entry.path)}";
                 var response = await _httpClient.DeleteAsync(url).ConfigureAwait(false);
 
                 if (response.IsSuccessStatusCode)

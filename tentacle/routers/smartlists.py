@@ -6,17 +6,18 @@ Manage per-user Jellyfin SmartList config files.
 import os
 import json
 import logging
+import re
 import time
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 from fastapi import APIRouter, Depends, Request, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from sqlalchemy import func
 from models.database import (
-    get_db, get_setting, Movie, Series, Provider,
+    get_db, get_setting, get_recently_added_days, Movie, Series, Provider,
     ListSubscription, ListItem, AutoPlaylistToggle, TentacleUser, DownloadRequest,
 )
 from routers.auth import get_user_from_request
@@ -225,13 +226,20 @@ def set_playlist_sort(req: PlaylistSortRequest, db: Session = Depends(get_db), u
     return update_playlist_sort(req.name, req.sort_by, req.sort_order, db, user_id=user.id)
 
 
+class SyncOneRequest(BaseModel):
+    name: str = ""
+    conditions: List[dict] = []
+    apply_to: str = "both"
+    output_tag: Optional[str] = None
+
+
 @router.post("/sync-one")
-def sync_one(body: dict, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def sync_one(body: SyncOneRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Fast sync a single custom playlist — used by create/edit to avoid rebuilding all configs."""
-    name = body.get("name", "")
-    conditions = body.get("conditions", [])
-    apply_to = body.get("apply_to", "both")
-    output_tag = body.get("output_tag", name)
+    name = body.name
+    conditions = body.conditions
+    apply_to = body.apply_to
+    output_tag = body.output_tag if "output_tag" in body.model_fields_set else name
     if not name or not conditions:
         return {"error": "name and conditions required"}
     result = sync_single_custom_playlist(db, user.id, name, conditions, apply_to, output_tag)
@@ -345,12 +353,16 @@ def sync_status(user: TentacleUser = Depends(get_user_from_request)):
         return dict(_resync_state_for(user.id))
 
 
+class SyncRequest(BaseModel):
+    full: bool = False
+
+
 @router.post("/sync")
-def sync(body: dict = None, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def sync(body: Optional[SyncRequest] = None, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Run per-user playlist pipeline: sync configs → populate items → artwork → home config → notify plugin.
     Pass {"full": true} to force refresh ALL playlists — this runs in the background
     and returns {"status": "started"} immediately (poll /sync-status for completion)."""
-    full = (body or {}).get("full", False)
+    full = bool(body and body.full)
 
     if full:
         # Heavy full rebuild — hand off to a background thread and return now.
@@ -528,13 +540,13 @@ def playlist_health(db: Session = Depends(get_db), user: TentacleUser = Depends(
 
 class PreviewRequest(BaseModel):
     apply_to: str = "both"
-    conditions: list = []
+    conditions: List[dict] = []
 
 
 @router.post("/preview-count")
 def preview_count(body: PreviewRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Return the number of items matching the given conditions (for live preview)."""
-    from services.smartlists import _classify_conditions, _conditions_to_expressions, _build_query_params, _extract_genre_logic
+    from services.smartlists import _rule_expressions, _build_query_params, _extract_genre_logic
     from services.jellyfin import JellyfinService
 
     jf_url = get_setting(db, "jellyfin_url")
@@ -552,25 +564,29 @@ def preview_count(body: PreviewRequest, db: Session = Depends(get_db), user: Ten
     elif body.apply_to == "series":
         media = ["Series"]
 
-    classification = _classify_conditions(conditions)
-
-    # Build a minimal config to reuse _build_query_params
-    expressions = []
-    if classification == "native":
-        expressions = _conditions_to_expressions(conditions)
-    else:
-        # For tentacle/mixed conditions, we can't easily preview without tag data
-        # Just count items with any tag-based conditions as 0
+    # The query the playlist will run. A rule that queries its own tag (list,
+    # runtime, downloaded) can't be counted before the tagger has run.
+    tag, expressions = _rule_expressions(conditions, media, "")
+    if not expressions and not tag:
         return {"count": -1}  # -1 signals "can't preview"
+    if not expressions:
+        expressions = [{"MemberName": "Tags", "Operator": "Contains", "TargetValue": tag}]
 
     config = {
         "MediaTypes": media,
-        "ExpressionSets": [{"Expressions": expressions}] if expressions else [],
+        "ExpressionSets": [{"Expressions": expressions}],
     }
 
     jf = JellyfinService(jf_url, jf_key)
+    # Count as the rule's owner, the same query the playlist runs (#538):
+    # without a user Jellyfin answers for every library, on stale metadata.
     query = _build_query_params(config)
-    items = jf.query_items(**query)
+    query["user_id"] = user.jellyfin_user_id
+    try:
+        items = jf.query_items(**query)
+    except Exception as e:
+        logger.warning(f"[SmartLists] Preview count query failed: {e}")
+        return {"count": -1}  # "can't preview", not a wrong number
 
     # AND filter for multiple genres (skip if OR mode)
     required_genres = query.get("genres") or []
@@ -716,12 +732,20 @@ def add_row(req: AddRowRequest, db: Session = Depends(get_db), user: TentacleUse
             home_row_limit = int(get_setting(db, "home_row_limit", "20") or "20")
             for r in config["rows"]:
                 r["order"] = r.get("order", 0) + 1
+            # Carry the SmartList's sort and the row's starting shape, as
+            # write_home_config() does for every row. Without them the plugin
+            # reads the unset sort as "keep the stored playlist order" (#59), so
+            # a release-date row showed a newly appended title last, and a
+            # YouTube row drew cropped poster cards, until the next regeneration.
             config["rows"].insert(0, {
                 "type": "playlist",
                 "playlist_id": req.playlist_id,
                 "display_name": match["name"],
                 "order": 1,
                 "max_items": home_row_limit,
+                "sort_by": match.get("sort_by", "releasedate"),
+                "sort_order": match.get("sort_order", "Descending"),
+                "shape": "wide" if match.get("is_youtube") else "poster",
             })
         else:
             return {"success": False, "message": "Must provide playlist_id or section_id"}
@@ -902,9 +926,42 @@ def set_row_shape(req: RowShapeRequest, db: Session = Depends(get_db), user: Ten
     return {"success": True, "shape": shape, **notify}
 
 
+_JELLYFIN_ID = re.compile(r"[0-9a-fA-F]{32}|[0-9a-fA-F-]{36}")
+
+
+def _hero_display_name(db: Session, user: TentacleUser, playlist_id: str) -> str:
+    """Name for a picked hero playlist: its home row, else Tentacle's playlist,
+    else what Jellyfin calls it for this user (a playlist made in Jellyfin, #650).
+    Jellyfin is asked as the user, so one they can't see stays unnamed; the id is
+    the last resort. Runs outside home_config_lock: a slow Jellyfin must not hold
+    up other home-config writes (the file is replaced atomically)."""
+    rows = (_read_home_json(user) or {}).get("rows") or []
+    matching = next((r for r in rows if r.get("playlist_id") == playlist_id), None)
+    if matching and matching.get("display_name"):
+        return matching["display_name"]
+    all_playlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
+    pl = next((p for p in all_playlists if p["playlist_id"] == playlist_id), None)
+    if pl:
+        return pl["name"]
+
+    jellyfin_url = get_setting(db, "jellyfin_url", "")
+    jellyfin_key = get_setting(db, "jellyfin_api_key", "")
+    if jellyfin_url and jellyfin_key and user.jellyfin_user_id and _JELLYFIN_ID.fullmatch(playlist_id):
+        from services.jellyfin import JellyfinService
+        try:
+            jf = JellyfinService(jellyfin_url, jellyfin_key, user.jellyfin_user_id)
+            name = (jf._get(jf._item_path(playlist_id)) or {}).get("Name")
+            if isinstance(name, str) and name.strip():
+                return name
+        except Exception as e:
+            logger.debug(f"Hero playlist name lookup failed for {playlist_id}: {e}")
+    return playlist_id
+
+
 @router.post("/hero")
 def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Read JSON, update hero, write JSON back. That's it."""
+    display_name = _hero_display_name(db, user, req.playlist_id) if req.playlist_id else ""
     with home_config_lock:
         config = _read_home_json(user)
         if not config:
@@ -914,14 +971,6 @@ def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: Tentacle
 
         existing_hero = config.get("hero", {})
         if req.playlist_id:
-            # Look up display name from rows first, then all playlists
-            matching = next((r for r in config["rows"] if r.get("playlist_id") == req.playlist_id), None)
-            if matching:
-                display_name = matching["display_name"]
-            else:
-                all_playlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
-                pl = next((p for p in all_playlists if p["playlist_id"] == req.playlist_id), None)
-                display_name = pl["name"] if pl else req.playlist_id
             config["hero"] = {
                 "enabled": True,
                 "playlist_id": req.playlist_id,
@@ -930,6 +979,8 @@ def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: Tentacle
                 "sort_order": existing_hero.get("sort_order", "Descending"),
                 "require_logo": existing_hero.get("require_logo", True),
                 "require_trailer": existing_hero.get("require_trailer", False),
+                # Missing means muted, as in the plugin's HeroConfig and write_home_config
+                "trailer_audio": existing_hero.get("trailer_audio", False),
                 "item_count": existing_hero.get("item_count", 10),
             }
         else:
@@ -1108,7 +1159,7 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
 
     # ── Built-in playlists ──
     from datetime import datetime, timedelta
-    recently_added_days = int(get_setting(db, "recently_added_days", "30"))
+    recently_added_days = get_recently_added_days(db)
     cutoff = datetime.utcnow() - timedelta(days=recently_added_days)
     recent_movies = db.query(func.count(Movie.id)).filter(Movie.date_added >= cutoff).scalar() or 0
     recent_series = db.query(func.count(Series.id)).filter(Series.date_added >= cutoff).scalar() or 0

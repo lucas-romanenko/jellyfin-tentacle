@@ -103,11 +103,11 @@ Fix it from the title itself (admins only):
 - **Android TV:** the **Wrong movie? Fix it** button on the title's page
 - **Dashboard:** open the title in Library, **Wrong movie? Fix it**
 
-Tentacle asks **which movie it really is** and suggests candidates. Once the title has been played, Jellyfin knows the stream's real length, and films of that length are listed first (a mislabelled stream is usually a similarly named film). Pick the right one and the copy moves there: new folder, the right metadata, same stream. Tentacle remembers the fix so the nightly sync keeps it. On the web and the dashboard you can also search for the title yourself.
+Tentacle asks **which movie it really is** and suggests candidates. Once the title has been played, Jellyfin knows the stream's real length, and films of that length are listed first (a mislabelled stream is usually a similarly named film). Pick the right one and the copy becomes that film: the right metadata, same stream. The file stays where it is, so Jellyfin keeps the title and everyone's watched state, resume point, favourites and playlist entries; only its folder keeps the old label's name. (If a download shares that folder, the copy moves to the right film's own folder instead, or to `<Title (Year)> [tmdbid-N]` when another film already has that name.) Tentacle remembers the fix so the nightly sync keeps it. On the web and the dashboard you can also search for the title yourself.
 
 **Not sure which film it is?** Two more clues help:
 
-- **Audio language.** Jellyfin also records the language of the stream's audio. When the stream has a single audio language, films originally in that language get a **same language** badge and move up the list. A stream with several audio tracks (an original plus dubs) says little about the film, so it isn't used.
+- **Audio language.** Jellyfin also records the language of the stream's audio. When the stream has a single audio language, films originally in that language get a **same language** badge and move up the list. The length still counts first: a film of exactly the stream's length comes before one in the same language that is a few minutes off, since a single audio track is often a dub. A stream with several audio tracks (an original plus dubs) says little about the film, so it isn't used.
 - **Pictures from the stream.** **Not sure? Show pictures** grabs three stills from the stream, spread across its length, so you can see what it actually is before you pick. The pictures come straight from your provider, so they take a few seconds. If the provider only allows one stream at a time and someone is watching, try again later. They are cached for two weeks.
 
 If you still can't tell, **Leave it for now** closes the panel and changes nothing. The title stays flagged under **Library → Possible wrong movies**, so you can come back to it.
@@ -183,9 +183,70 @@ If playlists were recreated during a sync (new Jellyfin playlist IDs), Tentacle 
 
 Click the Categories tab — Tentacle auto-fetches categories on first visit. If nothing loads:
 
-1. Test the provider connection (click Test on the provider card)
+1. Test the provider connection (click Test on the provider's card in Settings → Providers)
 2. Verify credentials are correct
 3. Some providers may be temporarily unavailable
+
+### A red banner says the provider is failing
+
+Every hour Tentacle logs in to each provider and opens a few seconds of
+one stream. When either fails twice in a row (two minutes apart), every
+dashboard page shows a red banner with the reason. It goes away by itself
+once the check passes; **Check now** checks again at once, **Hide** hides it
+until the reason changes. Nothing is checked while live TV or a recording is
+running through Tentacle, so a check never cuts a stream.
+
+What the syncs and live streams see counts too, with no extra connection:
+when the provider refuses a library or channel sync, or a live stream, with
+401/403 twice at least two minutes apart, the banner comes, even while a
+recording runs. It clears by itself once a sync reads the provider again
+(for a refused login) or a live channel plays for 10 seconds (for refused
+streams), without **Check now**. A channel refused while another channel
+of the same provider is playing or recording doesn't count: that channel is
+likely not in your package.
+
+| The banner says | Usually means |
+|---|---|
+| Provider refusing: 403 | The provider blocks your IP, the account has expired, or the server URL has moved. Ask the provider. |
+| Provider refusing streams: 403 (the login still works) | IP block, or the account is over its connection limit (another device is using it). |
+| Provider rejects the login | Wrong username or password, or the account has expired. Check them in Settings → Providers. |
+| Provider address not found (404) / answers with a web page | The server URL has moved, or a block page answers instead of the provider. |
+| Provider server error (HTTP 5xx) | A problem on the provider's side; usually passes. |
+| Provider unreachable | No answer, connection refused, or the name does not resolve: the provider is down or the URL is wrong. |
+| Provider account expired on ... / Provider account is ... | What the provider itself reports about the account. |
+| Provider test streams not found (404) | The titles tried have left the provider; the next sync replaces them. |
+
+**Alerts on your phone:** in Settings → Integrations → Pushover, enter an
+application token (create an application at pushover.net) and your user
+key, Save, then press **Send test**. Tentacle then sends one message when a
+provider starts failing and one when it works again.
+
+**For a monitor** (Uptime Kuma, rmnk, ...): `GET /api/provider-status`
+needs no sign-in and answers 200 `{"status": "ok"}`, or 503 with the
+reasons while a provider is failing. It names no provider and carries no
+URL or login.
+
+### An episode stops, shows the backdrop and jumps to the next one
+
+The provider dropped the connection mid-episode. A `.strm` that points
+straight at the provider is read by Jellyfin's ffmpeg in one long
+connection; when the provider closes it early, ffmpeg logs `partial file`
+or `Stream ends prematurely`, then exits as if the file had ended.
+Jellyfin takes that as the end of the episode and autoplays the next one.
+
+Tentacle prevents this by default: films and episodes play through
+Tentacle (`/api/vod/...` in the `.strm` files), which reconnects to the
+provider and carries on from the byte where it stopped, so the player never
+sees the drop. If it still happens:
+
+- Open a `.strm` file: if it holds the provider's address instead of
+  `/api/vod/`, Tentacle did not know an address Jellyfin can reach it at.
+  The log says so (`VOD keeps direct provider links`). Check the Jellyfin
+  plugin's Tentacle URL, or set `vod_base_url`; the files are rewritten a
+  minute and a half after Tentacle starts, and at every sync.
+- The setting `vod_via_tentacle_enabled` set to `false` turns this off on
+  purpose.
+- Only Xtream providers play through Tentacle; M3U ones keep their own links.
 
 ### VOD content missing metadata
 
@@ -203,8 +264,8 @@ If titles appear without posters or proper names:
 
 1. Verify the HDHomeRun tuner is added in Jellyfin (Dashboard → Live TV → Tuner Devices)
 2. Make sure channels are enabled in Tentacle (not just the groups)
-3. Click **Refresh Guide** in Tentacle — this recreates the XMLTV listing provider in Jellyfin, forcing a full channel remap
-4. Simply refreshing guide data alone won't pick up new channels
+3. Save Tentacle's address on the Live TV page's **Jellyfin Setup** tab, then click **Sync EPG** on the Channels tab — when it finishes, Tentacle recreates the XMLTV listing provider in Jellyfin, forcing a full channel remap
+4. Simply refreshing guide data in Jellyfin alone won't pick up new channels
 
 ### No EPG data for channels
 
@@ -238,8 +299,10 @@ source", "Could not read Radarr's root folders…"). The common ones:
 |---------|-----------|
 | Could not read Radarr's/Sonarr's root folders | The *arr was busy or down. Nothing was added — retry in a moment. |
 | Sonarr could not find this show in its TVDB metadata source | The show isn't on TheTVDB yet (usually very new). Nothing you can fix in Tentacle. |
-| the root folder Tentacle used does not exist | Add a root folder in the *arr (Settings → Media Management). |
-| the selected quality profile no longer exists | Pick a different quality profile. |
+| Pick a default Radarr/Sonarr quality profile in Tentacle's settings | Pick one under Radarr/Sonarr in Settings → Connections. Tentacle won't guess. |
+| Requests aren't set up yet / aren't working right now: an admin has to… | What a non-admin sees for the same problems (they can't open Settings). An admin fixes it as in the rows around this one. |
+| the root folder Tentacle used does not exist | Add a root folder in the *arr (Settings → Media Management), or pick another default root folder in Settings → Connections. |
+| the quality profile Tentacle used no longer exists / Your default quality profile no longer exists | Pick another default in Settings → Connections. |
 | another series/movie is already using that folder | A folder collision in the *arr — rename or remove the existing one. |
 
 If it's an authorization problem instead, the plugin passes the Jellyfin user ID

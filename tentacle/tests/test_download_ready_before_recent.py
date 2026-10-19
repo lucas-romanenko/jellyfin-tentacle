@@ -13,8 +13,8 @@ Seen live 2026-09-24 (Welcome to the Family, 4 episodes via Sonarr):
   just-added entry (#114), and move_playlist_item fell back to Jellyfin's own
   move endpoint, which always answers 400 to an API key.
 """
-import tempfile
 import threading
+import time
 import unittest
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -24,12 +24,14 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from starlette.requests import Request
 
+from tmp_dirs import temp_dir
+
 TMDB = 333058
 
 
-def _maker():
+def _maker(owner):
     import models.database as mdb
-    engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db", connect_args={"check_same_thread": False})
+    engine = create_engine(f"sqlite:///{temp_dir(owner)}/t.db", connect_args={"check_same_thread": False})
     mdb.Base.metadata.create_all(engine)
     maker = sessionmaker(bind=engine)
     db = maker()
@@ -43,17 +45,6 @@ def _maker():
 def _request():
     return Request({"type": "http", "method": "POST", "headers": [], "path": "/api/sonarr/webhook",
                     "query_string": b"", "client": ("10.0.0.2", 1)})
-
-
-class _SyncThread:
-    """threading.Thread that runs its target inline, so the webhook's
-    background work finishes before the route returns."""
-
-    def __init__(self, target=None, args=(), kwargs=None, daemon=None):
-        self._run = lambda: target(*args, **(kwargs or {}))
-
-    def start(self):
-        self._run()
 
 
 class _FakeJellyfin:
@@ -116,7 +107,7 @@ class ActivityLists(unittest.TestCase):
         self.r = download_readiness
         self.r.reset()
         self.addCleanup(self.r.reset)
-        self.maker = _maker()
+        self.maker = _maker(self)
         self.db = self.maker()
         self.addCleanup(self.db.close)
 
@@ -161,7 +152,7 @@ class SonarrWebhookEndToEnd(unittest.TestCase):
         self.r = download_readiness
         self.r.reset()
         self.addCleanup(self.r.reset)
-        self.maker = _maker()
+        self.maker = _maker(self)
         db = self.maker()
         from models.database import Series
         db.add(Series(tmdb_id=TMDB, title="Welcome to the Family", source="sonarr",
@@ -193,12 +184,20 @@ class SonarrWebhookEndToEnd(unittest.TestCase):
         try:
             with mock.patch("models.database.SessionLocal", self.maker), \
                     mock.patch.object(sonarr, "scan_sonarr_library", lambda db: None), \
-                    mock.patch.object(sonarr.threading, "Thread", _SyncThread), \
+                    mock.patch.object(sonarr, "WEBHOOK_QUIET_SECONDS", 0.01), \
+                    mock.patch.object(sonarr, "WEBHOOK_MAX_WAIT_SECONDS", 0.05), \
                     mock.patch("services.jellyfin.JellyfinService", fake), \
                     mock.patch("services.smartlists.add_item_to_matching_playlists", add_to_playlists), \
                     mock.patch("services.smartlists._notify_jellyfin_plugin", lambda db: None), \
                     mock.patch("time.sleep", lambda s: None):
                 sonarr.sonarr_webhook(payload, _request(), db)
+                # Sonarr events are coalesced (#182): one worker thread runs the batch.
+                deadline = time.monotonic() + 10
+                while sonarr._webhook_state["worker"] is not None or sonarr._webhook_pending:
+                    self.assertLess(time.monotonic(), deadline, "the webhook worker never finished")
+                    worker = sonarr._webhook_state["worker"]
+                    if worker is not None:
+                        worker.join(0.1)
         finally:
             db.close()
         probe = self.maker()

@@ -138,7 +138,7 @@ For VOD series that have gaps in their episode coverage, you can download missin
     - **Missing episodes** — Selectable checkboxes
     - **Unaired episodes** — Shown at 50% opacity with air date
 4. Select the episodes you want
-5. Choose a quality profile
+5. Leave the quality profile on **Default**, or pick another for this request
 6. Click **Add** — Sonarr downloads them into the same folder
 
 !!! info "Hybrid series"
@@ -156,6 +156,12 @@ When adding a new series to Sonarr:
 | Pilot | Only S01E01 |
 | Pick Episodes | Opens the episode picker for manual selection |
 
+With **Pick Episodes** (and **Download More Episodes**) the add waits until
+Sonarr has set the show up before it monitors and searches the picked
+episodes: a few seconds normally, longer when Sonarr is busy. If Sonarr has
+not finished within 3 minutes, the show stays in Sonarr and the message
+says to pick the episodes in **Manage Episodes**.
+
 ## Manage Episodes
 
 For series already in Sonarr, you can change which episodes are monitored:
@@ -165,13 +171,18 @@ For series already in Sonarr, you can change which episodes are monitored:
 3. Adjust checkboxes — downloaded episodes are pre-checked and disabled
 4. Apply — newly-monitored episodes are automatically searched in Sonarr
 
-## Quality Profiles
+## Quality Profile and Root Folder
 
-When adding a series via Discover or a list:
+Pick a **default quality profile** (and, optionally, a root folder) under
+Sonarr in **Settings → Connections**. Every request uses them: Discover,
+Library, lists, the Jellyfin plugin and the Android TV app.
 
-- Available quality profiles are fetched from Sonarr's API
-- Click the quality button to cycle through profiles
-- Your last selection is remembered (stored separately from Radarr profiles)
+- Until a default profile is picked, requests are refused with a message
+  saying where to pick one. Tentacle never guesses one.
+- The root folder defaults to **Automatic**: the first Sonarr root folder that
+  isn't a VOD folder. Hybrid VOD series still follow the hybrid layout above.
+- The Add dialogs start on **Default**. Choosing another profile there applies
+  to that one request only, and is logged.
 
 ## Sonarr Library Scan
 
@@ -189,6 +200,8 @@ tentacle:
     - /path/to/shows:/media/shows              # Sonarr TV library
     - /path/to/vod/shows:/media/vod/shows      # VOD series (for hybrid detection)
 ```
+
+Sonarr may call its root folder anything (`/data/shows`, `/data/tv`, `/data/media/tv-shows`): Tentacle finds each series by its folder name under `/media/shows`, so mount the same host folder Sonarr's root folder is on. When a scan can't find series there, the log says so ("downloads not found under /media/shows") and no `tvshow.nfo` or tags are written beside them. Series in a VOD folder (hybrid series) are left to the VOD sync.
 
 ## Download Client Prerequisites
 

@@ -65,6 +65,48 @@ class TestTheAppKeepsCredentialsOutOfTheLog(unittest.TestCase):
             acc.removeHandler(h); acc.setLevel(old)
         self.assertNotIn("JellyfinTok3n", " ".join(seen))
 
+    def test_a_real_webhook_call_through_uvicorn(self):
+        # As in the container: uvicorn's own logging config and access
+        # formatter, a real HTTP request, the webhook secret in the query
+        # string as Radarr and Sonarr send it.
+        import threading
+        import time
+        import urllib.request
+        import uvicorn
+        from fastapi import FastAPI
+        from uvicorn.logging import AccessFormatter
+        import main  # noqa: F401  (installs the redaction as the container does)
+
+        app = FastAPI()
+
+        @app.post("/api/radarr/webhook")
+        def hook():
+            return {"ok": True}
+
+        server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0))
+        t = threading.Thread(target=server.run, daemon=True)
+        t.start()
+        stream = io.StringIO()
+        h = logging.StreamHandler(stream)
+        h.setFormatter(AccessFormatter('%(client_addr)s - "%(request_line)s" %(status_code)s',
+                                       use_colors=False))
+        try:
+            deadline = time.monotonic() + 10
+            while not server.started and time.monotonic() < deadline:
+                time.sleep(0.05)
+            port = server.servers[0].sockets[0].getsockname()[1]
+            logging.getLogger("uvicorn.access").addHandler(h)
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/radarr/webhook?secret=Hunter2pw",
+                data=b'{"eventType": "Test"}', headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=5).read()
+        finally:
+            logging.getLogger("uvicorn.access").removeHandler(h)
+            server.should_exit = True
+            t.join(5)
+        self.assertIn('"POST /api/radarr/webhook?secret=*** HTTP/1.1" 200', stream.getvalue())
+        self.assertNotIn("Hunter2pw", stream.getvalue())
+
 
 class TestLogRedaction(unittest.TestCase):
     @classmethod
@@ -98,7 +140,8 @@ class TestLogRedaction(unittest.TestCase):
 
     def test_query_string_secrets(self):
         for q in ("password=Hunter2pw", "api_key=Hunter2pw", "token=Hunter2pw",
-                  "X-Emby-Token=Hunter2pw", "secret=Hunter2pw"):
+                  "X-Emby-Token=Hunter2pw", "secret=Hunter2pw", "webhook_secret=Hunter2pw",
+                  "X-Tentacle-Secret=Hunter2pw", "apiKey=Hunter2pw", "key=Hunter2pw"):
             with self.subTest(q=q), _Capture("services.m3u_parser") as c:
                 logging.getLogger("services.m3u_parser").info(
                     "Downloading %s", f"http://p/get.php?username=alice&{q}&type=m3u_plus")
@@ -157,9 +200,35 @@ class TestLogRedaction(unittest.TestCase):
         self.assertNotIn("Hunter2pw", c.text)
         self.assertIn("5.ts", c.text)
 
+    def test_the_short_xtream_path_of_m3u_playlists(self):
+        # Xtream servers' M3U playlists list channels as host/<user>/<pass>/<id>.
+        for url in ("http://prov.example:8080/alice/Hunter2pw/414149",
+                    "http://prov.example:8080/alice/Hunter2pw/414149.ts",
+                    "https://prov.example/alice/Hunter2pw/7.m3u8"):
+            with self.subTest(url=url), _Capture("routers.livetv") as c:
+                logging.getLogger("routers.livetv").info(
+                    f"[LiveTV] Stream request for channel 53 (CP24): {url}")
+                self.assertNotIn("Hunter2pw", c.text)
+                self.assertNotIn("alice", c.text)
+                self.assertIn("prov.example", c.text)
+                self.assertIn(url.rsplit("/", 1)[1], c.text)  # the stream id stays
+
+    def test_a_login_in_a_url(self):
+        with _Capture("routers.youtube") as c:
+            logging.getLogger("routers.youtube").info(
+                "[YouTube] Traffic settings saved: proxy http://alice:Hunter2pw@gluetun:8888")
+        self.assertNotIn("Hunter2pw", c.text)
+        self.assertIn("gluetun:8888", c.text)
+
     def test_ordinary_paths_are_left_alone(self):
         for s in ("/api/live/stream/123", "/api/live/sync-channels/5",
-                  "http://jellyfin:8096/Items/abc", "Synced 42 movies"):
+                  "http://jellyfin:8096/Items/abc", "Synced 42 movies",
+                  "http://tentacle:8888/api/live/stream/123",
+                  "http://tentacle:8888/api/vod/42", "http://radarr:7878/api/v3/movie/12",
+                  "http://jellyfin:8096/Items/abc/Images/Primary",
+                  "http://jellyfin:8096/Videos/abc/stream.ts",
+                  "https://image.tmdb.org/t/p/w185/abc.jpg",
+                  "http://gluetun:8888", "12:30 at http://host:8096/web/"):
             with self.subTest(s=s):
                 self.assertEqual(log_redaction.redact(s), s)
 

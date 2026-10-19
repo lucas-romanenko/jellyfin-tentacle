@@ -36,6 +36,7 @@ def _v(height, codec="avc1.4D4020"):
 
 def _pick(formats, max_height):
     from services.youtube import resolver
+    resolver.forget_tracks("v9LArDyyNxw")      # not an earlier test's cached tracks
     with mock.patch.object(resolver.client, "extract",
                            return_value={"formats": formats}):
         return resolver.pick_tracks("v9LArDyyNxw", max_height)

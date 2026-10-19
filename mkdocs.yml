@@ -4,6 +4,10 @@ site_url: https://lucas-romanenko.github.io/jellyfin-tentacle
 repo_url: https://github.com/lucas-romanenko/jellyfin-tentacle
 repo_name: lucas-romanenko/jellyfin-tentacle
 
+# notes for coding agents (linked from CLAUDE.md), not part of the site
+exclude_docs: |
+  agents/
+
 theme:
   name: material
   palette:
@@ -70,6 +74,7 @@ nav:
     - Playlists: features/playlists.md
     - Home Screen: features/home-screen.md
     - Discover & Lists: features/discover-and-lists.md
+    - Music: features/music.md
     - Library: features/library.md
     - Activity Tracking: features/activity.md
     - Multi-User: features/multi-user.md

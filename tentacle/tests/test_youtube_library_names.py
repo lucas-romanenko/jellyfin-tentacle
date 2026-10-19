@@ -12,12 +12,12 @@ Writes to a real temporary directory, because the limit is the filesystem's.
 Needs sqlalchemy only (as CI has).
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
-import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
 
 from services.youtube import library
+from tmp_dirs import temp_dir
 
 
 class _Video:
@@ -47,7 +47,7 @@ JP_TITLE = "【完全版】東京の下町グルメを食べ歩きながら歴�
 
 class TestNonLatinTitles(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp())
+        self.root = Path(temp_dir(self))
 
     def test_folder_name_fits_the_filesystem_limit(self):
         video = _Video(JP_TITLE)

@@ -75,6 +75,14 @@ class TestMangledTitleIsPruned(NightlyHarness):
         self.assertIn(1002, still_here,
                       "'Max (2015)' was cleaned to nothing and its row was pruned")
 
+    def test_titles_the_validator_rejected_are_imported(self):
+        # Issue #452: these were skipped before any TMDB lookup on every sync.
+        FakeTMDB.ids = {"Psych": 2001, "iCarly": 2002, "[REC]": 2003, "Space: 1999": 2004}
+        self._list(["Psych (2006)", "iCarly (2007)", "[REC] (2007)", "Space: 1999"])
+        self.night()
+        for tmdb_id in (2001, 2002, 2003, 2004):
+            self.assertIsNotNone(self.movie(tmdb_id), f"TMDB {tmdb_id} was not imported")
+
 
 if __name__ == "__main__":
     unittest.main()

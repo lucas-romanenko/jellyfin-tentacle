@@ -15,7 +15,7 @@ The result: your provider's content appears in Jellyfin as if it were a native l
 
 ## Adding a Provider
 
-Go to the **VOD** page in Tentacle and click **Add Provider**.
+Go to **Settings → Providers** in Tentacle and click **+ Add Provider**. The same provider also serves [Live TV](live-tv.md) when it is an Xtream provider whose account has live channels.
 
 ### Xtream API (Recommended)
 
@@ -41,7 +41,7 @@ For locally hosted M3U files:
 - **M3U File** — Path to the M3U file
 
 !!! tip "Test first"
-    Click the **Test** button on a provider card to verify the connection before syncing. This only tests connectivity — it doesn't download any content.
+    Click the **Test** button on the provider's card in Settings → Providers to verify the connection before syncing. This only tests connectivity — it doesn't download any content.
 
 ## Selecting Categories
 
@@ -120,7 +120,7 @@ These tags are written into the NFO files and are what power the [auto playlists
 
 ### Manual Sync
 
-Click **Sync** on a provider card to trigger a sync immediately. A progress indicator shows the current status.
+Click **Sync All** on the VOD page to trigger a sync immediately. A progress indicator shows the current status.
 
 ### Scheduled Sync
 
@@ -179,7 +179,8 @@ a storage hiccup must never be able to wipe a library:
   mergerfs, unionfs, NFS, SMB and rclone, where a branch dropping out makes
   every file report as missing while the mount itself stays up.
 
-Blocked removals are recorded in the deletion log (Settings → Deletion Log).
+Blocked removals are recorded in the deletion log (Health → Deletion Log) as
+"refused": nothing is deleted.
 
 ## Opting a Title Out of `.strm` Management
 
@@ -197,6 +198,61 @@ If you're migrating from another tool (like xtream-sync) and Tentacle detects ex
 - **Delete and start fresh** — Removes old files so Tentacle can create properly tagged ones
 - **Dismiss** — Keep old files (not recommended — they won't have proper metadata or tags)
 
+## Changing Your Provider's Address or Login
+
+When your provider gives you a new server URL (or a new username or
+password) for the same account, edit the provider in **Settings → Providers**
+and save. The films and episodes already in your library are updated to the
+new address in the background, Jellyfin rescans, and an entry in Activity
+says how many moved. Live TV channels follow at once. Every sync also
+repairs any title still on the old address before it asks the provider for
+anything, so this works even when the provider refuses the sync, and a
+restart before the update ran doesn't lose it.
+
+For an M3U provider, save the new playlist address: the next full sync points
+every film and episode it lists at the new playlist's addresses.
+
+### Provider refusing (HTTP 403)
+
+A provider that blocks your server (an IP block, often after many requests,
+or a blocked account) answers every request with 403. After three refusals
+in a row Tentacle stops asking for the rest of that sync, so the block isn't
+made worse, and the run says "the provider refuses this server". Nothing is
+removed from your library on such a night. Tentacle can't lift the block:
+check whether the same link works in another app on the same network (for
+example TiviMate), and if it doesn't, ask the provider to unblock your IP or
+account. A new link from them doesn't help while the IP or account is
+blocked. Once **Check now** on the dashboard banner passes, sync again.
+
+Titles the new address no longer lists are removed by the sync, like any title
+a provider drops: marked by one sync, removed by the next one that still
+doesn't list them (see [Safety Guards on Removal](#safety-guards-on-removal)).
+
+If the new link is a different service (another panel, other stream ids),
+that is a new provider: add it and use Migrate (below).
+
 ## Provider Migration
 
-If your provider changes their server URL, Tentacle can rewrite all existing `.strm` files with the new URL without re-syncing everything. This is available in Settings.
+When you switch to another provider, **Settings → Providers → ⇄ Migrate**
+moves your films to it without re-syncing everything:
+
+1. Add the new provider and choose its movie categories first. Migrate refuses
+   while it has none.
+2. In the dialog pick the old and the new provider. **Preview** shows how many
+   films move and how many stay; **Migrate** does it.
+
+A film moves when the new provider lists it in one of its chosen movie
+categories under the same title and year: its `.strm` is rewritten to play
+from the new provider, and the new provider's sync looks after it from then on.
+Everything else stays with the old provider, with its files untouched:
+
+- films the new provider doesn't list (or lists only in a category you didn't
+  choose, or under another name),
+- films on a stream you marked **Wrong movie** or re-matched on the new
+  provider,
+- a film that shares its title and year with another film in your library
+  (on any provider, or downloaded),
+- every series.
+
+The old provider is switched off, so its sync no longer runs; what stayed with
+it keeps playing from it for as long as that account works.

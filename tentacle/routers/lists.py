@@ -9,7 +9,8 @@ import threading
 import requests
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
+from urllib.parse import urlparse
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -19,67 +20,34 @@ from services.cleaner import clean_list_title
 from services.ssrf import is_safe_url
 from services.nfo import update_nfo_tags
 from services.tmdb import TMDBService
-from services import arr_add
-from services.arr_add import AddReport, ADDED, EXISTS, FAILED
+from services import media_requests
+from services.media_requests import RequestRefused
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/lists", tags=["lists"])
 
 
-def _record_download_request(db: Session, tmdb_id: int, media_type: str, user_id: int):
-    """Record who requested a download so the scan can attribute it."""
-    existing = db.query(DownloadRequest).filter(
-        DownloadRequest.tmdb_id == tmdb_id,
-        DownloadRequest.media_type == media_type,
-    ).first()
-    if not existing:
-        db.add(DownloadRequest(tmdb_id=tmdb_id, media_type=media_type, user_id=user_id))
-        db.commit()
+def _via(request: Optional[Request]) -> str:
+    """Who is asking, for the request log. The plugin authenticates with ?api_key=."""
+    if request is None:
+        return "the API"
+    if request.query_params.get("api_key") or request.query_params.get("userId"):
+        return "the Jellyfin plugin (web or Android TV)"
+    return "Tentacle's dashboard"
 
 
-def _get_radarr_root_folder(radarr_url: str, radarr_key: str) -> str:
-    """Fetch the first non-VOD root folder from Radarr's API.
-
-    radarr_movies_path is Tentacle's container mount — NOT valid for Radarr API calls.
-    Radarr needs its own internal path (e.g. /data/movies).
-
-    Raises HTTPException(503) when the folders can't be read. There is no safe
-    fallback: a hardcoded path is only correct if the user happens to have a
-    root folder at exactly that path, so guessing turns a transient,
-    self-healing API blip into a guaranteed rejection with no explanation. In
-    the hybrid-series path a wrong root is worse still — it builds a wrong
-    series folder instead of failing cleanly.
-    """
-    try:
-        return arr_add.radarr_root_folder(radarr_url, radarr_key)
-    except Exception as e:
-        logger.warning(f"Failed to fetch Radarr root folders: {e}")
-        raise HTTPException(
-            503,
-            "Could not read Radarr's root folders (Radarr may be busy or down). "
-            "Nothing was added — please retry in a moment.",
-        )
+def _refused(e: RequestRefused, user) -> HTTPException:
+    return HTTPException(e.status, e.for_user(user))
 
 
-def _get_sonarr_root_folders(sonarr) -> list:
-    """Sonarr root folders, or HTTPException(503). See _get_radarr_root_folder."""
-    try:
-        folders = sonarr.get_root_folders(required=True)
-    except Exception as e:
-        logger.warning(f"Failed to fetch Sonarr root folders: {e}")
-        raise HTTPException(
-            503,
-            "Could not read Sonarr's root folders (Sonarr may be busy or down). "
-            "Nothing was added — please retry in a moment.",
-        )
-    if not folders:
-        raise HTTPException(
-            503,
-            "Sonarr has no root folders configured. Add one in Sonarr → Settings → "
-            "Media Management, then retry.",
-        )
-    return folders
+def _profiles_with_default(db: Session, service: str, url: str, key: str) -> list:
+    """The *arr's profiles, the configured default marked so pickers can offer it as "Default"."""
+    r = requests.get(f"{url.rstrip('/')}/api/v3/qualityprofile",
+                     headers={"X-Api-Key": key}, timeout=10)
+    r.raise_for_status()
+    default = media_requests.default_quality_profile(db, service)
+    return [{"id": p["id"], "name": p["name"], "is_default": p["id"] == default} for p in r.json()]
 
 
 @router.get("/radarr-profiles")
@@ -90,12 +58,10 @@ def radarr_profiles(db: Session = Depends(get_db), user: TentacleUser = Depends(
     if not radarr_url or not radarr_key:
         raise HTTPException(400, "Radarr not configured")
     try:
-        r = requests.get(f"{radarr_url.rstrip('/')}/api/v3/qualityprofile",
-                         headers={"X-Api-Key": radarr_key}, timeout=10)
-        r.raise_for_status()
-        return [{"id": p["id"], "name": p["name"]} for p in r.json()]
+        return _profiles_with_default(db, "radarr", radarr_url, radarr_key)
     except Exception as e:
-        raise HTTPException(502, f"Failed to fetch Radarr profiles: {e}")
+        logger.warning(f"Radarr quality profiles: {e}")
+        raise HTTPException(502, f"Failed to fetch Radarr profiles ({type(e).__name__})")
 
 
 @router.get("/sonarr-profiles")
@@ -106,12 +72,10 @@ def sonarr_profiles(db: Session = Depends(get_db), user: TentacleUser = Depends(
     if not sonarr_url or not sonarr_key:
         raise HTTPException(400, "Sonarr not configured")
     try:
-        r = requests.get(f"{sonarr_url.rstrip('/')}/api/v3/qualityprofile",
-                         headers={"X-Api-Key": sonarr_key}, timeout=10)
-        r.raise_for_status()
-        return [{"id": p["id"], "name": p["name"]} for p in r.json()]
+        return _profiles_with_default(db, "sonarr", sonarr_url, sonarr_key)
     except Exception as e:
-        raise HTTPException(502, f"Failed to fetch Sonarr profiles: {e}")
+        logger.warning(f"Sonarr quality profiles: {e}")
+        raise HTTPException(502, f"Failed to fetch Sonarr profiles ({type(e).__name__})")
 
 
 @router.get("/radarr-folders")
@@ -127,7 +91,8 @@ def radarr_folders(db: Session = Depends(get_db), user: TentacleUser = Depends(g
         r.raise_for_status()
         return [{"path": f["path"], "freeSpace": f["freeSpace"]} for f in r.json()]
     except Exception as e:
-        raise HTTPException(502, f"Failed to fetch Radarr folders: {e}")
+        logger.warning(f"Radarr root folders: {e}")
+        raise HTTPException(502, f"Failed to fetch Radarr folders ({type(e).__name__})")
 
 
 @router.get("/sonarr-folders")
@@ -143,7 +108,8 @@ def sonarr_folders(db: Session = Depends(get_db), user: TentacleUser = Depends(g
         r.raise_for_status()
         return [{"path": f["path"], "freeSpace": f["freeSpace"]} for f in r.json()]
     except Exception as e:
-        raise HTTPException(502, f"Failed to fetch Sonarr folders: {e}")
+        logger.warning(f"Sonarr root folders: {e}")
+        raise HTTPException(502, f"Failed to fetch Sonarr folders ({type(e).__name__})")
 
 
 class ListCreate(BaseModel):
@@ -158,6 +124,11 @@ class ListCreate(BaseModel):
 class AddMissingBody(BaseModel):
     tmdb_ids: Optional[list] = None
     tvdb_ids: Optional[list] = None  # For TheTVDB-only content (no TMDB entry)
+    # An explicit profile the user picked for this one request. Anything else
+    # uses the default from settings (services.media_requests).
+    quality_profile_override: Optional[int] = None
+    # Ignored (logged): older clients always filled it in with the *arr's first
+    # profile, usually "Any", whether or not the user chose it.
     quality_profile_id: Optional[int] = None
     monitor: Optional[str] = None
     season_folder: Optional[bool] = None
@@ -176,6 +147,10 @@ LIST_ALLOWED_HOSTS = {
 }
 
 
+def _as_fetch(items) -> "ListFetch":
+    return items if isinstance(items, ListFetch) else ListFetch(items or [])
+
+
 def list_url_is_allowed(list_type: str, url: str) -> bool:
     """True if `url` is a public http(s) URL on a host this list type may use."""
     allowed = LIST_ALLOWED_HOSTS.get(list_type)
@@ -184,21 +159,50 @@ def list_url_is_allowed(list_type: str, url: str) -> bool:
     return is_safe_url(url, allowed_hosts=allowed)
 
 
-def fetch_list_tmdb_ids(lst: ListSubscription, bearer_token: str = "", trakt_client_id: str = "") -> list:
+def fetch_list_tmdb_ids(lst: ListSubscription, bearer_token: str = "", trakt_client_id: str = "") -> "ListFetch":
     """Fetch TMDB IDs from a list URL"""
     if not list_url_is_allowed(lst.type, lst.url or ""):
         logger.error(
             f"Refusing to fetch list {lst.id} ({lst.type}): URL is not a public "
             f"{'/'.join(sorted(LIST_ALLOWED_HOSTS.get(lst.type, set())))} address"
         )
-        return []
+        return ListFetch([], complete=False, note="Not refreshed: the list's address is not allowed.")
     if lst.type == "imdb_rss":
-        return fetch_imdb_rss(lst.url, bearer_token=bearer_token)
+        return _as_fetch(fetch_imdb_rss(lst.url, bearer_token=bearer_token))
     elif lst.type == "letterboxd":
-        return fetch_letterboxd_rss(lst.url)
+        return _as_fetch(fetch_letterboxd_rss(lst.url))
     elif lst.type == "trakt":
-        return fetch_trakt_list(lst.url, client_id=trakt_client_id)
-    return []
+        return _as_fetch(fetch_trakt_list(lst.url, client_id=trakt_client_id))
+    return ListFetch([], complete=False)
+
+
+class ListFetch(list):
+    """Fetched list items, plus how much of the list they actually are.
+
+    A plain list cannot say "this is only part of it", and every refresh
+    replaces the stored items with what it is given and strips the list's tag
+    from anything missing. So a source that could only return part of a list
+    (IMDb's GraphQL refusing page 2, or the movies-only Servarr fallback)
+    silently deleted the rest (#145). Callers that do not care still get an
+    ordinary list.
+
+    complete:      False when the fetch stopped part-way, so anything not in
+                   it may still be on the list.
+    missing_types: media types the source cannot return at all; Servarr only
+                   knows movies, so {"series"}.
+    note:          what to tell the user when either applies.
+    """
+
+    def __init__(self, items=(), source="", complete=True, missing_types=(), note=""):
+        super().__init__(items)
+        self.source = source
+        self.complete = complete
+        self.missing_types = set(missing_types)
+        self.note = note
+
+    @property
+    def partial(self) -> bool:
+        return not self.complete or bool(self.missing_types)
 
 
 _IMDB_GQL_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -269,17 +273,26 @@ def _fetch_imdb_graphql_chart(chart_type: str) -> list:
                 "media_type": media_type,
             })
         logger.info(f"IMDb GraphQL chart {chart_type}: {len(result)} items")
-        return result
+        return ListFetch(result)
     except Exception as e:
         logger.error(f"IMDb GraphQL chart {chart_type} failed: {e}")
-        return []
+        return ListFetch([], complete=False, note=f"IMDb did not answer ({_short(e)}).")
 
 
-def _fetch_imdb_graphql_list(list_id: str) -> list:
-    """Fetch an IMDb user list via GraphQL. Supports pagination."""
+def _short(e: Exception) -> str:
+    text = str(e) or type(e).__name__
+    return text if len(text) <= 80 else text[:77] + "..."
+
+
+def _fetch_imdb_graphql_list(list_id: str) -> "ListFetch":
+    """Fetch an IMDb user list via GraphQL. Supports pagination.
+
+    A page that fails is not the end of the list: the result is marked
+    incomplete, so what came before it is not stored as the whole list."""
     tv_types = {"tvSeries", "tvMiniSeries", "tvMovie", "tvSpecial"}
     result = []
     after = ""
+    error = ""
 
     while True:
         after_arg = f', after: "{after}"' if after else ""
@@ -328,18 +341,47 @@ def _fetch_imdb_graphql_list(list_id: str) -> list:
                 break
         except Exception as e:
             logger.warning(f"IMDb GraphQL list {list_id} failed: {e}")
+            error = _imdb_error_text(e)
             break
 
     movies = sum(1 for i in result if i["media_type"] == "movie")
     series = sum(1 for i in result if i["media_type"] == "series")
     logger.info(f"IMDb GraphQL list: {len(result)} items ({movies} movies, {series} series)")
-    return result
+    if error and result:
+        # A later page failed. What came back is the start of the list, not
+        # all of it — never let it stand in for the whole list.
+        return ListFetch(result, source="imdb", complete=False, note=(
+            f"Only the first {len(result)} items could be read: IMDb stopped "
+            f"answering ({error}). The rest of the list was kept as it was."))
+    fetched = ListFetch(result, source="imdb")
+    fetched.error = error
+    return fetched
 
 
-def _fetch_imdb_servarr(list_id: str) -> list:
-    """Last-resort fallback: fetch via Servarr API (movie-only, limited chart support)."""
+def _imdb_error_text(e: Exception) -> str:
+    """A short reason for the list card: "HTTP 403" rather than a traceback."""
+    status = getattr(getattr(e, "response", None), "status_code", None)
+    if status:
+        return f"HTTP {status}"
+    return type(e).__name__
+
+
+def _servarr_fallback(servarr_id: str, reason: str) -> list:
+    """The Servarr fallback, marked as the movies-only view it is."""
+    items = _fetch_imdb_servarr(servarr_id)
+    if not items:
+        return items
+    return ListFetch(items, source="servarr", missing_types={"series"}, note=(
+        f"TV shows unavailable: {reason}, so only movies were read. "
+        f"TV shows already on this list were kept."))
+
+def _fetch_imdb_servarr(list_id: str) -> "ListFetch":
+    """Last-resort fallback: fetch via Servarr API (movie-only, limited chart support).
+
+    It can only ever see movies: _servarr_fallback marks its answer so, and a
+    refresh keeps the list's stored TV shows instead of deleting them (#145)."""
     if not list_id:
-        return []
+        return ListFetch([], complete=False)
     try:
         api_url = f"https://radarrapi.servarr.com/v1/list/imdb/{list_id}"
         r = requests.get(api_url, timeout=20)
@@ -362,7 +404,7 @@ def _fetch_imdb_servarr(list_id: str) -> list:
         return result
     except Exception as e:
         logger.error(f"Servarr API failed for {list_id}: {e}")
-        return []
+        return ListFetch([], complete=False, note=f"IMDb and its fallback did not answer ({_short(e)}).")
 
 
 def fetch_imdb_rss(url: str, bearer_token: str = "") -> list:
@@ -377,21 +419,25 @@ def fetch_imdb_rss(url: str, bearer_token: str = "") -> list:
                 return items
         # Unknown chart or GraphQL failed → try Servarr
         servarr_id = "top250" if parsed["id"] == "top" else parsed["id"]
-        return _fetch_imdb_servarr(servarr_id)
+        return _servarr_fallback(servarr_id, "IMDb did not answer the chart request")
 
     if parsed["type"] == "list":
-        # User list → GraphQL list query, Servarr fallback
+        # User list → GraphQL list query, Servarr fallback. A partial GraphQL
+        # read is still better than the movies-only fallback.
         items = _fetch_imdb_graphql_list(parsed["id"])
         if items:
             return items
-        return _fetch_imdb_servarr(parsed["id"])
+        error = getattr(items, "error", "")
+        return _servarr_fallback(parsed["id"], f"IMDb blocked the request ({error})" if error
+                                 else "IMDb returned no items")
 
     if parsed["type"] == "user":
         # User watchlist/ratings → try Servarr
-        return _fetch_imdb_servarr(parsed["id"])
+        return _servarr_fallback(parsed["id"], "IMDb watchlists and ratings are only "
+                                               "available through a movies-only source")
 
     logger.error(f"Unrecognized IMDb URL format: {url}")
-    return []
+    return ListFetch([], complete=False, note="Not an IMDb list, chart or user address.")
 
 
 def _fetch_letterboxd_film(slug: str, session: requests.Session) -> dict:
@@ -400,6 +446,11 @@ def _fetch_letterboxd_film(slug: str, session: requests.Session) -> dict:
     r.raise_for_status()
     tmdb_match = re.search(r'data-tmdb-id="(\d+)"', r.text)
     if not tmdb_match:
+        # A bot challenge answered with 200 is a film the list still has, not
+        # a page without a TMDB id: dropping it silently made the read look
+        # complete, and the film was removed from the list (#164).
+        if _looks_like_challenge(r.text):
+            raise RuntimeError("Letterboxd served a challenge page instead of the film")
         return None
     tmdb_type = re.search(r'data-tmdb-type="(\w+)"', r.text)
     title_match = re.search(r'<meta property="og:title" content="([^"]+)"', r.text)
@@ -412,7 +463,12 @@ def _fetch_letterboxd_film(slug: str, session: requests.Session) -> dict:
     }
 
 
-def fetch_letterboxd_rss(url: str) -> list:
+def _looks_like_challenge(html: str) -> bool:
+    text = (html or "")[:20000].lower()
+    return "challenge-platform" in text or "just a moment" in text or "cf-chl" in text
+
+
+def fetch_letterboxd_rss(url: str) -> "ListFetch":
     """Fetch Letterboxd list via HTML scraping (RSS blocked by Cloudflare)"""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -422,11 +478,12 @@ def fetch_letterboxd_rss(url: str) -> list:
 
     if not is_safe_url(url, allowed_hosts=LIST_ALLOWED_HOSTS["letterboxd"]):
         logger.error("Refusing to fetch Letterboxd list: URL is not a public letterboxd.com address")
-        return []
+        return ListFetch([], complete=False, note="Not a Letterboxd address.")
     try:
         # Collect all film slugs across pages
         all_slugs = []
         page = 1
+        cut_short = False
         while True:
             page_url = f"{url.rstrip('/')}/page/{page}/"
             r = session.get(page_url, timeout=15)
@@ -436,6 +493,10 @@ def fetch_letterboxd_rss(url: str) -> list:
 
             slugs = re.findall(r'data-target-link="/film/([^/]+)/"', r.text)
             if not slugs:
+                # Page N+1 was linked from page N, so an empty one is not the
+                # end of the list but a page that did not render (a Cloudflare
+                # challenge answers 200) — what came before is only part of it.
+                cut_short = page > 1
                 break
             all_slugs.extend(slugs)
 
@@ -447,6 +508,7 @@ def fetch_letterboxd_rss(url: str) -> list:
 
         # Fetch film pages in parallel
         items = []
+        failed = 0
         with ThreadPoolExecutor(max_workers=10) as pool:
             futures = {pool.submit(_fetch_letterboxd_film, slug, session): slug for slug in all_slugs}
             for future in as_completed(futures):
@@ -456,25 +518,54 @@ def fetch_letterboxd_rss(url: str) -> list:
                     if result:
                         items.append(result)
                 except Exception as e:
+                    failed += 1
                     logger.debug(f"Letterboxd: failed to fetch film '{slug}': {e}")
 
-        logger.info(f"Letterboxd: resolved {len(items)} films with TMDB IDs")
+        logger.info(f"Letterboxd: resolved {len(items)} films with TMDB IDs"
+                    + (f", {failed} film page(s) failed" if failed else ""))
+        if failed or cut_short:
+            # A film page that failed (ten at a time, so a 429 is likely on a
+            # long list) is a film still on the list, not one that left it.
+            reasons = []
+            if cut_short:
+                reasons.append(f"page {page} of the list did not load")
+            if failed:
+                reasons.append(f"{failed} film page(s) did not load")
+            return ListFetch(items, source="letterboxd", complete=False, note=(
+                f"Letterboxd was only partly read ({'; '.join(reasons)}). "
+                f"Films already on this list were kept."))
         return items
     except Exception as e:
         logger.error(f"Failed to fetch Letterboxd {url}: {e}")
-        return []
+        return ListFetch([], complete=False, note=f"Letterboxd did not answer ({_short(e)}).")
+
+
+_trakt_unconfigured_logged = False
 
 
 def fetch_trakt_list(url: str, client_id: str = "") -> list:
     """Fetch Trakt list via API"""
     if not client_id:
-        logger.error("Trakt client ID not configured — add it in Settings → Connections")
-        return []
+        # A setup gap, not a failure: said once per run of the process at
+        # WARNING, not at ERROR on every refresh, and shown on the list card.
+        global _trakt_unconfigured_logged
+        if not _trakt_unconfigured_logged:
+            logger.warning("Trakt client ID not configured — Trakt lists are not refreshed. "
+                           "Add it in Settings → Connections")
+            _trakt_unconfigured_logged = True
+        return ListFetch([], source="trakt", note=(
+            "Not refreshed: no Trakt client ID is configured (Settings → Connections). "
+            "The previous items were kept."))
     try:
-        # Convert URL to API endpoint
-        # e.g. https://trakt.tv/users/username/lists/listname
+        # Convert URL to API endpoint: the pasted URL's path on api.trakt.tv,
+        # whatever trakt.tv host it came from (www., app., api.), without its
+        # query or fragment (#681).
+        # e.g. https://app.trakt.tv/users/username/lists/listname?sort=rank,asc
         # → https://api.trakt.tv/users/username/lists/listname/items
-        api_url = url.rstrip('/').replace('trakt.tv', 'api.trakt.tv') + '/items'
+        path = urlparse(url).path.rstrip('/')
+        if path.endswith('/items'):
+            path = path[:-len('/items')]
+        api_url = f"https://api.trakt.tv{path}/items"
         # Checked again post-transform: the request below carries the real
         # trakt-api-key, so it must never be sent to a caller-chosen host.
         if not is_safe_url(api_url, allowed_hosts=LIST_ALLOWED_HOSTS["trakt"]):
@@ -500,22 +591,26 @@ def fetch_trakt_list(url: str, client_id: str = "") -> list:
                 if ids.get("tmdb"):
                     result.append({"tmdb_id": ids["tmdb"], "title": s.get("title"), "media_type": "series"})
         logger.info(f"Trakt: found {len(result)} items")
-        return result
+        return ListFetch(result)
     except Exception as e:
         logger.error(f"Failed to fetch Trakt list {url}: {e}")
-        return []
+        return ListFetch([], complete=False, note=f"Trakt did not answer ({_short(e)}).")
 
 
 def store_list_items(lst: ListSubscription, items: list, db: Session) -> dict:
     """Store fetched items in ListItem table (replace old entries).
-    Returns stats: {stored, new, removed, skipped_no_tmdb, skipped_duplicate}."""
-    # Snapshot existing TMDB IDs before replacing
-    old_tmdb_ids = {
-        row.tmdb_id for row in
-        db.query(ListItem.tmdb_id).filter(ListItem.list_id == lst.id).all()
+    Returns stats: {stored, new, removed, skipped_no_tmdb, skipped_duplicate}.
+
+    Items are keyed on (tmdb_id, media_type): TMDB numbers films and shows
+    separately, so a film and a show with the same number are two items (#365).
+    An item without a type is a film."""
+    # Snapshot existing items before replacing
+    old_keys = {
+        (row.tmdb_id, row.media_type or "movie") for row in
+        db.query(ListItem.tmdb_id, ListItem.media_type).filter(ListItem.list_id == lst.id).all()
     }
     db.query(ListItem).filter(ListItem.list_id == lst.id).delete()
-    seen_tmdb = set()
+    seen = set()
     stored = 0
     skipped_no_tmdb = 0
     skipped_duplicate = 0
@@ -527,32 +622,106 @@ def store_list_items(lst: ListSubscription, items: list, db: Session) -> dict:
             title = item.get("title", "unknown")
             logger.debug(f"Skipping '{title}' — no TMDB match")
             continue
-        # Skip duplicate TMDB IDs (same movie with different IMDb entries)
-        if tmdb_id in seen_tmdb:
+        media_type = item.get("media_type") or "movie"
+        # Skip duplicates (same title with different IMDb entries)
+        if (tmdb_id, media_type) in seen:
             skipped_duplicate += 1
             continue
-        seen_tmdb.add(tmdb_id)
+        seen.add((tmdb_id, media_type))
         # Clean HTML entities + trailing " (YYYY)" from list-sourced titles
         clean_name, clean_year = clean_list_title(item.get("title"), item.get("year"))
         db.add(ListItem(
             list_id=lst.id,
             tmdb_id=tmdb_id,
             imdb_id=imdb_id,
-            media_type=item.get("media_type", "movie"),
+            media_type=media_type,
             title=clean_name,
             year=clean_year,
             poster_path=item.get("poster_path"),
         ))
         stored += 1
     db.flush()
-    new_count = len(seen_tmdb - old_tmdb_ids)
-    removed_count = len(old_tmdb_ids - seen_tmdb)
+    new_count = len(seen - old_keys)
+    removed_count = len(old_keys - seen)
     if skipped_no_tmdb or skipped_duplicate:
         logger.info(f"List '{lst.name}': stored {stored}, skipped {skipped_no_tmdb} (no TMDB match), {skipped_duplicate} (duplicate)")
     return {"stored": stored, "new": new_count, "removed": removed_count, "skipped_no_tmdb": skipped_no_tmdb, "skipped_duplicate": skipped_duplicate}
 
 
-def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
+def keep_unread_items(lst: ListSubscription, items: list, db: Session) -> list:
+    """Add back the stored items a partial fetch could not have seen.
+
+    Storing a fetch replaces the list and strips its tag from everything not in
+    it, which is only right when the fetch read the whole list. After a page
+    failure nothing not re-read can be judged gone, so every stored item stays;
+    after a movies-only fallback, the stored TV shows do. Items are matched on
+    (tmdb_id, media_type), the key store_list_items de-duplicates on.
+    """
+    missing = getattr(items, "missing_types", set())
+    complete = getattr(items, "complete", True)
+    if complete and not missing:
+        return items
+    merged = ListFetch(items, source=getattr(items, "source", ""),
+                       complete=complete, missing_types=missing,
+                       note=getattr(items, "note", ""))
+    have = {(i.get("tmdb_id"), i.get("media_type") or "movie") for i in items if i.get("tmdb_id")}
+    kept = 0
+    for row in db.query(ListItem).filter(ListItem.list_id == lst.id).all():
+        key = (row.tmdb_id, row.media_type or "movie")
+        if not row.tmdb_id or key in have:
+            continue
+        if complete and key[1] not in missing:
+            continue
+        merged.append({
+            "tmdb_id": row.tmdb_id, "imdb_id": row.imdb_id,
+            "media_type": row.media_type, "title": row.title,
+            "year": row.year, "poster_path": row.poster_path,
+        })
+        have.add(key)
+        kept += 1
+    if kept:
+        logger.info(f"List '{lst.name}': kept {kept} stored item(s) the partial fetch could not see")
+    return merged
+
+
+def refresh_list(lst: ListSubscription, db: Session, bearer_token: str = "",
+                 trakt_client_id: str = "", tmdb: Optional[TMDBService] = None):
+    """Fetch, enrich, store and tag one list. The one path every refresh takes.
+
+    Returns (items, store_stats), or (None, None) when the fetch came back
+    empty — which is never stored, because an empty answer is far more often a
+    failure than a list that was emptied. Either way lst.last_fetch_note says
+    what the user needs to know about the last attempt.
+    """
+    items = fetch_list_tmdb_ids(lst, bearer_token=bearer_token, trakt_client_id=trakt_client_id)
+    if not items:
+        lst.last_fetch_note = (getattr(items, "note", "")
+                               or "The last refresh returned nothing, so the previous items were kept.")
+        return None, None
+    if tmdb:
+        enrich_items_with_tmdb(items, tmdb)
+        failed = sum(1 for i in items if i.get("_lookup_failed"))
+        if failed:
+            # Those items cannot be matched this time, so nothing not
+            # re-matched can be judged gone: keep the stored list as it was.
+            note = getattr(items, "note", "")
+            items = ListFetch(items, source=getattr(items, "source", ""), complete=False,
+                              missing_types=getattr(items, "missing_types", ()),
+                              note=" ".join(filter(None, [note, (
+                                  f"TMDB did not answer for {failed} item(s); the rest of the "
+                                  f"list was kept as it was.")])))
+    items = keep_unread_items(lst, items, db)
+    store_stats = store_list_items(lst, items, db)
+    changed = {"Movie": set(), "Series": set()}
+    store_stats["tagged"] = apply_list_tags_to_library(items, lst.tag, db, changed=changed)
+    store_stats["changed"] = changed
+    lst.last_fetched = datetime.utcnow()
+    lst.last_item_count = store_stats["stored"]
+    lst.last_fetch_note = getattr(items, "note", "") or None
+    return items, store_stats
+
+
+def apply_list_tags_to_library(items: list, tag: str, db: Session, changed: dict = None) -> int:
     """Match list items to library content and apply/remove tags via NFO update.
 
     Respects media_type from list items to avoid cross-type TMDB ID collisions
@@ -560,7 +729,14 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
 
     Also removes the tag from any library items that are no longer on the list,
     so stale tags get cleaned up on every list refresh.
+
+    `changed` ({"Movie": set(), "Series": set()}), when given, gets the TMDB
+    id of every row whose tags this changed: what the tag push must write.
     """
+    from services.tagger import tentacle_owned_tags
+    if changed is None:
+        changed = {"Movie": set(), "Series": set()}
+    owned = tentacle_owned_tags(db)   # an NFO's other tags stay (#165)
     # Build set of (tmdb_id, media_type) that should have this tag
     valid_ids = set()
     for item in items:
@@ -568,9 +744,27 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
         media_type = item.get("media_type", "")
         if tmdb_id:
             valid_ids.add((tmdb_id, media_type))
+    # Every other list with the same tag wants its titles tagged too. Tags are
+    # library-wide while lists are per user, and the suggested tag is the list
+    # name, so two users' "Watchlist" lists share one tag: judged on this list
+    # alone, each refresh stripped the tag from everything on the other list,
+    # and the other list's refresh stripped it back.
+    others = db.query(ListItem.tmdb_id, ListItem.media_type).join(
+        ListSubscription, ListItem.list_id == ListSubscription.id
+    ).filter(ListSubscription.tag == tag, ListItem.tmdb_id.isnot(None)).all()
+    for tmdb_id, media_type in others:
+        valid_ids.add((tmdb_id, media_type or "movie"))
 
     tagged = 0
     cleaned = 0
+
+    # An active tag rule with the same output tag gives titles this tag too (a
+    # user may point a list and a rule at one playlist). A title the rule
+    # matches is not stale just because it is not on the list: stripping it
+    # here only for the nightly rule pass to add it back hours later meant
+    # every such title left the tag, its NFO and its playlist each night.
+    from services.tagger import rule_gives, rules_giving
+    sharing_rules = rules_giving(tag, db)
 
     # --- Strip stale tags from items that no longer belong ---
     for movie in db.query(Movie).all():
@@ -578,10 +772,13 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
             continue
         if (movie.tmdb_id, "movie") in valid_ids or (movie.tmdb_id, "") in valid_ids:
             continue
+        if sharing_rules and rule_gives(sharing_rules, movie, "movie", tag):
+            continue
         tags = [t for t in movie.tags if t != tag]
         movie.tags = tags
         if movie.nfo_path:
-            update_nfo_tags(Path(movie.nfo_path), tags)
+            update_nfo_tags(Path(movie.nfo_path), tags, owned)
+        changed["Movie"].add(movie.tmdb_id)
         cleaned += 1
 
     for series in db.query(Series).all():
@@ -589,10 +786,13 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
             continue
         if (series.tmdb_id, "series") in valid_ids or (series.tmdb_id, "") in valid_ids:
             continue
+        if sharing_rules and rule_gives(sharing_rules, series, "series", tag):
+            continue
         tags = [t for t in series.tags if t != tag]
         series.tags = tags
         if series.nfo_path:
-            update_nfo_tags(Path(series.nfo_path), tags)
+            update_nfo_tags(Path(series.nfo_path), tags, owned)
+        changed["Series"].add(series.tmdb_id)
         cleaned += 1
 
     if cleaned:
@@ -614,7 +814,8 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
                     tags.append(tag)
                     series.tags = tags
                     if series.nfo_path:
-                        update_nfo_tags(Path(series.nfo_path), tags)
+                        update_nfo_tags(Path(series.nfo_path), tags, owned)
+                    changed["Series"].add(series.tmdb_id)
                     tagged += 1
         elif media_type == "movie":
             movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
@@ -624,7 +825,8 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
                     tags.append(tag)
                     movie.tags = tags
                     if movie.nfo_path:
-                        update_nfo_tags(Path(movie.nfo_path), tags)
+                        update_nfo_tags(Path(movie.nfo_path), tags, owned)
+                    changed["Movie"].add(movie.tmdb_id)
                     tagged += 1
         else:
             movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
@@ -634,7 +836,8 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
                     tags.append(tag)
                     movie.tags = tags
                     if movie.nfo_path:
-                        update_nfo_tags(Path(movie.nfo_path), tags)
+                        update_nfo_tags(Path(movie.nfo_path), tags, owned)
+                    changed["Movie"].add(movie.tmdb_id)
                     tagged += 1
                 continue
 
@@ -645,11 +848,74 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
                     tags.append(tag)
                     series.tags = tags
                     if series.nfo_path:
-                        update_nfo_tags(Path(series.nfo_path), tags)
+                        update_nfo_tags(Path(series.nfo_path), tags, owned)
+                    changed["Series"].add(series.tmdb_id)
                     tagged += 1
 
     db.commit()
     return tagged
+
+
+def _users_on_tags(db: Session, tags: set, owner_id: int) -> set:
+    """The owner plus every other user whose list or tag rule gives one of
+    these tags (shared tags from before the conflict check, #162): their
+    playlists match the same titles."""
+    from models.database import TagRule
+    users = {owner_id}
+    if tags:
+        users |= {u for (u,) in db.query(ListSubscription.user_id).filter(
+            ListSubscription.tag.in_(tags)) if u is not None}
+        users |= {u for (u,) in db.query(TagRule.user_id).filter(
+            TagRule.output_tag.in_(tags)) if u is not None}
+    return users
+
+
+def _follow_list_change(db: Session, user_ids: set, changed: Optional[dict], removed: bool = False) -> None:
+    """Carry a list change to Jellyfin and its users' playlists (#679).
+
+    The rows and NFOs are already right, but Jellyfin keeps tags set through
+    its API: the changed titles' tags are pushed first, then each user's
+    playlists are refreshed (for a deleted list synced, so its playlist goes)
+    and their home config written. Runs in the background, started after the
+    endpoint's last commit; a Jellyfin that fails leaves it to the nightly."""
+    jf_url = get_setting(db, "jellyfin_url")
+    jf_key = get_setting(db, "jellyfin_api_key")
+    if not jf_url or not jf_key:
+        return
+    jf_user_id = get_setting(db, "jellyfin_user_id", "")
+    changed = {k: set(v) for k, v in (changed or {}).items() if v}
+    user_ids = sorted(user_ids)
+
+    def _run():
+        from services.jellyfin import JellyfinService, sync_owned_tags
+        import services.smartlists as sl
+        bg = SessionLocal()
+        try:
+            if changed:
+                # Before the playlists, so they match the new tags.
+                jf = JellyfinService(jf_url, jf_key, jf_user_id)
+                counts = sync_owned_tags(bg, jf, "Lists", only=changed)
+                logger.info(f"[Lists] Pushed the tags of {sum(len(v) for v in changed.values())} title(s) "
+                            f"to Jellyfin: {counts['written']} written, {counts['unchanged']} unchanged, "
+                            f"{counts['not_found']} not in Jellyfin, {counts['errors']} failed")
+            for uid in user_ids:
+                gone = frozenset()
+                if removed:
+                    before = {p["playlist_id"] for p in sl._get_smartlists_with_playlist_ids(bg, user_id=uid)}
+                    sl.sync_smartlists(bg, user_id=uid)
+                    after = {p["playlist_id"] for p in sl._get_smartlists_with_playlist_ids(bg, user_id=uid)}
+                    gone = frozenset(before - after)
+                sl.refresh_smartlist_playlists(bg, user_id=uid)
+                sl.write_home_config(bg, user_id=uid, dropped_ids=gone)
+            sl.bump_playlist_version()
+            sl._notify_jellyfin_plugin(bg)
+        except Exception as e:
+            logger.warning(f"[Lists] Could not carry the list change to Jellyfin's tags and playlists: {e} "
+                           f"(the nightly sync will catch up)")
+        finally:
+            bg.close()
+
+    threading.Thread(target=_run, daemon=True, name="list-change").start()
 
 
 @router.get("")
@@ -669,6 +935,7 @@ def get_lists(db: Session = Depends(get_db), user: TentacleUser = Depends(get_us
             "playlist_enabled": l.playlist_enabled,
             "last_fetched": l.last_fetched,
             "last_item_count": l.last_item_count,
+            "last_fetch_note": l.last_fetch_note,
             "created_at": l.created_at,
         }
         for l in lists
@@ -680,6 +947,33 @@ def create_list(body: ListCreate, db: Session = Depends(get_db), user: TentacleU
     if not list_url_is_allowed(body.type, body.url or ""):
         raise HTTPException(400, f"A {body.type} list URL must be a public "
                                  f"{'/'.join(sorted(LIST_ALLOWED_HOSTS[body.type]))} address")
+    tag = (body.tag or "").strip()
+    if tag:
+        # A list's tag is library-wide and its refresh removes the tag from
+        # every title not on the list, so it must not be a tag something else
+        # sets: another user's list (each refresh would undo the other's, and
+        # both users' playlists would show both lists), a tag rule's output, a
+        # provider source tag or a built-in like "Recently Added Movies".
+        from models.database import TagRule
+        from services.tagger import tentacle_owned_tags
+        # The user's own list and rule tags are not "taken": one user may
+        # feed one playlist from a list and a rule, and stripping is
+        # producer-aware for both.
+        own = {t for (t,) in db.query(ListSubscription.tag).filter(
+            ListSubscription.user_id == user.id)}
+        own |= {t for (t,) in db.query(TagRule.output_tag).filter(TagRule.user_id == user.id)}
+        from services.tagger import name_key, youtube_title_taken
+        # A deleted list's or rule's tag is free again (#542).
+        taken = {name_key(t) for t in tentacle_owned_tags(db, include_retired=False) - own}
+        if name_key(tag) in taken or youtube_title_taken(db, tag):
+            raise HTTPException(400, f"The tag '{tag}' is already used by Tentacle or by another "
+                                     f"user's list — choose a different tag")
+    if body.type == "imdb_rss" and _parse_imdb_url(body.url or "")["type"] == "unknown":
+        # Otherwise accepted and then never fetched: every refresh logs
+        # "Unrecognized IMDb URL" and the list stays empty (#145) — most often
+        # the name and URL fields swapped.
+        raise HTTPException(400, "Not an IMDb list, chart or user URL "
+                                 "(for example https://www.imdb.com/list/ls055592025/)")
     lst = ListSubscription(
         name=body.name,
         type=body.type,
@@ -695,191 +989,60 @@ def create_list(body: ListCreate, db: Session = Depends(get_db), user: TentacleU
     return {"id": lst.id, "success": True}
 
 
-def _radarr_upcoming_release(radarr_url: str, radarr_key: str, tmdb_id: int):
-    """Earliest future release date Radarr knows for a movie, for UI feedback."""
-    try:
-        r = requests.get(
-            f"{radarr_url.rstrip('/')}/api/v3/movie",
-            headers={"X-Api-Key": radarr_key},
-            params={"tmdbId": tmdb_id},
-            timeout=arr_add.READ_TIMEOUT,
-        )
-        r.raise_for_status()
-        movies = r.json()
-        movie_data = next((m for m in movies if m.get("tmdbId") == tmdb_id), None) if isinstance(movies, list) else None
-        if not movie_data:
-            return None
-        now = datetime.utcnow()
-        for field in ("digitalRelease", "physicalRelease", "inCinemas"):
-            val = movie_data.get(field)
-            if not val:
-                continue
-            try:
-                dt = datetime.fromisoformat(val.replace("Z", "+00:00")).replace(tzinfo=None)
-            except (ValueError, TypeError):
-                continue
-            if dt > now:
-                return val[:10]
-    except Exception as e:
-        logger.debug(f"Could not read release date for tmdb:{tmdb_id}: {e}")
-    return None
-
-
 @router.post("/add-to-radarr")
-def add_to_radarr(body: AddMissingBody, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
-    """Add specific TMDB IDs to Radarr (standalone, no list required)"""
+def add_to_radarr(body: AddMissingBody, db: Session = Depends(get_db),
+                  user: TentacleUser = Depends(get_user_from_request), request: Request = None):
+    """Add specific TMDB IDs to Radarr (standalone, no list required).
+
+    The dashboard, the Jellyfin plugin (web and Android TV) and API callers all
+    land here. Profile and root folder come from settings (media_requests).
+    """
     if not body.tmdb_ids:
         raise HTTPException(400, "No tmdb_ids provided")
 
-    radarr_url = get_setting(db, "radarr_url")
-    radarr_key = get_setting(db, "radarr_api_key")
-    if not radarr_url or not radarr_key:
-        raise HTTPException(400, "Radarr not configured")
-
-    root_folder = _get_radarr_root_folder(radarr_url, radarr_key)
-    quality_profile_id = body.quality_profile_id or int(get_setting(db, "radarr_quality_profile_id", "1") or "1")
-    report = AddReport()
-    release_date = None
-
-    for tmdb_id in body.tmdb_ids:
-        existing = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
+    def downloaded(tmdb_id):
         # Only an already-DOWNLOADED copy blocks the add. A VOD (.strm) copy
         # must not: adding to Radarr is exactly how users get a proper download
         # of a VOD title (the duplicate system then tracks the overlap). Radarr
         # itself rejects true duplicates via MovieExistsValidator.
-        if existing and existing.source == "radarr":
-            report.record(EXISTS)
-            continue
-        outcome, reason = arr_add.add_movie_to_radarr(
-            radarr_url, radarr_key, tmdb_id, quality_profile_id, root_folder
-        )
-        report.record(outcome, reason)
-        if outcome == ADDED:
-            _record_download_request(db, tmdb_id, "movie", user.id)
-            # Only for the first added title, and only for a single-title add:
-            # this is an extra round trip purely for UI feedback, and doing it
-            # per item made a bulk add outlast most reverse-proxy timeouts.
-            if not release_date and len(body.tmdb_ids) == 1:
-                release_date = _radarr_upcoming_release(radarr_url, radarr_key, tmdb_id)
+        existing = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
+        return bool(existing and existing.source == "radarr")
 
-    if report.added:
-        # New Radarr entries should badge as "requested" in Discover immediately
-        from routers.discover import bust_arr_ids_cache
-        bust_arr_ids_cache()
-
-    result = report.as_response()
-    if release_date:
-        result["release_date"] = release_date
-    return result
+    try:
+        outcome = media_requests.request_movies(
+            db, body.tmdb_ids, user_id=user.id, via=_via(request),
+            quality_profile_override=body.quality_profile_override,
+            legacy_profile_id=body.quality_profile_id,
+            already_owned=downloaded, want_release_date=len(body.tmdb_ids) == 1)
+    except RequestRefused as e:
+        raise _refused(e, user)
+    return outcome.as_response()
 
 
 @router.post("/add-to-sonarr")
-def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
-    """Add specific TMDB or TVDB IDs to Sonarr"""
+def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db),
+                  user: TentacleUser = Depends(get_user_from_request), request: Request = None):
+    """Add specific TMDB or TVDB IDs to Sonarr (same callers as add-to-radarr)."""
     if not body.tmdb_ids and not body.tvdb_ids:
         raise HTTPException(400, "No tmdb_ids or tvdb_ids provided")
 
-    sonarr_url = get_setting(db, "sonarr_url")
-    sonarr_key = get_setting(db, "sonarr_api_key")
-    if not sonarr_url or not sonarr_key:
-        raise HTTPException(400, "Sonarr not configured")
-
-    from services.sonarr import SonarrService
-    sonarr = SonarrService(sonarr_url, sonarr_key)
-    root_folders = _get_sonarr_root_folders(sonarr)
-    # Regular adds must never default into the VOD root folder (used only for
-    # hybrid series) — prefer the first non-VOD root
-    _non_vod_roots = [rf for rf in root_folders if "vod" not in rf["path"].lower()]
-    root_folder = (_non_vod_roots or root_folders)[0]["path"]
-    quality_profile_id = body.quality_profile_id or int(get_setting(db, "sonarr_quality_profile_id", "1") or "1")
-
-    report = AddReport()
-
-    monitor = body.monitor or "all"
-    season_folder = body.season_folder if body.season_folder is not None else True
-
-    # Find VOD root folder in Sonarr (for "Download More Episodes" on VOD series)
-    vod_root = None
-    for rf in root_folders:
-        if "vod" in rf["path"].lower():
-            vod_root = rf["path"].rstrip("/")
-            break
-
-    tmdb = _get_tmdb_service(db)
-
-    # Process TMDB IDs
-    for tmdb_id in (body.tmdb_ids or []):
+    def downloaded(tmdb_id):
         existing = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
-        if existing and existing.source == "sonarr":
-            report.record(EXISTS)
-            continue
+        return bool(existing and existing.source == "sonarr")
 
-        # Hybrid VOD series: unify VOD (.strm) + downloaded episodes as ONE
-        # Jellyfin series. Two layouts (hybrid_series_layout setting):
-        #   vod_root       — Sonarr downloads INTO the VOD folder (needs the VOD
-        #                    root folder registered in Sonarr)
-        #   shared_library — Sonarr downloads to its own root but with the SAME
-        #                    folder name as the VOD show; Jellyfin merges the
-        #                    same-named folders (both in one Jellyfin library)
-        series_path = None
-        is_hybrid = existing and existing.strm_path and existing.source.startswith("provider_")
-        if is_hybrid:
-            import os
-            folder_name = os.path.basename(existing.strm_path.rstrip("/"))
-            layout = get_setting(db, "hybrid_series_layout", "vod_root")
-            if layout == "shared_library":
-                # Same folder name under Sonarr's regular root — Jellyfin's
-                # cross-folder merge keys on matching series folder names
-                series_path = f"{root_folder.rstrip('/')}/{folder_name}"
-            elif vod_root:
-                series_path = f"{vod_root}/{folder_name}"
-            elif not existing.sonarr_path:
-                # vod_root layout but no VOD root folder in Sonarr: downloading
-                # to the regular root would show the series TWICE in Jellyfin.
-                # Fail loudly with a fix-it message instead.
-                report.record(FAILED, (
-                    "Sonarr has no VOD root folder. Add the folder containing your VOD "
-                    "series (the same host folder Tentacle writes .strm shows into) as a "
-                    "Root Folder in Sonarr → Settings → Media Management, then retry — or "
-                    "switch to the shared-library layout in Tentacle Settings → Integrations. "
-                    "Without one of these, downloads would create a duplicate series in Jellyfin."))
-                logger.warning(f"Blocked hybrid add for tmdb:{tmdb_id} — no VOD root folder in Sonarr")
-                continue
-
-        # Resolve the exact TVDB id (Sonarr's native key) so add_series doesn't
-        # have to rely on Skyhook's unreliable tmdb: term lookup
-        tvdb_id = tmdb.get_tvdb_id(tmdb_id) if tmdb else None
-        result = sonarr.add_series(tmdb_id, quality_profile_id, root_folder, monitor=monitor, season_folder=season_folder, selected_episodes=body.selected_episodes, series_path=series_path, monitor_new=body.monitor_new or False, tvdb_id=tvdb_id)
-        if result and result.get("alreadyExists"):
-            # Sonarr already has it — the outcome the user wanted, not a failure.
-            report.record(EXISTS)
-        elif result:
-            report.record(ADDED)
-            _record_download_request(db, tmdb_id, "series", user.id)
-            # Mark VOD series with sonarr_path so scan skips duplicate detection
-            if existing and existing.source.startswith("provider_") and result.get("path"):
-                existing.sonarr_path = result["path"]
-                db.commit()
-        else:
-            report.record(FAILED, sonarr.last_error)
-
-    # Process TVDB IDs (for TheTVDB-only content not on TMDB)
-    for tvdb_id in (body.tvdb_ids or []):
-        result = sonarr.add_series(tvdb_id=tvdb_id, quality_profile_id=quality_profile_id, root_folder=root_folder, monitor=monitor, season_folder=season_folder, selected_episodes=body.selected_episodes, monitor_new=body.monitor_new or False)
-        if result and result.get("alreadyExists"):
-            report.record(EXISTS)
-        elif result:
-            report.record(ADDED)
-            # Use the tmdbId from Sonarr's response if available, else use negative tvdb_id
-            result_tmdb = result.get("tmdbId") or -tvdb_id
-            _record_download_request(db, result_tmdb, "series", user.id)
-        else:
-            report.record(FAILED, sonarr.last_error)
-
-    if report.added:
-        from routers.discover import bust_arr_ids_cache
-        bust_arr_ids_cache()
-    return report.as_response()
+    try:
+        outcome = media_requests.request_series(
+            db, tmdb_ids=body.tmdb_ids or [], tvdb_ids=body.tvdb_ids or [],
+            user_id=user.id, via=_via(request),
+            quality_profile_override=body.quality_profile_override,
+            legacy_profile_id=body.quality_profile_id,
+            monitor=body.monitor or "all",
+            season_folder=body.season_folder if body.season_folder is not None else True,
+            selected_episodes=body.selected_episodes, monitor_new=body.monitor_new or False,
+            already_owned=downloaded)
+    except RequestRefused as e:
+        raise _refused(e, user)
+    return outcome.as_response()
 
 
 @router.delete("/{list_id}")
@@ -890,8 +1053,17 @@ def delete_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser 
     ).first()
     if not lst:
         raise HTTPException(404, "List not found")
+    from services.tagger import retire_tag
+    tag = lst.tag
+    retire_tag(db, tag)
     db.delete(lst)
     db.commit()
+    # With the list gone, this strips its tag from the titles it gave it,
+    # keeping those another list on the tag or a sharing rule still gives:
+    # left on them, a user who takes the freed tag (#542) got these titles.
+    changed = {"Movie": set(), "Series": set()}
+    apply_list_tags_to_library([], tag, db, changed=changed)
+    _follow_list_change(db, _users_on_tags(db, {tag}, user.id), changed, removed=True)
     return {"success": True}
 
 
@@ -942,18 +1114,18 @@ def refresh_all_lists(db: Session = Depends(get_db), user: TentacleUser = Depend
 
     refreshed = 0
     errors = []
+    warnings = []
+    changed = {"Movie": set(), "Series": set()}
     for lst in active_lists:
         try:
-            items = fetch_list_tmdb_ids(lst, bearer_token=bearer, trakt_client_id=trakt_cid)
-            if not items:
+            items, store_stats = refresh_list(lst, db, bearer, trakt_cid, tmdb)
+            if items is None:
                 errors.append(f"{lst.name}: empty or failed")
                 continue
-            if tmdb:
-                enrich_items_with_tmdb(items, tmdb)
-            store_stats = store_list_items(lst, items, db)
-            apply_list_tags_to_library(items, lst.tag, db)
-            lst.last_fetched = datetime.utcnow()
-            lst.last_item_count = store_stats["stored"]
+            for media_type, ids in (store_stats.get("changed") or {}).items():
+                changed.setdefault(media_type, set()).update(ids)
+            if lst.last_fetch_note:
+                warnings.append(f"{lst.name}: {lst.last_fetch_note}")
             refreshed += 1
             logger.info(f"Refreshed list '{lst.name}': {store_stats['stored']} items")
         except Exception as e:
@@ -962,7 +1134,10 @@ def refresh_all_lists(db: Session = Depends(get_db), user: TentacleUser = Depend
 
     db.commit()
     log_activity(db, "lists_refresh", f"Refreshed {refreshed} lists")
-    return {"success": True, "refreshed": refreshed, "errors": errors}
+    if refreshed:
+        # One push and one playlist refresh for every list, not one per list.
+        _follow_list_change(db, _users_on_tags(db, {l.tag for l in active_lists}, user.id), changed)
+    return {"success": True, "refreshed": refreshed, "errors": errors, "warnings": warnings}
 
 
 @router.post("/{list_id}/fetch")
@@ -978,57 +1153,34 @@ def fetch_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser =
     from services.tmdb import get_tmdb_token
     bearer_token = get_tmdb_token(db)
     trakt_client_id = get_setting(db, "trakt_client_id") or ""
-    items = fetch_list_tmdb_ids(lst, bearer_token=bearer_token, trakt_client_id=trakt_client_id)
-    if not items:
-        raise HTTPException(400, "Failed to fetch list or list is empty")
-
-    # Enrich items with metadata from TMDB (poster, title, year)
     tmdb = _get_tmdb_service(db)
-    if tmdb:
-        enrich_items_with_tmdb(items, tmdb)
-
-    # Store items with metadata
-    store_stats = store_list_items(lst, items, db)
-
-    tagged = apply_list_tags_to_library(items, lst.tag, db)
-
-    lst.last_fetched = datetime.utcnow()
-    lst.last_item_count = store_stats["stored"]
+    items, store_stats = refresh_list(lst, db, bearer_token, trakt_client_id, tmdb)
+    if items is None:
+        db.commit()
+        raise HTTPException(400, "Failed to fetch list or list is empty")
+    tagged = store_stats.get("tagged", 0)
     db.commit()
 
-    # Auto-add missing to Radarr
+    # Auto-add missing movies to Radarr
     radarr_added = 0
     radarr_error = None
-    if lst.auto_add_radarr:
-        radarr_url = get_setting(db, "radarr_url")
-        radarr_key = get_setting(db, "radarr_api_key")
-        if radarr_url and radarr_key:
-            # The list items are already committed at this point, so a Radarr
-            # problem must not fail a fetch that otherwise succeeded — skip the
-            # optional auto-add and report why.
-            try:
-                root_folder = _get_radarr_root_folder(radarr_url, radarr_key)
-            except HTTPException as e:
-                root_folder = None
-                radarr_error = e.detail
-                logger.warning(f"Auto-add to Radarr skipped for '{lst.name}': {e.detail}")
-            if root_folder:
-                quality_profile_id = int(get_setting(db, "radarr_quality_profile_id", "1") or "1")
-                for item in items:
-                    tmdb_id = item.get("tmdb_id")
-                    if not tmdb_id:
-                        continue
-                    # Check if in library
-                    if db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first():
-                        continue
-                    outcome, reason = arr_add.add_movie_to_radarr(
-                        radarr_url, radarr_key, tmdb_id, quality_profile_id, root_folder
-                    )
-                    if outcome == ADDED:
-                        radarr_added += 1
-                        _record_download_request(db, tmdb_id, "movie", user.id)
-                    elif outcome == FAILED and not radarr_error:
-                        radarr_error = reason
+    if lst.auto_add_radarr and get_setting(db, "radarr_url") and get_setting(db, "radarr_api_key"):
+        # Movies only: a series' TMDB id names a different title (or nothing)
+        # in Radarr's movie namespace.
+        movie_ids = [item["tmdb_id"] for item in items
+                     if item.get("tmdb_id") and item.get("media_type", "movie") != "series"]
+        # The list items are already committed at this point, so a Radarr
+        # problem must not fail a fetch that otherwise succeeded — skip the
+        # optional auto-add and report why.
+        try:
+            outcome = media_requests.request_movies(
+                db, movie_ids, user_id=user.id, via=f"list '{lst.name}' auto-add",
+                already_owned=lambda tid: db.query(Movie).filter(Movie.tmdb_id == tid).first() is not None)
+            radarr_added = outcome.report.added
+            radarr_error = outcome.report.detail
+        except RequestRefused as e:
+            radarr_error = e.for_user(user)
+            logger.warning(f"Auto-add to Radarr skipped for '{lst.name}': {e.message}")
 
     log_activity(db, "list_fetch", f"Fetched '{lst.name}' — {store_stats['stored']} items stored")
 
@@ -1038,6 +1190,7 @@ def fetch_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser =
         _notify_jellyfin_plugin(db)
     except Exception:
         pass
+    _follow_list_change(db, _users_on_tags(db, {lst.tag}, user.id), store_stats.get("changed"))
 
     return {
         "success": True,
@@ -1046,6 +1199,7 @@ def fetch_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser =
         "skipped_no_tmdb": store_stats["skipped_no_tmdb"],
         "skipped_duplicate": store_stats["skipped_duplicate"],
         "tagged": tagged,
+        "note": lst.last_fetch_note,
         "radarr_added": radarr_added,
         "radarr_error": radarr_error,
     }
@@ -1060,15 +1214,23 @@ def _get_tmdb_service(db: Session) -> Optional[TMDBService]:
     return TMDBService(bearer_token=token, cache_dir=cache_dir)
 
 
-def enrich_items_with_tmdb(items: list, tmdb: TMDBService):
+def enrich_items_with_tmdb(items: list, tmdb: TMDBService) -> int:
     """Enrich list items with TMDB metadata (poster, title, year).
-    Modifies items in-place. Reusable by both the fetch endpoint and scheduled sync."""
+    Modifies items in-place. Reusable by both the fetch endpoint and scheduled sync.
+
+    Returns how many IMDb-only items TMDB did not answer for (429/5xx/timeout).
+    Those items have no TMDB id, and without the count they read as "TMDB has
+    no such title": dropped from the list, their tag stripped (#163)."""
+    failed = 0
     for item in items:
         tid = item.get("tmdb_id")
         imdb_id = item.get("imdb_id")
 
         if not tid and imdb_id:
             details = tmdb.find_by_imdb_id(imdb_id)
+            if not details and getattr(tmdb, "lookup_failed", lambda: False)():
+                # TMDB did not answer: not the same as "no TMDB entry".
+                item["_lookup_failed"] = True
             if details:
                 item["tmdb_id"] = details.get("tmdb_id")
                 item.setdefault("title", details.get("title"))
@@ -1087,6 +1249,7 @@ def enrich_items_with_tmdb(items: list, tmdb: TMDBService):
                 item.setdefault("year", str(details.get("year", "") or ""))
                 item["poster_path"] = details.get("poster_path")
                 item.setdefault("media_type", details.get("media_type", "movie"))
+    return failed
 
 
 @router.get("/{list_id}/coverage")
@@ -1120,8 +1283,11 @@ def get_list_coverage(list_id: int, db: Session = Depends(get_db), user: Tentacl
 
     for item in items:
         tid = item.tmdb_id
-        movie = movie_map.get(tid) if tid else None
-        serie = series_map.get(tid) if tid else None
+        # TMDB numbers movies and shows separately: a list's film is looked up only
+        # among movies, its show only among series, as Add Missing sends them (#264).
+        is_series = item.media_type == "series"
+        movie = movie_map.get(tid) if tid and not is_series else None
+        serie = series_map.get(tid) if tid and is_series else None
 
         if movie:
             entry = {"tmdb_id": tid, "title": movie.title, "year": movie.year, "poster_path": movie.poster_path, "media_type": "movie"}
@@ -1154,9 +1320,10 @@ def get_list_coverage(list_id: int, db: Session = Depends(get_db), user: Tentacl
     sonarr.sort(key=lambda x: (x.get("title") or "").lower())
     missing.sort(key=lambda x: (x.get("title") or "").lower())
 
-    # Count missing by type
-    missing_movies = sum(1 for m in missing if m.get("media_type") != "series")
-    missing_series = sum(1 for m in missing if m.get("media_type") == "series")
+    # Count missing by type: what Add Missing sends (an item without a TMDB id
+    # can't be sent, so it is listed as missing but not counted).
+    missing_movies = sum(1 for m in missing if m.get("tmdb_id") and m.get("media_type") != "series")
+    missing_series = sum(1 for m in missing if m.get("tmdb_id") and m.get("media_type") == "series")
 
     return {
         "list_id": list_id,
@@ -1177,7 +1344,8 @@ def get_list_coverage(list_id: int, db: Session = Depends(get_db), user: Tentacl
 
 
 @router.post("/{list_id}/add-missing-to-radarr")
-def add_missing_to_radarr(list_id: int, body: AddMissingBody = None, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def add_missing_to_radarr(list_id: int, body: AddMissingBody = None, db: Session = Depends(get_db),
+                          user: TentacleUser = Depends(get_user_from_request), request: Request = None):
     """Add missing list items to Radarr"""
     lst = db.query(ListSubscription).filter(
         ListSubscription.id == list_id,
@@ -1186,50 +1354,35 @@ def add_missing_to_radarr(list_id: int, body: AddMissingBody = None, db: Session
     if not lst:
         raise HTTPException(404, "List not found")
 
-    radarr_url = get_setting(db, "radarr_url")
-    radarr_key = get_setting(db, "radarr_api_key")
-    if not radarr_url or not radarr_key:
-        raise HTTPException(400, "Radarr not configured")
-
-    root_folder = _get_radarr_root_folder(radarr_url, radarr_key)
-    quality_profile_id = (body.quality_profile_id if body else None) or int(get_setting(db, "radarr_quality_profile_id", "1") or "1")
-
     # Determine which tmdb_ids to add
     if body and body.tmdb_ids:
         target_ids = body.tmdb_ids
     else:
-        # Get all missing: list items not in Movie table
+        # Get all missing: the list's movies not in Movie table. A show's TMDB
+        # id names a different film (or none) in Radarr's movie namespace (#264).
         items = db.query(ListItem).filter(ListItem.list_id == list_id).all()
-        all_ids = [item.tmdb_id for item in items]
+        all_ids = [item.tmdb_id for item in items
+                   if item.tmdb_id and (item.media_type or "movie") != "series"]
         existing = {m.tmdb_id for m in db.query(Movie.tmdb_id).filter(Movie.tmdb_id.in_(all_ids)).all()}
         target_ids = [tid for tid in all_ids if tid not in existing]
 
-    report = AddReport()
-
-    for tmdb_id in target_ids:
-        existing = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
-        if existing:
-            report.record(EXISTS)
-            continue
-        # Shares add_movie_to_radarr with the single-title path, so a movie
-        # Radarr already owns (added in Radarr's own UI, by an import list, or
-        # by a watchlist sync — none of which are in Tentacle's Movie table)
-        # counts as already_exists instead of a hard failure.
-        outcome, reason = arr_add.add_movie_to_radarr(
-            radarr_url, radarr_key, tmdb_id, quality_profile_id, root_folder
-        )
-        report.record(outcome, reason)
-        if outcome == ADDED:
-            _record_download_request(db, tmdb_id, "movie", user.id)
-
-    if report.added:
-        from routers.discover import bust_arr_ids_cache
-        bust_arr_ids_cache()
-    return report.as_response()
+    # A movie Radarr already owns but Tentacle's Movie table doesn't know
+    # (added in Radarr's own UI, an import list, a watchlist sync) comes back
+    # from Radarr as already_exists, not as a failure.
+    try:
+        outcome = media_requests.request_movies(
+            db, target_ids, user_id=user.id, via=f"list '{lst.name}' add missing",
+            quality_profile_override=body.quality_profile_override if body else None,
+            legacy_profile_id=body.quality_profile_id if body else None,
+            already_owned=lambda tid: db.query(Movie).filter(Movie.tmdb_id == tid).first() is not None)
+    except RequestRefused as e:
+        raise _refused(e, user)
+    return outcome.as_response()
 
 
 @router.post("/{list_id}/add-missing-to-sonarr")
-def add_missing_to_sonarr(list_id: int, body: AddMissingBody = None, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def add_missing_to_sonarr(list_id: int, body: AddMissingBody = None, db: Session = Depends(get_db),
+                          user: TentacleUser = Depends(get_user_from_request), request: Request = None):
     """Add missing list items to Sonarr"""
     lst = db.query(ListSubscription).filter(
         ListSubscription.id == list_id,
@@ -1238,53 +1391,23 @@ def add_missing_to_sonarr(list_id: int, body: AddMissingBody = None, db: Session
     if not lst:
         raise HTTPException(404, "List not found")
 
-    sonarr_url = get_setting(db, "sonarr_url")
-    sonarr_key = get_setting(db, "sonarr_api_key")
-    if not sonarr_url or not sonarr_key:
-        raise HTTPException(400, "Sonarr not configured")
-
-    from services.sonarr import SonarrService
-    sonarr = SonarrService(sonarr_url, sonarr_key)
-    root_folders = _get_sonarr_root_folders(sonarr)
-    # Regular adds must never default into the VOD root folder (used only for
-    # hybrid series) — prefer the first non-VOD root
-    _non_vod_roots = [rf for rf in root_folders if "vod" not in rf["path"].lower()]
-    root_folder = (_non_vod_roots or root_folders)[0]["path"]
-    quality_profile_id = (body.quality_profile_id if body else None) or int(get_setting(db, "sonarr_quality_profile_id", "1") or "1")
-
     if body and body.tmdb_ids:
         target_ids = body.tmdb_ids
     else:
         items = db.query(ListItem).filter(ListItem.list_id == list_id).all()
-        all_ids = [item.tmdb_id for item in items]
+        all_ids = [item.tmdb_id for item in items if item.tmdb_id and item.media_type == "series"]
         existing = {s.tmdb_id for s in db.query(Series.tmdb_id).filter(Series.tmdb_id.in_(all_ids)).all()}
         target_ids = [tid for tid in all_ids if tid not in existing]
 
-    monitor = (body.monitor if body else None) or "all"
-    season_folder = (body.season_folder if body else None)
-    if season_folder is None:
-        season_folder = True
-
-    report = AddReport()
-
-    tmdb = _get_tmdb_service(db)
-    for tmdb_id in target_ids:
-        if db.query(Series).filter(Series.tmdb_id == tmdb_id).first():
-            report.record(EXISTS)
-            continue
-        # Resolve the exact TVDB id (Sonarr's native key) so add_series doesn't
-        # have to rely on Skyhook's unreliable tmdb: term lookup
-        tvdb_id = tmdb.get_tvdb_id(tmdb_id) if tmdb else None
-        result = sonarr.add_series(tmdb_id, quality_profile_id, root_folder, monitor=monitor, season_folder=season_folder, tvdb_id=tvdb_id)
-        if result and result.get("alreadyExists"):
-            report.record(EXISTS)
-        elif result:
-            report.record(ADDED)
-            _record_download_request(db, tmdb_id, "series", user.id)
-        else:
-            report.record(FAILED, sonarr.last_error)
-
-    if report.added:
-        from routers.discover import bust_arr_ids_cache
-        bust_arr_ids_cache()
-    return report.as_response()
+    season_folder = body.season_folder if body else None
+    try:
+        outcome = media_requests.request_series(
+            db, tmdb_ids=target_ids, user_id=user.id, via=f"list '{lst.name}' add missing",
+            quality_profile_override=body.quality_profile_override if body else None,
+            legacy_profile_id=body.quality_profile_id if body else None,
+            monitor=(body.monitor if body else None) or "all",
+            season_folder=True if season_folder is None else season_folder,
+            already_owned=lambda tid: db.query(Series).filter(Series.tmdb_id == tid).first() is not None)
+    except RequestRefused as e:
+        raise _refused(e, user)
+    return outcome.as_response()

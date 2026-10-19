@@ -1,7 +1,7 @@
 """
 Tentacle - Health Router
 Library housekeeping: deletion audit log, download health, missing content,
-stream health. Admin-only.
+provider health, stream health. Admin-only.
 """
 
 import logging
@@ -290,6 +290,30 @@ def arr_problems(db: Session = Depends(get_db)):
     return {"problems": problems(db)}
 
 
+# ─── Provider health ──────────────────────────────────────────────────────────
+
+@router.get("/providers")
+def provider_health(db: Session = Depends(get_db)):
+    """The hourly provider check's state per provider (the dashboard banner)."""
+    from services import provider_health as ph
+    from services.pushover import configured
+    return {"providers": ph.provider_view(db), "running": ph.check_running(),
+            "pushover": configured(db)}
+
+
+@router.post("/providers/check")
+def check_providers_now(db: Session = Depends(get_db)):
+    """"Check now": every provider once, without the 2-minute confirmation."""
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "A provider check")
+    from services import provider_health as ph
+    result = ph.check_now(db)
+    if result is None:
+        raise HTTPException(409, "A provider check is already running (a failure is confirmed 2 minutes "
+                                 "after it is first seen). Try again in a few minutes.")
+    return {**result, "providers": ph.provider_view(db)}
+
+
 # ─── Stream health ────────────────────────────────────────────────────────────
 
 class StreamCheckRequest(BaseModel):
@@ -332,6 +356,8 @@ def check_stream_now(body: StreamCheckRequest, db: Session = Depends(get_db)):
     """On-demand stream check for one library title."""
     if body.media_type not in ("movie", "series"):
         raise HTTPException(400, "media_type must be movie or series")
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "A stream check")
     from services.stream_health import check_title
     result = check_title(db, body.media_type, body.tmdb_id)
     if not result.get("ok"):
@@ -340,7 +366,7 @@ def check_stream_now(body: StreamCheckRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/streams/recheck")
-def recheck_streams(limit: int = 25, db: Session = Depends(get_db)):
+def recheck_streams(limit: int = 10, db: Session = Depends(get_db)):
     """Re-test known-bad entries now; recovered ones are cleared. At most
     `limit` per call (each probe is a few seconds; a reverse proxy in front
     of Tentacle would time the request out on a long list) -- the response
@@ -351,11 +377,10 @@ def recheck_streams(limit: int = 25, db: Session = Depends(get_db)):
 
 @router.post("/streams/sweep")
 def trigger_stream_sweep():
-    """Run the rotating-batch sweep now (background)."""
-    import threading
-    from services.stream_health import run_stream_health_sweep
-    threading.Thread(target=run_stream_health_sweep, daemon=True).start()
-    return {"started": True}
+    """Run the rotating-batch sweep now (background). `started` is false
+    while a sweep (this button's or the 04:30 job's) is still running."""
+    from services.stream_health import start_stream_health_sweep
+    return {"started": start_stream_health_sweep()}
 
 
 @router.post("/streams/clear")

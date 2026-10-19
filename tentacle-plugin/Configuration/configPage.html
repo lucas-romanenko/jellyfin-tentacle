@@ -88,33 +88,32 @@
                 resultEl.innerHTML = '<span style="color:#aaa;">Testing...</span>';
                 statusEl.style.display = 'none';
 
-                var xhr = new XMLHttpRequest();
-                xhr.open('GET', url.replace(/\/+$/, '') + '/api/widget/status', true);
-                xhr.timeout = 5000;
-                xhr.onload = function () {
-                    if (xhr.status === 200) {
-                        try {
-                            var data = JSON.parse(xhr.responseText);
-                            resultEl.innerHTML = '<span style="color:#4caf50;">Connected!</span>';
-                            statusEl.style.display = 'block';
-                            detailsEl.innerHTML =
-                                '<div>Movies: <strong>' + (data.total_movies || 0) + '</strong></div>' +
-                                '<div>Series: <strong>' + (data.total_series || 0) + '</strong></div>' +
-                                '<div>Last Sync: ' + (data.last_sync || 'Never') + '</div>';
-                        } catch (e) {
-                            resultEl.innerHTML = '<span style="color:#f44336;">Invalid response</span>';
+                // Tested by the plugin, from the Jellyfin server: that's where it
+                // calls this URL. From the browser the test failed for server-side
+                // addresses, other Jellyfin origins (CORS) and http from https (#290).
+                fetch(ApiClient.getUrl('Tentacle/TestConnection', { url: url }), {
+                    headers: { 'Authorization': 'MediaBrowser Token="' + ApiClient.accessToken() + '"' }
+                }).then(function (resp) {
+                    return resp.json().catch(function () { return {}; }).then(function (data) {
+                        if (!resp.ok) {
+                            resultEl.textContent = '';
+                            var err = document.createElement('span');
+                            err.style.color = '#f44336';
+                            err.textContent = data.error || ('HTTP ' + resp.status);
+                            resultEl.appendChild(err);
+                            return;
                         }
-                    } else {
-                        resultEl.innerHTML = '<span style="color:#f44336;">HTTP ' + xhr.status + '</span>';
-                    }
-                };
-                xhr.onerror = function () {
-                    resultEl.innerHTML = '<span style="color:#f44336;">Connection failed</span>';
-                };
-                xhr.ontimeout = function () {
-                    resultEl.innerHTML = '<span style="color:#f44336;">Timed out</span>';
-                };
-                xhr.send();
+                        resultEl.innerHTML = '<span style="color:#4caf50;">Connected!</span>';
+                        statusEl.style.display = 'block';
+                        detailsEl.innerHTML =
+                            '<div>Movies: <strong>' + (Number(data.movies) || 0) + '</strong></div>' +
+                            '<div>Series: <strong>' + (Number(data.series) || 0) + '</strong></div>' +
+                            '<div>Last Sync: <span id="tentacleLastSync"></span></div>';
+                        detailsEl.querySelector('#tentacleLastSync').textContent = data.last_sync || 'Never';
+                    });
+                })['catch'](function () {
+                    resultEl.innerHTML = '<span style="color:#f44336;">Could not ask Jellyfin</span>';
+                });
             }
         </script>
     </div>

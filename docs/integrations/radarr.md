@@ -60,13 +60,20 @@ Tentacle can scan your entire Radarr library at any time:
 
 The scan fetches all movies from Radarr, matches TMDB metadata, writes NFO files, and applies tags.
 
-## Quality Profiles
+## Quality Profile and Root Folder
 
-When adding a movie via Discover or a list, you can select a Radarr quality profile:
+Pick a **default quality profile** (and, optionally, a root folder) under
+Radarr in **Settings → Connections**. Every request uses them, wherever it
+comes from: Tentacle's Discover and Library pages, list auto-add and "add
+missing", the Jellyfin plugin on the web, and the Android TV app.
 
-- Available profiles are fetched from Radarr's API
-- Click the quality button to cycle through profiles
-- Your last selection is remembered
+- Until a default profile is picked, requests are refused with a message
+  saying where to pick one. Tentacle never guesses: Radarr's first profile is
+  usually "Any", which accepts disc images.
+- The root folder defaults to **Automatic**: the first Radarr root folder that
+  isn't a VOD folder.
+- The Add dialogs start on **Default**. Choosing another profile there applies
+  to that one request only, and is logged.
 
 ## NFO Files
 
@@ -91,7 +98,7 @@ tentacle:
     - /path/to/movies:/media/movies    # Same folder Radarr downloads to
 ```
 
-Radarr sees this folder at `/data/movies` (inside the Radarr container). Tentacle sees it at `/media/movies`. The path mapping is handled automatically.
+Radarr may call this folder anything (`/data/movies`, `/data/media/movies`, `D:\Movies`): Tentacle finds each download by its folder name under `/media/movies`, so mount the same host folder Radarr's root folder is on. When a scan can't find downloads there, the log says so ("downloads not found under /media/movies") and no NFO or tags are written beside them.
 
 ## Download Client Prerequisites
 

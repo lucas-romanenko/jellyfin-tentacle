@@ -47,8 +47,10 @@ def _enclosing_conditions(body: str, needle: str):
 class TestRefusalIsNotCached(unittest.TestCase):
     def setUp(self):
         self.src = _strip_comments(MANAGER.read_text())
-        self.get = _method(self.src, "public HomeConfig? GetHomeConfig(")
-        self.fetch = _method(self.src, "private HomeConfig? FetchFromApi(")
+        # The fetch and its cache write (FetchAndCacheAsync), and the HTTP call
+        # itself (FetchFromApiAsync), since the fetch became async (#256).
+        self.get = _method(self.src, "private async Task<HomeConfigResult> FetchAndCacheAsync(")
+        self.fetch = _method(self.src, "private async Task<(HomeConfigResult Home, bool CallerRefused)> FetchFromApiAsync(")
 
     def test_the_fetch_tells_a_refusal_apart_from_other_failures(self):
         failure = self.fetch[self.fetch.index("IsSuccessStatusCode"):]
@@ -68,7 +70,8 @@ class TestRefusalIsNotCached(unittest.TestCase):
     def test_the_condition_comes_from_the_fetch(self):
         """Whatever gates the write has to be something FetchFromApi reported."""
         conditions = " ".join(_enclosing_conditions(self.get, "_userCache[cacheKey] ="))
-        call = re.search(r"FetchFromApi\(([^;]*)\)\s*;", self.get).group(0)
+        # The whole statement, with what it assigns.
+        call = re.search(r"[^;{}]*FetchFromApiAsync\([^;]*;", self.get).group(0)
         names = set(re.findall(r"[A-Za-z_]\w*", conditions)) - {"if"}
         reported = {n for n in names if re.search(rf"\b{n}\b", call)}
         self.assertTrue(reported,

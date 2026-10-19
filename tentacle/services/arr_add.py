@@ -49,10 +49,10 @@ FAILED = "failed"
 _VALIDATOR_MESSAGES = {
     "movieexistsvalidator": "it is already in Radarr",
     "seriesexistsvalidator": "it is already in Sonarr",
-    "rootfoldervalidator": "the root folder Tentacle used does not exist in {service}",
+    "rootfoldervalidator": "the root folder Tentacle used does not exist in {service} (check the default root folder in Tentacle's settings)",
     "seriespathvalidator": "another series is already using that folder",
     "moviepathvalidator": "another movie is already using that folder",
-    "qualityprofileexistsvalidator": "the selected quality profile no longer exists in {service}",
+    "qualityprofileexistsvalidator": "the quality profile Tentacle used no longer exists in {service} (pick another default in Tentacle's settings)",
     "recyclebinvalidator": "{service}'s recycle bin path is not writable",
 }
 

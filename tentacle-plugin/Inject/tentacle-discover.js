@@ -31,6 +31,7 @@
     loadedAt: 0,          // timestamp of last render — stale after 5 min
     activityData: null,   // shared — used for download badges on discover cards
     generation: 0,        // incremented on navigation, stale API responses check this
+    view: 0,              // incremented whenever the grid is repainted for another tab/pill
     _pendingAction: null, // 'manage' or 'downloadMore' — auto-trigger after modal render
     streamingProviders: null, // [{slug,name}] once loaded
     streamingActive: null,    // active provider slug
@@ -50,7 +51,16 @@
     active: false,
     loaded: false,
     timer: null,
+    pollSince: 0,   // when the outstanding Activity poll started, 0 = none
+    pollToken: 0,
   };
+  // A poll still out after this long is given up on, so one request that
+  // never answers can't stop the polling for good.
+  var POLL_STALE_MS = 90000;
+  // Monotonic where available, so a wall-clock jump can't stall the poll.
+  function pollClock() {
+    return (window.performance && window.performance.now) ? window.performance.now() : Date.now();
+  }
 
   // ── Bootstrap ───────────────────────────────────────────────────────
   function waitForReady() {
@@ -207,6 +217,28 @@
     return d.innerHTML;
   }
 
+  // Attribute-context escaping (escapes quotes, unlike esc()).
+  function escAttr(str) {
+    if (str == null) return '';
+    return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // A trailer address for a link or an embedded player: https on a known
+  // video host only (as tentacle-details.js checks), otherwise null.
+  function safeTrailerUrl(url) {
+    if (!url) return null;
+    var parsed;
+    try { parsed = new URL(url, window.location.href); } catch (e) { return null; }
+    if (parsed.protocol !== 'https:') return null;
+    var host = parsed.hostname.toLowerCase();
+    var allowed = ['www.youtube.com', 'youtube.com', 'youtube-nocookie.com', 'www.youtube-nocookie.com',
+      'youtu.be', 'player.vimeo.com', 'vimeo.com', 'www.dailymotion.com', 'dailymotion.com'];
+    for (var i = 0; i < allowed.length; i++) {
+      if (host === allowed[i] || host.endsWith('.' + allowed[i])) return parsed.href;
+    }
+    return null;
+  }
+
   // ════════════════════════════════════════════════════════════════════
   //  DISCOVER MODULE
   // ════════════════════════════════════════════════════════════════════
@@ -302,6 +334,7 @@
   // ── Fetch discover sections ─────────────────────────────────────────
   function fetchDiscoverData() {
     var gen = MD.generation;
+    MD.view++;
     var content = document.getElementById('mdDiscoverContent');
     if (content) content.innerHTML = '<div class="md-loading"><div class="md-spinner"></div><br>Loading...</div>';
 
@@ -377,6 +410,7 @@
 
   function switchSection(sectionId) {
     MD.activeSection = sectionId;
+    MD.view++;
 
     document.querySelectorAll('.md-section-tab').forEach(function (btn) {
       btn.classList.toggle('md-section-active', btn.getAttribute('data-section') === sectionId);
@@ -409,7 +443,7 @@
       }
       var pills = '<div class="md-stream-pills">' + provs.map(function (p) {
         var on = p.slug === MD.streamingActive ? ' md-stream-pill-active' : '';
-        return '<button class="md-stream-pill' + on + '" data-prov="' + esc(p.slug) + '">' + esc(p.name) + '</button>';
+        return '<button class="md-stream-pill' + on + '" data-prov="' + escAttr(p.slug) + '">' + esc(p.name) + '</button>';
       }).join('') + '</div>';
       content.innerHTML = pills + '<div id="mdStreamGrid"><div class="md-loading"><div class="md-spinner"></div><br>Loading...</div></div>';
       content.querySelectorAll('.md-stream-pill').forEach(function (btn) {
@@ -419,14 +453,18 @@
         });
       });
       var typeParam = MD.mediaFilter === 'series' ? 'series' : 'movies';
+      // A later pill, tab or type switch reuses #mdStreamGrid: an answer for
+      // the earlier one must not land in it.
+      var view = ++MD.view;
       apiGet('TentacleDiscover/Streaming?provider=' + encodeURIComponent(MD.streamingActive) + '&type=' + typeParam + '&userId=' + window.ApiClient.getCurrentUserId())
         .then(function (data) {
-          if (gen !== MD.generation) return;
+          if (gen !== MD.generation || view !== MD.view) return;
           MD.streamingSection = { id: 'streaming', items: (data && data.items) || [], failure: failureMessage(data) };
           var wrap = document.getElementById('mdStreamGrid');
           if (wrap) renderGrid(MD.streamingSection, wrap);
         })
         .catch(function () {
+          if (gen !== MD.generation || view !== MD.view) return;
           var wrap = document.getElementById('mdStreamGrid');
           if (wrap) wrap.innerHTML = '<div class="md-loading">Failed to load.</div>';
         });
@@ -434,8 +472,8 @@
 
     if (!MD.streamingProviders) {
       apiGet('TentacleDiscover/Providers?userId=' + window.ApiClient.getCurrentUserId())
-        .then(function (data) { MD.streamingProviders = (data && data.providers) || []; if (gen === MD.generation) paint(); })
-        .catch(function () { MD.streamingProviders = []; if (gen === MD.generation) paint(); });
+        .then(function (data) { MD.streamingProviders = (data && data.providers) || []; if (gen === MD.generation && MD.activeSection === 'streaming') paint(); })
+        .catch(function () { MD.streamingProviders = []; if (gen === MD.generation && MD.activeSection === 'streaming') paint(); });
     } else {
       paint();
     }
@@ -455,7 +493,7 @@
     content.innerHTML = '<div class="md-discover-grid">' +
       items.map(function (item) {
         var poster = item.poster_path
-          ? '<img src="' + _imgUrl(item.poster_path, 'w185') + '" loading="lazy" onerror="this.style.display=\'none\'">'
+          ? '<img src="' + escAttr(_imgUrl(item.poster_path, 'w185')) + '" loading="lazy" onerror="this.style.display=\'none\'">'
           : '<div class="md-card-poster-placeholder">&#9707;</div>';
         var dlInfo = getDownloadInfo(item.tmdb_id);
         var ulInfo = !dlInfo ? getUnreleasedInfo(item.tmdb_id) : null;
@@ -498,7 +536,7 @@
         if (e.target.closest('.md-card-add')) return;
         var tmdb = parseInt(card.getAttribute('data-tmdb'), 10) || 0;
         var tvdb = parseInt(card.getAttribute('data-tvdb'), 10) || 0;
-        var item = findItem(tmdb, tvdb);
+        var item = findItem(tmdb, tvdb, card.getAttribute('data-type'));
         if (item) showDetailModal(item);
       });
     });
@@ -509,7 +547,8 @@
         e.stopPropagation();
         var tmdb = parseInt(btn.getAttribute('data-tmdb'), 10) || 0;
         var tvdb = parseInt(btn.getAttribute('data-tvdb'), 10) || 0;
-        var item = findItem(tmdb, tvdb);
+        var card = btn.closest('.md-card');
+        var item = findItem(tmdb, tvdb, card && card.getAttribute('data-type'));
         if (item) showDetailModal(item);
       });
     });
@@ -537,14 +576,16 @@
           renderLists();
         });
       });
+      var view = ++MD.view;
       apiGet('TentacleDiscover/ListMissing?list_id=' + encodeURIComponent(MD.missingActive) + '&type=' + typeParam + '&userId=' + window.ApiClient.getCurrentUserId())
         .then(function (data) {
-          if (gen !== MD.generation) return;
+          if (gen !== MD.generation || view !== MD.view) return;
           MD.missingSection = { id: 'missing', items: (data && data.items) || [], failure: failureMessage(data) };
           var wrap = document.getElementById('mdStreamGrid');
           if (wrap) renderGrid(MD.missingSection, wrap);
         })
         .catch(function () {
+          if (gen !== MD.generation || view !== MD.view) return;
           var wrap = document.getElementById('mdStreamGrid');
           if (wrap) wrap.innerHTML = '<div class="md-loading">Failed to load.</div>';
         });
@@ -552,8 +593,8 @@
 
     if (!MD.missingLists || MD.missingListType !== typeParam) {
       apiGet('TentacleDiscover/Lists?type=' + typeParam + '&userId=' + window.ApiClient.getCurrentUserId())
-        .then(function (data) { MD.missingLists = (data && data.lists) || []; MD.missingListType = typeParam; if (gen === MD.generation) paint(); })
-        .catch(function () { MD.missingLists = []; MD.missingListType = typeParam; if (gen === MD.generation) paint(); });
+        .then(function (data) { MD.missingLists = (data && data.lists) || []; MD.missingListType = typeParam; if (gen === MD.generation && MD.activeSection === 'missing') paint(); })
+        .catch(function () { MD.missingLists = []; MD.missingListType = typeParam; if (gen === MD.generation && MD.activeSection === 'missing') paint(); });
     } else {
       paint();
     }
@@ -598,14 +639,16 @@
           renderGenres();
         });
       });
+      var view = ++MD.view;
       apiGet('TentacleDiscover/Genre?genre_id=' + MD.genreActive + '&type=' + typeParam + '&mode=' + MD.genreMode + '&userId=' + window.ApiClient.getCurrentUserId())
         .then(function (data) {
-          if (gen !== MD.generation) return;
+          if (gen !== MD.generation || view !== MD.view) return;
           MD.genreSection = { id: 'genres', items: (data && data.items) || [], failure: failureMessage(data) };
           var wrap = document.getElementById('mdStreamGrid');
           if (wrap) renderGrid(MD.genreSection, wrap);
         })
         .catch(function () {
+          if (gen !== MD.generation || view !== MD.view) return;
           var wrap = document.getElementById('mdStreamGrid');
           if (wrap) wrap.innerHTML = '<div class="md-loading">Failed to load.</div>';
         });
@@ -613,38 +656,28 @@
 
     if (!MD.genreList || MD.genreListType !== typeParam) {
       apiGet('TentacleDiscover/Genres?type=' + typeParam + '&userId=' + window.ApiClient.getCurrentUserId())
-        .then(function (data) { MD.genreList = (data && data.genres) || []; MD.genreListType = typeParam; if (gen === MD.generation) paint(); })
-        .catch(function () { MD.genreList = []; MD.genreListType = typeParam; if (gen === MD.generation) paint(); });
+        .then(function (data) { MD.genreList = (data && data.genres) || []; MD.genreListType = typeParam; if (gen === MD.generation && MD.activeSection === 'genres') paint(); })
+        .catch(function () { MD.genreList = []; MD.genreListType = typeParam; if (gen === MD.generation && MD.activeSection === 'genres') paint(); });
     } else {
       paint();
     }
   }
 
-  function findItem(tmdbId, tvdbId) {
-    if (MD.missingSection) {
-      var mitems = MD.missingSection.items || [];
-      for (var q = 0; q < mitems.length; q++) {
-        if ((mitems[q].tmdb_id || 0) === tmdbId || (tvdbId && (mitems[q].tvdb_id || 0) === tvdbId)) return mitems[q];
-      }
-    }
-    if (MD.genreSection) {
-      var gitems = MD.genreSection.items || [];
-      for (var j = 0; j < gitems.length; j++) {
-        if ((gitems[j].tmdb_id || 0) === tmdbId || (tvdbId && (gitems[j].tvdb_id || 0) === tvdbId)) return gitems[j];
-      }
-    }
-    if (MD.streamingSection) {
-      var sitems = MD.streamingSection.items || [];
-      for (var k = 0; k < sitems.length; k++) {
-        if ((sitems[k].tmdb_id || 0) === tmdbId || (tvdbId && (sitems[k].tvdb_id || 0) === tvdbId)) return sitems[k];
-      }
-    }
-    if (!MD.sections) return null;
-    for (var i = 0; i < MD.sections.length; i++) {
-      var items = MD.sections[i].items;
-      for (var j = 0; j < items.length; j++) {
-        if (tmdbId && items[j].tmdb_id === tmdbId) return items[j];
-        if (tvdbId && items[j].tvdb_id === tvdbId) return items[j];
+  function findItem(tmdbId, tvdbId, mediaType) {
+    // The grid on screen first: an older From My Lists / Genres / Streaming
+    // answer stays in memory, and a movie and a show can share a TMDB number.
+    var byTab = { missing: MD.missingSection, genres: MD.genreSection, streaming: MD.streamingSection };
+    var pools = [];
+    var current = byTab[MD.activeSection] ||
+      (MD.sections && MD.sections.find(function (s) { return s.id === MD.activeSection; }));
+    if (current) pools.push(current.items || []);
+    [MD.missingSection, MD.genreSection, MD.streamingSection].forEach(function (sec) { if (sec) pools.push(sec.items || []); });
+    (MD.sections || []).forEach(function (sec) { pools.push(sec.items || []); });
+    for (var p = 0; p < pools.length; p++) {
+      for (var i = 0; i < pools[p].length; i++) {
+        var it = pools[p][i];
+        if (mediaType && (it.media_type || 'movie') !== mediaType) continue;
+        if ((tmdbId && (it.tmdb_id || 0) === tmdbId) || (tvdbId && (it.tvdb_id || 0) === tvdbId)) return it;
       }
     }
     return null;
@@ -715,7 +748,7 @@
     MD._currentItem = item;
 
     var backdrop = item.backdrop_path
-      ? '<img src="' + _imgUrl(item.backdrop_path, 'w780') + '">'
+      ? '<img src="' + escAttr(_imgUrl(item.backdrop_path, 'w780')) + '">'
       : '';
 
     var downloadSection = '';
@@ -795,7 +828,7 @@
                   '<button id="mdArrChooseBtn" class="md-arr-link" type="button">Choose episodes\u2026</button>' +
                   '<div id="mdArrChooseList" class="md-arr-choose-list" style="display:none">' +
                     item.missing_labels.map(function (l) {
-                      return '<label class="md-arr-choose-row"><input type="checkbox" checked value="' + esc(l) + '"> ' + esc(l) + '</label>';
+                      return '<label class="md-arr-choose-row"><input type="checkbox" checked value="' + escAttr(l) + '"> ' + esc(l) + '</label>';
                     }).join('') +
                   '</div>' +
                 '</div>'
@@ -1004,7 +1037,7 @@
               '<div class="md-arr-rel-info">' +
                 '<div class="md-arr-rel-title">' + esc(r.title) + '</div>' +
                 '<div class="md-arr-rel-facts">' + facts + '</div>' +
-                (r.rejected ? '<div class="md-arr-rel-why" title="' + esc((r.raw_reasons || []).join('\n')) + '">' + esc((r.reasons || []).join(', ') || 'rejected') + '</div>' : '') +
+                (r.rejected ? '<div class="md-arr-rel-why" title="' + escAttr((r.raw_reasons || []).join('\n')) + '">' + esc((r.reasons || []).join(', ') || 'rejected') + '</div>' : '') +
               '</div>' +
               '<button class="md-download-btn md-arr-rel-btn" type="button" data-rel="' + i + '">' + (r.rejected ? 'Download anyway' : 'Download') + '</button>' +
             '</div>';
@@ -1105,8 +1138,15 @@
       stopBtn.addEventListener('click', function () {
         var c = chosen();
         var body = arrTitleBody(item);
-        // All ticked = every missing episode (the list shows at most 50).
-        if (c && c.length < (item.missing_labels || []).length) body.episodes = c;
+        // Some unticked: just those. All ticked: the whole card (below).
+        if (c && c.length < (item.missing_labels || []).length) {
+          body.episodes = c;
+        } else if ((item.missing_labels || []).length) {
+          // The whole card: its labels plus its count (labels are capped at
+          // 50). The server stops what the card counted, never every episode.
+          body.episodes = item.missing_labels;
+          body.episode_count = item.missing_episodes || item.missing_labels.length;
+        }
         stopBtn.disabled = true;
         if (searchBtn) searchBtn.disabled = true;
         say('Telling Sonarr\u2026', true);
@@ -1391,11 +1431,9 @@
       profileSelect.innerHTML = '<option value="">Loading...</option>';
       var uid = window.ApiClient.getCurrentUserId();
       apiGet('TentacleDiscover/SonarrProfiles?userId=' + uid).then(function (profiles) {
-        profileSelect.innerHTML = (profiles || []).map(function (p) {
-          return '<option value="' + p.id + '">' + esc(p.name) + '</option>';
-        }).join('');
+        profileSelect.innerHTML = profileOptionsHtml(profiles);
       }).catch(function () {
-        profileSelect.innerHTML = '<option value="">Failed</option>';
+        profileSelect.innerHTML = '<option value="">Default (couldn\'t load the list)</option>';
       });
     }
 
@@ -1460,7 +1498,7 @@
         } else if (item.tvdb_id && item.tvdb_id > 0) {
           body.tvdb_ids = [item.tvdb_id];
         }
-        if (profileId) body.quality_profile_id = parseInt(profileId, 10);
+        if (profileId) body.quality_profile_override = parseInt(profileId, 10);
         apiPost('TentacleDiscover/AddToSonarr?userId=' + uid2, body).then(function (r) {
           var status2 = document.getElementById('mdDownloadStatus');
           if (r.added > 0) {
@@ -1547,7 +1585,7 @@
     var overlay = document.createElement('div');
     overlay.className = 'moonfin-trailer-overlay';
     overlay.innerHTML =
-      '<div class="moonfin-trailer-modal" role="dialog" aria-modal="true" aria-label="' + esc(title || 'Trailer') + '">' +
+      '<div class="moonfin-trailer-modal" role="dialog" aria-modal="true" aria-label="' + escAttr(title || 'Trailer') + '">' +
         '<button class="moonfin-trailer-close" aria-label="Close trailer" tabindex="0">' +
           '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.3 5.71 12 12l6.3 6.29-1.41 1.42L10.59 13.4 4.29 19.71 2.88 18.3 9.17 12 2.88 5.71 4.29 4.29l6.3 6.3 6.29-6.3z"/></svg>' +
         '</button>' +
@@ -1578,9 +1616,9 @@
       host.innerHTML =
         '<iframe class="moonfin-trailer-iframe visible" src="https://www.youtube.com/embed/' + videoId + '?autoplay=1&rel=0" ' +
         'allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen loading="eager" referrerpolicy="origin"></iframe>';
-    } else {
+    } else if (safeTrailerUrl(url)) {
       host.innerHTML =
-        '<iframe class="moonfin-trailer-iframe visible" src="' + esc(url) + '" ' +
+        '<iframe class="moonfin-trailer-iframe visible" src="' + escAttr(safeTrailerUrl(url)) + '" ' +
         'allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen loading="eager" referrerpolicy="origin"></iframe>';
     }
 
@@ -1601,6 +1639,23 @@
     }
   }
 
+  // Quality profile picker: "Default" (the profile picked in Tentacle's
+  // settings) first, sending nothing; any other choice is this request's
+  // override. Never preselect the *arr's first profile: it is usually "Any".
+  function profileOptionsHtml(profiles) {
+    profiles = profiles || [];
+    var def = null;
+    for (var i = 0; i < profiles.length; i++) { if (profiles[i].is_default) { def = profiles[i]; break; } }
+    var html = def
+      ? '<option value="">Default \u2014 ' + esc(def.name) + '</option>'
+      : '<option value="">Default (none picked yet in Tentacle)</option>';
+    for (var j = 0; j < profiles.length; j++) {
+      if (profiles[j].is_default) continue;
+      html += '<option value="' + esc(String(profiles[j].id)) + '">' + esc(profiles[j].name) + '</option>';
+    }
+    return html;
+  }
+
   function loadDownloadOptions(item) {
     var isSeries = item.media_type === 'series';
     var uid = window.ApiClient.getCurrentUserId();
@@ -1611,9 +1666,7 @@
       var ps = document.getElementById('mdProfileSelect');
       if (!ps) return;
 
-      ps.innerHTML = profiles.map(function (p) {
-        return '<option value="' + p.id + '">' + esc(p.name) + '</option>';
-      }).join('');
+      ps.innerHTML = profileOptionsHtml(profiles);
 
       var btn = document.getElementById('mdDownloadBtn');
       if (btn) {
@@ -1640,9 +1693,9 @@
     var uid = window.ApiClient.getCurrentUserId();
     var ep = isSeries ? 'TentacleDiscover/AddToSonarr?userId=' + uid : 'TentacleDiscover/AddToRadarr?userId=' + uid;
 
-    var body = {
-      quality_profile_id: parseInt(profileId, 10),
-    };
+    // "Default" sends nothing: Tentacle applies the profile picked in its settings.
+    var body = {};
+    if (profileId) body.quality_profile_override = parseInt(profileId, 10);
     if (item.tmdb_id && item.tmdb_id > 0) {
       body.tmdb_ids = [item.tmdb_id];
     } else if (item.tvdb_id && item.tvdb_id > 0) {
@@ -1771,7 +1824,7 @@
   function actPoster(path, phClass) {
     var src = path ? _imgUrl(path, 'w185') : '';
     if (!src || _badPosters[src]) return '<div class="' + phClass + '">&#9707;</div>';
-    return '<img src="' + src + '" loading="lazy" onerror="__tentacleBadPoster(this,\'' + phClass + '\')">';
+    return '<img src="' + escAttr(src) + '" loading="lazy" onerror="__tentacleBadPoster(this,\'' + phClass + '\')">';
   }
 
   // Patch `from` (live) to match `to` (freshly built) in place, keeping every
@@ -1799,14 +1852,42 @@
     }
     morphChildren(from, to);
   }
+  // Cards carry data-morph-key: a card whose title moved (one arrived above it,
+  // or one above it left) is moved, not rewritten — patching by position gave
+  // every card below a new poster src, and each of those flashed.
+  function morphKey(n) { return n.nodeType === 1 ? n.getAttribute('data-morph-key') : null; }
+  function actKey() {
+    return Array.prototype.map.call(arguments, function (x) {
+      return String(x == null ? '' : x).replace(/[^A-Za-z0-9_-]/g, '');
+    }).join(':');
+  }
   function morphChildren(from, to) {
-    var fc = Array.prototype.slice.call(from.childNodes);
+    var keyed = {};
+    Array.prototype.forEach.call(from.childNodes, function (n) {
+      var k = morphKey(n);
+      if (k && !keyed.hasOwnProperty(k)) keyed[k] = n;
+    });
     var tc = Array.prototype.slice.call(to.childNodes);
+    var wanted = {};
+    tc.forEach(function (n) { var k = morphKey(n); if (k) wanted[k] = 1; });
     for (var i = 0; i < tc.length; i++) {
-      if (i < fc.length) morphNode(fc[i], tc[i]);
-      else from.appendChild(tc[i]);
+      var n = tc[i], cur = from.childNodes[i] || null, k = morphKey(n);
+      // A card that is gone: drop it here rather than moving every card after it.
+      while (cur && morphKey(cur) && !wanted.hasOwnProperty(morphKey(cur))) {
+        from.removeChild(cur); cur = from.childNodes[i] || null;
+      }
+      var match = k && keyed.hasOwnProperty(k) ? keyed[k] : null;
+      if (match) {
+        delete keyed[k];
+        if (match !== cur) from.insertBefore(match, cur);
+        morphNode(match, n);
+      } else if (!k && cur && !morphKey(cur)) {
+        morphNode(cur, n);
+      } else {
+        from.insertBefore(n, cur);
+      }
     }
-    for (var j = tc.length; j < fc.length; j++) from.removeChild(fc[j]);
+    while (from.childNodes.length > tc.length) from.removeChild(from.childNodes[tc.length]);
   }
   function morphInto(el, html) {
     var tpl = document.createElement('div');
@@ -1935,7 +2016,7 @@
           var sizeLabel = dl.size_remaining ? esc(dl.size_remaining) + ' left' : '';
           var qualityLabel = dl.quality ? esc(dl.quality) : '';
 
-          return '<div class="md-act-card md-act-status-' + statusClass + '">' +
+          return '<div class="md-act-card md-act-status-' + statusClass + '" data-morph-key="' + actKey('dl', dl.source, dl.queue_id) + '">' +
             '<div class="md-act-poster">' + poster + '</div>' +
             '<div class="md-act-info">' +
               '<div class="md-act-card-title">' + esc(dl.title) + epLabel + '</div>' +
@@ -1967,7 +2048,7 @@
           var poster = actPoster(item.poster_path, 'md-act-upcoming-ph');
           var waited = waitedFor(item.waiting_since);
           var epLabel = item.episode ? '<div class="md-act-upcoming-type">' + esc(item.episode) + '</div>' : '';
-          return '<div class="md-act-upcoming-card" data-searching-idx="' + idx + '" style="cursor:pointer">' +
+          return '<div class="md-act-upcoming-card" data-searching-idx="' + idx + '" data-morph-key="' + actKey('s', item.media_type, item.tmdb_id, item.tvdb_id) + '" style="cursor:pointer">' +
             '<div class="md-act-upcoming-poster">' + poster +
               '<div class="md-act-countdown-badge md-act-cd-searching">' + (waited ? 'Searching \u00b7 ' + esc(waited) : 'Searching') + '</div>' +
             '</div>' +
@@ -1975,7 +2056,7 @@
               '<div class="md-act-upcoming-title">' + esc(item.title) + '</div>' +
               epLabel +
               (item.check
-                ? '<div class="md-act-upcoming-date md-act-check md-act-check-' + esc(item.check.state) + '" title="' + esc(item.check.summary) + '">' + esc(item.check.short) + '</div>'
+                ? '<div class="md-act-upcoming-date md-act-check md-act-check-' + escAttr(item.check.state) + '" title="' + escAttr(item.check.summary) + '">' + esc(item.check.short) + '</div>'
                 : '<div class="md-act-upcoming-date">Looking for a release</div>') +
               (item.requested_by ? '<div class="md-act-requested-by" style="margin-top:2px">' + esc(item.requested_by) + '</div>' : '') +
             '</div>' +
@@ -1997,7 +2078,7 @@
           var hrs = item.hours_remaining;
           var chip = (hrs != null) ? '<div class="md-act-countdown-badge md-act-cd-ready">' + hrs + 'h</div>' : '';
           var epLabel = item.episode ? '<div class="md-act-upcoming-type">' + esc(item.episode) + '</div>' : '';
-          return '<div class="md-act-upcoming-card" data-recent-idx="' + idx + '" style="cursor:pointer">' +
+          return '<div class="md-act-upcoming-card" data-recent-idx="' + idx + '" data-morph-key="' + actKey('r', item.media_type, item.tmdb_id, item.episode) + '" style="cursor:pointer">' +
             '<div class="md-act-upcoming-poster">' + poster + chip + '</div>' +
             '<div class="md-act-upcoming-info">' +
               '<div class="md-act-upcoming-title">' + esc(item.title) + '</div>' +
@@ -2019,7 +2100,7 @@
         '</div>' +
         '<div class="md-act-upcoming-grid">' +
         coming.map(function (item) {
-          return '<div class="md-act-upcoming-card">' +
+          return '<div class="md-act-upcoming-card" data-morph-key="' + actKey('c', item.tmdb_id || item.tvdb_id, item.episode) + '">' +
             '<div class="md-act-upcoming-poster">' + actPoster(item.poster_path, 'md-act-upcoming-ph') +
               '<div class="md-act-countdown-badge md-act-cd-week">' + esc(airDay(item.air_date_utc)) + '</div>' +
             '</div>' +
@@ -2055,7 +2136,7 @@
             else { countdown = diff + ' days'; countdownClass = 'md-act-cd-later'; }
           }
           var releaseLabel = item.release_type ? '<div class="md-act-upcoming-type">' + esc(item.release_type) + '</div>' : '';
-          return '<div class="md-act-upcoming-card" data-upcoming-idx="' + idx + '" style="cursor:pointer">' +
+          return '<div class="md-act-upcoming-card" data-upcoming-idx="' + idx + '" data-morph-key="' + actKey('u', item.media_type, item.tmdb_id || item.tvdb_id) + '" style="cursor:pointer">' +
             '<div class="md-act-upcoming-poster">' + poster +
               (countdown ? '<div class="md-act-countdown-badge ' + countdownClass + '">' + countdown + '</div>' : '') +
             '</div>' +
@@ -2118,7 +2199,7 @@
       ? _imgUrl(item.poster_path, 'w780')
       : '';
     var poster = item.poster_path
-      ? '<img src="' + _imgUrl(item.poster_path, 'w342') + '">'
+      ? '<img src="' + escAttr(_imgUrl(item.poster_path, 'w342')) + '">'
       : '';
 
     // Build release dates list
@@ -2157,8 +2238,9 @@
     }
 
     // Trailer button
-    var trailerBtn = item.trailer_url
-      ? '<a href="' + esc(item.trailer_url) + '" target="_blank" class="md-up-trailer-btn">' +
+    var trailerHref = safeTrailerUrl(item.trailer_url);
+    var trailerBtn = trailerHref
+      ? '<a href="' + escAttr(trailerHref) + '" target="_blank" rel="noopener" class="md-up-trailer-btn">' +
           '<svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>' +
           'Watch Trailer' +
         '</a>'
@@ -2169,7 +2251,7 @@
     overlay.className = 'md-up-overlay';
     overlay.innerHTML =
       '<div class="md-up-modal">' +
-        (backdrop ? '<div class="md-up-backdrop" style="background-image:url(' + backdrop + ')"></div>' : '') +
+        (backdrop ? '<div class="md-up-backdrop"></div>' : '') +
         '<button class="md-up-close">&times;</button>' +
         '<div class="md-up-body">' +
           '<div class="md-up-poster">' + poster + '</div>' +
@@ -2184,6 +2266,9 @@
         '</div>' +
       '</div>';
 
+    var upBackdrop = backdrop && overlay.querySelector('.md-up-backdrop');
+    // Set as a style property: an address is never parsed as markup or CSS text.
+    if (upBackdrop) upBackdrop.style.backgroundImage = 'url("' + String(backdrop).replace(/["\\\n\r\f]/g, encodeURIComponent) + '")';
     document.body.appendChild(overlay);
     requestAnimationFrame(function () { overlay.classList.add('md-visible'); });
 
@@ -2207,7 +2292,14 @@
         stopActivityPolling();
         return;
       }
+      // One poll at a time: behind a slow backend every 3 s tick used to add
+      // another request on top of the ones still outstanding.
+      if (ACT.pollSince && pollClock() - ACT.pollSince < POLL_STALE_MS) return;
+      var tok = ++ACT.pollToken;
+      ACT.pollSince = pollClock();
       apiGet('TentacleDiscover/Activity?userId=' + window.ApiClient.getCurrentUserId()).then(function (data) {
+        if (tok !== ACT.pollToken) return;   // given up on; a newer poll owns the page
+        ACT.pollSince = 0;
         MD.activityData = data;
         var count = activityCount(data);
         window.dispatchEvent(new CustomEvent('tentacle-activity-count', { detail: count }));
@@ -2216,7 +2308,7 @@
         if (ACT.active) {
           renderActivityContent(data);
         }
-      }).catch(function () {});
+      }).catch(function () { if (tok === ACT.pollToken) ACT.pollSince = 0; });
     }, 3000);
   }
 
@@ -2225,6 +2317,8 @@
       clearInterval(ACT.timer);
       ACT.timer = null;
     }
+    ACT.pollSince = 0;
+    ACT.pollToken++;   // an answer still on its way belongs to the stopped poller
   }
 
   // Background badge polling — runs on home page even when overlays are closed

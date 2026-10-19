@@ -5,7 +5,6 @@ pre-fix baseline dd32f32, which shows they exercise the original bugs.
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
-import tempfile
 import unittest
 from pathlib import Path as _RealPath
 
@@ -20,13 +19,14 @@ import models.database as mdb  # noqa: E402
 from models.database import Movie, Series, Provider  # noqa: E402
 import services.sync as sync  # noqa: E402
 from nightly_harness import NightlyHarness, FakeTMDB  # noqa: E402
+from tmp_dirs import temp_dir
 
 
 class TestIssue1ProviderDelete(unittest.TestCase):
     def test_delete_provider_keeps_downloaded_episodes(self):
         """#1: deleting a provider must not rmtree a merged show folder."""
         import routers.providers as providers
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
         db = sessionmaker(bind=engine)()

@@ -6,16 +6,16 @@ title's directory destroys downloaded media Tentacle never created.
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
-import tempfile
 import unittest
 from pathlib import Path
 
 from services.media_files import delete_movie_files, delete_series_files
+from tmp_dirs import temp_dir
 
 
 class TestDeleteSeriesFiles(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp())
+        self.root = Path(temp_dir(self))
         self.show = self.root / "Community (2009)"
         (self.show / "Season 01").mkdir(parents=True)
         (self.show / "tvshow.nfo").write_text("x")
@@ -60,7 +60,7 @@ class TestDeleteSeriesFiles(unittest.TestCase):
 
 class TestDeleteMovieFiles(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp())
+        self.root = Path(temp_dir(self))
         self.folder = self.root / "Alien (1979)"
         self.folder.mkdir(parents=True)
         self.strm = self.folder / "Alien (1979).strm"

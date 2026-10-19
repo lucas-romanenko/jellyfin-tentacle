@@ -15,7 +15,6 @@ blocklisted release is never grabbed again.
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
-import tempfile
 import unittest
 
 from sqlalchemy import create_engine
@@ -24,12 +23,13 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 from models.database import Setting
 import services.download_health as dh
+from tmp_dirs import temp_dir
 
 CLIENT_DOWN = "Unable to communicate with qBittorrent. Connection refused"
 
 
 def _session_factory():
-    tmp = tempfile.mkdtemp()
+    tmp = temp_dir()
     engine = create_engine(f"sqlite:///{tmp}/t.db")
     mdb.Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)
@@ -109,6 +109,17 @@ class AutoFixSweepTests(unittest.TestCase):
             len(blocklisted), 40,
             f"a download-client outage blocklisted all {len(blocklisted)} "
             "queue items in one 5-minute sweep")
+
+    def test_client_outage_cancels_nothing(self):
+        """The outage guard on its own. 40 of 40 items stuck at once is the download
+        client (or the arr) going away: nothing is cancelled or blocklisted. The test
+        above only asserts "fewer than 40", which the per-sweep cap of 5 satisfies
+        without the outage guard, and then 5 more go every 5-minute sweep."""
+        arr = _Arr([_item(i) for i in range(1, 41)])
+        self._install(arr)
+        dh.run_download_health_check()
+        self.assertEqual(arr.deletes, [], "queue items removed during a client outage")
+        self.assertEqual(arr.grabs, [], "replacements grabbed during a client outage")
 
     def test_auto_fix_is_capped_per_sweep(self):
         """Even a genuine multi-failure run must not act without a bound.

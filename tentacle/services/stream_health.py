@@ -25,6 +25,7 @@ import json
 import time
 import logging
 import re
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -49,7 +50,21 @@ DEFAULT_BATCH_SIZE = 100
 # said it is over its limit.
 PROBE_INTERVAL_SECONDS = 3.0
 PROVIDER_BUSY_STATUSES = {429, 509}
-_probe_state = {"provider_busy": False}
+_probe_state = {"provider_busy": False, "busy_seq": 0}
+# One sweep at a time: the 04:30 job and "Run sweep" both take it without
+# waiting. A second sweep would read the same cursor, probe the same titles
+# alongside the first (two connections at once is what a one-connection
+# account answers 509 to), and its start would clear the first one's
+# `provider_busy`. The scheduler's max_instances=1 only covers its own runs.
+_sweep_lock = threading.Lock()
+
+
+def _note_provider_busy():
+    """A probe was answered 429/509. `provider_busy` stops the sweep for the
+    rest of its run; `busy_seq` lets a recheck notice a 509 that happened
+    during ITS run without resetting the sweep's flag (they can overlap)."""
+    _probe_state["provider_busy"] = True
+    _probe_state["busy_seq"] = _probe_state.get("busy_seq", 0) + 1
 
 
 def _live_streams_active() -> bool:
@@ -70,6 +85,13 @@ def _live_streams_active() -> bool:
         return isinstance(free, int) and isinstance(size, int) and free < size
     except Exception:
         return False
+
+def _someone_watching(db) -> bool:
+    """Live TV through Tentacle, or anything playing in Jellyfin (a VOD .strm
+    streams straight from the provider, so only Jellyfin knows)."""
+    from services.provider_activity import jellyfin_playing
+    return _live_streams_active() or jellyfin_playing(db)
+
 
 # 4xx codes that mean "not right now", not "not any more": the account's
 # max_connections are already in use, the provider is rate-limiting our own
@@ -104,10 +126,12 @@ def _direct_url(url: str, kind, stream_id, provider) -> str:
     Tentacle's /api/vod route must not be probed through Tentacle itself:
     that would take a playback slot for a health check."""
     from services import vod_tokens
+    from services.xtream_client import quote_cred
     if provider and kind and stream_id and vod_tokens.is_vod_url(url):
         container = url.rsplit(".", 1)[-1].split("?")[0] if "." in url else "mp4"
         path = "movie" if kind == "movie" else "series"
-        return f"{provider.server_url.rstrip('/')}/{path}/{provider.username}/{provider.password}/{stream_id}.{container}"
+        login = f"{quote_cred(provider.username)}/{quote_cred(provider.password)}"
+        return f"{provider.server_url.rstrip('/')}/{path}/{login}/{stream_id}.{container}"
     return url
 
 
@@ -122,7 +146,7 @@ def _probe_url(url: str, user_agent: str) -> bool | None:
                     return len(chunk) > 0
                 return False
             if r.status_code in PROVIDER_BUSY_STATUSES:
-                _probe_state["provider_busy"] = True
+                _note_provider_busy()
                 return None
             if r.status_code in INCONCLUSIVE_STATUSES:
                 return None
@@ -178,6 +202,10 @@ def _mark_bad(db, media_type: str, tmdb_id: int, title: str, episode: str,
     if entry:
         entry.fail_count = (entry.fail_count or 1) + 1
         entry.last_checked_at = now
+        # Dead at the address the file holds now: that is what Remove checks
+        # against (a file the sync repointed since is not this entry's).
+        if stream_url:
+            entry.stream_url = stream_url
     else:
         db.add(StreamHealth(
             media_type=media_type, tmdb_id=tmdb_id, title=title, episode=episode,
@@ -232,6 +260,13 @@ def _check_item(db, item, media_type: str, providers: dict) -> bool | None:
     alive = check_stream(db, media_type, kind, stream_id, url, provider)
     if alive is False:
         _mark_bad(db, media_type, item.tmdb_id, item.title, episode, strm_path, url)
+    elif alive is True:
+        # Alive now: an entry from an earlier dead verdict (the file was
+        # repaired or repointed since) must not keep offering Remove.
+        stale = db.query(StreamHealth).filter(StreamHealth.strm_path == strm_path).first()
+        if stale:
+            db.delete(stale)
+            db.commit()
     return alive
 
 
@@ -255,6 +290,10 @@ def recheck_known_bad(db, limit: int = 0) -> dict:
     cleared, rechecked = [], 0
     deferred = provider_busy = False
     remaining = 0
+    # "Over its limit" is about THIS run: a 509 seen by an earlier sweep or
+    # "Check now" must not keep the Recheck button dead until the next sweep
+    # -- and resetting the shared flag could un-stop a sweep running now.
+    busy_at_start = _probe_state.get("busy_seq", 0)
     # Least recently re-tested first, so successive limited calls work
     # through the whole list instead of re-testing the same few each time.
     entries = db.query(StreamHealth).order_by(StreamHealth.last_checked_at.asc(), StreamHealth.id.asc()).all()
@@ -266,7 +305,12 @@ def recheck_known_bad(db, limit: int = 0) -> dict:
             cleared.append(entry.title)
             db.delete(entry)
             continue
-        url = entry.stream_url or _read_strm(entry.strm_path)
+        # The file's address first: a sync that repointed or repaired the
+        # .strm since (a re-listed stream id, new credentials, VOD through
+        # Tentacle) left the recorded address behind, and probing that kept
+        # a playing title "dead" for good. A blank file falls back to it.
+        current = _read_strm(entry.strm_path)
+        url = current or entry.stream_url
         if not url:
             continue
         # Each re-test is a real stream open on the account. The same manners
@@ -276,7 +320,7 @@ def recheck_known_bad(db, limit: int = 0) -> dict:
         if _live_streams_active():
             deferred = True
             break
-        if _probe_state["provider_busy"]:
+        if _probe_state.get("busy_seq", 0) != busy_at_start:
             provider_busy = True
             break
         if rechecked:
@@ -294,24 +338,60 @@ def recheck_known_bad(db, limit: int = 0) -> dict:
             db.delete(entry)
         elif alive is False:
             entry.fail_count = (entry.fail_count or 1) + 1
+            entry.stream_url = url   # dead at this address (Remove checks against it)
     db.commit()
     return {"rechecked": rechecked, "cleared": cleared,
             "deferred": deferred, "provider_busy": provider_busy, "remaining": remaining}
 
 
-def run_stream_health_sweep():
+def stream_health_sweep_running() -> bool:
+    return _sweep_lock.locked()
+
+
+def start_stream_health_sweep() -> bool:
+    """"Run sweep": run it in the background. False (nothing started) while a
+    sweep is already running."""
+    if not _sweep_lock.acquire(blocking=False):
+        return False
+
+    def run():
+        try:
+            _sweep()
+        finally:
+            _sweep_lock.release()
+    try:
+        threading.Thread(target=run, daemon=True, name="stream-health-sweep").start()
+    except Exception:
+        _sweep_lock.release()
+        raise
+    return True
+
+
+def run_stream_health_sweep() -> bool:
     """Daily job: recheck stale known-bad entries, then probe the next rotating
-    batch of healthy VOD titles."""
+    batch of healthy VOD titles. False (nothing probed) while a sweep is
+    already running."""
+    if not _sweep_lock.acquire(blocking=False):
+        logger.info("[Stream health] a sweep is already running — this one probes nothing")
+        return False
+    try:
+        _sweep()
+    finally:
+        _sweep_lock.release()
+    return True
+
+
+def _sweep():
     db = SessionLocal()
     try:
         stats = {"rechecked": 0, "cleared": 0, "probed": 0, "new_bad": 0, "inconclusive": 0}
         _probe_state["provider_busy"] = False
-        if _live_streams_active():
+        if _someone_watching(db):
             stats["deferred"] = True
             set_setting(db, "stream_health_last_run", json.dumps({
                 "at": datetime.utcnow().isoformat(), **stats,
             }))
-            logger.info("[Stream health] live TV is streaming — sweep deferred, nothing probed")
+            logger.info("[Stream health] someone is watching — sweep deferred, nothing probed")
             return
 
         # 1. Recheck known-bad entries older than the recheck window
@@ -353,7 +433,7 @@ def run_stream_health_sweep():
                 # and stop once the provider says it is over its limit. The
                 # cursor rests on the first title NOT probed, so nothing is
                 # skipped -- the next sweep picks up here.
-                if _live_streams_active():
+                if _someone_watching(db):
                     stats["deferred"] = True
                     break
                 if _probe_state["provider_busy"]:
@@ -383,7 +463,7 @@ def run_stream_health_sweep():
                          f"Stream health sweep: {stats['new_bad']} dead stream(s) found "
                          f"({stats['probed']} probed)")
         if stats.get("deferred"):
-            logger.info(f"[Stream health] live TV started — sweep stopped early: {stats}")
+            logger.info(f"[Stream health] someone started watching — sweep stopped early: {stats}")
         elif stats.get("provider_busy"):
             logger.warning(f"[Stream health] provider answered 429/509 — sweep stopped early: {stats}")
         else:
@@ -400,6 +480,13 @@ def remove_dead_stream(db, entry_id: int, user_name: str = None) -> dict:
     entry = db.query(StreamHealth).filter(StreamHealth.id == entry_id).first()
     if not entry:
         return {"ok": False, "error": "Entry not found"}
+
+    # The entry says the address it found dead. A file that plays another one
+    # now (the sync repointed or repaired it) was never tested: deleting it
+    # would remove a title that may well play. Recheck tests it first.
+    current = _read_strm(entry.strm_path)
+    if current and entry.stream_url and current != entry.stream_url:
+        return {"ok": False, "error": "The file has changed since it was found dead; press Recheck first"}
 
     strm = Path(entry.strm_path)
     try:

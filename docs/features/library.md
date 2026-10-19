@@ -75,7 +75,18 @@ The dashboard shows a duplicate count if any are detected. Click through to see 
 
 ### Resolving
 
-You can resolve duplicates individually or all at once. Resolving removes the duplicate record from the database — it doesn't delete any files. You decide which version to keep by managing it in your provider categories or Radarr.
+You can resolve duplicates individually or all at once:
+
+- **Keep Downloaded** deletes the VOD copy (its `.strm` and `.nfo` files) and keeps the download. Tentacle stops importing that title from your provider. For a show, Tentacle first checks with Sonarr that at least one episode really was downloaded, and refuses otherwise.
+- **Keep VOD** deletes the downloaded files through Radarr or Sonarr and removes the title there. When the download shares its folder with the VOD copy, only the downloaded video files are deleted; the `.strm` and `.nfo` files stay. Tentacle first checks that the VOD copy is on disk (a film's `.strm`, at least one episode `.strm` of a show) and refuses otherwise, so the download is never deleted when it is the only copy left, for example a film you downloaded before your provider offered it.
+- **Keep Both** changes nothing.
+
+A duplicate is resolved only once. If it was already resolved meanwhile (in another browser tab, or by Resolve All), the second choice is refused, nothing is deleted, and the list reloads to show what happened.
+
+When the two copies are separate items in Jellyfin, each user's watched state on the copy that is removed (played, play count, resume point, favourite) is carried over to the copy that stays before anything is deleted. If Jellyfin can't be reached, or the copy you keep isn't in Jellyfin yet while users have watched state on the other one, nothing is deleted and the duplicate stays pending: scan the library in Jellyfin and try again.
+
+!!! info "Sonarr and `.strm` files"
+    Sonarr counts `.strm` files as episodes. When Sonarr holds a show in the same folder as its VOD copy, Sonarr lists Tentacle's `.strm` files as downloaded episodes. Tentacle only calls a show a duplicate when Sonarr has at least one episode that is not a `.strm`, and dismisses older duplicates that have none.
 
 !!! info "Hybrid series are not duplicates"
     If you use "Download More Episodes" to add missing episodes to a VOD series, that's an intentional hybrid — not a duplicate. Tentacle tracks this via the `sonarr_path` field and won't flag it.

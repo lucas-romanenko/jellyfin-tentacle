@@ -11,7 +11,6 @@ into two files. With the reconnect budget raised (#136) that silence can
 last minutes, so the front end needs to be able to ask.
 """
 import asyncio
-import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -20,6 +19,7 @@ from sqlalchemy.orm import sessionmaker
 
 from test_livetv_open_single_fetch import PANEL, TOKENIZED, FakeClient, _redirect, _resp
 from test_livetv_raw_reconnect import _dropped, _live
+from tmp_dirs import temp_dir
 
 
 class StatusEntriesBelongToTheStreamThatMadeThem(unittest.IsolatedAsyncioTestCase):
@@ -36,11 +36,13 @@ class StatusEntriesBelongToTheStreamThatMadeThem(unittest.IsolatedAsyncioTestCas
     async def test_the_timer_refresher_does_not_run_for_vod_alone(self):
         from routers import livetv
         livetv._stream_slots = livetv._StreamSlots()
+        self.addCleanup(lambda: setattr(livetv, "_stream_slots", livetv._StreamSlots()))
         await livetv._stream_slots.acquire_lease(6, 0.01, "vod", "vod:movie:1:1")
         self.assertFalse(livetv._live_leases_exist())
         await livetv._stream_slots.acquire_lease(6, 0.01, "live", "channel:1")
         self.assertTrue(livetv._live_leases_exist())
         livetv._stream_slots = livetv._StreamSlots()
+        self.addCleanup(lambda: setattr(livetv, "_stream_slots", livetv._StreamSlots()))
 
 
 class StatusTransitions(unittest.IsolatedAsyncioTestCase):
@@ -100,7 +102,7 @@ class RawStreamReportsItself(unittest.IsolatedAsyncioTestCase):
 class RouteReportsStreams(unittest.TestCase):
     def setUp(self):
         import models.database as mdb
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db",
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db",
                                connect_args={"check_same_thread": False})
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()

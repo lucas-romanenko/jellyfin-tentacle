@@ -3,7 +3,6 @@
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import re
-import tempfile
 import unittest
 from unittest import mock
 
@@ -16,6 +15,7 @@ from services.youtube import resolver
 from services.youtube.errors import (
     VideoUnavailable, YouTubeBlocked, YouTubeError, YouTubeUnavailable,
 )
+from tmp_dirs import temp_dir
 
 LADDER = """#EXTM3U
 #EXT-X-INDEPENDENT-SEGMENTS
@@ -47,7 +47,7 @@ class _FakeHttp:
     def __exit__(self, *a):
         return False
 
-    def get(self, url, headers=None):
+    def get(self, url, headers=None, timeout=None):
         r = mock.Mock()
         r.text = LADDER
         r.raise_for_status = lambda: None
@@ -61,7 +61,7 @@ class _RouteBase(unittest.TestCase):
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         from models.database import YouTubeChannel, YouTubeVideo
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
@@ -89,7 +89,7 @@ class _RouteBase(unittest.TestCase):
     def get(self, query=""):
         fake = resolver.ResolvedVideo(VID, "https://r1.googlevideo.com/master.m3u8", {})
         with mock.patch.object(youtube_router.resolver, "resolve", return_value=fake) as res, \
-             mock.patch.object(youtube_router.httpx, "Client", _FakeHttp):
+             mock.patch.object(resolver.traffic, "http_client", lambda: _FakeHttp()):
             r = self.client.get(f"/api/youtube/v/{VID}/master.m3u8{query}")
         self.resolve_calls = res.call_args_list
         return r

@@ -8,8 +8,8 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from models.database import YouTubeChannel, YouTubeVideo, get_setting
-from services.youtube import indexer, library
-from services.youtube.errors import YouTubeError
+from services.youtube import indexer, library, traffic
+from services.youtube.errors import YouTubeBlocked, YouTubeError
 
 logger = logging.getLogger(__name__)
 
@@ -211,13 +211,85 @@ def detect_base_url(db: Session, request_host: str = None, request_scheme: str =
     return {"url": None, "tried": tried}
 
 
-def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=None) -> dict:
-    """Index one channel, write any new media files, then apply retention."""
-    result = indexer.index_channel(db, channel, on_progress=on_progress)
+UNPLAYABLE_REASON = indexer.UNAVAILABLE_REASON
+
+
+def _retire_unplayable(db: Session, channel: YouTubeChannel) -> int:
+    """Take library videos that could not be played twice in a row out of the
+    library (made private, members-only, removed, age-restricted). Jellyfin
+    would keep probing them, and each probe asks YouTube again."""
+    from services.youtube import resolver
+    ids = resolver.unplayable_ids()
+    if not ids:
+        return 0
+    gone = db.query(YouTubeVideo).filter(
+        YouTubeVideo.channel_fk == channel.id,
+        YouTubeVideo.removed_at.is_(None),
+        YouTubeVideo.video_id.in_(list(ids)),
+    ).all()
+    for video in gone:
+        library.remove_video(video)
+        video.removed_at = datetime.utcnow()
+        video.strm_path = None
+        # Read again later (6 h, doubling to 48 h) like any video whose details
+        # could not be read, and restored if it plays by then. Retired without a
+        # next check, a video retired by mistake never came back (#241).
+        indexer._retry_later(video, UNPLAYABLE_REASON)
+    resolver.forget_unplayable(ids)
+    if gone:
+        db.commit()
+        logger.info(f"[YouTube] Retired {len(gone)} video(s) from '{channel.title}' that can no longer be played")
+    return len(gone)
+
+
+# One channel at a time is indexed, whoever asked: the scheduled check and a
+# refresh someone started used to run side by side, both saw the same new upload
+# and the second insert failed on UNIQUE(video_id), which ended the scheduled
+# run (#245). A run that finds the lock taken waits for the channel in hand
+# (one channel's index), then indexes with what is current by then.
+_index_lock = threading.Lock()
+
+
+def channel_ref(channel: YouTubeChannel):
+    """(id, title) of a channel, or None when it was removed meanwhile.
+
+    A run holds its channels for minutes; one removed from the page in that time
+    raises ObjectDeletedError on its next attribute read (#278).
+    """
+    from sqlalchemy.orm.exc import ObjectDeletedError
+    try:
+        return channel.id, channel.title
+    except ObjectDeletedError:
+        return None
+
+
+def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=None,
+                 light: bool = False) -> dict:
+    """Index one channel, write any new media files, then apply retention.
+
+    `light`: the scheduled check, which reads the channel's feed first and lists
+    its tabs only when something is new (see indexer._light_check).
+    """
+    from sqlalchemy.exc import InvalidRequestError
+    with _index_lock:
+        try:
+            # Its settings as they are now: another run, or the page, may have
+            # changed them (or removed the channel) while this one waited.
+            db.refresh(channel)
+        except InvalidRequestError:
+            logger.info("[YouTube] A channel was removed before its turn; skipping it")
+            return {"skipped": True, "removed": True, "new": 0, "seen": 0}
+        return _sync_channel(db, channel, base, on_progress, light)
+
+
+def _sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress, light: bool) -> dict:
+    result = indexer.index_channel(db, channel, on_progress=on_progress, light=light)
     if result.get("skipped"):
         return result
 
     written, art = 0, 0
+    retitled = set(result.get("retitled") or ())
+    title, new_folders = channel.title, []
     for video in db.query(YouTubeVideo).filter(
         YouTubeVideo.channel_fk == channel.id,
         YouTubeVideo.removed_at.is_(None),
@@ -229,14 +301,34 @@ def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=No
             # videos indexed before it exist with no images — pick those up
             # instead of leaving them blank until something rewrites them.
             if video.folder_path:
-                art += library.fetch_artwork(video, Path(video.folder_path))
+                if video.video_id in retitled:
+                    library.rewrite_nfo(video, channel, base)
+                if not traffic.paused():
+                    art += library.fetch_artwork(video, Path(video.folder_path))
             continue
         try:
             art += library.write_video(video, channel, base).get("artwork", 0)
             written += 1
+            new_folders.append(video.folder_path)
         except OSError as e:
             logger.warning(f"[YouTube] Could not write files for {video.video_id}: {e}")
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        if channel_ref(channel) is None:
+            # Removed from the page while these files were being written. The
+            # removal could not see them (their paths were not saved yet), and
+            # no row is left to find them by later: Jellyfin would keep them as
+            # videos that never play. Take them away now.
+            for folder in new_folders:
+                library.remove_folder(folder)
+            library.remove_channel_folder(title)
+            logger.info(f"[YouTube] '{title}' was removed while its files were written; "
+                        f"removed the {len(new_folders)} just written")
+        raise
+    if retitled:
+        retitle_in_jellyfin(db, channel, retitled)
 
     # Guide entries for live/upcoming streams when the channel is on Live TV.
     guide = 0
@@ -244,10 +336,45 @@ def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=No
         from services.youtube import livetv
         guide = livetv.refresh_guide(db, channel)
 
-    removed = apply_retention(db, channel)
+    removed = apply_retention(db, channel) + _retire_unplayable(db, channel)
     result.update({"written": written, "retired": removed, "guide": guide,
                    "artwork": art})
     return result
+
+
+def retitle_in_jellyfin(db: Session, channel: YouTubeChannel, video_ids) -> int:
+    """Give Jellyfin the repaired titles of videos it has already imported.
+
+    The rewritten NFO is not enough on its own. It carries
+    <lockdata>true</lockdata>, and Jellyfin does not re-read a locked item's
+    NFO — not on a scan, not even on a full "replace all metadata" refresh
+    (checked on 10.11.8) — so it only helps an item not imported yet. One
+    already in the library is renamed through the API instead, which keeps the
+    item, and every user's watched state and playlist entries with it.
+    Best effort: a failure leaves the old title showing, nothing else.
+    """
+    from services.jellyfin import JellyfinService
+
+    url = get_setting(db, "jellyfin_url", "")
+    key = get_setting(db, "jellyfin_api_key", "")
+    if not (url and key and video_ids):
+        return 0
+    titles = {v.video_id: v.title for v in db.query(YouTubeVideo).filter(
+        YouTubeVideo.channel_fk == channel.id,
+        YouTubeVideo.video_id.in_(list(video_ids))).all()}
+    renamed = 0
+    try:
+        jf = JellyfinService(url, key, get_setting(db, "jellyfin_user_id", ""))
+        for item in jf.query_items(include_types=["Movie"], tags=[f"yt:{channel.slug}"]) or []:
+            ids = {k.lower(): v for k, v in (item.get("ProviderIds") or {}).items()}
+            title = titles.get(ids.get("youtube"))
+            if title and item.get("Name") != title and jf.set_item_name(item["Id"], title):
+                renamed += 1
+    except Exception as e:
+        logger.warning(f"[YouTube] Could not pass repaired titles to Jellyfin: {e}")
+    if renamed:
+        logger.info(f"[YouTube] Renamed {renamed} video(s) in Jellyfin for '{channel.title}'")
+    return renamed
 
 
 def apply_retention(db: Session, channel: YouTubeChannel) -> int:
@@ -370,20 +497,26 @@ def _wait_for_channel_items(jf, channel: YouTubeChannel, expected: int,
         time.sleep(SCAN_POLL_SECONDS)
 
 
-WARM_WORKERS = 4
+# Videos warmed per publish at most, and how recent they must be. Warming only
+# spares Jellyfin's first probe of a NEW video a slow resolve; the whole channel
+# used to be resolved, four at a time, whenever one video changed.
+WARM_MAX = 10
+WARM_RECENT_HOURS = 3
+# Seconds between two warm resolves (random within the range).
+WARM_SPACING = (3.0, 8.0)
 
 
 def _warm_streams(db: Session, channels: list, on_stage=None) -> int:
-    """Resolve each channel's library videos ahead of Jellyfin's probes.
+    """Resolve newly added library videos ahead of Jellyfin's first probe.
 
-    Skips anything already cached, so a re-publish costs nothing. Stops at the
-    first bot check: warming is an optimisation, and hammering on through a
-    block would turn it into an outage. Returns how many were resolved.
+    Only videos added in the last WARM_RECENT_HOURS and not cached, at most
+    WARM_MAX, one at a time with random gaps. Stops at a bot check or while
+    YouTube requests are paused: warming is an optimisation, and pushing on
+    through a block would turn it into an outage. Returns how many were resolved.
     """
-    from concurrent.futures import ThreadPoolExecutor
     from services.youtube import resolver
-    from services.youtube.errors import YouTubeBlocked
 
+    recent = datetime.utcnow() - timedelta(hours=WARM_RECENT_HOURS)
     todo = []
     for ch in channels:
         for video in db.query(YouTubeVideo).filter(
@@ -391,32 +524,30 @@ def _warm_streams(db: Session, channels: list, on_stage=None) -> int:
             YouTubeVideo.removed_at.is_(None),
             indexer.is_library_status(YouTubeVideo.live_status),
         ).all():
+            if video.first_seen and video.first_seen < recent:
+                continue
             if not resolver.is_cached(video.video_id):
                 todo.append((video.video_id, ch.max_height or 1080))
+    todo = todo[:WARM_MAX]
     if not todo:
         return 0
     if on_stage:
         on_stage(f"preparing {len(todo)} stream(s) so Jellyfin imports quickly")
 
-    blocked = threading.Event()
     done = 0
-
-    def _one(item):
-        vid, height = item
-        if blocked.is_set():
-            return False
+    for i, (vid, height) in enumerate(todo):
+        if traffic.paused():
+            break
+        if i:
+            time.sleep(traffic.spacing(*WARM_SPACING))
         try:
             resolver.resolve(vid, height)
-            return True
+            done += 1
         except YouTubeBlocked as e:
             logger.warning(f"[YouTube] Bot-checked while preparing streams — stopping: {e}")
-            blocked.set()
+            break
         except Exception as e:
             logger.debug(f"[YouTube] Could not prepare {vid}: {e}")
-        return False
-
-    with ThreadPoolExecutor(max_workers=WARM_WORKERS) as pool:
-        done = sum(1 for ok in pool.map(_one, todo) if ok)
     logger.info(f"[YouTube] Prepared {done} of {len(todo)} stream(s) for Jellyfin's import")
     return done
 
@@ -514,16 +645,27 @@ def publish_to_jellyfin(db: Session, channels: list, on_stage=None) -> None:
         users = db.query(TentacleUser).all()
         for user in users:
             # sync_smartlists is what creates a playlist that is newly desired;
-            # refresh only fills ones that already exist.
-            sync_smartlists(db, user_id=user.id)
-            refresh_smartlist_playlists(db, user_id=user.id, only_names=names)
-            write_home_config(db, user_id=user.id)
+            # refresh only fills ones that already exist. One user's failure
+            # must not stop the others.
+            try:
+                sync_smartlists(db, user_id=user.id)
+                refresh_smartlist_playlists(db, user_id=user.id, only_names=names)
+                write_home_config(db, user_id=user.id)
+            except Exception as e:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                short = True
+                logger.warning(f"[YouTube] Publishing playlists failed for user {user.id}: {e}", exc_info=True)
         bump_playlist_version()
         _notify_jellyfin_plugin(db)
 
         # Say so if a playlist is still short. Silence here is what made an
         # empty row a mystery.
         for user in users:
+            # Read as its owner: Jellyfin answers 404 to anyone else.
+            owner = JellyfinService(url, key, user.jellyfin_user_id)
             ids = {p["name"]: p["playlist_id"]
                    for p in _get_smartlists_with_playlist_ids(db, user_id=user.id)}
             for ch in channels:
@@ -531,13 +673,14 @@ def publish_to_jellyfin(db: Session, channels: list, on_stage=None) -> None:
                 if not pid or not expected[ch.id]:
                     continue
                 try:
-                    items = jf.get_playlist_items(pid)
+                    items = owner.get_playlist_items(pid)
                 except Exception:
                     continue
                 if items is None:
                     continue  # could not read it — not the same as empty
                 have = len(items)
-                if have < expected[ch.id]:
+                if have < expected[ch.id] and have < _playlist_target(
+                        owner, ch.slug, expected[ch.id], user.jellyfin_user_id):
                     short = True
                     logger.warning(f"[YouTube] Playlist '{ch.title}' for user {user.id} holds {have} of "
                                    f"{expected[ch.id]} videos after publishing")
@@ -551,6 +694,24 @@ def publish_to_jellyfin(db: Session, channels: list, on_stage=None) -> None:
             on_stage("Jellyfin is picking the videos up — the row fills in as they land")
         start_background_refill()
     return {"short": short}
+
+
+def _playlist_target(owner, slug: str, expected: int, jellyfin_user_id: str) -> int:
+    """How many of a channel's `expected` videos one user's playlist should hold.
+
+    All of them, less those Jellyfin hides from this user: a parental limit
+    keeps a rated channel's videos from a restricted profile, whose playlist is
+    then full without them. Videos Jellyfin has not imported yet still count,
+    so a playlist filled too early is still reported short. On a failed count
+    the library's number stands.
+    """
+    try:
+        in_library = len(owner.query_items(include_types=["Movie"], tags=[f"yt:{slug}"]) or [])
+        for_user = len(owner.query_items(include_types=["Movie"], tags=[f"yt:{slug}"],
+                                         user_id=jellyfin_user_id) or [])
+    except Exception:
+        return expected
+    return expected - max(0, in_library - for_user)
 
 
 _refill_lock = threading.Lock()
@@ -655,12 +816,16 @@ def reconcile_playlists(db: Session, report: bool = False):
                     f"The reason is logged just above as 'Could not create Jellyfin playlist'. "
                     f"Usually: Settings → Jellyfin URL or API key is wrong, or this user's "
                     f"Jellyfin account is not what Tentacle thinks it is.")
+        # Each user's playlist is read as that user: Jellyfin answers 404 to
+        # anyone else, which read as "unknown" and left every other user's
+        # short playlist as it was.
+        owner = JellyfinService(url, key, user.jellyfin_user_id)
         short = []
         for p in have_playlists:
             if not p.get("is_youtube") or not want.get(p["name"]):
                 continue
             try:
-                items = jf.get_playlist_items(p["playlist_id"])
+                items = owner.get_playlist_items(p["playlist_id"])
             except Exception:
                 continue
             if items is None:
@@ -673,14 +838,18 @@ def reconcile_playlists(db: Session, report: bool = False):
         names = [n for n, _, _, _ in short]
         # Only worth a refresh if Jellyfin has more than the playlist does;
         # otherwise the videos have not landed yet and there is nothing to add.
+        # What this user may see is what their playlist can hold; whether
+        # Jellyfin has imported them all is the library's own count.
         can_grow = []
         for name, pid, have, want_n in short:
             try:
                 slug = next(ch.slug for ch in db.query(YouTubeChannel).all() if ch.title == name)
                 in_jf = len(jf.query_items(include_types=["Movie"], tags=[f"yt:{slug}"]) or [])
+                for_user = len(owner.query_items(include_types=["Movie"], tags=[f"yt:{slug}"],
+                                                 user_id=user.jellyfin_user_id) or [])
             except Exception:
-                in_jf = 0
-            if in_jf > have:
+                in_jf = for_user = 0
+            if for_user > have:
                 can_grow.append(name)
             if max(in_jf, have) < want_n:
                 still_behind = True
@@ -706,13 +875,36 @@ def reconcile_playlists(db: Session, report: bool = False):
     return (fixed, still_behind) if report else fixed
 
 
+# Seconds between two channels in a scheduled check (random within the range),
+# so the checks never arrive as one burst at a fixed minute.
+CHANNEL_GAP_SECONDS = (20.0, 90.0)
+
+
 def run_youtube_sync() -> dict:
-    """Scheduler entry point."""
+    """Scheduler entry point: the light check of every enabled channel.
+
+    Off when background checks are turned off or YouTube requests are paused
+    after a bot check. Channels are checked in random order with random gaps,
+    each starting from its feed (see indexer._light_check).
+    """
+    import random
     from models.database import SessionLocal
     db = SessionLocal()
     try:
         if get_setting(db, "youtube_enabled", "false") != "true":
             return {"enabled": False}
+        if get_setting(db, "youtube_background_checks", "true") == "false":
+            return {"enabled": True, "background": False}
+        if traffic.paused():
+            problem = traffic.proxy_problem()
+            if problem:
+                logger.warning(f"[YouTube] Scheduled check skipped: the saved proxy can't be used "
+                               f"({problem}); nothing is sent to YouTube until it is fixed")
+            else:
+                state = traffic.pause_state()
+                logger.info(f"[YouTube] Scheduled check skipped: YouTube requests are paused after a "
+                            f"bot check until {state['until']}")
+            return {"enabled": True, "paused": True}
         base = base_url(db)
         if not base:
             logger.warning("[YouTube] Could not work out Tentacle's address — skipping. Point the "
@@ -721,20 +913,49 @@ def run_youtube_sync() -> dict:
 
         totals = {"channels": 0, "new": 0, "written": 0, "retired": 0, "errors": 0}
         changed = []
-        for channel in db.query(YouTubeChannel).filter(YouTubeChannel.enabled == True).all():  # noqa: E712
+        channels = db.query(YouTubeChannel).filter(YouTubeChannel.enabled == True).all()  # noqa: E712
+        random.shuffle(channels)
+        for i, channel in enumerate(channels):
+            if traffic.paused():
+                break
+            if i:
+                time.sleep(traffic.spacing(*CHANNEL_GAP_SECONDS))
+            ref = channel_ref(channel)
+            if ref is None:
+                continue                        # removed from the page meanwhile
+            title = ref[1]
             totals["channels"] += 1
             try:
-                r = sync_channel(db, channel, base)
+                r = sync_channel(db, channel, base, light=True)
                 totals["new"] += r.get("new", 0)
                 totals["written"] += r.get("written", 0)
                 totals["retired"] += r.get("retired", 0)
                 if r.get("written") or r.get("retired"):
                     changed.append(channel)
+            except YouTubeBlocked as e:
+                totals["errors"] += 1
+                logger.warning(f"[YouTube] '{title}' failed: {e}")
+                break
             except YouTubeError as e:
                 totals["errors"] += 1
-                logger.warning(f"[YouTube] '{channel.title}' failed: {e}")
+                logger.warning(f"[YouTube] '{title}' failed: {e}")
+            except Exception as e:
+                # A database error ("database is locked", a UNIQUE clash, a
+                # channel removed mid-index) is this channel's failure. It used
+                # to end the whole run: the channels after it went unchecked and
+                # nothing was published (#245, #253, #278).
+                totals["errors"] += 1
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                logger.error(f"[YouTube] '{title}' failed: {e}", exc_info=True)
+        changed = [c for c in changed if channel_ref(c)]
         if changed:
-            publish_to_jellyfin(db, changed)
+            try:
+                publish_to_jellyfin(db, changed)
+            except Exception as e:
+                logger.warning(f"[YouTube] Publish to Jellyfin failed: {e}")
         try:
             totals["refilled"] = reconcile_playlists(db)
         except Exception as e:

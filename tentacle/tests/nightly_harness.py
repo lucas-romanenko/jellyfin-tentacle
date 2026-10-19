@@ -7,7 +7,6 @@ client, TMDB, and the /media/vod roots (redirected to a temp dir).
 """
 import logging
 import shutil
-import tempfile
 import unittest
 from pathlib import Path as _RealPath
 
@@ -17,6 +16,7 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 from models.database import Movie, Series, Provider, ProviderCategory
 import services.sync as sync
+from tmp_dirs import temp_dir
 
 
 
@@ -81,7 +81,7 @@ class NightlyHarness(unittest.TestCase):
     """In-memory-ish SQLite DB + temp /media/vod + patched sync module."""
 
     def setUp(self):
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, tmp, True)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
@@ -144,7 +144,12 @@ class NightlyHarness(unittest.TestCase):
     def sync_only(self):
         """A manual "Sync now" (routers/sync.py) — prune, no sweep."""
         run = sync.sync_provider(self.provider, "full", self.db)
-        self.assertEqual(run.status, "completed", run.error_message)
+        if getattr(self.client, "raise_for", None) and "could not be read" in (run.error_message or ""):
+            # Every category failing is a failed run (#267); the nightly goes on
+            # to the sweep either way.
+            self.assertIn(run.status, ("completed", "failed"), run.error_message)
+        else:
+            self.assertEqual(run.status, "completed", run.error_message)
         self.db.expire_all()
 
     def night(self):

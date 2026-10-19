@@ -12,7 +12,6 @@ one client that stays connected for as long as it matters -- a viewer who
 gives up closes the socket, which ends the retries anyway.
 """
 import asyncio
-import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -21,12 +20,13 @@ from sqlalchemy.orm import sessionmaker
 
 from test_livetv_open_single_fetch import PANEL, TOKENIZED, FakeClient, _redirect, _resp
 from test_livetv_raw_reconnect import _dropped, _live
+from tmp_dirs import temp_dir
 
 
 class BudgetIsASetting(unittest.TestCase):
     def setUp(self):
         import models.database as mdb
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db",
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db",
                                connect_args={"check_same_thread": False})
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()

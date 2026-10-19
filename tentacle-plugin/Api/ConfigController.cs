@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 using Jellyfin.Plugin.Tentacle.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -25,6 +26,16 @@ public class TentacleConfigController : ControllerBase
     // double-check below corrects it).
     private static volatile string? _cachedConfig;
     private static DateTime _configCacheExpiry = DateTime.MinValue;
+
+    // The last answer built from a successful read. A failed read is never cached
+    // (it switched ratings off for every user for 5 minutes, #258); it serves this
+    // instead, so a backend restart doesn't flicker ratings off. Survives ClearCache.
+    private static volatile string? _lastGoodConfig;
+
+    // After a failed read, don't ask the backend again for a moment: every request
+    // would wait out the 10 s timeout in turn behind _cacheLock.
+    private static readonly TimeSpan RetryAfterFailure = TimeSpan.FromSeconds(15);
+    private static DateTime _retryAfter = DateTime.MinValue;
     private static readonly SemaphoreSlim _cacheLock = new(1, 1);
 
     public TentacleConfigController(
@@ -42,6 +53,7 @@ public class TentacleConfigController : ControllerBase
     {
         _cachedConfig = null;
         _configCacheExpiry = DateTime.MinValue;
+        _retryAfter = DateTime.MinValue;
     }
 
     /// <summary>
@@ -74,6 +86,11 @@ public class TentacleConfigController : ControllerBase
                 return Content(fallback, "application/json");
             }
 
+            if (DateTime.UtcNow < _retryAfter)
+            {
+                return LastGoodOrUnavailable();
+            }
+
             var client = _httpClientFactory.CreateClient();
             client.Timeout = TimeSpan.FromSeconds(10);
 
@@ -99,26 +116,54 @@ public class TentacleConfigController : ControllerBase
                 {
                     tmdbKey = tmdbApiElement.GetString();
                 }
+
+                var mdblistEnabled = !string.IsNullOrEmpty(mdblistKey);
+                var tmdbEnabled = !string.IsNullOrEmpty(tmdbKey);
+
+                var configJson = BuildConfigJson(mdblistEnabled, mdblistKey, tmdbEnabled, tmdbKey);
+
+                // Only a successful read is shared with everyone.
+                _cachedConfig = configJson;
+                _lastGoodConfig = configJson;
+                _configCacheExpiry = DateTime.UtcNow.Add(CacheDuration);
+
+                return Content(configJson, "application/json");
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            {
+                // The backend refused THIS caller's token (an expired session, a server
+                // API key): that says nothing about the keys, so it goes to this caller
+                // only and is never cached for the others.
+                _logger.LogWarning("[Tentacle Config] Tentacle refused the caller's token: {Status}", (int)ex.StatusCode!);
+                return StatusCode((int)ex.StatusCode!);
             }
             catch (Exception ex)
             {
                 _logger.LogWarning("[Tentacle Config] Failed to fetch settings: {Error}", ex.Message);
+                _retryAfter = DateTime.UtcNow.Add(RetryAfterFailure);
             }
 
-            var mdblistEnabled = !string.IsNullOrEmpty(mdblistKey);
-            var tmdbEnabled = !string.IsNullOrEmpty(tmdbKey);
-
-            var configJson = BuildConfigJson(mdblistEnabled, mdblistKey, tmdbEnabled, tmdbKey);
-
-            _cachedConfig = configJson;
-            _configCacheExpiry = DateTime.UtcNow.Add(CacheDuration);
-
-            return Content(configJson, "application/json");
+            return LastGoodOrUnavailable();
         }
         finally
         {
             _cacheLock.Release();
         }
+    }
+
+    /// <summary>
+    /// The answer while the backend can't be read (restarting, slow, failing): what was
+    /// last known, else a 503, which the web client retries (tentacle-mdblist.js).
+    /// </summary>
+    private ActionResult LastGoodOrUnavailable()
+    {
+        var lastGood = _lastGoodConfig;
+        if (lastGood != null)
+        {
+            return Content(lastGood, "application/json");
+        }
+
+        return StatusCode(503, new { error = "Tentacle did not answer" });
     }
 
     private static string BuildConfigJson(bool mdblistEnabled, string? mdblistKey, bool tmdbEnabled, string? tmdbKey)

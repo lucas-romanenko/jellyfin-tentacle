@@ -7,12 +7,12 @@ from. That is the address TENTACLE uses to reach Jellyfin -- often a docker
 service name -- so every avatar was a broken image. `jellyfin_public_url`
 exists for exactly this and routers/discover.py already prefers it for links.
 """
-import tempfile
 import unittest
 from unittest import mock
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from tmp_dirs import temp_dir
 
 
 class _Resp:
@@ -28,7 +28,7 @@ class _Resp:
 class AvatarUrl(unittest.TestCase):
     def setUp(self):
         import models.database as mdb
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db",
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db",
                                connect_args={"check_same_thread": False})
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()

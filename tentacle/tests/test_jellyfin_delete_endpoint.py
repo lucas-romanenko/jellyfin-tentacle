@@ -8,7 +8,6 @@ tombstones, and must not start a playlist sweep per call.
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
-import tempfile
 import unittest
 
 from sqlalchemy import create_engine
@@ -21,6 +20,7 @@ _ensure_web_stubs()
 import models.database as mdb  # noqa: E402
 from models.database import DownloadRequest, Duplicate, Movie  # noqa: E402
 import routers.library as library  # noqa: E402
+from tmp_dirs import temp_dir
 
 
 class _FakeThread:
@@ -39,7 +39,7 @@ class _FakeThreading:
 
 class TestDeleteLibraryItemUnknownTitle(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
@@ -62,8 +62,12 @@ class TestDeleteLibraryItemUnknownTitle(unittest.TestCase):
                               resolution="keep_radarr"))
         self.db.commit()
 
-    def _delete(self, tmdb_id=777):
-        return library.delete_library_item("movie", tmdb_id, None, self.db)
+    def _delete(self, tmdb_id=777, **kw):
+        # Authorisation has its own test (test_library_delete_auth.py); these
+        # are about what an accepted deletion does.
+        from unittest import mock
+        with mock.patch.object(library, "_deletion_authorised", lambda *a: True):
+            return library.delete_library_item("movie", tmdb_id, None, self.db, **kw)
 
     def test_unknown_title_keeps_request_and_tombstone(self):
         self.assertIsNone(self.db.query(Movie).filter(Movie.tmdb_id == 777).first())
@@ -85,11 +89,11 @@ class TestDeleteLibraryItemUnknownTitle(unittest.TestCase):
 
     def test_known_title_is_still_deleted(self):
         # Must-not-change: a real row is still removed, with its request,
-        # its tombstone and one playlist sweep.
+        # its tombstone and one playlist sweep (for the deleted item's own id, #296).
         self.db.add(Movie(tmdb_id=777, title="Kept Film", source="provider_1", provider_id=1))
         self.db.commit()
 
-        result = self._delete()
+        result = self._delete(item_id="abc", path="/vod/Kept Film/Kept Film.strm")
 
         self.assertEqual(result.get("deleted"), True)
         self.assertIsNone(self.db.query(Movie).filter(Movie.tmdb_id == 777).first())

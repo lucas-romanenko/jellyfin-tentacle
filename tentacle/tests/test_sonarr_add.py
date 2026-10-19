@@ -33,20 +33,20 @@ class TestAddSeries(unittest.TestCase):
         with mock.patch.object(self.sonarr, "lookup_by_tvdb", return_value=dict(LOOKUP)), \
              mock.patch.object(self.sonarr.session, "post",
                                return_value=_response(400, ALREADY_ADDED)):
-            result = self.sonarr.add_series(tvdb_id=424242)
+            result = self.sonarr.add_series(quality_profile_id=7, tvdb_id=424242)
         self.assertEqual(result, {"alreadyExists": True})
 
     def test_missing_lookup_records_a_reason(self):
         with mock.patch.object(self.sonarr, "lookup_by_tvdb", return_value=None), \
              mock.patch.object(self.sonarr, "lookup_by_tmdb", return_value=None):
-            self.assertIsNone(self.sonarr.add_series(tmdb_id=999999999))
+            self.assertIsNone(self.sonarr.add_series(quality_profile_id=7, tmdb_id=999999999))
         self.assertIn("TVDB", self.sonarr.last_error)
 
     def test_rejection_records_a_reason(self):
         body = '[{"propertyName":"Path","errorMessage":"Folder is in use","errorCode":"SeriesPathValidator"}]'
         with mock.patch.object(self.sonarr, "lookup_by_tvdb", return_value=dict(LOOKUP)), \
              mock.patch.object(self.sonarr.session, "post", return_value=_response(400, body)):
-            self.assertIsNone(self.sonarr.add_series(tvdb_id=424242))
+            self.assertIsNone(self.sonarr.add_series(quality_profile_id=7, tvdb_id=424242))
         self.assertIn("folder", self.sonarr.last_error.lower())
 
     def test_timeout_is_polled_until_the_series_appears(self):
@@ -67,7 +67,7 @@ class TestAddSeries(unittest.TestCase):
              mock.patch.object(self.sonarr.session, "post",
                                side_effect=requests.exceptions.Timeout), \
              mock.patch.object(self.sonarr.session, "get", side_effect=_get):
-            self.assertEqual(self.sonarr.add_series(tvdb_id=424242), landed)
+            self.assertEqual(self.sonarr.add_series(quality_profile_id=7, tvdb_id=424242), landed)
         self.assertGreaterEqual(attempts["n"], 3, "gave up after a single sample")
 
     def test_timeout_applies_episode_selection_to_the_recovered_series(self):
@@ -85,7 +85,7 @@ class TestAddSeries(unittest.TestCase):
              mock.patch.object(self.sonarr.session, "get", return_value=r), \
              mock.patch.object(self.sonarr, "_monitor_selected_episodes") as monitor_eps, \
              mock.patch.object(self.sonarr, "_unmonitor_series"):
-            self.sonarr.add_series(tvdb_id=424242,
+            self.sonarr.add_series(quality_profile_id=7, tvdb_id=424242,
                                    selected_episodes=[{"season": 1, "episode": 2}])
         monitor_eps.assert_called_once()
 
@@ -98,7 +98,7 @@ class TestAddSeries(unittest.TestCase):
              mock.patch.object(self.sonarr.session, "post",
                                side_effect=requests.exceptions.Timeout), \
              mock.patch.object(self.sonarr.session, "get", return_value=r):
-            self.assertIsNone(self.sonarr.add_series(tvdb_id=424242))
+            self.assertIsNone(self.sonarr.add_series(quality_profile_id=7, tvdb_id=424242))
         self.assertIn("retry", self.sonarr.last_error.lower())
 
     def test_non_json_success_is_a_failure_with_a_reason_not_a_crash(self):
@@ -108,13 +108,13 @@ class TestAddSeries(unittest.TestCase):
         r.json.side_effect = ValueError("not json")
         with mock.patch.object(self.sonarr, "lookup_by_tvdb", return_value=dict(LOOKUP)), \
              mock.patch.object(self.sonarr.session, "post", return_value=r):
-            self.assertIsNone(self.sonarr.add_series(tvdb_id=424242))
+            self.assertIsNone(self.sonarr.add_series(quality_profile_id=7, tvdb_id=424242))
         self.assertIn("could not read", self.sonarr.last_error.lower())
 
     def test_sonarr_being_down_is_not_reported_as_missing_from_tvdb(self):
         with mock.patch.object(self.sonarr.session, "get",
                                side_effect=requests.exceptions.ConnectionError("refused")):
-            self.assertIsNone(self.sonarr.add_series(tvdb_id=424242))
+            self.assertIsNone(self.sonarr.add_series(quality_profile_id=7, tvdb_id=424242))
         self.assertIn("could not reach sonarr", self.sonarr.last_error.lower())
         self.assertNotIn("thetvdb", self.sonarr.last_error.lower())
 

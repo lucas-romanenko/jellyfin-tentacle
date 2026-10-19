@@ -4,8 +4,10 @@ Unified view of movies and series
 """
 
 import threading
+import requests
 import logging
 import re
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -69,6 +71,14 @@ def get_library_items(
 ):
     # List mode: return all items from the list with in_library status
     if list_id is not None:
+        # Lists are per user; every /api/lists route checks the owner, and so
+        # does this view of a list's contents (404 for another user's list).
+        from models.database import ListSubscription
+        owned = db.query(ListSubscription.id).filter(ListSubscription.id == list_id)
+        if not user.is_admin:
+            owned = owned.filter(ListSubscription.user_id == user.id)
+        if owned.first() is None:
+            raise HTTPException(404, "List not found")
         return _get_list_items(list_id, search, sort, list_status, limit, offset, db)
 
     movies_q = db.query(Movie)
@@ -189,8 +199,11 @@ def _get_list_items(list_id: int, search: Optional[str], sort: Optional[str],
 
     items = []
     for li in list_items:
-        movie = movie_map.get(li.tmdb_id) if li.tmdb_id else None
-        serie = series_map.get(li.tmdb_id) if li.tmdb_id else None
+        # TMDB numbers films and shows separately: a list's show N is not the
+        # library's film N (#510). Untyped rows are films, as in the #365 rebuild.
+        is_series = li.media_type == "series"
+        movie = movie_map.get(li.tmdb_id) if li.tmdb_id and not is_series else None
+        serie = series_map.get(li.tmdb_id) if li.tmdb_id and is_series else None
 
         if movie:
             items.append({
@@ -358,8 +371,46 @@ def _get_followers_for_series(db, tmdb_id: int) -> list:
     ]
 
 
-def _cleanup_playlists_all_users(tmdb_id: int, media_type: str, jellyfin_item_id: str = None):
-    """Background: remove an item from all users' playlists."""
+def _arr_copy_in_jellyfin(jf, tmdb_id: int, media_type: str, arr_folder: str) -> Optional[str]:
+    """The Jellyfin item of the Radarr/Sonarr copy of a title: the one with
+    this TMDB id whose folder is the app's folder (by name; the apps and
+    Jellyfin mount it at different prefixes), never a VOD .strm. None when
+    Jellyfin no longer lists it."""
+    want = _path_tail(arr_folder, 1)
+    jf_type = "Movie" if media_type == "movie" else "Series"
+    for item in jf._fetch_all_items(jf_type):
+        if (item.get("ProviderIds") or {}).get("Tmdb") != str(tmdb_id):
+            continue
+        path = (jf.get_item_by_id(item["Id"]) or {}).get("Path") or ""
+        if path.lower().endswith(".strm"):
+            continue
+        folder = path.replace("\\", "/").rsplit("/", 1)[0] if media_type == "movie" else path
+        if want and _path_tail(folder, 1) == want and (media_type == "movie" or _has_downloaded_episode(jf, item["Id"])):
+            return item["Id"]
+    return None
+
+
+def _has_downloaded_episode(jf, series_id: str) -> bool:
+    """A show's path is its folder, and the VOD copy's folder has the same name
+    as Sonarr's ("<Title> (<Year>)"): the download is the show with an episode
+    file that is not a .strm. A listing that fails counts as no."""
+    try:
+        data = jf._get("/Items", params={"ParentId": series_id, "Recursive": "true",
+                                         "IncludeItemTypes": "Episode", "Fields": "Path", "Limit": 50,
+                                         "EnableImages": "false", "EnableUserData": "false"})
+    except Exception:
+        return False
+    return any((e.get("Path") or "") and not (e.get("Path") or "").lower().endswith(".strm")
+               for e in ((data or {}).get("Items") or []))
+
+
+def _cleanup_playlists_all_users(tmdb_id: int, media_type: str, jellyfin_item_id: str = None,
+                                 arr_folder: str = None):
+    """Background: remove an item from all users' playlists.
+
+    arr_folder: the Radarr/Sonarr folder of a deleted download. Only the item
+    in that folder (for a show: with a downloaded episode) is removed; "the first item with this TMDB id" can be the
+    VOD copy that stays (#296)."""
     from models.database import SessionLocal
     from services.jellyfin import JellyfinService
     from services.smartlists import remove_item_from_playlists
@@ -377,9 +428,12 @@ def _cleanup_playlists_all_users(tmdb_id: int, media_type: str, jellyfin_item_id
             if not users:
                 return
             jf = JellyfinService(jf_url, jf_key, users[0].jellyfin_user_id)
-            jf_type = "Movie" if media_type == "movie" else "Series"
-            jf_item = jf.search_by_tmdb_id(tmdb_id, media_type=jf_type)
-            jf_item_id = jf_item["Id"] if jf_item else None
+            if arr_folder:
+                jf_item_id = _arr_copy_in_jellyfin(jf, tmdb_id, media_type, arr_folder)
+            else:
+                jf_type = "Movie" if media_type == "movie" else "Series"
+                jf_item = jf.search_by_tmdb_id(tmdb_id, media_type=jf_type)
+                jf_item_id = jf_item["Id"] if jf_item else None
 
         if not jf_item_id:
             logger.debug(f"No Jellyfin item found for tmdb:{tmdb_id}, skipping playlist cleanup")
@@ -404,23 +458,97 @@ def _cleanup_playlists_all_users(tmdb_id: int, media_type: str, jellyfin_item_id
         cleanup_db.close()
 
 
+def _deletion_authorised(request: Request, db: Session, media_type: str, tmdb_id: int) -> bool:
+    """Internal secret, an admin, or Jellyfin confirming it forwarded this deletion."""
+    from routers.auth import _has_internal_secret, get_user_from_request
+    if _has_internal_secret(request, db):
+        return True
+    try:
+        if get_user_from_request(request, db).is_admin:
+            return True
+    except HTTPException:
+        pass
+    jf_url, jf_key = get_setting(db, "jellyfin_url", ""), get_setting(db, "jellyfin_api_key", "")
+    if not (jf_url and jf_key):
+        return False
+    try:
+        r = requests.post(f"{jf_url.rstrip('/')}/Tentacle/Deletions/{media_type}/{tmdb_id}/Confirm",
+                          headers={"X-Emby-Token": jf_key}, timeout=5)
+        return r.status_code == 200
+    except Exception as e:
+        logger.warning(f"[Library] Could not ask Jellyfin to confirm a deletion: {e}")
+        return False
+
+
+def _path_tail(path: str, parts: int) -> Optional[str]:
+    bits = [b for b in (path or "").replace("\\", "/").split("/") if b]
+    return "/".join(bits[-parts:]) if len(bits) >= parts else None
+
+
+def _deleted_copy_is_rows(item, media_type: str, path: Optional[str]) -> bool:
+    """Whether the item Jellyfin deleted was this row's copy (#296). The same
+    title can be in Jellyfin twice (the VOD .strm and a download in another
+    library), and the plugin reports a deletion by TMDB id. With the deleted
+    item's path (plugins from #296 on), compare it to the row's own files by
+    their last parts (folder/file for a film, the show folder for a series):
+    Jellyfin, Radarr/Sonarr and Tentacle mount them at different prefixes.
+    Without one (an older plugin), a VOD copy whose .strm is still on disk was
+    not the one deleted; anything else is taken as before.
+
+    A VOD copy still on disk (its .strm, or its show folder) was not the one
+    deleted, whatever the path says: Sonarr and Tentacle both name a show's
+    folder "<Title> (<Year>)", so in separate libraries the download's folder
+    has the VOD folder's name, and the one-part comparison matched it.
+    Jellyfin deletes a copy's files (a show's whole folder) before the plugin
+    forwards the deletion, so a copy it really deleted is gone from disk."""
+    parts = 2 if media_type == "movie" else 1
+    download = getattr(item, "radarr_path" if media_type == "movie" else "sonarr_path", None)
+    own = [p for p in (item.strm_path, download) if p]
+    tail = _path_tail(path, parts) if path else None
+    if item.strm_path:
+        try:
+            on_disk = Path(item.strm_path).exists()
+        except OSError:
+            on_disk = False  # can't tell: decide by the path, as before
+        if on_disk:
+            if tail and _path_tail(item.strm_path, parts) == tail:
+                logger.info(f"[Library] Jellyfin deleted {path}, which has the name of this title's "
+                            f"VOD copy {item.strm_path}; that is still on disk, so the row stays "
+                            f"(another copy, or a mount that lags Jellyfin's)")
+            return False
+    if tail and own:
+        return any(_path_tail(p, parts) == tail for p in own)
+    return True
+
+
 @router.delete("/item/{media_type}/{tmdb_id}")
 def delete_library_item(
     media_type: str,
     tmdb_id: int,
     request: Request,
     db: Session = Depends(get_db),
+    item_id: Optional[str] = None,
+    path: Optional[str] = None,
 ):
     """Lightweight: remove from Tentacle DB + playlists only (Jellyfin item already gone).
 
     Called by the C# plugin's ItemRemoved handler (a server-side hosted service with no
-    user context) when items are deleted through Jellyfin's native UI. Left unauthenticated
-    to keep the plugin zero-config; it's self-healing if abused — the Jellyfin item still
-    exists, so the next Radarr/Sonarr/VOD scan re-creates the DB record and the nightly
-    orphan sweep reconciles anything stale. Keep the backend on the internal network.
+    user context) when items are deleted through Jellyfin's native UI. It took no
+    authentication, so one stray request on the LAN removed a title from the catalogue
+    and from every user's playlists, and deleted request history a scan cannot rebuild
+    (#139). The plugin has no shared secret, so the backend asks Jellyfin instead:
+    the plugin records each deletion it forwards and confirms it once (POST
+    /Tentacle/Deletions/{type}/{id}/Confirm, with the server's API key). The internal
+    secret or an admin session is also accepted; the "no users yet" bootstrap pass is
+    not. Anything else is refused with 403 before the catalogue is looked at, so the
+    answer cannot be used to probe it.
     """
     if media_type not in ("movie", "series"):
         raise HTTPException(400, "Invalid media type")
+    if not _deletion_authorised(request, db, media_type, tmdb_id):
+        logger.warning(f"[Library] Refused a delete of {media_type} tmdb:{tmdb_id} that Jellyfin "
+                       f"did not report (from {request.client.host if request.client else '?'})")
+        raise HTTPException(403, "Not a deletion Jellyfin reported")
 
     model = Movie if media_type == "movie" else Series
     item = db.query(model).filter(model.tmdb_id == tmdb_id).first()
@@ -437,12 +565,36 @@ def delete_library_item(
         return {"success": True, "deleted": False}
 
     title = item.title if hasattr(item, "title") else str(tmdb_id)
+    from services.bad_copy import is_replacing
+    if not _deleted_copy_is_rows(item, media_type, path):
+        # Another copy of the title was deleted (e.g. a download next to the
+        # VOD copy): the row's own copy is still there, so the row stays. Only
+        # a pending pairing goes -- one copy is left; a "keep downloaded"
+        # tombstone stays. The deleted download's request goes with it, as the
+        # Radarr/Sonarr delete webhooks do.
+        db.query(Duplicate).filter(
+            Duplicate.tmdb_id == tmdb_id,
+            Duplicate.media_type == media_type,
+            Duplicate.resolution == "pending",
+        ).delete()
+        if (item.source or "").startswith("provider_") and not is_replacing(db, media_type, tmdb_id):
+            db.query(DownloadRequest).filter(
+                DownloadRequest.tmdb_id == tmdb_id,
+                DownloadRequest.media_type == media_type,
+            ).delete()
+        db.commit()
+        logger.info(f"[Library] Jellyfin deleted another copy of {media_type} '{title}' (tmdb:{tmdb_id}, "
+                    f"{path or 'no path'}); its catalogue row stays")
+        if item_id:
+            threading.Thread(target=_cleanup_playlists_all_users,
+                             args=(tmdb_id, media_type, item_id), daemon=True).start()
+        return {"success": True, "deleted": False}
+
     db.delete(item)
 
     # Also clean up DownloadRequest + duplicate tombstones (a deliberate full
     # delete is a clean slate — the title may re-import from VOD later).
     # Not while a bad copy is being replaced: the request still stands.
-    from services.bad_copy import is_replacing
     if not is_replacing(db, media_type, tmdb_id):
         db.query(DownloadRequest).filter(
             DownloadRequest.tmdb_id == tmdb_id,
@@ -455,15 +607,19 @@ def delete_library_item(
     db.commit()
 
     log_deletion(db, kind="jellyfin-delete", name=title, media_type=media_type, reason="webhook",
-                 detail="Deleted via Jellyfin native UI — Tentacle DB record and playlists cleaned up")
+                 detail="Deleted in Jellyfin — Tentacle DB record and playlists cleaned up")
     emit_library_event(f"{media_type}_removed", {"tmdb_id": tmdb_id, "media_type": media_type})
 
-    # Remove from all users' playlists in background
-    threading.Thread(
-        target=_cleanup_playlists_all_users,
-        args=(tmdb_id, media_type),
-        daemon=True,
-    ).start()
+    # Remove the deleted item from all users' playlists in background, by its
+    # own id. Never "the first item with this TMDB id": after the delete that
+    # can only be a surviving copy (#296). Without an id (an older plugin), the
+    # next playlist refresh prunes the dead entry.
+    if item_id:
+        threading.Thread(
+            target=_cleanup_playlists_all_users,
+            args=(tmdb_id, media_type, item_id),
+            daemon=True,
+        ).start()
 
     return {"success": True, "deleted": True}
 
@@ -811,7 +967,7 @@ def list_match_suspects(db: Session = Depends(get_db)):
     return {"suspects": [{
         "tmdb_id": r.tmdb_id, "media_type": r.media_type, "title": r.title,
         "expected_minutes": r.expected_minutes, "actual_minutes": r.actual_minutes,
-        "jellyfin_item_id": r.jellyfin_item_id, "poster_path": posters.get(r.tmdb_id),
+        "jellyfin_item_id": r.jellyfin_item_id, "poster_path": posters.get(r.tmdb_id), "reason": r.reason,
         "detected_at": r.detected_at.isoformat() + "Z" if r.detected_at else None,
     } for r in rows]}
 
@@ -827,6 +983,17 @@ def dismiss_match_suspect(tmdb_id: int, db: Session = Depends(get_db)):
     row.dismissed = True
     db.commit()
     return {"ok": True}
+
+
+@router.post("/match-suspects/{tmdb_id}/undo-follow")
+def undo_follow(tmdb_id: int, db: Session = Depends(get_db),
+                user: Optional[TentacleUser] = Depends(require_admin)):
+    """A fix followed a re-listed stream that is not that film: put it back."""
+    from services.wrong_match import WrongMatchError, undo_followed_fix
+    try:
+        return undo_followed_fix(db, tmdb_id, user_name=user.display_name if user else None)
+    except WrongMatchError as e:
+        raise HTTPException(e.status, str(e))
 
 
 @router.post("/match-suspects/check", dependencies=[Depends(require_admin)])

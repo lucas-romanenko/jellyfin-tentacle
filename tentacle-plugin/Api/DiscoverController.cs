@@ -2,6 +2,7 @@ using System.Net.Http;
 using System.Reflection;
 using System.Text.Json;
 using Jellyfin.Plugin.Tentacle.Configuration;
+using MediaBrowser.Controller.Net;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -17,6 +18,7 @@ namespace Jellyfin.Plugin.Tentacle.Api;
 public class TentacleDiscoverController : ControllerBase
 {
     private readonly ILogger<TentacleDiscoverController> _logger;
+    private readonly IAuthorizationContext _authContext;
     private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(15) };
 
     /// <summary>
@@ -30,16 +32,17 @@ public class TentacleDiscoverController : ControllerBase
     /// </remarks>
     private static readonly HttpClient AddClient = new() { Timeout = TimeSpan.FromMinutes(4) };
 
-    // In-memory cache for discover data (30 min), keyed by type param
+    // In-memory cache for discover data (30 min), keyed by type + the resolved caller
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string Data, DateTime Expiry)> _itemsCache = new();
     private static string? _cachedConfig;
     private static DateTime _configCacheExpiry = DateTime.MinValue;
     private static readonly object _configLock = new();
 
 
-    public TentacleDiscoverController(ILogger<TentacleDiscoverController> logger)
+    public TentacleDiscoverController(ILogger<TentacleDiscoverController> logger, IAuthorizationContext authContext)
     {
         _logger = logger;
+        _authContext = authContext;
     }
 
     /// <summary>
@@ -60,16 +63,6 @@ public class TentacleDiscoverController : ControllerBase
     {
         var config = Plugin.Instance?.Configuration;
         return config?.TentacleUrl?.TrimEnd('/') ?? "";
-    }
-
-    /// <summary>
-    /// Gets the userId query param forwarded from the JS client.
-    /// Used as a cache key discriminator (not for auth on its own).
-    /// </summary>
-    private string GetUserIdParam()
-    {
-        var userId = HttpContext.Request.Query["userId"].FirstOrDefault();
-        return string.IsNullOrEmpty(userId) ? "" : $"userId={userId}";
     }
 
     /// <summary>
@@ -174,7 +167,18 @@ public class TentacleDiscoverController : ControllerBase
         if (type != "all" && type != "movies" && type != "series")
             type = "all";
 
-        var cacheKey = $"{type}_{GetUserIdParam()}";
+        // The response is per user ("From Your Lists"), so the cache must be keyed on
+        // who the caller really is. Keyed on the ?userId= they sent, any signed-in
+        // user could read another user's cached page by passing that user's id,
+        // and every client that sent none shared one entry.
+        Guid.TryParse(HttpContext.Request.Query["userId"].FirstOrDefault(), out var claimedUserId);
+        var caller = await CallerIdentity.ResolveAsync(_authContext, HttpContext, claimedUserId).ConfigureAwait(false);
+        if (!caller.Allowed)
+        {
+            return Forbid();
+        }
+
+        var cacheKey = $"{type}_{caller.UserId:N}";
         if (_itemsCache.TryGetValue(cacheKey, out var cached) && DateTime.UtcNow < cached.Expiry)
         {
             return Content(cached.Data, "application/json");
@@ -397,7 +401,7 @@ public class TentacleDiscoverController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Discover] Failed to toggle follow: {Error}", ex.Message);
-            return StatusCode(500, new { detail = ex.Message });
+            return StatusCode(500, new { detail = DescribeFailure(ex).Message });
         }
     }
 
@@ -408,12 +412,11 @@ public class TentacleDiscoverController : ControllerBase
     [HttpPost("ArrSearch")]
     [Authorize]
     public Task<ActionResult> ArrSearch([FromBody] JsonElement body) =>
-        ForwardArrAction("search", body, HttpClient);
+        // AddClient: Tentacle reads the whole Sonarr series list and the show's
+        // episodes first; on a big library that outlasts HttpClient's 15 s and the
+        // user was told it failed when Sonarr had done it.
+        ForwardArrAction("search", body, AddClient);
 
-    /// <summary>
-    /// Stops Sonarr looking for a show's missing episodes (body: media_type, tmdb_id,
-    /// tvdb_id, optional episodes). Downloaded episodes are untouched.
-    /// </summary>
     /// <summary>
     /// Why hasn't this downloaded? Tentacle runs Radarr/Sonarr's interactive search
     /// (every indexer — can take a minute) and sums up the releases (body: media_type,
@@ -430,10 +433,14 @@ public class TentacleDiscoverController : ControllerBase
     public Task<ActionResult> ArrGrab([FromBody] JsonElement body) =>
         ForwardArrAction("grab", body, AddClient);
 
+    /// <summary>
+    /// Stops Sonarr looking for a show's missing episodes (body: media_type, tmdb_id,
+    /// tvdb_id, optional episodes). Downloaded episodes are untouched.
+    /// </summary>
     [HttpPost("ArrStopMissing")]
     [Authorize]
     public Task<ActionResult> ArrStopMissing([FromBody] JsonElement body) =>
-        ForwardArrAction("stop-missing", body, HttpClient);
+        ForwardArrAction("stop-missing", body, AddClient);
 
     /// <summary>
     /// Removes a requested title from Radarr/Sonarr, folder included (VOD folders
@@ -609,7 +616,7 @@ public class TentacleDiscoverController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Discover] Failed to delete library item: {Error}", ex.Message);
-            return StatusCode(500, new { detail = ex.Message });
+            return StatusCode(500, new { detail = DescribeFailure(ex).Message });
         }
     }
 
@@ -856,7 +863,7 @@ public class TentacleDiscoverController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Discover] Failed to add to Radarr: {Error}", ex.Message);
-            return StatusCode(500, new { detail = ex.Message });
+            return StatusCode(500, new { detail = DescribeFailure(ex).Message });
         }
     }
 
@@ -883,7 +890,7 @@ public class TentacleDiscoverController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Discover] Failed to add to Sonarr: {Error}", ex.Message);
-            return StatusCode(500, new { detail = ex.Message });
+            return StatusCode(500, new { detail = DescribeFailure(ex).Message });
         }
     }
 
@@ -1128,7 +1135,7 @@ public class TentacleDiscoverController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Discover] Failed to manage episodes: {Error}", ex.Message);
-            return StatusCode(500, new { detail = ex.Message });
+            return StatusCode(500, new { detail = DescribeFailure(ex).Message });
         }
     }
 

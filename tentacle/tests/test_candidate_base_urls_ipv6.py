@@ -7,17 +7,17 @@ listens on. Covers a bare and a bracketed IPv6 Host / X-Forwarded-Host, and an
 IPv6 jellyfin_url — urlparse().hostname drops the brackets, so the "Jellyfin's
 host on Tentacle's port" guess, ranked first, came out unparseable.
 """
-import tempfile
 import unittest
 from urllib.parse import urlparse
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from tmp_dirs import temp_dir
 
 
 def _db(jellyfin_url):
     import models.database as mdb
-    engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db")
+    engine = create_engine(f"sqlite:///{temp_dir()}/t.db")
     mdb.Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
     mdb.set_setting(db, "jellyfin_url", jellyfin_url)

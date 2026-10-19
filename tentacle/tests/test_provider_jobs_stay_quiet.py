@@ -11,7 +11,6 @@ the three 509 storms that cut one NHL recording into four files. The health
 sweep already stood aside for live TV; the sync, discovery, the known-bad
 recheck and the "wrong movie" frame grabs did not.
 """
-import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -19,11 +18,12 @@ from unittest import mock
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from tmp_dirs import temp_dir
 
 
 def _db():
     import models.database as mdb
-    engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db", connect_args={"check_same_thread": False})
+    engine = create_engine(f"sqlite:///{temp_dir()}/t.db", connect_args={"check_same_thread": False})
     mdb.Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()
 
@@ -161,7 +161,7 @@ class SyncPausesOnlyBetweenCategories(unittest.TestCase):
         c.get_series_info("9")
         c.job_pause.assert_not_called()
         for call in c.session.get.call_args_list:
-            self.assertEqual(30, call.kwargs.get("timeout"), "requests ignores Session.timeout; pass it per call")
+            self.assertEqual((15, 180), call.kwargs.get("timeout"), "requests ignores Session.timeout; pass it per call")
         self.assertFalse(hasattr(c, "before_request"), "the per-request hook is gone")
 
     def test_the_category_pause_commits_first(self):
@@ -238,7 +238,7 @@ class RecheckKnownBadIsPolite(unittest.TestCase):
         self.sh = sh
         self.db = _db()
         self.addCleanup(self.db.close)
-        d = Path(tempfile.mkdtemp())
+        d = Path(temp_dir(self))
         for i in range(3):
             f = d / f"t{i}.strm"
             f.write_text(f"http://panel.test/movie/u/p/{100 + i}.mkv")
@@ -271,11 +271,30 @@ class RecheckKnownBadIsPolite(unittest.TestCase):
         self.assertTrue(out["deferred"])
         self.assertEqual([], self.checked)
 
-    def test_stops_when_the_provider_is_over_its_limit(self):
-        self.sh._probe_state["provider_busy"] = True
-        out = self.sh.recheck_known_bad(self.db)
-        self.assertEqual(0, out["rechecked"])
+    def test_stops_when_the_provider_goes_over_its_limit_during_the_run(self):
+        def check(db, media_type, kind, stream_id, url, provider):
+            self.checked.append(stream_id)
+            self.sh._note_provider_busy()                    # this probe got a 509
+            return None
+        with mock.patch.object(self.sh, "check_stream", check):
+            out = self.sh.recheck_known_bad(self.db)
+        self.assertEqual(1, out["rechecked"])
         self.assertTrue(out["provider_busy"])
+
+    def test_the_button_does_not_clear_a_running_sweeps_busy_flag(self):
+        """The dashboard recheck (a worker thread) can overlap the nightly
+        sweep; the sweep must stay stopped once the provider said 509."""
+        self.sh._probe_state["provider_busy"] = True
+        self.sh.recheck_known_bad(self.db, limit=10)
+        self.assertTrue(self.sh._probe_state["provider_busy"])
+
+    def test_a_busy_flag_left_by_an_earlier_probe_does_not_block_the_button(self):
+        """A 509 seen by last night's sweep or by "Check now" sets
+        provider_busy; the button must still re-test."""
+        self.sh._probe_state["provider_busy"] = True
+        out = self.sh.recheck_known_bad(self.db, limit=10)
+        self.assertEqual(3, out["rechecked"])
+        self.assertFalse(out["provider_busy"])
 
     def test_the_button_does_a_batch_and_says_how_many_are_left(self):
         """At PROBE_INTERVAL_SECONDS per probe a long list outlasts a reverse
@@ -290,18 +309,27 @@ class RecheckKnownBadIsPolite(unittest.TestCase):
 
 
 class SecretsStayMasked(unittest.TestCase):
+    # GET masking and the masked-value guard on POST read one list, SENSITIVE_KEYS.
     def test_the_vod_token_secret_is_masked_like_the_api_keys(self):
         from routers import settings as settings_router
-        src = Path(settings_router.__file__).read_text(encoding="utf-8")
-        self.assertIn('"vod_token_secret"', src.split("# Mask sensitive values", 1)[1].split("\n", 2)[1])
+        self.assertIn("vod_token_secret", settings_router.SENSITIVE_KEYS)
+        db = _db()
+        self.addCleanup(db.close)
+        import models.database as mdb
+        mdb.set_setting(db, "radarr_api_key", "r" * 32)
+        self.assertNotIn("r" * 32, str(settings_router.get_settings(db)))
 
     def test_a_masked_secret_posted_back_is_not_written(self):
         """GET masks it; a client that round-trips GET -> POST must not
-        replace the real secret with 'abcd...wxyz' (every .strm would 404)."""
+        replace the real secret with the masked form (every .strm would 404)."""
         from routers import settings as settings_router
-        src = Path(settings_router.__file__).read_text(encoding="utf-8")
-        sensitive = src.split("sensitive_keys = {", 1)[1].split("}", 1)[0]
-        self.assertIn('"vod_token_secret"', sensitive)
+        import models.database as mdb
+        db = _db()
+        self.addCleanup(db.close)
+        mdb.set_setting(db, "radarr_api_key", "r" * 32)
+        shown = settings_router.get_settings(db)["radarr_api_key"]
+        settings_router.update_settings(settings_router.SettingsUpdate(settings={"radarr_api_key": shown}), db)
+        self.assertEqual("r" * 32, mdb.get_setting(db, "radarr_api_key"))
 
 
 class FrameGrabsRefuseWhileLive(unittest.TestCase):
@@ -311,7 +339,7 @@ class FrameGrabsRefuseWhileLive(unittest.TestCase):
         import services.wrong_match as wm
         db = _db()
         self.addCleanup(db.close)
-        strm = Path(tempfile.mkdtemp()) / "m.strm"
+        strm = Path(temp_dir(self)) / "m.strm"
         strm.write_text("http://panel.test/movie/u/p/5.mkv")
         db.add(mdb.Movie(tmdb_id=5, title="Film", source="provider_1", strm_path=str(strm)))
         db.commit()

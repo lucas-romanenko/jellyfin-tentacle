@@ -13,15 +13,35 @@ import os
 import logging
 import re
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from models.database import create_tables, SessionLocal, seed_defaults, Setting, Provider, SyncRun
-from routers import settings, providers, sync as sync_router, library, duplicates, lists as lists_router, widget, radarr as radarr_router, sonarr as sonarr_router, tags as tags_router, collections as collections_router, smartlists as smartlists_router, discover as discover_router, livetv as livetv_router, auth as auth_router, activity as activity_router, notifications as notifications_router, health as health_router, youtube as youtube_router
+from services.exceptions import TMDBConnectionError
+from routers import settings, providers, sync as sync_router, library, duplicates, lists as lists_router, widget, radarr as radarr_router, sonarr as sonarr_router, tags as tags_router, collections as collections_router, smartlists as smartlists_router, discover as discover_router, livetv as livetv_router, auth as auth_router, activity as activity_router, notifications as notifications_router, health as health_router, youtube as youtube_router, music as music_router
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-scheduler = BackgroundScheduler()
+# APScheduler 3 drops a run that starts more than misfire_grace_time after its
+# trigger (default 1 s), so a backup freezing the container or a clock step
+# skipped that night's sync (#271). Late runs now run once when the scheduler
+# wakes; the daily jobs below allow hours.
+scheduler = BackgroundScheduler(job_defaults={"coalesce": True, "max_instances": 1,
+                                              "misfire_grace_time": 300})
+
+
+def _rollback(db):
+    """Make the nightly job's shared session usable again after a failed step.
+
+    A step that failed on a flush/commit leaves the session "rolled back due
+    to a previous exception"; without this, the handler's own log_activity
+    raised PendingRollbackError and every later step of the night was
+    skipped (#269). A no-op on a healthy session.
+    """
+    try:
+        db.rollback()
+    except Exception as e:
+        logger.warning(f"Nightly sync: could not roll back the session: {e}")
 
 
 def run_scheduled_sync():
@@ -31,10 +51,12 @@ def run_scheduled_sync():
     from services.radarr import scan_radarr_library
     from services.tmdb import TMDBService
     from models.database import get_setting, log_activity
+    from routers.sync import _after_sync
+    nightly_started = datetime.utcnow()
     db = SessionLocal()
     try:
         from models.database import ListSubscription
-        from routers.lists import fetch_list_tmdb_ids, store_list_items, apply_list_tags_to_library, enrich_items_with_tmdb, _get_tmdb_service
+        from routers.lists import refresh_list, _get_tmdb_service
         from services.tmdb import get_tmdb_token
         bearer = get_tmdb_token(db)
         trakt_cid = get_setting(db, "trakt_client_id") or ""
@@ -42,14 +64,8 @@ def run_scheduled_sync():
         active_lists = db.query(ListSubscription).filter(ListSubscription.active == True).all()
         for lst in active_lists:
             try:
-                items = fetch_list_tmdb_ids(lst, bearer_token=bearer, trakt_client_id=trakt_cid)
+                items, store_stats = refresh_list(lst, db, bearer, trakt_cid, tmdb)
                 if items:
-                    if tmdb:
-                        enrich_items_with_tmdb(items, tmdb)
-                    store_stats = store_list_items(lst, items, db)
-                    apply_list_tags_to_library(items, lst.tag, db)
-                    lst.last_fetched = datetime.utcnow()
-                    lst.last_item_count = len(items)
                     stored = store_stats.get("stored", len(items)) if store_stats else len(items)
                     new_count = store_stats.get("new", 0) if store_stats else 0
                     removed_count = store_stats.get("removed", 0) if store_stats else 0
@@ -58,7 +74,12 @@ def run_scheduled_sync():
                     else:
                         log_activity(db, "list_fetch", f"Fetched '{lst.name}' — {stored} items (no changes)")
                     logger.info(f"List '{lst.name}' refreshed: {len(items)} items")
+                else:
+                    # Not a failure to warn about every night: a missing Trakt
+                    # client ID was already said once, at WARNING (#160).
+                    logger.info(f"List '{lst.name}': {lst.last_fetch_note}")
             except Exception as e:
+                _rollback(db)
                 logger.warning(f"Failed to refresh list '{lst.name}': {e}")
         db.commit()
 
@@ -71,15 +92,26 @@ def run_scheduled_sync():
         # sync itself waits before its first provider call, once its run is
         # visible -- so a waiting nightly sync can be cancelled like any other.
         pause = JobPause(db, "the scheduled provider sync")
-        active_providers = db.query(Provider).filter(Provider.active == True).all()
-        for provider in active_providers:
+        # Only the ids: the syncs take hours, and a provider waiting its turn
+        # holds no slot, so it can be deleted or switched off meanwhile (#517).
+        provider_ids = [pid for (pid,) in db.query(Provider.id).filter(Provider.active == True).all()]
+        for provider_id in provider_ids:
             # Respect the same running-guard the manual sync endpoint uses, so the
             # nightly run never starts a second concurrent sync for a provider a
             # user (or a previous nightly job) is already syncing. Check-and-set
             # atomically under _sync_lock to avoid a TOCTOU race.
             with _sync_lock:
-                if provider.id in _running_syncs:
-                    logger.info(f"Scheduled sync skipping {provider.name} — sync already running")
+                if provider_id in _running_syncs:
+                    logger.info(f"Scheduled sync skipping provider {provider_id} — sync already running")
+                    continue
+                # Read it fresh under the slot lock delete_provider() also takes:
+                # end the open transaction first so a delete committed by another
+                # request is seen (nothing is pending between providers).
+                db.commit()
+                provider = db.query(Provider).filter(Provider.id == provider_id, Provider.active == True).first()
+                if provider is None:
+                    logger.info(f"Scheduled sync skipping provider {provider_id} — "
+                                "deleted or switched off since the job started")
                     continue
                 _running_syncs[provider.id] = True
             db_running = db.query(SyncRun).filter(
@@ -113,13 +145,23 @@ def run_scheduled_sync():
                                     pause=pause)
                 phase = "complete" if run.status == "completed" else "cancelled" if run.status == "cancelled" else "error"
                 _notify_sync_progress(provider.id, phase, "", {})
+                if run.status == "failed" or (run.status == "completed" and run.error_message):
+                    # A provider that could not be read (#267) or a failed run is said, not only logged
+                    log_activity(db, "vod_sync", f"Scheduled sync of {provider.name} "
+                                 f"{'failed' if run.status == 'failed' else 'completed'} — {run.error_message}")
             except Exception as e:
+                _rollback(db)
                 logger.error(f"Scheduled sync failed for {provider.name}: {e}")
                 log_activity(db, "sync", f"Scheduled sync failed for {provider.name}: {e}")
             finally:
                 _running_syncs.pop(provider.id, None)
                 _cancel_flags.pop(provider.id, None)
                 _sync_progress.pop(provider.id, None)
+
+        # The provider runs above read "completed" from here on while the rest
+        # of the job runs for a long while yet: report them as finishing (#159).
+        _after_sync["nightly"] = nightly_started
+        pause.run_id = None     # later waits (discovery) belong to no sync run
 
         logger.info("Scheduled Radarr scan starting")
         try:
@@ -129,6 +171,7 @@ def run_scheduled_sync():
                 log_activity(db, "radarr_scan", f"Radarr scan — {new_count} new movie(s) imported")
             logger.info(f"Radarr scan complete: {radarr_stats}")
         except Exception as e:
+            _rollback(db)
             logger.error(f"Radarr scan failed: {e}")
             log_activity(db, "radarr_scan", f"Radarr scan failed: {e}")
 
@@ -141,6 +184,7 @@ def run_scheduled_sync():
                 log_activity(db, "sonarr_scan", f"Sonarr scan — {new_count} new series imported")
             logger.info(f"Sonarr scan complete: {sonarr_stats}")
         except Exception as e:
+            _rollback(db)
             logger.error(f"Sonarr scan failed: {e}")
             log_activity(db, "sonarr_scan", f"Sonarr scan failed: {e}")
 
@@ -148,6 +192,7 @@ def run_scheduled_sync():
         try:
             refresh_recently_added_tags(db)
         except Exception as e:
+            _rollback(db)
             logger.error(f"Tag refresh failed: {e}")
 
         # Run full Jellyfin pipeline: library scan → wait → push tags → refresh playlists → home config
@@ -164,6 +209,7 @@ def run_scheduled_sync():
                 log_activity(db, "jellyfin_push", f"Jellyfin pipeline — {tags_pushed} tag(s) pushed")
             logger.info(f"Jellyfin pipeline complete: {pipeline_stats}")
         except Exception as e:
+            _rollback(db)
             logger.error(f"Jellyfin pipeline failed: {e}")
             log_activity(db, "jellyfin_push", f"Jellyfin pipeline failed: {e}")
 
@@ -174,6 +220,7 @@ def run_scheduled_sync():
                 tmdb = TMDBService(bearer, data_dir)
                 tmdb.cleanup_cache()
         except Exception as e:
+            _rollback(db)
             logger.error(f"TMDB cache cleanup failed: {e}")
 
         # Discover new provider content: VOD categories + Live TV groups.
@@ -187,6 +234,7 @@ def run_scheduled_sync():
             if discovered["vod_new"] or discovered["live_new"]:
                 logger.info(f"Discovery: {len(discovered['vod_new'])} new VOD categories, {len(discovered['live_new'])} new Live TV groups")
         except Exception as e:
+            _rollback(db)
             logger.error(f"Provider content discovery failed: {e}")
 
         # Sweep orphaned downloads (radarr/sonarr records no longer in Jellyfin).
@@ -200,7 +248,18 @@ def run_scheduled_sync():
             if orphans:
                 log_activity(db, "orphan_sweep", f"Removed {orphans} orphaned download(s) from DB")
         except Exception as e:
+            _rollback(db)
             logger.error(f"Orphan sweep failed: {e}")
+
+        # Watched state saved when a duplicate's same-folder copy was deleted,
+        # for the kept copy's new item, if the worker gave up before Jellyfin
+        # made it (#333). After the Jellyfin pipeline's scan.
+        try:
+            from services.duplicates import apply_pending_user_data
+            apply_pending_user_data(db)
+        except Exception as e:
+            _rollback(db)
+            logger.error(f"Carrying saved watched state over failed: {e}")
 
         # Flag VOD movies that play a different film than their label (found
         # once Jellyfin has probed them on first play). Same slot as the sweep:
@@ -212,38 +271,38 @@ def run_scheduled_sync():
                 log_activity(db, "wrong_match", f"{found['flagged']} VOD movie(s) may be the wrong film — "
                                                 f"see Library → Possible wrong movies")
         except Exception as e:
+            _rollback(db)
             logger.error(f"Wrong-match check failed: {e}")
 
         # EPG sync for Live TV providers + Jellyfin guide refresh
         logger.info("Syncing Live TV EPG data")
         try:
             from models.database import LiveChannel
-            from routers.livetv import _run_epg_sync_background
-            live_providers = db.query(Provider).filter(Provider.live_tv_enabled == True, Provider.active == True).all()
+            from routers.livetv import _epg_provider_data, _run_epg_sync_background, live_tv_providers
+            from services.provider_activity import wait_for_recordings, EPG_WAIT_FOR_RECORDING_SECONDS
+            epg_may_download = True
+            live_providers = live_tv_providers(db)
+            if not live_providers:
+                logger.info("No Live TV provider — nothing to sync")
             epg_synced = False
             for lp in live_providers:
                 all_channels = db.query(LiveChannel).filter(LiveChannel.provider_id == lp.id).all()
                 if not all_channels:
                     continue
-                enabled_count = sum(1 for ch in all_channels if ch.enabled)
-                provider_data = {
-                    "id": lp.id,
-                    "provider_type": lp.provider_type or "xtream",
-                    "server_url": lp.server_url,
-                    "username": lp.username,
-                    "password": lp.password,
-                    "user_agent": lp.user_agent or "TiviMate/4.7.0 (Linux; Android 12)",
-                    "epg_url": lp.epg_url,
-                    "channels": [
-                        {"stream_id": ch.stream_id, "epg_channel_id": ch.epg_channel_id, "name": ch.name}
-                        for ch in all_channels
-                    ],
-                    "enabled_count": enabled_count,
-                }
-                logger.info(f"EPG sync for '{lp.name}': {len(all_channels)} channels ({enabled_count} enabled)")
+                provider_data = _epg_provider_data(lp, all_channels)
+                logger.info(f"EPG sync for '{lp.name}': {len(all_channels)} channels "
+                            f"({provider_data['enabled_count']} enabled)")
                 # Only trigger the Jellyfin guide refresh if the sync actually
                 # produced data — refreshing after a failed sync makes Jellyfin
                 # re-ingest a draining/stale guide for nothing.
+                # The guide download is a provider request like any other; with
+                # recording protection on it waits for a running recording --
+                # for a bounded time, then this night's download is skipped.
+                if epg_may_download:
+                    epg_may_download = wait_for_recordings(db, "the scheduled EPG sync",
+                                                           max_seconds=EPG_WAIT_FOR_RECORDING_SECONDS)
+                if not epg_may_download:
+                    continue
                 if _run_epg_sync_background(provider_data):
                     epg_synced = True
 
@@ -263,6 +322,7 @@ def run_scheduled_sync():
                 except Exception as e:
                     logger.error(f"Jellyfin guide refresh failed: {e}")
         except Exception as e:
+            _rollback(db)
             logger.error(f"EPG sync failed: {e}")
 
         # Sweep VOD DB records whose .strm files no longer exist on disk
@@ -273,6 +333,7 @@ def run_scheduled_sync():
             if vod_orphans:
                 log_activity(db, "vod_sweep", f"Removed {vod_orphans} orphaned VOD record(s) with missing files")
         except Exception as e:
+            _rollback(db)
             logger.error(f"VOD sweep failed: {e}")
 
         # Repair season-folder ownership on hybrid shows (no-op unless PUID set)
@@ -280,6 +341,7 @@ def run_scheduled_sync():
             from services.sync import repair_hybrid_ownership
             repair_hybrid_ownership(db)
         except Exception as e:
+            _rollback(db)
             logger.error(f"Hybrid ownership repair failed: {e}")
 
         # Per-user: sync smartlist configs + write home configs
@@ -304,6 +366,7 @@ def run_scheduled_sync():
                         if dupes:
                             logger.info(f"[Nightly] Removed {dupes} duplicate playlist(s) for user {user.id}")
                     except Exception as e:
+                        _rollback(db)
                         logger.warning(f"[Nightly] Duplicate playlist cleanup failed for user {user.id}: {e}")
                     write_home_config(db, user_id=user.id)
                     logger.info(
@@ -321,6 +384,7 @@ def run_scheduled_sync():
                             f"— see [SmartLists] lines above"
                         )
                 except Exception as e:
+                    _rollback(db)
                     logger.error(f"Per-user sync failed for user {user.id}: {e}")
             # Notify plugin to clear caches once at end
             try:
@@ -330,6 +394,7 @@ def run_scheduled_sync():
                 pass
             logger.info(f"Per-user sync complete for {len(users)} user(s)")
         except Exception as e:
+            _rollback(db)
             logger.error(f"Per-user sync failed: {e}")
 
         logger.info("Syncing playlist artwork")
@@ -337,10 +402,12 @@ def run_scheduled_sync():
             from routers.collections import sync_playlist_artwork
             sync_playlist_artwork(db)
         except Exception as e:
+            _rollback(db)
             logger.error(f"Artwork sync failed: {e}")
 
         logger.info("Scheduled sync complete")
     except Exception as e:
+        _rollback(db)
         logger.error(f"Scheduled sync failed: {e}", exc_info=True)
         # Surface the failure in the activity feed so it isn't silently swallowed.
         try:
@@ -348,6 +415,7 @@ def run_scheduled_sync():
         except Exception:
             pass
     finally:
+        _after_sync.pop("nightly", None)
         db.close()
 
 
@@ -378,23 +446,33 @@ def reschedule_main_sync(cron: str = None) -> bool:
     """(Re)schedule the daily sync from a 5-field cron string. Reads the
     sync_schedule setting when cron is None. Safe to call at runtime — the job is
     replaced in place, so schedule changes take effect without a restart."""
-    if cron is None:
+    from models.database import NON_EMPTY_DEFAULTS, get_setting
+    default = NON_EMPTY_DEFAULTS["sync_schedule"]
+    from_settings = cron is None
+    if from_settings:
         db = SessionLocal()
         try:
-            s = db.query(Setting).filter(Setting.key == "sync_schedule").first()
-            cron = s.value if s and s.value else "0 3 * * *"
+            # Through get_setting: a stored blank or whitespace value reads as
+            # the default. Read raw, "  " was truthy, failed the 5-field check
+            # below, and no nightly job was scheduled at all (#157).
+            cron = get_setting(db, "sync_schedule", default)
         finally:
             db.close()
-    parts = (cron or "").strip().split()
-    if len(parts) != 5:
-        logger.warning(f"Invalid sync schedule '{cron}' — expected 5 cron fields")
-        return False
+    from services.sync_schedule import sync_trigger
     try:
-        trigger = CronTrigger(
-            minute=parts[0], hour=parts[1],
-            day=parts[2], month=parts[3], day_of_week=parts[4]
-        )
-        scheduler.add_job(run_scheduled_sync, trigger, id="main_sync", replace_existing=True)
+        trigger = sync_trigger(cron)
+    except ValueError as e:
+        if not from_settings or cron == default:
+            logger.warning(f"Invalid sync schedule '{cron}': {e}")
+            return False
+        # A stored value that is no schedule ("0 24 * * *", or "0 3 * * 7"
+        # before #458) must not leave the install with no nightly job: run at
+        # the default time and say so.
+        logger.warning(f"Invalid sync schedule '{cron}' in settings ({e}) — using the default '{default}'")
+        cron, trigger = default, sync_trigger(default)
+    try:
+        scheduler.add_job(run_scheduled_sync, trigger, id="main_sync", replace_existing=True,
+                          misfire_grace_time=6 * 3600)
         logger.info(f"Sync scheduled: {cron}")
         return True
     except Exception as e:
@@ -402,18 +480,57 @@ def reschedule_main_sync(cron: str = None) -> bool:
         return False
 
 
+def reschedule_music_reconcile(time_str: str = None) -> bool:
+    """The music module's daily check, at the music_reconcile_time setting (HH:MM).
+    The job itself does nothing while the module is off or Lidarr isn't set up."""
+    from services.music.jobs import scheduled_reconcile
+    from services.music.settings import DEFAULTS
+    if time_str is None:
+        from models.database import get_setting
+        db = SessionLocal()
+        try:
+            time_str = get_setting(db, "music_reconcile_time", DEFAULTS["music_reconcile_time"])
+        finally:
+            db.close()
+    try:
+        hour, minute = (int(x) for x in (time_str or "").strip().split(":")[:2])
+        assert 0 <= hour < 24 and 0 <= minute < 60
+    except Exception:
+        logger.warning(f"Invalid music check time '{time_str}' — using {DEFAULTS['music_reconcile_time']}")
+        hour, minute = (int(x) for x in DEFAULTS["music_reconcile_time"].split(":"))
+    scheduler.add_job(scheduled_reconcile, CronTrigger(hour=hour, minute=minute), id="music_reconcile",
+                      replace_existing=True, max_instances=1, coalesce=True, misfire_grace_time=3600)
+    logger.info(f"Music check scheduled: daily at {hour:02d}:{minute:02d}")
+    return True
+
+
+def schedule_once(fn, delay_seconds: int, job_id: str) -> None:
+    """Run fn once, delay_seconds from now (replacing a pending run with the same id)."""
+    from datetime import datetime, timedelta
+    from apscheduler.triggers.date import DateTrigger
+    scheduler.add_job(fn, DateTrigger(run_date=datetime.now() + timedelta(seconds=delay_seconds)),
+                      id=job_id, replace_existing=True)
+
+
 def get_schedule_info() -> dict:
     """Current sync schedule as a friendly time + the effective timezone + next run."""
     from datetime import datetime
+    from models.database import NON_EMPTY_DEFAULTS, get_setting
     db = SessionLocal()
     try:
-        s = db.query(Setting).filter(Setting.key == "sync_schedule").first()
-        cron = s.value if s and s.value else "0 3 * * *"
+        cron = get_setting(db, "sync_schedule", NON_EMPTY_DEFAULTS["sync_schedule"])
     finally:
         db.close()
+    from services.sync_schedule import sync_trigger
+    try:
+        sync_trigger(cron)
+        usable = True
+    except ValueError:
+        # Startup runs the default instead (reschedule_main_sync)
+        usable = False
     parts = cron.strip().split()
     time_str = "03:00"
-    if len(parts) >= 2:
+    if usable and len(parts) >= 2:
         try:
             time_str = f"{int(parts[1]):02d}:{int(parts[0]):02d}"
         except Exception:
@@ -432,11 +549,75 @@ def get_schedule_info() -> dict:
         pass
     return {
         "cron": cron,
+        "usable": usable,
         "time": time_str,
         "timezone": str(tz),
         "timezone_abbr": tz_abbr,
         "next_run_human": next_run_human,
     }
+
+
+def reschedule_youtube_index() -> bool:
+    """(Re)schedule the YouTube check from its settings. Safe at runtime: a
+    settings save calls it, so a change takes effect without a restart.
+
+    Never at a fixed beat: the interval carries random jitter, and the first run
+    lands at a random point of the first interval rather than at startup plus the
+    interval. Removed entirely when background checks are off.
+    """
+    from services.youtube import traffic as yt_traffic
+    from services.youtube.sync import run_youtube_sync
+    from models.database import get_setting
+    import random
+    db = SessionLocal()
+    try:
+        enabled = get_setting(db, "youtube_background_checks", "true") != "false"
+        minutes = yt_traffic.interval_minutes(
+            get_setting(db, "youtube_index_interval_minutes", str(yt_traffic.DEFAULT_INTERVAL_MINUTES)))
+    finally:
+        db.close()
+    if not enabled:
+        try:
+            scheduler.remove_job("youtube_index")
+        except Exception:
+            pass
+        logger.info("YouTube background checks are off: channels refresh only on request")
+        return False
+    first = datetime.now() + timedelta(seconds=random.uniform(5 * 60, minutes * 60))
+    scheduler.add_job(
+        run_youtube_sync,
+        IntervalTrigger(minutes=minutes, jitter=int(minutes * 60 * 0.2), start_date=first),
+        id="youtube_index",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info(f"YouTube channel checks scheduled: about every {minutes} min (±20%), first at {first:%H:%M}")
+    return True
+
+
+def _resume_youtube_channels() -> None:
+    from routers.youtube import resume_unfinished_channels
+    try:
+        resume_unfinished_channels()
+    except Exception as e:
+        logger.warning(f"[YouTube] Could not resume unfinished channels: {e}")
+
+
+def _resume_provider_relinks() -> None:
+    from services.provider_relink import resume_pending
+    try:
+        resume_pending()
+    except Exception as e:
+        logger.warning(f"[Relink] Could not resume a provider's .strm rewrite: {e}")
+
+
+def _start_vod_route_relink() -> None:
+    from services.provider_relink import start_vod_route_relink
+    try:
+        start_vod_route_relink()
+    except Exception as e:
+        logger.warning(f"[Relink] Could not start the VOD .strm rewrite: {e}")
 
 
 def setup_scheduler(db):
@@ -497,32 +678,52 @@ def setup_scheduler(db):
         replace_existing=True,
         max_instances=1,
         coalesce=True,
+        misfire_grace_time=3600,
     )
     logger.info("Stream health sweep scheduled: daily at 04:30")
 
-    # YouTube source: index enabled channels and write their .strm/NFO files.
-    # The job checks the youtube_enabled setting itself, so the schedule can
-    # stay in place whether or not the feature is turned on.
-    from services.youtube.sync import run_youtube_sync
-    yt_interval = 60
-    try:
-        from models.database import get_setting as _get_setting
-        db_ = SessionLocal()
-        try:
-            yt_interval = int(_get_setting(db_, "youtube_index_interval_minutes", "60") or "60")
-        finally:
-            db_.close()
-    except Exception:
-        pass
+    # Provider health: log in to each provider and open one test stream every
+    # hour; a confirmed failure shows on the dashboard and goes to Pushover
+    # (services/provider_health.py). Once shortly after start, so the state is
+    # fresh after a restart.
+    from services.provider_health import run_provider_health
     scheduler.add_job(
-        run_youtube_sync,
-        IntervalTrigger(minutes=max(15, yt_interval)),
-        id="youtube_index",
+        run_provider_health,
+        IntervalTrigger(hours=1),
+        id="provider_health",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
     )
-    logger.info(f"YouTube channel indexing scheduled: every {max(15, yt_interval)} min")
+    schedule_once(run_provider_health, 120, "provider_health_first")
+    logger.info("Provider health check scheduled: hourly")
+
+    # YouTube source: check enabled channels for new uploads and live streams.
+    # The job checks the youtube_enabled setting itself, so the schedule can
+    # stay in place whether or not the feature is turned on.
+    reschedule_youtube_index()
+    # A channel whose first index a restart cut short is picked up a minute
+    # after start-up, background checks or not (#288).
+    schedule_once(_resume_youtube_channels, 60, "youtube_resume_first_index")
+    # A provider save's .strm rewrite a restart cut short (#149)
+    schedule_once(_resume_provider_relinks, 60, "provider_relink_resume")
+    # VOD through Tentacle (the default): existing .strm files move to the
+    # /api/vod route (or back, for an install that opted out) without a sync
+    schedule_once(_start_vod_route_relink, 90, "vod_route_relink")
+    # Music module: the daily reconcile (checks the setting itself when it runs),
+    # and any request a restart interrupted before its pin and search.
+    reschedule_music_reconcile()
+    from services.music.jobs import resume_requests
+    resume_requests()
+    from services.youtube import traffic as _yt_traffic
+    scheduler.add_job(
+        _yt_traffic.hourly_report,
+        IntervalTrigger(hours=1),
+        id="youtube_traffic_report",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
 
 logging.basicConfig(level=logging.INFO)
 from services.log_redaction import install as _install_log_redaction
@@ -651,11 +852,19 @@ app.include_router(smartlists_router.router)
 app.include_router(discover_router.router)
 app.include_router(activity_router.router)
 app.include_router(livetv_router.router)
+# A refused tuner open answers 503 with no body: Jellyfin's tuner copies any
+# body as if it were the stream (#140).
+app.add_exception_handler(livetv_router._TunerRefusal, livetv_router.tuner_refusal_handler)
 from routers import vod as vod_router
 app.include_router(vod_router.router)
+# A VOD range ended on purpose (a seek) closes its connection through an
+# exception uvicorn would log as a crash (#285).
+logging.getLogger("uvicorn.error").addFilter(vod_router.EarlyRangeEndFilter())
 app.include_router(notifications_router.router)
 app.include_router(health_router.router)
 app.include_router(youtube_router.router)
+app.include_router(music_router.router)
+app.include_router(music_router.webhook_router)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -725,6 +934,21 @@ BUILD_DATE = (os.environ.get("TENTACLE_BUILD_DATE") or "").strip() or "unknown"
 @app.get("/api/health")
 def health():
     return {"status": "ok", "commit": BUILD_COMMIT, "built": BUILD_DATE}
+
+
+@app.get("/api/provider-status")
+def provider_status():
+    """For a monitor (rmnk): 200 {"status": "ok"}, or 503 {"status":
+    "failing", "since", "checked_at", "problems": [reason, ...]} while the
+    hourly check finds a provider failing. Unauthenticated like /api/version,
+    so it carries no provider names, URLs or logins."""
+    from services.provider_health import public_status
+    db = SessionLocal()
+    try:
+        code, body = public_status(db)
+    finally:
+        db.close()
+    return JSONResponse(body, status_code=code)
 
 
 def code_drift(manifest_path: str = ".build-manifest") -> dict:
@@ -800,7 +1024,7 @@ async def api_not_found(full_path: str, request: Request):
 # change — and forgetting sent users a mix of new HTML and months-old
 # JavaScript, where the page simply lacks whatever was added. Derived from the
 # files now, so it cannot fall out of step with them.
-_ASSET_FILES = ("static/js/app.js", "static/js/pages.js")
+_ASSET_FILES = ("static/js/app.js", "static/js/pages.js", "static/js/music.js")
 _index_cache: dict = {"key": None, "html": None}
 
 
@@ -849,11 +1073,36 @@ async def serve_frontend(full_path: str):
     )
 
 
+@app.exception_handler(TMDBConnectionError)
+async def _tmdb_unreachable(request: Request, exc: TMDBConnectionError):
+    # TMDB down at the connection level (DNS, refused, reset) where a route
+    # doesn't handle it itself, e.g. a Discover detail or genre page (#273):
+    # say so, instead of a bare 500 with a traceback.
+    logger.warning(f"{request.method} {request.url.path}: {exc}")
+    return JSONResponse(status_code=503, content={"detail": "TMDB could not be reached. Try again later."})
+
+
+@app.exception_handler(OverflowError)
+async def _id_out_of_range(request: Request, exc: OverflowError):
+    # FastAPI accepts an int of any size in a path or query; SQLite refuses to
+    # bind one above 2**63-1. Such an id can't exist: answer like any unknown id
+    # (#286) instead of a 500 with a traceback. Any other overflow is a real bug.
+    if "too large to convert to SQLite" in str(exc):
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
+    return await global_exception_handler(request, exc)
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     # Log the full detail server-side, but return a generic message to the client
     # so internal paths, library/version info, or secrets in exception text aren't
     # leaked to callers.
+    from routers.vod import is_early_range_end
+    if is_early_range_end(exc):
+        # A VOD range ended on purpose below its Content-Length (a seek);
+        # the server closes that connection, which is the point (#285).
+        logger.debug(f"{request.method} {request.url.path}: range ended early on purpose; connection closed")
+        return JSONResponse(status_code=500, content={"detail": "Internal server error"})
     logger.error(f"Unhandled exception on {request.method} {request.url.path}: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,

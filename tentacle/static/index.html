@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="theme-color" content="#0c0c10">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -26,7 +26,7 @@
   --border2: rgba(255,255,255,0.12);
   --text: #e2e2ec;
   --text2: #9090a8;
-  --text3: #5a5a72;
+  --text3: #82829c;  /* 4.6:1 on --bg2 (WCAG AA); #5a5a72 was 2.6:1 */
   --accent: #6c63ff;
   --accent-dim: rgba(108,99,255,0.15);
   --accent-hover: #7d75ff;
@@ -435,6 +435,70 @@ body {
 
 .form-hint { font-size: 11px; color: var(--text3); margin-top: 4px; }
 
+/* Test results: one line per step (Settings → Connections / Music) */
+.svc-checks { margin-top: 8px; font-size: 12px; display: grid; gap: 3px; }
+.svc-checks:empty { display: none; }
+.svc-check { display: flex; gap: 8px; align-items: baseline; }
+.svc-check-icon { width: 14px; flex-shrink: 0; text-align: center; font-weight: 600; }
+.svc-check.ok .svc-check-icon { color: var(--green); }
+.svc-check.fail .svc-check-icon { color: var(--red); }
+.svc-check.warn .svc-check-icon { color: var(--amber); }
+.svc-check-label { color: var(--text); white-space: nowrap; }
+.svc-check-detail { color: var(--text3); overflow-wrap: anywhere; }
+.settings-toggle { font-size: 13px; display: flex; gap: 8px; align-items: flex-start; margin-bottom: 10px; }
+.settings-toggle input { margin-top: 3px; accent-color: var(--accent); }
+
+/* Music module: hidden unless it is on (body.music-on, set from /api/music/config) */
+body:not(.music-on) [data-music-only] { display: none !important; }
+.lib-card.music .lib-card-poster { aspect-ratio: 1 / 1; }
+.music-section-title { grid-column: 1 / -1; font-size: 13px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 8px; }
+.music-rows { grid-column: 1 / -1; display: grid; gap: 4px; }
+.music-row, .music-lib-row { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--bg1); border: 1px solid var(--border); cursor: pointer; min-width: 0; }
+.music-row:hover, .music-lib-row:hover { border-color: var(--border2); }
+.music-row-icon { width: 34px; height: 34px; border-radius: 50%; background: var(--bg3); color: var(--text2); display: flex; align-items: center; justify-content: center; font-weight: 600; flex-shrink: 0; }
+.music-row-main { flex: 1; min-width: 0; }
+.music-row-title { font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.music-row-sub { font-size: 11px; color: var(--text3); margin-top: 2px; overflow-wrap: anywhere; }
+.music-row-hint { font-size: 11px; color: var(--text3); white-space: nowrap; }
+.music-note { grid-column: 1 / -1; font-size: 12px; color: var(--text3); }
+.music-list-bar { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+@media (max-width: 600px) { #discover-streaming-pills.music-pills { flex-wrap: nowrap !important; overflow-x: auto; scrollbar-width: none; } #discover-streaming-pills.music-pills > * { flex-shrink: 0; } }
+.music-artist-card { cursor: pointer; text-align: center; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.music-artist-pic { width: 100%; aspect-ratio: 1 / 1; border-radius: 50%; object-fit: cover; background: var(--bg3); display: flex; align-items: center; justify-content: center; font-size: 30px; font-weight: 600; color: var(--text3); transition: transform 0.12s; }
+.music-artist-card:hover .music-artist-pic { transform: scale(1.03); }
+.music-artist-name { font-size: 12px; color: var(--text); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.music-progress { height: 4px; background: var(--bg3); border-radius: 2px; overflow: hidden; margin-top: 4px; }
+.music-progress > div { height: 100%; background: var(--accent); transition: width 0.3s; }
+.music-check-list { display: grid; gap: 2px; }
+.music-check-row { display: flex; gap: 10px; align-items: center; padding: 6px 4px; border-bottom: 1px solid var(--border); cursor: pointer; min-width: 0; }
+.music-check-row input { accent-color: var(--accent); flex-shrink: 0; }
+.music-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; margin-top: 8px; }
+.music-subhead { font-size: 12px; font-weight: 600; color: var(--text2); margin-top: 14px; }
+.music-original { margin-top: 18px; padding: 10px 12px; border-left: 3px solid var(--accent); background: var(--bg1); border-radius: var(--radius-sm); font-size: 13px; }
+.music-disc { font-size: 11px; color: var(--text3); margin: 12px 0 4px; text-transform: uppercase; letter-spacing: 0.05em; }
+.music-tracklist { margin-top: 8px; display: grid; }
+.music-track { display: flex; gap: 10px; padding: 5px 8px; font-size: 13px; border-radius: 4px; }
+.music-track.hl { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
+.music-track-n { width: 26px; color: var(--text3); font-family: 'DM Mono', monospace; font-size: 11px; flex-shrink: 0; padding-top: 1px; }
+.music-track-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.music-track-len { color: var(--text3); font-family: 'DM Mono', monospace; font-size: 11px; }
+.music-option { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.music-fix-group { margin-bottom: 22px; }
+.music-fix-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.music-fix-title { font-size: 14px; font-weight: 600; }
+.music-fix-desc { font-size: 12px; color: var(--text3); flex-basis: 100%; }
+.music-fix-change { font-size: 11px; color: var(--text2); margin-top: 3px; }
+.music-picks { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.music-pick { width: 72px; text-align: center; font-size: 10px; color: var(--text3); cursor: pointer; background: none; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px; }
+.music-pick:hover { border-color: var(--accent); }
+.music-pick img { width: 62px; height: 62px; object-fit: cover; border-radius: 4px; display: block; margin: 0 auto 3px; }
+.music-lib-artist { margin-bottom: 18px; }
+.music-lib-artist-name { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+.music-lib-artist-name a { color: var(--text); text-decoration: none; }
+.music-lib-row { margin-bottom: 4px; }
+.music-lib-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 600px) { .music-lib-row, .music-row { flex-wrap: wrap; } .music-lib-actions { width: 100%; justify-content: flex-start; } .music-row-hint { display: none; } }
+
 /* ── Buttons ── */
 .btn {
   display: inline-flex;
@@ -552,6 +616,7 @@ td.primary { color: var(--text); font-weight: 500; }
 .toast.success { border-color: rgba(74,222,128,0.3); }
 .toast.error { border-color: rgba(248,113,113,0.3); }
 .toast.info { border-color: rgba(96,165,250,0.3); }
+.toast.warning { border-color: rgba(251,191,36,0.3); }
 .toast.loading { border-color: rgba(96,165,250,0.3); }
 .toast-spinner { display:inline-block; width:14px; height:14px; border:2px solid var(--border2); border-top-color:var(--blue); border-radius:50%; animation:spin 0.7s linear infinite; vertical-align:middle; }
 
@@ -617,6 +682,8 @@ td.primary { color: var(--text); font-weight: 500; }
 .filter-btn { padding: 7px 12px; font-size: 12px; font-weight: 500; cursor: pointer; border: none; background: none; color: var(--text3); transition: all 0.12s; font-family: 'DM Sans', sans-serif; }
 .filter-btn:hover { color: var(--text); background: var(--bg3); }
 .filter-btn.active { background: var(--accent); color: #fff; }
+.music-filter-group { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.music-filter-group .filter-btn { white-space: nowrap; flex: 0 0 auto; }
 
 .cat-list { display: flex; flex-direction: column; gap: 4px; max-height: 520px; overflow-y: auto; }
 
@@ -1192,6 +1259,7 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 }
 .live-ch-epg { font-size: 10px; color: var(--text3); font-family: 'DM Mono', monospace; }
 .live-ch-epg-badge { font-size: 10px; padding: 1px 6px; border-radius: 3px; white-space: nowrap; }
+button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; }
 .live-ch-epg-badge.has-epg { background: rgba(46,160,67,0.15); color: #3fb950; }
 .live-ch-epg-badge.no-epg { background: rgba(255,255,255,0.06); color: var(--text3); opacity: 0.6; }
 .live-progress {
@@ -1226,6 +1294,9 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
   background: var(--bg1); transition: border-color 0.12s;
 }
 .activity-card:hover { border-color: var(--border2); }
+.list-fetch-note { font-size: 12px; color: var(--amber); margin-top: 6px; line-height: 1.4; }
+.activity-card[data-open] { cursor: pointer; }
+.activity-card[data-open]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .activity-poster {
   width: 60px; min-width: 60px; aspect-ratio: 2/3;
   border-radius: 6px; overflow: hidden; background: var(--bg3);
@@ -1305,6 +1376,10 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 .arr-problems-head button { margin-left: auto; }
 .arr-problems ul { margin: 6px 0 0; padding-left: 18px; color: var(--text2); }
 .arr-problems a { color: inherit; }
+.provider-problems { border-color: rgba(239, 68, 68, .7); background: rgba(239, 68, 68, .16); }
+.provider-problems .arr-problems-head { color: var(--red); }
+.provider-problems ul { list-style: none; padding-left: 0; color: var(--text); }
+.arr-problems-actions { margin-left: auto; display: flex; gap: 6px; }
 .activity-problems { margin-bottom: 14px; }
 .activity-check { font-size: 12px; margin-top: 2px; }
 .activity-check.rejected, .activity-check.none { color: var(--amber); }
@@ -1383,13 +1458,16 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 }
 
 /* ── Library downloads section ── */
+/* The row wraps whenever the title would get less than 220 px, whatever the
+   screen: what squeezes the title is the row's own width, and above 768 px the
+   sidebar makes a tablet's row narrower than a phone's (#280). */
 .dl-item {
-  display: flex; align-items: center; gap: 12px;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap; row-gap: 6px;
   padding: 8px 16px; border-bottom: 1px solid var(--border);
 }
 .dl-item:last-child { border-bottom: none; }
 .dl-item-title {
-  font-size: 13px; font-weight: 500; flex: 1; min-width: 0;
+  font-size: 13px; font-weight: 500; flex: 1 1 220px; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .dl-item-status {
@@ -1405,6 +1483,15 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 .dl-item-bar-fill { height: 100%; border-radius: 2px; background: var(--accent); transition: width 0.5s ease; }
 .dl-item-pct { font-size: 11px; color: var(--text3); font-family: 'DM Mono', monospace; min-width: 36px; text-align: right; }
 .dl-requested-by { font-size: 11px; color: var(--text3); background: var(--bg3); padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
+/* Phones: the title gets a line of its own, status, bar and percent go below
+   it. In one row the title was the only item allowed to shrink and ended at
+   0 px wide (#280). */
+@media (max-width: 600px) {
+  .dl-item { flex-wrap: wrap; row-gap: 6px; }
+  .dl-item-title { flex: 1 1 100%; }
+  .dl-item-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .dl-item-bar { flex: 1; width: auto; min-width: 40px; }
+}
 
 /* ── Mobile menu button + off-canvas backdrop (hidden on desktop) ── */
 .mobile-menu-btn {
@@ -1541,6 +1628,7 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
   .live-ch-row::before { content: ''; order: 3; flex-basis: 100%; height: 0; } /* line break */
   .live-ch-row .live-ch-group { order: 4; flex: 0 1 auto; max-width: none; margin-left: 38px; }
   .live-ch-row .live-ch-epg-badge { order: 5; }
+  .live-ch-row .live-ch-rename { order: 6; margin-left: auto; }
   .live-group-row .group-count { min-width: 0; }
 
   /* Modals: slide up from the bottom, full width, scroll inside, no scroll-through */
@@ -1614,6 +1702,12 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
   /* Downloads card rows: drop the requester badge, slim the progress bar */
   .dl-requested-by { display: none; }
   .dl-item-bar { width: 70px; }
+}
+/* Touch screens of any width: 16 px inputs so focusing one never zooms the
+   page (tablets above 768 px included). This, not a locked viewport scale,
+   stops the auto-zoom, so pinch-zoom stays available (#281). */
+@media (pointer: coarse) {
+  input, select, textarea { font-size: 16px !important; }
 }
 </style>
 </head>
@@ -1690,6 +1784,8 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 
     <!-- Radarr/Sonarr problems (admins): the usual cause of "it never downloads" -->
     <div id="arr-problems-banner" class="arr-problems" style="display:none"></div>
+    <!-- IPTV provider failing (admins): the hourly provider check -->
+    <div id="provider-problems-banner" class="arr-problems error provider-problems" style="display:none" role="alert"></div>
 
     <!-- Pages -->
     <div class="page-content">
@@ -1716,6 +1812,33 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
               </div>
               <button class="btn btn-secondary" onclick="ytDetectAddress('yt-address')" title="Work it out again">Detect</button>
               <button class="btn btn-secondary" onclick="ytSaveAddress('yt-address')">Save</button>
+            </div>
+          </details>
+        </div>
+
+        <!-- How Tentacle talks to YouTube. The defaults are safe for everyone:
+             a light, randomly timed check per channel and a pause after any
+             bot check. Everything here is optional. -->
+        <div class="card" id="yt-traffic-card" style="margin-bottom:16px">
+          <details>
+            <summary style="cursor:pointer;padding:12px 16px;font-size:13px;color:var(--text2)">Advanced: how Tentacle talks to YouTube <span id="yt-traffic-summary" style="color:var(--text3)"></span></summary>
+            <div class="card-body" style="padding-top:0;display:grid;gap:14px">
+              <label style="font-size:13px;display:flex;gap:8px;align-items:flex-start"><input type="checkbox" id="yt-bg-checks" style="margin-top:3px"> <span>Check channels for new uploads and live streams in the background <span style="color:var(--text3)">&mdash; off: only when you press Refresh</span></span></label>
+              <div>
+                <label class="form-label" for="yt-interval">Check about every (minutes) <span style="font-weight:400;color:var(--text3)">&mdash; at least 30. Each check is one small request per channel, at random times around this.</span></label>
+                <input type="number" id="yt-interval" class="form-input" min="30" max="1440" step="5" style="max-width:140px">
+              </div>
+              <div>
+                <label class="form-label" for="yt-api-key">YouTube Data API key <span style="font-weight:400;color:var(--text3)">&mdash; optional. With one, new uploads, video details and live status come from Google&rsquo;s official API instead of YouTube&rsquo;s pages. Free from the Google Cloud console.</span></label>
+                <input type="text" id="yt-api-key" class="form-input" placeholder="Not set" autocomplete="off" spellcheck="false">
+                <div id="yt-api-status" style="font-size:12px;margin-top:4px;color:var(--text3)"></div>
+              </div>
+              <div>
+                <label class="form-label" for="yt-proxy">Proxy for YouTube traffic <span style="font-weight:400;color:var(--text3)">&mdash; optional, for example <code>http://gluetun:8888</code> to send YouTube through a VPN. Watching YouTube videos then goes through it too.</span></label>
+                <input type="text" id="yt-proxy" class="form-input" placeholder="None" autocomplete="off" spellcheck="false">
+              </div>
+              <div id="yt-traffic-status" style="font-size:12px;color:var(--text3)"></div>
+              <div><button class="btn btn-secondary" onclick="ytSaveTraffic()">Save</button></div>
             </div>
           </details>
         </div>
@@ -1835,6 +1958,16 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 
         <div class="card" style="margin-bottom:16px">
           <div class="card-header">
+            <div class="card-title">Recent Activity <span id="health-activity-count" style="color:var(--text3);font-weight:400"></span></div>
+            <button class="btn btn-secondary btn-sm" onclick="loadHealthActivity()">Refresh</button>
+          </div>
+          <div id="health-activity">
+            <div class="empty-state"><p>Loading…</p></div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header">
             <div class="card-title">Deletion Log</div>
             <button class="btn btn-secondary btn-sm" onclick="loadHealthDeletions()">Refresh</button>
           </div>
@@ -1878,7 +2011,7 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
         </div>
 
         <div id="vod-provider-bar" style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
-          <select class="form-input" id="vod-provider-select" style="width:240px;padding:6px 10px;font-size:13px" onchange="onVodProviderChange()">
+          <select class="form-input" id="vod-provider-select" aria-label="VOD provider" style="width:240px;padding:6px 10px;font-size:13px" onchange="onVodProviderChange()">
           </select>
           <span id="vod-provider-status" style="font-size:12px;color:var(--text3)"></span>
         </div>
@@ -1957,6 +2090,7 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
             <button class="settings-nav-item active" data-section="connections">Connections</button>
             <button class="settings-nav-item" data-section="providers">Providers</button>
             <button class="settings-nav-item" data-section="integrations">Integrations</button>
+            <button class="settings-nav-item" data-section="music">Music</button>
             <button class="settings-nav-item" data-section="paths">Library Paths</button>
             <button class="settings-nav-item" data-section="users">Users</button>
             <button class="settings-nav-item" data-section="playlists-info">Playlists Guide</button>
@@ -2014,10 +2148,23 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
                   <div class="form-label">Radarr API Key</div>
                   <div style="display:flex;gap:8px">
                     <input class="form-input mono" id="radarr_api_key" type="password" placeholder="abc123...">
-                    <button class="btn btn-secondary" onclick="testConnection('radarr')">Test</button>
+                    <button class="btn btn-secondary" onclick="testService('radarr')">Test</button>
                   </div>
                 </div>
               </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <div class="form-label">Default quality profile</div>
+                  <select class="form-input" id="radarr_quality_profile_id"><option value="">Enter the URL and key, then Test</option></select>
+                  <div class="form-hint">Used by every request: Tentacle, the Jellyfin plugin and Android TV. With none picked, requests are refused instead of guessed.</div>
+                </div>
+                <div class="form-group">
+                  <div class="form-label">Root folder</div>
+                  <select class="form-input" id="radarr_root_folder"><option value="">Automatic (first folder that isn't a VOD folder)</option></select>
+                </div>
+              </div>
+              <div class="svc-checks" id="checks-radarr"></div>
 
               <hr class="divider">
 
@@ -2030,10 +2177,23 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
                   <div class="form-label">Sonarr API Key</div>
                   <div style="display:flex;gap:8px">
                     <input class="form-input mono" id="sonarr_api_key" type="password" placeholder="abc123...">
-                    <button class="btn btn-secondary" onclick="testConnection('sonarr')">Test</button>
+                    <button class="btn btn-secondary" onclick="testService('sonarr')">Test</button>
                   </div>
                 </div>
               </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <div class="form-label">Default quality profile</div>
+                  <select class="form-input" id="sonarr_quality_profile_id"><option value="">Enter the URL and key, then Test</option></select>
+                  <div class="form-hint">Used by every request: Tentacle, the Jellyfin plugin and Android TV. With none picked, requests are refused instead of guessed.</div>
+                </div>
+                <div class="form-group">
+                  <div class="form-label">Root folder</div>
+                  <select class="form-input" id="sonarr_root_folder"><option value="">Automatic (first folder that isn't a VOD folder)</option></select>
+                </div>
+              </div>
+              <div class="svc-checks" id="checks-sonarr"></div>
 
               <hr class="divider">
 
@@ -2054,6 +2214,126 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
                 <div class="form-label">Jellyfin URL for links (optional)</div>
                 <input class="form-input" id="jellyfin_public_url" placeholder="https://jellyfin.example.com">
                 <div class="form-hint">Where your browser opens Jellyfin, used by "Watch in Jellyfin". Leave empty if the Jellyfin URL above already works in your browser (it usually doesn't when it is a Docker name like http://jellyfin:8096).</div>
+              </div>
+
+
+              <!-- Music services: shown only while the Music module is on -->
+              <div id="music-connections" style="display:none">
+                <hr class="divider">
+                <div class="section-title">Music</div>
+                <p class="form-hint" style="margin:-6px 0 14px">Used by the Music module (Settings → Music). Lidarr finds, downloads and tags the music; your player plays it.</p>
+
+                <div class="form-row">
+                  <div class="form-group">
+                    <div class="form-label">Lidarr URL</div>
+                    <input class="form-input" id="lidarr_url" placeholder="http://localhost:8686">
+                  </div>
+                  <div class="form-group">
+                    <div class="form-label">Lidarr API Key</div>
+                    <div style="display:flex;gap:8px">
+                      <input class="form-input mono" id="lidarr_api_key" type="password" placeholder="abc123...">
+                      <button class="btn btn-secondary" onclick="testService('lidarr')">Test</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <div class="form-label">Root folder</div>
+                    <select class="form-input" id="lidarr_root_folder"><option value="">Enter the URL and key, then Test</option></select>
+                  </div>
+                  <div class="form-group">
+                    <div class="form-label">Quality profile</div>
+                    <select class="form-input" id="lidarr_quality_profile_id"><option value="">Enter the URL and key, then Test</option></select>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <div class="form-label">Metadata profile</div>
+                    <select class="form-input" id="lidarr_metadata_profile_id"><option value="">Enter the URL and key, then Test</option></select>
+                  </div>
+                  <div class="form-hint" style="align-self:end;margin-bottom:16px">Artists Tentacle adds to Lidarr get these, with only the requested album monitored.</div>
+                </div>
+                <div class="svc-checks" id="checks-lidarr"></div>
+
+                <hr class="divider">
+
+                <label class="settings-toggle"><input type="checkbox" id="navidrome_enabled"> <span>Navidrome <span style="color:var(--text3)">&mdash; set artist pictures, rescan after imports, &ldquo;Open in Navidrome&rdquo; links</span></span></label>
+                <div class="form-row">
+                  <div class="form-group">
+                    <div class="form-label">Navidrome URL</div>
+                    <input class="form-input" id="navidrome_url" placeholder="http://localhost:4533">
+                  </div>
+                  <div class="form-group">
+                    <div class="form-label">Username</div>
+                    <input class="form-input" id="navidrome_username" autocomplete="off">
+                  </div>
+                </div>
+                <div class="form-group">
+                  <div class="form-label">Navidrome URL for links (optional)</div>
+                  <input class="form-input" id="navidrome_public_url" placeholder="https://music.example.com">
+                  <div class="form-hint">Where your browser opens Navidrome, for &ldquo;Open in Navidrome&rdquo;. Leave empty if the URL above works in your browser.</div>
+                </div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <div class="form-label">Password</div>
+                    <div style="display:flex;gap:8px">
+                      <input class="form-input mono" id="navidrome_password" type="password" autocomplete="new-password">
+                      <button class="btn btn-secondary" onclick="testService('navidrome')">Test</button>
+                    </div>
+                  </div>
+                  <div class="form-hint" style="align-self:end;margin-bottom:16px">Navidrome has no API tokens, so Tentacle signs in with a user. An admin, or any user if EnableArtworkUpload is on, can upload artist pictures.</div>
+                </div>
+                <label class="settings-toggle"><input type="checkbox" id="navidrome_upload_artist_images"> <span>Upload artist pictures</span></label>
+                <label class="settings-toggle"><input type="checkbox" id="navidrome_rescan_after_import"> <span>Rescan after imports</span></label>
+                <div class="svc-checks" id="checks-navidrome"></div>
+
+                <hr class="divider">
+
+                <label class="settings-toggle"><input type="checkbox" id="jellyfin_music_enabled"> <span>Jellyfin as a music player <span style="color:var(--text3)">&mdash; uses the Jellyfin connection above; also shows music search and requests inside Jellyfin</span></span></label>
+                <div class="form-group">
+                  <div class="form-label">Music library</div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap">
+                    <select class="form-input" id="jellyfin_music_library_id" style="flex:1;min-width:200px"><option value="">Loading…</option></select>
+                    <button class="btn btn-secondary" onclick="toggleCreateMusicLibrary()">Create one</button>
+                    <button class="btn btn-secondary" onclick="testService('jellyfin_music')">Test</button>
+                  </div>
+                  <div id="jf-music-create" style="display:none;margin-top:10px">
+                    <div class="form-row">
+                      <input class="form-input" id="jf-music-create-name" value="Music" placeholder="Library name">
+                      <input class="form-input mono" id="jf-music-create-path" placeholder="Folder as Jellyfin sees it, e.g. /data/music">
+                    </div>
+                    <div class="form-hint">Starts as Lidarr&rsquo;s root folder. Change it if Jellyfin mounts that folder at a different path.</div>
+                    <button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="createMusicLibrary()">Create library</button>
+                  </div>
+                </div>
+                <label class="settings-toggle"><input type="checkbox" id="jellyfin_music_set_artist_images"> <span>Set artist images</span></label>
+                <div class="svc-checks" id="checks-jellyfin_music"></div>
+
+                <hr class="divider">
+
+                <div class="form-row">
+                  <div class="form-group">
+                    <div class="form-label">MusicBrainz contact email</div>
+                    <div style="display:flex;gap:8px">
+                      <input class="form-input" id="musicbrainz_contact" type="email" placeholder="you@example.com">
+                      <button class="btn btn-secondary" onclick="testService('musicbrainz')">Test</button>
+                    </div>
+                    <div class="form-hint">MusicBrainz requires a contact in every request&rsquo;s User-Agent. It is sent only to MusicBrainz.</div>
+                  </div>
+                  <div class="form-group">
+                    <div class="form-label">Cache lifetime (days)</div>
+                    <input class="form-input" id="musicbrainz_cache_days" type="number" min="1" max="365" placeholder="30">
+                  </div>
+                </div>
+                <div class="svc-checks" id="checks-musicbrainz"></div>
+
+                <div class="form-group" style="margin-top:6px">
+                  <div class="form-label">Music folder as Tentacle sees it (optional)</div>
+                  <input class="form-input mono" id="music_library_path" placeholder="/media/music">
+                  <div class="form-hint">Lidarr&rsquo;s root folder, mounted read-only into Tentacle, so an existing artist.jpg can be reused for artist pictures. Leave empty to take pictures from Deezer. Tentacle never writes here.</div>
+                </div>
+                <label class="settings-toggle" style="margin-top:6px"><input type="checkbox" id="deezer_enabled"> <span>Deezer as a source of artist pictures <span style="color:var(--text3)">&mdash; no key needed</span> <a href="#" onclick="testService('deezer');return false" style="color:var(--accent)">Test</a></span></label>
+                <div class="svc-checks" id="checks-deezer"></div>
               </div>
 
               <div style="margin-top:20px">
@@ -2138,6 +2418,23 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 
               <hr class="divider">
 
+              <div class="section-title">Pushover</div>
+              <div class="form-hint" style="margin-bottom:10px">Tentacle checks every IPTV provider each hour. When one starts failing, the dashboard shows a red banner and Pushover sends one message to your phone, and one more when it works again. Create an application at pushover.net for the app token; the user key is on your Pushover home page.</div>
+              <div class="form-group">
+                <div class="form-label">Pushover App Token</div>
+                <input class="form-input mono" id="pushover_app_token" type="password" placeholder="Application API token" autocomplete="off">
+              </div>
+              <div class="form-group">
+                <div class="form-label">Pushover User Key</div>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <input class="form-input mono" id="pushover_user_key" type="password" placeholder="Your user key" autocomplete="off">
+                  <button class="btn btn-secondary" onclick="testPushover()">Send test</button>
+                </div>
+                <div class="form-hint">Leave both empty for no messages; the banner shows either way.</div>
+              </div>
+
+              <hr class="divider">
+
               <div class="section-title">Webhooks</div>
               <div class="form-group">
                 <div class="form-label">Radarr Webhook URL</div>
@@ -2181,6 +2478,91 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 
               <div style="margin-top:20px">
                 <button class="btn btn-primary" onclick="saveSettings()">Save Integrations</button>
+              </div>
+            </div>
+
+            <!-- Music (the module's own settings) -->
+            <div class="settings-section card" id="section-music">
+              <h3>Music</h3>
+              <p class="section-desc">Turn &ldquo;I like this song, album or artist&rdquo; into the original studio album in your library, through Lidarr. Off by default; while off, Tentacle has no music anywhere.</p>
+
+              <label class="settings-toggle"><input type="checkbox" id="music_enabled" onchange="onMusicEnabledChange()"> <span><strong>Enable the music module</strong></span></label>
+              <div id="music-status-line" class="form-hint" style="margin:-4px 0 8px 22px"></div>
+
+              <div id="music-settings-body">
+                <hr class="divider">
+                <div class="section-title">Original release</div>
+                <p class="form-hint" style="margin:-6px 0 12px">Tentacle pins the release with the album&rsquo;s original tracklist: the earliest year&rsquo;s most common track count. These break ties between releases with that tracklist.</p>
+                <div class="form-row">
+                  <div class="form-group">
+                    <div class="form-label">Preferred countries</div>
+                    <input class="form-input" id="music_preferred_countries" placeholder="US,GB,CA,XW">
+                    <div class="form-hint">Country codes, in order. XW = worldwide.</div>
+                  </div>
+                  <div class="form-group">
+                    <div class="form-label">Preferred formats</div>
+                    <input class="form-input" id="music_preferred_formats" placeholder="CD,Digital Media">
+                    <div class="form-hint">MusicBrainz format names, in order.</div>
+                  </div>
+                </div>
+                <div class="form-group">
+                  <div class="form-label">Words that mark a special edition</div>
+                  <input class="form-input" id="music_edition_words" placeholder="deluxe,expanded,anniversary,bonus,live,mono,stereo,box,collector,legacy,super">
+                  <div class="form-hint">A release whose title or disambiguation contains one of these is passed over when another release has the same tracklist.</div>
+                </div>
+
+                <hr class="divider">
+                <div class="section-title">Discover</div>
+                <div class="form-group">
+                  <div class="form-label">Chart country</div>
+                  <select class="form-input" id="music_chart_country" style="max-width:240px"><option value="us">United States</option><option value="ca">Canada</option><option value="gb">United Kingdom</option><option value="au">Australia</option><option value="ie">Ireland</option><option value="nz">New Zealand</option><option value="de">Germany</option><option value="fr">France</option><option value="es">Spain</option><option value="it">Italy</option><option value="nl">Netherlands</option><option value="be">Belgium</option><option value="se">Sweden</option><option value="no">Norway</option><option value="dk">Denmark</option><option value="fi">Finland</option><option value="pl">Poland</option><option value="pt">Portugal</option><option value="br">Brazil</option><option value="mx">Mexico</option><option value="ar">Argentina</option><option value="jp">Japan</option><option value="kr">South Korea</option><option value="in">India</option><option value="za">South Africa</option></select>
+                  <div class="form-hint">Whose Apple Music charts Discover &rarr; Music shows under Trending and New releases. Top of all time is worldwide.</div>
+                </div>
+
+                <hr class="divider">
+                <div class="section-title">Reconcile</div>
+                <div class="form-group">
+                  <div class="form-label">Daily check at</div>
+                  <input class="form-input" id="music_reconcile_time" type="time" value="04:00" style="max-width:160px">
+                  <div class="form-hint">Checks monitored albums once a day, at low priority. Anything that isn&rsquo;t right goes to review.</div>
+                </div>
+                <div class="form-label" style="margin-bottom:8px">Apply automatically, without review</div>
+                <label class="settings-toggle"><input type="checkbox" id="music_auto_repin"> <span>Re-pin to the original release</span></label>
+                <label class="settings-toggle"><input type="checkbox" id="music_auto_repin_trim"> <span>Re-pin and remove extra tracks</span></label>
+                <label class="settings-toggle"><input type="checkbox" id="music_auto_repin_download"> <span>Re-pin and download missing tracks</span></label>
+                <div class="form-hint" style="margin-top:-4px">All off by default: everything waits for your click until you trust it. &ldquo;Needs review&rdquo; cases are never applied automatically.</div>
+
+                <hr class="divider">
+                <div class="section-title">Lidarr webhook</div>
+                <p class="form-hint" style="margin:-6px 0 12px">Lidarr tells Tentacle when an artist is added or an album is imported, so originals are pinned right away. Add it in Lidarr &rarr; Settings &rarr; Connect &rarr; + &rarr; Webhook:</p>
+                <div class="form-group">
+                  <div class="form-label">Name</div>
+                  <code style="font-size:12px">Tentacle</code>
+                </div>
+                <div class="form-group">
+                  <div class="form-label">Triggers <span style="font-weight:400;color:var(--text3)">&mdash; leave the others off</span></div>
+                  <div id="music-webhook-triggers" style="font-size:13px">On Artist Add, On Release Import, On Upgrade</div>
+                </div>
+                <div class="form-group">
+                  <div class="form-label">Webhook URL <span style="font-weight:400;color:var(--text3)">&mdash; Method: POST; Username and Password empty</span></div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap">
+                    <input class="form-input mono" id="music-webhook-url" readonly style="flex:1;min-width:240px;font-size:12px;background:var(--bg3)">
+                    <button class="btn btn-secondary" onclick="copyMusicWebhookUrl()">Copy</button>
+                    <button class="btn btn-secondary" onclick="regenerateMusicWebhookSecret()">New secret</button>
+                  </div>
+                  <div class="form-hint" id="music-webhook-hint">The part after ?secret= proves the call comes from your Lidarr.</div>
+                </div>
+                <div class="form-group">
+                  <div class="form-label">Status for monitoring <span style="font-weight:400;color:var(--text3)">&mdash; last check, counts, needs review, last error, health; cheap to poll</span></div>
+                  <input class="form-input mono" id="music-status-url" readonly style="font-size:12px;background:var(--bg3)">
+                </div>
+                <button class="btn btn-secondary" onclick="testMusicWebhook()">Send test</button>
+                <span id="music-webhook-last" class="form-hint" style="margin-left:8px"></span>
+                <div class="svc-checks" id="checks-music-webhook"></div>
+              </div>
+
+              <div style="margin-top:20px">
+                <button class="btn btn-primary" onclick="saveSettings()">Save Music</button>
               </div>
             </div>
 
@@ -2323,13 +2705,13 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
           <div class="modal" style="max-width:440px">
             <div class="modal-header">
               <div class="modal-title" style="color:var(--amber)">Confirm Deletion</div>
-              <button class="modal-close" onclick="document.getElementById('stale-confirm-modal').style.display='none'">&times;</button>
+              <button class="modal-close" onclick="closeModal('stale-confirm-modal')">&times;</button>
             </div>
             <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
               <p style="margin:0 0 12px">This will delete <strong id="stale-confirm-strm">0</strong> .strm files and <strong id="stale-confirm-nfo">0</strong> .nfo files from your VOD folders.</p>
               <p style="margin:0 0 16px;color:var(--red)">This cannot be undone.</p>
               <div style="display:flex;gap:8px;justify-content:flex-end">
-                <button class="btn btn-secondary btn-sm" onclick="document.getElementById('stale-confirm-modal').style.display='none'">Cancel</button>
+                <button class="btn btn-secondary btn-sm" onclick="closeModal('stale-confirm-modal')">Cancel</button>
                 <button class="btn btn-danger btn-sm" onclick="executeDeleteStaleFiles()">Delete All</button>
               </div>
             </div>
@@ -2384,8 +2766,27 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
         <!-- Library tabs -->
         <div class="tabs-bar" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
           <button class="live-tab active" data-libtab="browse" onclick="showLibTab('browse')">Browse</button>
+          <button class="live-tab" data-libtab="music" data-music-only onclick="showLibTab('music')">Music</button>
           <button class="live-tab" data-libtab="following" onclick="showLibTab('following')">Following <span class="nav-badge" id="lib-follow-badge" style="display:none;margin-left:6px">0</span></button>
           <button class="live-tab" data-libtab="duplicates" data-admin-only onclick="showLibTab('duplicates')">Duplicates <span class="nav-badge" id="lib-dup-badge" style="display:none;margin-left:6px">0</span></button>
+        </div>
+
+        <div id="lib-tab-music" style="display:none">
+          <div class="lib-filters-row" style="margin-bottom:14px;flex-wrap:wrap;gap:8px">
+            <div class="filter-group music-filter-group">
+              <button class="filter-btn active" data-musicfilter="all" onclick="setMusicLibFilter('all',this)">All<span id="music-count-all"></span></button>
+              <button class="filter-btn" data-musicfilter="in_library" onclick="setMusicLibFilter('in_library',this)">In library<span id="music-count-in_library"></span></button>
+              <button class="filter-btn" data-musicfilter="downloading" onclick="setMusicLibFilter('downloading',this)">Downloading<span id="music-count-downloading"></span></button>
+              <button class="filter-btn" data-musicfilter="wanted" onclick="setMusicLibFilter('wanted',this)">Wanted<span id="music-count-wanted"></span></button>
+              <button class="filter-btn" data-musicfilter="needs_review" onclick="setMusicLibFilter('needs_review',this)">Needs review<span id="music-count-needs_review"></span></button>
+              <button class="filter-btn" data-musicfilter="fix" data-admin-only onclick="setMusicLibFilter('fix',this)">Fix library<span id="music-count-fix"></span></button>
+            </div>
+            <div data-admin-only style="margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <span id="music-status-summary" style="font-size:12px;color:var(--text3)"></span>
+              <button class="btn btn-secondary btn-sm" onclick="startMusicReconcile(this)">Check library now</button>
+            </div>
+          </div>
+          <div id="music-library"><div class="loading-state"><div class="spinner"></div></div></div>
         </div>
 
         <div id="lib-tab-browse">
@@ -2394,7 +2795,7 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
           <!-- Row 1: Search + Sort -->
           <div class="lib-filters-row">
             <input class="search-box" id="lib-search" placeholder="Search titles..." oninput="searchLibrary()" style="width:220px">
-            <select class="lib-sort-select" id="lib-sort" onchange="setLibSort(this.value)">
+            <select class="lib-sort-select" id="lib-sort" aria-label="Sort library" onchange="setLibSort(this.value)">
               <option value="date_desc">Recently Added</option>
               <option value="title_asc">Title A–Z</option>
               <option value="title_desc">Title Z–A</option>
@@ -2505,10 +2906,10 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
             </div>
             <div style="padding:0 16px 16px">
               <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-                <select id="home-hero-select" class="form-input" style="max-width:360px;flex:1" onchange="updateHeroPick()">
+                <select id="home-hero-select" aria-label="Hero content" class="form-input" style="max-width:360px;flex:1" onchange="updateHeroPick()">
                   <option value="">-- disabled --</option>
                 </select>
-                <select id="home-hero-sort" class="form-input" style="max-width:180px" onchange="updateHeroSort()">
+                <select id="home-hero-sort" aria-label="Hero sort order" class="form-input" style="max-width:180px" onchange="updateHeroSort()">
                   <option value="random_desc">Random</option>
                   <option value="communityrating_desc">Top Rated</option>
                   <option value="releasedate_desc">Newest First</option>
@@ -2516,7 +2917,7 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
                   <option value="name_asc">A &rarr; Z</option>
                   <option value="datecreated_desc">Recently Added</option>
                 </select>
-                <select id="home-hero-item-count" class="form-input" style="max-width:120px" onchange="updateHeroSort()">
+                <select id="home-hero-item-count" aria-label="Hero item count" class="form-input" style="max-width:120px" onchange="updateHeroSort()">
                   <option value="5">5 items</option>
                   <option value="10" selected>10 items</option>
                   <option value="15">15 items</option>
@@ -2536,7 +2937,7 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
                   <span class="hero-config-tooltip">Only feature content that has a trailer. This works best with the Android TV app which can auto-play trailers in the hero spotlight.</span>
                 </label>
                 <label class="hero-config-checkbox">
-                  <input type="checkbox" id="home-hero-trailer-audio" onchange="updateHeroSort()" checked>
+                  <input type="checkbox" id="home-hero-trailer-audio" onchange="updateHeroSort()">
                   <span>Trailer audio default</span>
                   <span class="hero-config-hint" onclick="toggleHeroHint(event)">?</span>
                   <span class="hero-config-tooltip">When checked, trailer audio plays by default. Users can still mute/unmute with the on-screen button.</span>
@@ -2557,7 +2958,7 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
                   <div style="font-size:11px;color:var(--text3);margin-top:2px">Get notified when a movie or episode finishes downloading and is ready to watch. Shows a toast popup in Jellyfin and the Android TV app.</div>
                 </div>
                 <label style="position:relative;display:inline-block;width:40px;height:22px;flex-shrink:0">
-                  <input type="checkbox" id="notif-enabled-checkbox" onchange="toggleNotificationsFromCheckbox(this.checked)" style="opacity:0;width:0;height:0">
+                  <input type="checkbox" id="notif-enabled-checkbox" aria-label="Download notifications" onchange="toggleNotificationsFromCheckbox(this.checked)" style="opacity:0;width:0;height:0">
                   <span style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:var(--bg3);border-radius:11px;transition:.2s"></span>
                   <span id="notif-slider" style="position:absolute;height:16px;width:16px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.2s"></span>
                 </label>
@@ -2599,9 +3000,9 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
               <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:12px;border-bottom:1px solid var(--border);margin-bottom:12px">
                 <div style="flex:1">
                   <div style="font-size:13px;color:var(--text)">Previews when a card is focused</div>
-                  <div style="font-size:11px;color:var(--text3);margin-top:2px">Android TV plays a preview of a focused card. For a provider (IPTV) title that opens a provider connection per card scrolled over, which can cut off a running recording. "Local files only" keeps previews for downloaded media.</div>
+                  <div style="font-size:11px;color:var(--text3);margin-top:2px">Android TV plays a preview of a focused card. For a provider (IPTV) title that opens a provider connection per card scrolled over, which can cut off a running recording. "Local files only" (the default) keeps previews for downloaded media.</div>
                 </div>
-                <select id="card-previews-select" onchange="saveCardPreviews(this.value)" style="flex-shrink:0;font-size:12px;padding:4px 6px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px">
+                <select id="card-previews-select" aria-label="Card previews" onchange="saveCardPreviews(this.value)" style="flex-shrink:0;font-size:12px;padding:4px 6px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px">
                   <option value="all">All cards</option>
                   <option value="local_only">Local files only</option>
                   <option value="off">Off</option>
@@ -2687,6 +3088,7 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
             <div class="filter-group">
               <button class="filter-btn active" data-disctype="movies" onclick="setDiscoverType('movies',this)">Movies</button>
               <button class="filter-btn" data-disctype="series" onclick="setDiscoverType('series',this)">TV Shows</button>
+              <button class="filter-btn" data-disctype="music" data-music-only onclick="setDiscoverType('music',this)">Music</button>
             </div>
           </div>
           <div id="discover-section-tabs" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px"></div>
@@ -2785,10 +3187,10 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
               <div class="card-title">Channels <span id="live-ch-count" style="color:var(--text3);font-weight:400"></span></div>
               <div style="display:flex;gap:8px;align-items:center">
                 <input class="form-input" id="live-ch-search" placeholder="Search channels..." style="width:200px;padding:5px 10px;font-size:12px" oninput="searchLiveChannels()">
-                <select class="form-input" id="live-ch-group-filter" style="width:160px;padding:5px 10px;font-size:12px" onchange="filterLiveChannels()">
+                <select class="form-input" id="live-ch-group-filter" aria-label="Filter channels by group" style="width:160px;padding:5px 10px;font-size:12px" onchange="filterLiveChannels()">
                   <option value="">All Groups</option>
                 </select>
-                <select class="form-input" id="live-ch-epg-filter" style="width:120px;padding:5px 10px;font-size:12px" onchange="filterLiveChannelsByEpg()">
+                <select class="form-input" id="live-ch-epg-filter" aria-label="Filter channels by guide data" style="width:120px;padding:5px 10px;font-size:12px" onchange="filterLiveChannelsByEpg()">
                   <option value="">All</option>
                   <option value="has_epg">Has EPG</option>
                   <option value="no_epg">No EPG</option>
@@ -2831,6 +3233,7 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
                 <span id="live-setup-address-display" style="font-family:monospace;font-size:13px;padding:8px 12px;background:var(--bg2);border-radius:6px;color:var(--green);flex:1;min-width:0;overflow-wrap:anywhere"></span>
                 <button class="btn btn-secondary" style="padding:5px 12px;font-size:12px" onclick="editSetupAddress()">Edit</button>
               </div>
+              <p id="live-setup-detected" style="color:var(--amber);font-size:11px;margin-top:4px"></p>
               <p style="color:var(--text3);font-size:11px;margin-top:4px">The LAN IP and port of this Tentacle server (what Jellyfin can reach)</p>
             </div>
 
@@ -3030,9 +3433,12 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
     </div>
 
     <p style="font-size:13px;color:var(--text2);margin-bottom:20px;line-height:1.6">
-      Rewrites all <code style="font-family:'DM Mono',monospace;background:var(--bg3);padding:1px 5px;border-radius:3px">.strm</code>
-      files from the old provider to stream from the new provider, matched by title.
-      Content that doesn't exist on the new provider will be flagged.
+      Moves the old provider's films to the new provider: each film the new provider lists
+      in its chosen movie categories, under the same title and year, gets its
+      <code style="font-family:'DM Mono',monospace;background:var(--bg3);padding:1px 5px;border-radius:3px">.strm</code>
+      rewritten to play from the new provider. Everything else (films it doesn't list,
+      and all series) stays with the old provider, which is switched off, with its files untouched.
+      Choose the new provider's categories first; Preview shows the counts.
     </p>
 
     <div class="form-group">
@@ -3347,6 +3753,17 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
   </div>
 </div>
 
+<!-- Music: album / artist / song page -->
+<div class="modal-overlay" id="modal-music" style="display:none">
+  <div class="modal modal-wide">
+    <div class="modal-header">
+      <div class="modal-title" id="music-modal-title">—</div>
+      <button class="modal-close" onclick="closeModal('modal-music')">✕</button>
+    </div>
+    <div id="music-modal-body"></div>
+  </div>
+</div>
+
 <!-- Toast container -->
 <div class="toast-container" id="toasts"></div>
 
@@ -3445,6 +3862,11 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
         <button class="btn btn-secondary" onclick="testSetupArr('radarr')" style="font-size:12px">Test Radarr</button>
         <span id="setup-radarr-result" style="margin-left:8px;font-size:12px"></span>
       </div>
+      <div class="form-group" id="setup-radarr-profile-wrap" style="display:none">
+        <div class="form-label">Default quality profile</div>
+        <select class="form-input" id="setup-radarr-profile"></select>
+        <div class="form-hint">Every request uses it. Tentacle never guesses one (Radarr&rsquo;s first profile is usually &ldquo;Any&rdquo;).</div>
+      </div>
 
       <hr class="divider" style="margin:16px 0">
 
@@ -3459,6 +3881,11 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
       <div style="margin-bottom:16px">
         <button class="btn btn-secondary" onclick="testSetupArr('sonarr')" style="font-size:12px">Test Sonarr</button>
         <span id="setup-sonarr-result" style="margin-left:8px;font-size:12px"></span>
+      </div>
+      <div class="form-group" id="setup-sonarr-profile-wrap" style="display:none">
+        <div class="form-label">Default quality profile</div>
+        <select class="form-input" id="setup-sonarr-profile"></select>
+        <div class="form-hint">Every request uses it. Tentacle never guesses one (Sonarr&rsquo;s first profile is usually &ldquo;Any&rdquo;).</div>
       </div>
 
       <div style="display:flex;gap:8px">
@@ -3584,6 +4011,7 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="/static/js/app.js?v=42"></script>
 <script src="/static/js/pages.js?v=42"></script>
+<script src="/static/js/music.js?v=42"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {

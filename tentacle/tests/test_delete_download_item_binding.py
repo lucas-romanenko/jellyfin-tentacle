@@ -6,7 +6,6 @@ The permission check is on tmdb_id ("did you request this title"); the
 Jellyfin delete uses the caller-supplied jellyfin_item_id. Validating the id's
 shape (#71) stops path traversal but not a well-formed id of a different item.
 """
-import tempfile
 import unittest
 from unittest import mock
 
@@ -14,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from tmp_dirs import temp_dir
 
 MINE = "a" * 32       # the film this user requested (tmdb 603)
 THEIRS = "b" * 32     # someone else's film (tmdb 999)
@@ -50,7 +50,7 @@ class DeleteDownloadBindsTheItem(unittest.TestCase):
         from models.database import DownloadRequest, Movie, TentacleUser, get_db, set_setting
         from routers import library
         from routers.auth import _sign_session
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db",
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db",
                                connect_args={"check_same_thread": False})
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()

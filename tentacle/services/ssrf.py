@@ -11,10 +11,11 @@ IP at connect time); for the internal-home-server threat model this is an
 acceptable, large reduction in attack surface and matches the audit recommendation.
 """
 
+import inspect
 import ipaddress
 import logging
 import socket
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Tuple
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -43,20 +44,57 @@ def _ip_is_blocked(ip: str) -> bool:
     return not addr.is_global
 
 
-def host_is_public(hostname: str) -> bool:
-    """Resolve hostname; return True only if every resolved IP is public."""
+def host_verdict(hostname: str) -> Tuple[bool, str]:
+    """(public?, why not) from one lookup: True only if every resolved IP is
+    public. The reason names what the name resolved to, or the resolver's
+    error, so a refusal can be told apart from a DNS outage in the log."""
     if not hostname:
-        return False
+        return False, "no host"
     # A bare IP literal still resolves through getaddrinfo, so this covers
     # http://169.254.169.254/ and http://127.0.0.1/ as well as names.
     try:
         infos = socket.getaddrinfo(hostname, None)
-    except (socket.gaierror, UnicodeError, OSError):
-        return False
+    except (socket.gaierror, UnicodeError, OSError) as e:
+        return False, f"{hostname} could not be resolved ({e})"
     ips = {info[4][0] for info in infos}
     if not ips:
-        return False
-    return all(not _ip_is_blocked(ip) for ip in ips)
+        return False, f"{hostname} resolved to no address"
+    blocked = sorted(ip for ip in ips if _ip_is_blocked(ip))
+    if blocked:
+        return False, f"{hostname} resolves to {', '.join(sorted(ips))}; not public: {', '.join(blocked)}"
+    return True, ""
+
+
+def host_is_public(hostname: str) -> bool:
+    """Resolve hostname; return True only if every resolved IP is public."""
+    return host_verdict(hostname)[0]
+
+
+def _url_host(url: str, allowed_hosts: Optional[Iterable[str]]) -> Tuple[Optional[str], str]:
+    """The host is_safe_url() goes on to resolve, or (None, why not)."""
+    if not url:
+        return None, "empty URL"
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None, "unparseable URL"
+    if parsed.scheme not in ("http", "https"):
+        return None, "not an http(s) URL"
+    host = parsed.hostname
+    if not host:
+        return None, "no host in the URL"
+    if allowed_hosts is not None:
+        h = host.lower()
+        allow = [a.lower() for a in allowed_hosts]
+        if not any(h == a or h.endswith("." + a) for a in allow):
+            return None, f"{host} is not an allowed host"
+    return host, ""
+
+
+def url_host_allowed(url: str, allowed_hosts: Optional[Iterable[str]] = None) -> bool:
+    """is_safe_url() without the DNS half: http(s), a host, and (optionally)
+    on an allowlisted host. Needs no lookup, so it can run on the event loop."""
+    return _url_host(url, allowed_hosts)[0] is not None
 
 
 def is_safe_url(url: str, allowed_hosts: Optional[Iterable[str]] = None) -> bool:
@@ -66,23 +104,31 @@ def is_safe_url(url: str, allowed_hosts: Optional[Iterable[str]] = None) -> bool
     allowed_hosts matches by exact host or dotted-suffix (so "thetvdb.com" allows
     "artworks.thetvdb.com" but not "thetvdb.com.evil.test").
     """
-    if not url:
-        return False
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return False
-    if parsed.scheme not in ("http", "https"):
-        return False
-    host = parsed.hostname
-    if not host:
-        return False
-    if allowed_hosts is not None:
-        h = host.lower()
-        allow = [a.lower() for a in allowed_hosts]
-        if not any(h == a or h.endswith("." + a) for a in allow):
-            return False
-    return host_is_public(host)
+    host, _ = _url_host(url, allowed_hosts)
+    return host is not None and host_is_public(host)
+
+
+def explain_safe_url(url: str, allowed_hosts: Optional[Iterable[str]] = None) -> Tuple[bool, str]:
+    """is_safe_url() and, when it refuses, why -- from the same single lookup.
+    Resolves through host_verdict() itself: patching host_is_public() (as some
+    tests do) changes is_safe_url() only."""
+    host, why = _url_host(url, allowed_hosts)
+    if host is None:
+        return False, why
+    return host_verdict(host)
+
+
+is_safe_url.explain = explain_safe_url
+
+
+def explain_url(guard, url: str) -> Tuple[bool, str]:
+    """guard(url), plus the reason when the guard can give one (is_safe_url and
+    the lan_origin_guard() guards carry it as .explain; any other callable,
+    a test's lambda or Mock included, gets "")."""
+    explain = getattr(guard, "explain", None)
+    if not inspect.isfunction(explain):
+        return bool(guard(url)), ""
+    return explain(url)
 
 
 # Where a self-hosted re-streamer can legitimately live: RFC 1918, IPv6 ULA
@@ -106,11 +152,15 @@ def _ip_is_lan(ip: str) -> bool:
     return any(addr.version == n.version and addr in n for n in _LAN_NETS)
 
 
-def _resolve(host: str) -> set:
+def _resolve_explained(host: str) -> Tuple[set, str]:
     try:
-        return {info[4][0] for info in socket.getaddrinfo(host, None)}
-    except (socket.gaierror, UnicodeError, OSError):
-        return set()
+        return {info[4][0] for info in socket.getaddrinfo(host, None)}, ""
+    except (socket.gaierror, UnicodeError, OSError) as e:
+        return set(), str(e)
+
+
+def _resolve(host: str) -> set:
+    return _resolve_explained(host)[0]
 
 
 def _origin(url: str):
@@ -146,10 +196,21 @@ def lan_origin_guard(server_url: str):
     if not ips or not all(_ip_is_lan(ip) for ip in ips):
         return is_safe_url
 
-    def guard(url: str) -> bool:
+    def explain(url: str) -> Tuple[bool, str]:
         if _origin(url or "") == origin:
-            resolved = _resolve(origin[1])
-            return bool(resolved) and all(_ip_is_lan(ip) for ip in resolved)
-        return is_safe_url(url)
+            resolved, err = _resolve_explained(origin[1])
+            if not resolved:
+                return False, (f"{origin[1]} could not be resolved ({err})" if err
+                               else f"{origin[1]} resolved to no address")
+            not_lan = sorted(ip for ip in resolved if not _ip_is_lan(ip))
+            if not_lan:
+                return False, (f"{origin[1]} resolves to {', '.join(sorted(resolved))}; "
+                               f"not on the LAN: {', '.join(not_lan)}")
+            return True, ""
+        return explain_url(is_safe_url, url)
 
+    def guard(url: str) -> bool:
+        return explain(url)[0]
+
+    guard.explain = explain
     return guard

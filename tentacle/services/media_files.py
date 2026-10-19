@@ -8,18 +8,79 @@ created — bypassing Sonarr/Radarr's recycle bin. So every delete path removes
 files by extension and only prunes directories that are already empty.
 """
 import logging
+import re
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Where Tentacle sees Radarr's and Sonarr's downloads (Settings → Library
+# Paths). Read as media_files.RADARR_MEDIA_ROOT when used, never imported by
+# name: the tests point them at a temp dir.
+RADARR_MEDIA_ROOT = Path("/media/movies")
+SONARR_MEDIA_ROOT = Path("/media/shows")
 
 # Extensions Tentacle writes, and is therefore allowed to delete.
 OWNED_SUFFIXES = {".strm", ".nfo"}
 
 # Real media. Their presence means another tool owns files in this folder, so
-# shared metadata (tvshow.nfo) must be left alone.
+# shared metadata (tvshow.nfo) must be left alone. Every video extension
+# Radarr/Sonarr import (their MediaFileExtensions, less .strm and playlist or
+# generic data formats), compared lower-case: a download named ".MKV" or an
+# ".iso" rip is someone else's content too (#282).
 MEDIA_SUFFIXES = {
     ".mkv", ".mp4", ".avi", ".m4v", ".ts", ".webm", ".mov", ".wmv", ".mpg", ".mpeg", ".m2ts",
+    ".mts", ".mk3d", ".m2v", ".iso", ".img", ".vob", ".flv", ".rm", ".rmvb", ".divx", ".xvid",
+    ".ogm", ".ogv", ".asf", ".3gp", ".qt", ".dvr-ms", ".wtv", ".nrg", ".pva", ".nsv", ".ty",
+    ".avc", ".vp3", ".svq3", ".nuv", ".viv", ".dv", ".fli", ".bivx",
 }
+
+
+def arr_path_parts(arr_path: Optional[str]) -> list:
+    """The components of a path as Radarr/Sonarr report it, split on both
+    slashes: a Windows Radarr's look like D:\\Movies\\Heat (1995)\\Heat (1995).mkv,
+    and Path() on Linux reads that as one file name in the current directory."""
+    return [p for p in re.split(r"[\\/]", arr_path or "") if p]
+
+
+def arr_parent(arr_path: Optional[str]) -> str:
+    """The folder of a file Radarr/Sonarr reports, in their own path syntax
+    ("" when there is none)."""
+    m = re.match(r"^(.*)[\\/][^\\/]*$", (arr_path or "").rstrip("\\/"))
+    return m.group(1) if m else ""
+
+
+def is_vod_arr_path(arr_path: Optional[str]) -> bool:
+    """A Radarr/Sonarr folder inside a VOD folder (hybrid series, the merged
+    layout): the VOD sync's, not a download Tentacle must find under its mount."""
+    return any(p.lower() == "vod" for p in arr_path_parts(arr_path))
+
+
+def local_arr_folder(arr_folder: Optional[str], root: Path, arr_root: str) -> Optional[Path]:
+    """Tentacle's own path of a folder Radarr/Sonarr calls `arr_folder`, or
+    None when Tentacle can't see it.
+
+    First the documented mapping (Radarr's `arr_root`, /data/movies, is
+    Tentacle's `root`, /media/movies; a path outside `arr_root` as is, for a
+    mount at the same path). Then the folder by NAME under `root`, as the VOD
+    sync finds titles: Radarr's root folder can be called anything
+    (/data/media/movies, D:\\Movies) and Tentacle only mounts the same host
+    folder (#649). Not for a VOD folder: a same-named folder under `root`
+    would be another one.
+    """
+    parts = arr_path_parts(arr_folder)
+    if not parts:
+        return None
+    candidates = []
+    if arr_folder.startswith("/"):
+        arr_root = arr_root.rstrip("/")
+        if arr_folder == arr_root or arr_folder.startswith(arr_root + "/"):
+            candidates.append(Path(str(root) + arr_folder[len(arr_root):]))
+        else:
+            candidates.append(Path(arr_folder))
+    if not is_vod_arr_path(arr_folder):
+        candidates.append(Path(root) / parts[-1])
+    return next((c for c in candidates if c.is_dir()), None)
 
 
 def _prune_empty_dirs(root: Path) -> None:
@@ -56,7 +117,7 @@ def delete_movie_files(strm_path) -> int:
         # downloaded copy can share that stem ("Heat (1995).mkv"), and Radarr's
         # NFO for it has the same name — then it describes the download, not us.
         nfo = strm.with_suffix(".nfo")
-        has_download = any(strm.with_suffix(ext).exists() for ext in MEDIA_SUFFIXES)
+        has_download = _has_same_stem_media(strm)
         if nfo.exists() and not has_download:
             nfo.unlink()
             deleted += 1
@@ -76,7 +137,8 @@ def delete_series_files(show_dir) -> int:
     metadata option and Jellyfin's NFO saver write per-episode `SxxEyy.nfo` and
     `season.nfo` next to the downloaded `.mkv`s, and deleting every `.nfo` in
     the tree stripped the metadata off episodes Tentacle never touched. Only an
-    NFO sharing its stem with a `.strm` we are removing is ours.
+    NFO sharing its stem with a `.strm` we are removing is ours, unless a
+    download with that stem sits beside it: then it describes the download (#614).
 
     `tvshow.nfo` is shared by both sources (Tentacle writes it for VOD and for
     Sonarr series), so it is removed only when no real media is left anywhere in
@@ -94,9 +156,10 @@ def delete_series_files(show_dir) -> int:
         for strm in list(root.rglob("*.strm")):
             try:
                 nfo = strm.with_suffix(".nfo")
+                has_download = _has_same_stem_media(strm)
                 strm.unlink()
                 deleted += 1
-                if nfo.exists():
+                if nfo.exists() and not has_download:
                     nfo.unlink()
                     deleted += 1
             except OSError as e:
@@ -116,6 +179,16 @@ def delete_series_files(show_dir) -> int:
     except OSError as e:
         logger.warning(f"Failed to delete series files at {show_dir}: {e}")
     return deleted
+
+
+def _has_same_stem_media(strm: Path) -> bool:
+    """True when a download with the .strm's name sits beside it, in any case
+    ("Heat (1995).MKV") and any importable format ("Heat (1995).iso")."""
+    try:
+        return any(f.stem == strm.stem and f.suffix.lower() in MEDIA_SUFFIXES and f.is_file()
+                   for f in strm.parent.iterdir())
+    except OSError:
+        return True  # can't tell: keep the NFO
 
 
 def _has_media_files(root: Path) -> bool:

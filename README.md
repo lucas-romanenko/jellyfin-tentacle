@@ -23,7 +23,7 @@ Add your streaming provider and your Jellyfin home screen fills with curated row
 ## Features
 
 ### 📺 Live TV
-- Add your provider (Xtream, M3U URL, or M3U file) — replaces Threadfin
+- Uses your Xtream provider (the same one as VOD, added once in Settings) — replaces Threadfin
 - Browse and enable channel groups — only sync what you want
 - Full EPG program guide with automatic refresh and auto-chaining
 - Built-in HDHomeRun emulation — Jellyfin sees Tentacle as a native tuner
@@ -108,7 +108,7 @@ tentacle:
 docker compose up -d
 ```
 
-Open `http://localhost:8888` — the setup wizard will guide you through connecting Jellyfin. Only a Jellyfin URL and API key are required. TMDB metadata works out of the box with a built-in key.
+Open `http://localhost:8888` — the setup wizard will guide you through connecting Jellyfin. Only a Jellyfin URL, an API key and a sign-in with a Jellyfin admin account are required. TMDB metadata works out of the box with a built-in key.
 
 > **Volume notes:**
 > - `./tentacle-data:/data` is the only required volume. The other four are optional depending on which features you use.
@@ -118,13 +118,16 @@ Open `http://localhost:8888` — the setup wizard will guide you through connect
 
 ### After Starting
 
-1. **Jellyfin** — URL + API key (Dashboard → API Keys → Create) — *required*
-2. **TMDB** — works automatically with built-in key, or override with your own from [themoviedb.org](https://www.themoviedb.org/settings/api)
-3. **Streaming Provider** — add via the VOD page for on-demand content, or Live TV page for channels (optional)
-4. **Radarr / Sonarr** — URL + API key in Settings → Connections (optional). Set up webhooks in Radarr/Sonarr pointing to `http://<tentacle-ip>:8888/api/radarr/webhook` and `/api/sonarr/webhook` for real-time updates.
-5. **Check paths** — Settings → Library Paths to verify your volume mounts are correct
-6. **Playlists** — go to Jellyfin → Playlists tab to enable auto playlists from your synced content
-7. **Home Screen** — go to Jellyfin → Home Screen tab to set up the hero spotlight and playlist rows
+The [setup wizard](https://lucas-romanenko.github.io/jellyfin-tentacle/getting-started/setup-wizard/) walks through the first four:
+
+1. **Jellyfin** — URL + API key (Dashboard → API Keys → +), then sign in with your Jellyfin admin account — *required*
+2. **Radarr / Sonarr** — URL + API key and a default quality profile (optional; later in Settings → Connections). The wizard then shows the webhook URLs to add in Radarr/Sonarr: `http://<tentacle-ip>:8888/api/radarr/webhook` and `/api/sonarr/webhook`, for real-time updates.
+3. **TMDB** — works automatically with the built-in key, or override with your own from [themoviedb.org](https://www.themoviedb.org/settings/api)
+4. **Plugin** — install the Tentacle plugin in Jellyfin (optional)
+5. **Streaming Provider** — Settings → Providers → + Add Provider (optional). One provider serves VOD and, when the account has live channels, Live TV.
+6. **Check paths** — Settings → Library Paths to verify your volume mounts are correct
+7. **Playlists** — go to Jellyfin → Playlists tab to enable auto playlists from your synced content
+8. **Home Screen** — go to Jellyfin → Home Screen tab to set up the hero spotlight and playlist rows
 
 > **First-time users with existing VOD files:** If Tentacle detects `.strm` files in your VOD folders from a previous tool (xtream-sync, etc.), it will offer to clean them up so you can start fresh with proper metadata and tagging.
 

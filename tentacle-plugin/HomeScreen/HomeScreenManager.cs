@@ -5,9 +5,18 @@ using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Tentacle.HomeScreen;
+
+/// <summary>
+/// What one home-config read gave: the config (null when the user has none), and
+/// whether the read failed (timeout, refused, non-2xx, unreadable body). A failed
+/// read is not "no home": clients keep what they show instead of tearing it down.
+/// </summary>
+public readonly record struct HomeConfigResult(HomeConfig? Config, bool Failed);
 
 /// <summary>
 /// Fetches and caches home configuration from the Tentacle API.
@@ -17,12 +26,15 @@ public class HomeScreenManager
     private readonly ILogger<HomeScreenManager> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly object _cacheLock = new();
-    private readonly Dictionary<string, (HomeConfig? Config, DateTime Expiry)> _userCache = new();
+    private readonly Dictionary<string, (HomeConfigResult Value, DateTime Expiry)> _userCache = new();
     private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(5);
-    // One fetch per user at a time. A home page load asks for the same config
-    // from several endpoints at once; without this each of them made its own
-    // blocking call, holding a thread for up to the full timeout apiece.
-    private readonly ConcurrentDictionary<string, object> _fetchLocks = new();
+    // One fetch per user and token at a time, shared by every request that asks
+    // meanwhile. A home page load asks for the same config from several endpoints
+    // at once. They await the running fetch: waiting on the backend never holds a
+    // Jellyfin thread. The blocking fetch behind a per-user lock this replaces
+    // starved Jellyfin's thread pool on a burst of home loads (#256). Guarded by
+    // _cacheLock.
+    private readonly Dictionary<string, Task<HomeConfigResult>> _inflight = new();
     private const int PruneAbove = 64;
 
     public HomeScreenManager(ILogger<HomeScreenManager> logger, IHttpClientFactory httpClientFactory)
@@ -36,61 +48,46 @@ public class HomeScreenManager
     /// Fetches from Tentacle API with userId + api_key (the caller's Jellyfin access token,
     /// which the backend validates before trusting the userId). Returns null if unavailable.
     /// </summary>
-    public HomeConfig? GetHomeConfig(Guid userId = default, string apiKey = "")
+    public async Task<HomeConfig?> GetHomeConfigAsync(Guid userId = default, string apiKey = "", CancellationToken cancellationToken = default)
+    {
+        var home = await GetHomeConfigResultAsync(userId, apiKey, cancellationToken).ConfigureAwait(false);
+        return home.Config;
+    }
+
+    /// <summary>
+    /// Like <see cref="GetHomeConfigAsync"/>, but tells a failed read apart from "no home config".
+    /// </summary>
+    public Task<HomeConfigResult> GetHomeConfigResultAsync(Guid userId = default, string apiKey = "", CancellationToken cancellationToken = default)
     {
         var plugin = Plugin.Instance;
         if (plugin == null || string.IsNullOrEmpty(plugin.Configuration.TentacleUrl))
         {
-            return null;
+            return Task.FromResult(new HomeConfigResult(null, false));
         }
 
         var cacheKey = userId == default ? "_global" : userId.ToString("N");
+        // The shared fetch is keyed by the caller's token too: a 401/403 is a verdict
+        // on that token, and must not be handed to the user's other requests (#95).
+        var flightKey = cacheKey + "\n" + apiKey;
 
+        Task<HomeConfigResult>? fetch;
         lock (_cacheLock)
         {
             if (_userCache.TryGetValue(cacheKey, out var entry) && DateTime.UtcNow < entry.Expiry)
             {
-                return entry.Config;
+                return Task.FromResult(entry.Value);
+            }
+
+            if (!_inflight.TryGetValue(flightKey, out fetch))
+            {
+                fetch = FetchAndCacheAsync(plugin.Configuration.TentacleUrl, userId, apiKey, cacheKey, flightKey);
+                _inflight[flightKey] = fetch;
             }
         }
 
-        lock (_fetchLocks.GetOrAdd(cacheKey, _ => new object()))
-        {
-            // Whoever held the lock before us has usually just filled the cache.
-            lock (_cacheLock)
-            {
-                if (_userCache.TryGetValue(cacheKey, out var fresh) && DateTime.UtcNow < fresh.Expiry)
-                {
-                    return fresh.Config;
-                }
-            }
-
-            var config = FetchFromApi(plugin.Configuration.TentacleUrl, userId, apiKey, out var callerRefused);
-
-            // The cache is keyed by user, but a 401/403 is about THIS caller's token,
-            // not about the user's config: caching it would hand the refusal to the
-            // user's other, validly-authenticated requests (blank toolbar, rows with
-            // no sort settings) until the entry expires. Other failures stay cached
-            // briefly -- this is a blocking call, and an unreachable backend must not
-            // cost every home request its full timeout.
-            if (!callerRefused)
-            {
-                lock (_cacheLock)
-                {
-                    _userCache[cacheKey] = (config, DateTime.UtcNow.Add(CacheDuration));
-                    if (_userCache.Count > PruneAbove)
-                    {
-                        var now = DateTime.UtcNow;
-                        foreach (var stale in _userCache.Where(e => now >= e.Value.Expiry).Select(e => e.Key).ToList())
-                        {
-                            _userCache.Remove(stale);
-                        }
-                    }
-                }
-            }
-
-            return config;
-        }
+        // The fetch runs to its own timeout whoever waits for it; a caller whose
+        // client went away stops waiting at once.
+        return fetch.WaitAsync(cancellationToken);
     }
 
     /// <summary>
@@ -106,13 +103,52 @@ public class HomeScreenManager
         _logger.LogInformation("[Tentacle] Home config cache cleared");
     }
 
-    private HomeConfig? FetchFromApi(string tentacleUrl, Guid userId, string apiKey, out bool callerRefused)
+    private async Task<HomeConfigResult> FetchAndCacheAsync(string tentacleUrl, Guid userId, string apiKey, string cacheKey, string flightKey)
     {
-        callerRefused = false;
+        await Task.Yield(); // never finish inline: the caller registers this task first
+        try
+        {
+            var (home, callerRefused) = await FetchFromApiAsync(tentacleUrl, userId, apiKey).ConfigureAwait(false);
+
+            // The cache is keyed by user, but a 401/403 is about THIS caller's token,
+            // not about the user's config: caching it would hand the refusal to the
+            // user's other, validly-authenticated requests (blank toolbar, rows with
+            // no sort settings) until the entry expires. Other failures stay cached
+            // briefly: an unreachable backend must not cost every home request its
+            // full timeout.
+            if (!callerRefused)
+            {
+                lock (_cacheLock)
+                {
+                    _userCache[cacheKey] = (home, DateTime.UtcNow.Add(CacheDuration));
+                    if (_userCache.Count > PruneAbove)
+                    {
+                        var now = DateTime.UtcNow;
+                        foreach (var stale in _userCache.Where(e => now >= e.Value.Expiry).Select(e => e.Key).ToList())
+                        {
+                            _userCache.Remove(stale);
+                        }
+                    }
+                }
+            }
+
+            return home;
+        }
+        finally
+        {
+            lock (_cacheLock)
+            {
+                _inflight.Remove(flightKey);
+            }
+        }
+    }
+
+    private async Task<(HomeConfigResult Home, bool CallerRefused)> FetchFromApiAsync(string tentacleUrl, Guid userId, string apiKey)
+    {
         if (string.IsNullOrEmpty(tentacleUrl))
         {
             _logger.LogDebug("Tentacle URL not configured");
-            return null;
+            return (new HomeConfigResult(null, false), false);
         }
 
         try
@@ -134,34 +170,35 @@ public class HomeScreenManager
                 url += "?" + string.Join("&", query);
             }
 
-            // Sync-over-async: GetHomeConfig is called from sync Jellyfin IHomeSection interface
-            // (TentacleHomeSection) which cannot be made async. Safe in Kestrel (no SynchronizationContext).
-            var response = client.GetAsync(url).GetAwaiter().GetResult();
+            using var response = await client.GetAsync(url).ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning("Tentacle API returned {Status} for home-config", response.StatusCode);
-                callerRefused = response.StatusCode is System.Net.HttpStatusCode.Unauthorized
+                var callerRefused = response.StatusCode is System.Net.HttpStatusCode.Unauthorized
                     or System.Net.HttpStatusCode.Forbidden;
-                return null;
+                return (new HomeConfigResult(null, true), callerRefused);
             }
 
-            var json = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+            var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
             var wrapper = JsonSerializer.Deserialize<HomeConfigResponse>(json, JsonOptions);
 
             if (wrapper?.Config == null)
             {
                 _logger.LogDebug("Tentacle returned empty home config");
-                return null;
+                return (new HomeConfigResult(null, false), false);
             }
 
             _logger.LogInformation("[Tentacle] Loaded home config with {RowCount} rows from API", wrapper.Config.Rows?.Count ?? 0);
-            return wrapper.Config;
+            return (new HomeConfigResult(wrapper.Config, false), false);
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Failed to fetch home config from Tentacle API");
-            return null;
+            // Warning, not Debug: a timeout or a dropped connection is the usual
+            // outage, and the only trace of it in Jellyfin's log. Failures are
+            // cached for CacheDuration, so this is at most one line per user per 5 s.
+            _logger.LogWarning("Could not read the home config from Tentacle: {Error}", ex.Message);
+            return (new HomeConfigResult(null, true), false);
         }
     }
 

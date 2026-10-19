@@ -39,9 +39,14 @@ def discover_new_provider_content(db) -> dict:
     result = {"vod_new": [], "live_new": []}
 
     # ── VOD categories ────────────────────────────────────────────────────
+    # `active` is the VOD switch. Not `live_tv_enabled == False`: the provider
+    # test turns Live TV on for every Xtream account that has live channels,
+    # so that filter skipped the usual VOD + Live TV provider and its new VOD
+    # categories were never found. A provider made on the Live TV page is
+    # active=False and stays out.
     vod_providers = (
         db.query(Provider)
-        .filter(Provider.active == True, Provider.live_tv_enabled == False)  # noqa: E712
+        .filter(Provider.active == True)  # noqa: E712
         .all()
     )
     for p in vod_providers:
@@ -51,21 +56,23 @@ def discover_new_provider_content(db) -> dict:
                 logger.info(f"[Discovery] {len(new_names)} new VOD categories from '{p.name}': {new_names[:5]}")
                 result["vod_new"].extend(new_names)
         except Exception as e:
+            _rollback(db)   # first: reading p.name on a failed session raises again
             logger.warning(f"[Discovery] VOD category refresh failed for '{p.name}': {e}")
 
     # ── Live TV groups ───────────────────────────────────────────────────
-    live_providers = (
-        db.query(Provider)
-        .filter(Provider.active == True, Provider.live_tv_enabled == True)  # noqa: E712
-        .all()
-    )
-    for p in live_providers:
+    # The guide's selector: `live_tv_enabled` alone. A provider set up on the
+    # Live TV page is active=False, so a filter on `active` skipped the normal
+    # Live TV setup (#623, the same mistake #174 fixed for the guide).
+    from routers.livetv import live_tv_providers
+
+    for p in live_tv_providers(db):
         try:
             new_names = _refresh_live_groups(db, p)
             if new_names:
                 logger.info(f"[Discovery] {len(new_names)} new Live TV groups from '{p.name}': {new_names[:5]}")
                 result["live_new"].extend(new_names)
         except Exception as e:
+            _rollback(db)   # first: reading p.name on a failed session raises again
             logger.warning(f"[Discovery] Live TV group refresh failed for '{p.name}': {e}")
 
     # ── Notify ───────────────────────────────────────────────────────────
@@ -73,6 +80,17 @@ def discover_new_provider_content(db) -> dict:
         _record_notice(db, result["vod_new"], result["live_new"])
 
     return result
+
+
+def _rollback(db) -> None:
+    """After a provider's refresh failed: a failed flush leaves the session
+    refusing every statement until it is rolled back, so every later provider,
+    and the new-content notice, failed with it. Drops only that provider's
+    uncommitted rows (they are found again next time)."""
+    try:
+        db.rollback()
+    except Exception as e:
+        logger.warning(f"[Discovery] Could not roll back the session: {e}")
 
 
 def _refresh_vod_categories(db, provider) -> list:

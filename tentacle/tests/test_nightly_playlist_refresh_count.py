@@ -10,7 +10,6 @@ Needs fastapi + apscheduler to import main/routers; skipped otherwise.
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -19,6 +18,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
+from tmp_dirs import temp_dir
 
 try:
     import main
@@ -37,7 +37,7 @@ def _session(tmp):
 class TestNightlyRefreshRunsOncePerUser(unittest.TestCase):
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(temp_dir(self))
         self.db = _session(self.tmp)
         self.db.add(mdb.TentacleUser(id=1, jellyfin_user_id="jf-1", display_name="User 1"))
         self.db.add(mdb.TentacleUser(id=2, jellyfin_user_id="jf-2", display_name="User 2"))
@@ -77,6 +77,8 @@ class TestNightlyRefreshRunsOncePerUser(unittest.TestCase):
             mock.patch.object(tagger, "refresh_recently_added_tags", lambda db: None),
             mock.patch.object(discovery, "discover_new_provider_content",
                               lambda db: {"vod_new": [], "live_new": []}),
+            # A live stream another test left open must not make this wait.
+            mock.patch("services.provider_activity.live_streams_active", lambda: False),
             mock.patch.object(jellyfin.JellyfinService, "wait_for_library_scan",
                               lambda self, **kw: False),
         ]

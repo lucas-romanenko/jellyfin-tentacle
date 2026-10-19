@@ -15,14 +15,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from typing import Optional
 
 from models.database import YouTubeChannel, YouTubeVideo, get_db, get_setting
 from routers.auth import require_admin
-from services.youtube import client, indexer, library, playlist, resolver
+from services.youtube import client, indexer, library, playlist, resolver, traffic
 from services.youtube.sync import check_base_url, detect_base_url
 from services.youtube.errors import YouTubeBlocked, YouTubeError
+from services.secret_mask import is_shown_form, mask_url_login, restore_url_login
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +66,7 @@ def effective_height(channel_cap: int, requested: Optional[int]) -> int:
 @router.get("/v/{video_id}/master.m3u8")
 @router.head("/v/{video_id}/master.m3u8")
 def master_playlist(video_id: str,
+                    request: Request,
                     h: Optional[int] = Query(None, ge=1, le=4320),
                     db: Session = Depends(get_db)):
     """What a .strm points at. Jellyfin re-probes this on every PlaybackInfo.
@@ -75,15 +78,19 @@ def master_playlist(video_id: str,
     exactly what the channel is set to. Still one variant either way.
     """
     video = _known_video(db, video_id)
+    if request.method == "HEAD":
+        # "Is it there?" is answered from the database. Resolving for a HEAD
+        # was a YouTube page load plus a manifest for a probe that reads no body.
+        return Response(media_type="application/vnd.apple.mpegurl",
+                        headers={"Cache-Control": "no-cache"})
     channel = db.query(YouTubeChannel).filter(YouTubeChannel.id == video.channel_fk).first()
     max_height = effective_height(channel.max_height if channel else 1080, h)
 
     try:
-        resolved = resolver.resolve(video_id, max_height)
-        with httpx.Client(timeout=UPSTREAM_TIMEOUT, follow_redirects=True) as c:
-            r = c.get(resolved.master_url, headers=resolved.headers)
-            r.raise_for_status()
-            text = r.text
+        # The resolve and the master are both cached until shortly before
+        # Google's URL expires, and survive a restart (see resolver).
+        with traffic.purpose("playback"):
+            resolved, text = resolver.master_text(video_id, max_height)
     except resolver.ResolveBackoff as e:
         # Already logged when it failed; Jellyfin re-probes far more often
         # than it is worth hearing about.
@@ -124,7 +131,8 @@ def proxied(video_id: str, token: str, request: Request, db: Session = Depends(g
 
     headers = {}
     try:
-        resolved = resolver.resolve(video_id)
+        with traffic.purpose("playback"):
+            resolved = resolver.resolve(video_id)
     except YouTubeBlocked:
         raise HTTPException(503, "YouTube is rate-limiting this server; try again shortly")
     except YouTubeError as e:
@@ -135,13 +143,19 @@ def proxied(video_id: str, token: str, request: Request, db: Session = Depends(g
     if range_header:
         headers["Range"] = range_header
 
-    client_ = httpx.Client(timeout=UPSTREAM_TIMEOUT, follow_redirects=True)
+    # One shared client: segments reuse keep-alive connections instead of a new
+    # connection (and DNS lookup) per segment, and the proxy setting applies.
+    client_ = traffic.http_client()
     try:
-        req = client_.build_request("GET", target, headers=headers)
-        upstream = client_.send(req, stream=True)
+        with traffic.purpose("playback"):
+            req = client_.build_request("GET", target, headers=headers, timeout=UPSTREAM_TIMEOUT)
+            upstream = client_.send(req, stream=True)
         upstream.raise_for_status()
     except httpx.HTTPError as e:
-        client_.close()
+        try:
+            upstream.close()
+        except Exception:
+            pass
         logger.warning(f"[YouTube] Upstream fetch failed for {video_id}: {e}")
         raise HTTPException(502, "Upstream fetch failed")
 
@@ -151,7 +165,6 @@ def proxied(video_id: str, token: str, request: Request, db: Session = Depends(g
             text = upstream.read().decode("utf-8", errors="replace")
         finally:
             upstream.close()
-            client_.close()
         body = playlist.rewrite(text, target, _proxy_prefix(db, video_id))
         return Response(content=body, media_type="application/vnd.apple.mpegurl",
                         headers={"Cache-Control": "no-cache"})
@@ -162,7 +175,6 @@ def proxied(video_id: str, token: str, request: Request, db: Session = Depends(g
                 yield chunk
         finally:
             upstream.close()
-            client_.close()
 
     passthrough = {k: v for k, v in upstream.headers.items()
                    if k.lower() in ("content-length", "content-range", "accept-ranges")}
@@ -220,8 +232,9 @@ def live_stream(channel_id: int, db: Session = Depends(get_db)):
         raise HTTPException(503, "ffmpeg is not available on the Tentacle server")
 
     try:
-        video_url, audio_url, headers = resolver.pick_tracks(
-            video.video_id, channel.max_height or 1080)
+        with traffic.purpose("playback"):
+            video_url, audio_url, headers = resolver.pick_tracks(
+                video.video_id, channel.max_height or 1080)
     except YouTubeBlocked:
         raise HTTPException(503, "YouTube is rate-limiting this server; try again shortly")
     except YouTubeError as e:
@@ -231,10 +244,13 @@ def live_stream(channel_id: int, db: Session = Depends(get_db)):
     user_agent = headers.get("User-Agent", "Mozilla/5.0")
     # ffmpeg runs on this host, so Google's IP-signed URLs are valid for it —
     # no need to route the segments back through our own proxy.
+    # With a proxy set, ffmpeg goes through it too: Google signs the URLs to the
+    # address that resolved them.
+    via = traffic.ffmpeg_proxy_args()
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
-           "-user_agent", user_agent, "-i", video_url]
+           "-user_agent", user_agent, *via, "-i", video_url]
     if audio_url:
-        cmd += ["-user_agent", user_agent, "-i", audio_url,
+        cmd += ["-user_agent", user_agent, *via, "-i", audio_url,
                 "-map", "0:v:0", "-map", "1:a:0"]
     else:
         cmd += ["-map", "0:v:0", "-map", "0:a:0?"]
@@ -283,7 +299,12 @@ def live_stream(channel_id: int, db: Session = Depends(get_db)):
         err = b"".join(err_tail).decode("utf-8", "replace").strip()
         if err:
             logger.warning(f"[YouTube] ffmpeg for '{channel.title}': {err[-400:]}")
+            if produced[0] < 1_000_000:
+                # It failed before it got going: the cached tracks are stale.
+                resolver.forget_tracks(video.video_id)
         logger.info(f"[YouTube] Live stream ended for '{channel.title}'")
+
+    produced = [0]
 
     def _stream():
         try:
@@ -291,6 +312,7 @@ def live_stream(channel_id: int, db: Session = Depends(get_db)):
                 chunk = proc.stdout.read1(65536)
                 if not chunk:
                     break
+                produced[0] += len(chunk)
                 yield chunk
         finally:
             _stop()
@@ -336,12 +358,13 @@ def live_master(channel_id: int, db: Session = Depends(get_db)):
 
     try:
         # No failure back-off: a broadcast can start answering at any moment.
-        resolved = resolver.resolve(video.video_id, channel.max_height or 1080,
-                                    backoff=False)
-        with httpx.Client(timeout=UPSTREAM_TIMEOUT, follow_redirects=True) as c:
-            r = c.get(resolved.master_url, headers=resolved.headers)
-            r.raise_for_status()
-            text = r.text
+        with traffic.purpose("playback"):
+            resolved = resolver.resolve(video.video_id, channel.max_height or 1080,
+                                        backoff=False)
+            r = traffic.http_client().get(resolved.master_url, headers=resolved.headers,
+                                          timeout=UPSTREAM_TIMEOUT)
+        r.raise_for_status()
+        text = r.text
     except YouTubeBlocked:
         raise HTTPException(503, "YouTube is rate-limiting this server; try again shortly")
     except (YouTubeError, httpx.HTTPError) as e:
@@ -368,9 +391,15 @@ def toggle_live(channel_id: int, body: LiveToggle, db: Session = Depends(get_db)
     channel = db.query(YouTubeChannel).filter(YouTubeChannel.id == channel_id).first()
     if not channel:
         raise HTTPException(404, "Channel not found")
-    channel.live_enabled = body.enabled
     if body.channel_number:
-        channel.channel_number = body.channel_number
+        # A number another Live TV channel already has would be merged with it
+        # in Jellyfin (#179): say so rather than keep a pin the lineup must set aside.
+        number = str(body.channel_number).strip()
+        others = yt_livetv.lineup_numbers(db, [c for c in yt_livetv._lineup_channels(db) if c.id != channel.id])
+        if number in yt_livetv.iptv_guide_numbers(db) or number in set(others.values()):
+            raise HTTPException(409, f"Guide number {number} is already used by another Live TV channel")
+        channel.channel_number = number
+    channel.live_enabled = body.enabled
     db.commit()
 
     guide = 0
@@ -391,7 +420,8 @@ def toggle_live(channel_id: int, body: LiveToggle, db: Session = Depends(get_db)
 
     logger.info(f"[YouTube] Live TV {'enabled' if body.enabled else 'disabled'} for '{channel.title}'")
     return {"success": True, "live_enabled": body.enabled,
-            "guide_number": yt_livetv.guide_number(channel), "programmes": guide}
+            "guide_number": yt_livetv.number_for(db, channel),
+            "programmes": guide}
 
 
 # ── Admin ───────────────────────────────────────────────────────────────────
@@ -459,6 +489,90 @@ def status(request: Request, db: Session = Depends(get_db)):
         "resolver_cache": resolver.cache_size(),
         "resolver_backing_off": resolver.failure_count(),
     }
+
+
+class TrafficSettings(BaseModel):
+    """How Tentacle talks to YouTube. See services/youtube/traffic.py."""
+    background_checks: bool = True
+    interval_minutes: int = traffic.DEFAULT_INTERVAL_MINUTES
+    # A masked key (as GET returns it) keeps the saved one; "" clears it.
+    api_key: str = ""
+    proxy: str = ""
+
+
+def _mask(key: str) -> str:
+    return (key[:4] + "..." + key[-4:]) if len(key) > 10 else ("..." if key else "")
+
+
+def _unchanged_key(sent: str, stored: str) -> bool:
+    """The page sent back exactly the masked key it was shown: keep the key.
+    Anything else is a new key, even one that contains "..."."""
+    return bool(stored) and (sent == _mask(stored) or is_shown_form(sent, stored))
+
+
+@router.get("/traffic", dependencies=[Depends(require_admin)])
+def traffic_status(db: Session = Depends(get_db)):
+    """The traffic settings, the pause after a bot check, and request counts."""
+    from services.youtube import feeds
+    key = get_setting(db, "youtube_api_key", "") or ""
+    return {
+        "background_checks": get_setting(db, "youtube_background_checks", "true") != "false",
+        "interval_minutes": traffic.interval_minutes(
+            get_setting(db, "youtube_index_interval_minutes", str(traffic.DEFAULT_INTERVAL_MINUTES))),
+        "min_interval_minutes": traffic.MIN_INTERVAL_MINUTES,
+        "api_key": _mask(key),
+        "api": feeds.api_state(),
+        # The proxy's password is never sent back (a Save with the masked form
+        # keeps the stored one).
+        "proxy": mask_url_login(get_setting(db, "youtube_proxy", "") or ""),
+        # What is really used, and why a saved one is not: YouTube requests
+        # are held until it is fixed (#244).
+        "proxy_in_use": mask_url_login(traffic.proxy()),
+        "proxy_error": traffic.proxy_problem(),
+        "pause": traffic.pause_state(),
+        "this_hour": traffic.counts(),
+        "last_hour": traffic.last_report(),
+    }
+
+
+@router.post("/traffic", dependencies=[Depends(require_admin)])
+def save_traffic(body: TrafficSettings, db: Session = Depends(get_db)):
+    from models.database import set_setting
+    from services.youtube import feeds
+    old_proxy = get_setting(db, "youtube_proxy", "") or ""
+    old_key = get_setting(db, "youtube_api_key", "") or ""
+    try:
+        # The page shows the proxy with its password masked; sent back, it
+        # means the stored password.
+        proxy = traffic.normalize_proxy(restore_url_login(body.proxy or "", old_proxy))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    sent_key = (body.api_key or "").strip()
+    key = old_key if _unchanged_key(sent_key, old_key) else sent_key
+
+    set_setting(db, "youtube_background_checks", "true" if body.background_checks else "false")
+    set_setting(db, "youtube_index_interval_minutes", str(traffic.interval_minutes(body.interval_minutes)))
+    set_setting(db, "youtube_proxy", proxy)
+    set_setting(db, "youtube_api_key", key)
+    traffic.configure(proxy=proxy, api_key=key)
+    if proxy != old_proxy:
+        # A pause is about the address YouTube saw; a new route starts fresh.
+        traffic.clear_pause()
+    api_check = None
+    if key and key != old_key:
+        feeds.reset_api_state()
+        ok, message = feeds.check_api_key()
+        api_check = {"ok": ok, "detail": message}
+    try:
+        from main import reschedule_youtube_index
+        reschedule_youtube_index()
+    except Exception as e:
+        logger.warning(f"[YouTube] Could not reschedule the background check: {e}")
+    logger.info(f"[YouTube] Traffic settings saved: background checks "
+                f"{'on' if body.background_checks else 'off'}, every "
+                f"{traffic.interval_minutes(body.interval_minutes)} min, API key "
+                f"{'set' if key else 'not set'}, proxy {mask_url_login(proxy) or 'none'}")
+    return {**traffic_status(db), "api_check": api_check}
 
 
 class SetupBody(BaseModel):
@@ -649,9 +763,10 @@ def diagnose(request: Request, db: Session = Depends(get_db)):
             # "Nothing to show" has two opposite causes. Say which one this is
             # rather than listing every setting and leaving the user to guess.
             if not ch.include_videos:
-                fix = ("'Videos' is turned off for this channel, so its uploads are never "
-                       "looked at — only its live streams. Turn Videos on and press "
-                       "'Refresh now'.")
+                # Set on add for a channel with no Videos tab on YouTube (#277).
+                fix = (f"'{ch.title}' has no Videos tab on YouTube (it only streams, or only "
+                       f"posts Shorts), so its finished streams are its library. If none have "
+                       f"been found yet, press 'Check for new videos'.")
             elif not listing.get("videos"):
                 fix = (f"YouTube's Videos tab for '{ch.title}' returned nothing — the channel "
                        f"may only ever broadcast live. Its finished streams are kept instead "
@@ -769,7 +884,8 @@ def diagnose(request: Request, db: Session = Depends(get_db)):
             if jf_url and jf_key:
                 try:
                     from services.jellyfin import JellyfinService
-                    jfc = JellyfinService(jf_url, jf_key, get_setting(db, "jellyfin_user_id", ""))
+                    # As the playlists' owner: Jellyfin answers 404 to anyone else.
+                    jfc = JellyfinService(jf_url, jf_key, user.jellyfin_user_id)
                     ids = {p["name"]: p["playlist_id"]
                            for p in _get_smartlists_with_playlist_ids(db, user_id=user.id)}
                     for c in channels:
@@ -819,13 +935,15 @@ def list_channels(db: Session = Depends(get_db)):
     from services.youtube import livetv as yt_livetv
 
     out = []
+    numbers = yt_livetv.lineup_numbers(db)
+    taken = yt_livetv.iptv_guide_numbers(db) | set(numbers.values())
     for ch in db.query(YouTubeChannel).order_by(YouTubeChannel.title).all():
         # Guide entries this channel has in Tentacle's own EPG — what the
         # Live TV page shows next to it, and what Jellyfin's guide is built from.
         guide_programmes = db.query(EPGProgram).filter(
             EPGProgram.channel_id == yt_livetv.epg_channel_id(ch)).count() if ch.live_enabled else 0
         out.append({
-            "guide_number": yt_livetv.guide_number(ch),
+            "guide_number": numbers.get(ch.id) or yt_livetv.guide_number(ch, taken),
             "guide_programmes": guide_programmes,
             "id": ch.id, "title": ch.title, "slug": ch.slug, "kind": ch.kind,
             "input_url": ch.input_url, "avatar_url": ch.avatar_url,
@@ -856,6 +974,11 @@ def list_channels(db: Session = Depends(get_db)):
                 YouTubeVideo.removed_at.is_(None)).count(),
         })
     return out
+
+
+# A bound on "<title> (n)" numbering, so a naming bug can only ever fail an
+# add, never spin a request thread.
+_MAX_TITLE_NUMBER = 1000
 
 
 @router.post("/channels", dependencies=[Depends(require_admin)])
@@ -897,12 +1020,58 @@ def add_channel(body: ChannelCreate, request: Request, db: Session = Depends(get
     except (YouTubeError, ValueError) as e:
         raise HTTPException(400, f"Could not read that channel: {e}")
 
+    # A playlist is its own source: its listing carries its OWNER's
+    # channel_id, so matching on that refused a playlist next to the channel
+    # it comes from (or a second playlist of the same owner) as "already
+    # added". Videos in both are handled by the indexer ("already indexed
+    # under another channel or playlist").
     existing = None
-    if info.get("channel_id"):
+    if info.get("kind") == "playlist" and info.get("playlist_id"):
         existing = db.query(YouTubeChannel).filter(
-            YouTubeChannel.channel_id == info["channel_id"]).first()
+            YouTubeChannel.playlist_id == info["playlist_id"]).first()
+    elif info.get("channel_id"):
+        existing = db.query(YouTubeChannel).filter(
+            YouTubeChannel.channel_id == info["channel_id"],
+            or_(YouTubeChannel.kind.is_(None), YouTubeChannel.kind != "playlist")).first()
     if existing:
         raise HTTPException(409, f"'{existing.title}' is already added")
+
+    # The title names the source's folder, playlist and home row, and the
+    # playlist builder skips a second source of the same name. A playlist is
+    # often named like its channel ("Bluey") or generically ("Favorites"), so
+    # a clash is told apart by the owner, then by a number.
+    # The name space is shared with every other SmartList (lists, tag rules,
+    # source and built-in playlists, Downloads): a YouTube "Christmas" next
+    # to a "Christmas" rule displaced the rule's playlist. And two titles that
+    # differ only past the 120 characters safe_name() keeps would share one
+    # folder, so the folder name has to be free too.
+    from services.tagger import name_key, smartlist_names_in_use
+    taken = smartlist_names_in_use(db)
+    taken_folders = {name_key(library.safe_name(t)) for (t,) in db.query(YouTubeChannel.title).all() if t}
+
+    def _clash(t):
+        return name_key(t) in taken or name_key(library.safe_name(t)) in taken_folders
+
+    title = info["title"]
+    owner = info.get("owner")
+    if _clash(title) and info.get("kind") == "playlist" and owner \
+            and name_key(owner) != name_key(title):
+        title = f"{title} ({owner})"
+    base_title, n = title, 2
+    while _clash(title):
+        if n > _MAX_TITLE_NUMBER:
+            raise HTTPException(409, f"Could not find a free name for '{info['title']}': "
+                                     f"{_MAX_TITLE_NUMBER - 1} numbered copies already exist")
+        # Keep the number inside what the folder name keeps: safe_name() cuts
+        # at 120 characters AND at 255 bytes. Sized in characters only, a long
+        # CJK or emoji title lost its " (n)" to the byte cut, the folder name
+        # never changed, and this loop never ended.
+        suffix = f" ({n})"
+        cut = base_title[:120 - len(suffix)]
+        cut = library._fit_bytes(cut, library.MAX_NAME_BYTES - len(suffix.encode("utf-8")))
+        title = cut.rstrip() + suffix
+        n += 1
+    info["title"] = title
 
     slug = indexer.slugify(info["title"])
     if db.query(YouTubeChannel).filter(YouTubeChannel.slug == slug).first():
@@ -914,11 +1083,13 @@ def add_channel(body: ChannelCreate, request: Request, db: Session = Depends(get
     channel = YouTubeChannel(
         input_url=body.url, kind=info["kind"], channel_id=info.get("channel_id"),
         handle=info.get("handle"), playlist_id=info.get("playlist_id"),
-        title=info["title"], slug=slug,
+        title=title, slug=slug,
         avatar_url=info.get("avatar_url"), banner_url=info.get("banner_url"),
-        include_videos=True,
-        # A channel that only ever broadcasts live has an empty uploads tab;
-        # keeping its finished streams is the only way it has a library at all.
+        # A channel that only streams or only posts Shorts has no Videos tab at
+        # all; asking for it on every refresh would only ever list nothing (#277).
+        include_videos=info.get("has_videos_tab", True),
+        # A channel that only ever broadcasts live has no uploads; keeping its
+        # finished streams is the only way it has a library at all.
         # Decided here so nobody has to know such channels exist.
         include_streams=not info.get("has_uploads", True),
         include_shorts=body.include_shorts,
@@ -995,21 +1166,74 @@ def _start_refresh(channel_ids=None, guide: bool = False) -> bool:
     return True
 
 
-def _note_channel_error(db: Session, channel: YouTubeChannel, exc: Exception) -> None:
+def resume_unfinished_channels() -> list:
+    """Index again the channels whose first index never finished. Returns their ids.
+
+    The refresh queue lives in memory, so a restart during a channel's first
+    index (an update, a crash) left it half-added: rows but no files, no
+    playlist, and a card saying its videos were being fetched, until the next
+    scheduled check, or for good with background checks off (#288). Run once
+    after start-up. So is a channel listed in full whose library videos have no
+    files yet: the listing is saved before they are written. Anything else is
+    never queued, so a normal restart sends nothing; a pause after a bot check
+    still applies.
+    """
+    from models.database import SessionLocal
+    db = SessionLocal()
+    try:
+        if get_setting(db, "youtube_enabled", "false") != "true" or not client.available():
+            return []
+        # Never checked at all, not "never listed in full": last_full_check came
+        # with the feed checks, so on the first start after an upgrade from an
+        # older build it is empty on every channel, and all of them were
+        # listed and published again a minute after start-up.
+        # The listing is saved before the files are written and the playlists
+        # made, so a restart in that stretch left library videos with no files,
+        # on a channel already marked as listed. Those are finished too.
+        unwritten = db.query(YouTubeVideo.channel_fk).filter(
+            YouTubeVideo.removed_at.is_(None),
+            YouTubeVideo.strm_path.is_(None),
+            indexer.is_library_status(YouTubeVideo.live_status))
+        ids = [c.id for c in db.query(YouTubeChannel.id).filter(
+            YouTubeChannel.enabled == True,  # noqa: E712
+            or_(YouTubeChannel.last_checked.is_(None),
+                YouTubeChannel.id.in_(unwritten))).all()]
+    finally:
+        db.close()
+    if ids:
+        logger.info(f"[YouTube] {len(ids)} channel(s) were not finished (a restart cut their "
+                    f"first index or the writing of their files short); indexing them now")
+        _start_refresh(channel_ids=ids)
+    return ids
+
+
+def _note_channel_error(db: Session, channel: YouTubeChannel, exc: Exception, title: str = None) -> None:
     """Record a failed sync on the channel as well as on the run.
 
     The run's copy lives in a toast that is gone a few seconds later, and only
     listing failures inside index_channel ever reached the channel itself — so a
     crash anywhere after indexing (writing files, the guide, retention) left
     "indexed with 1 error" on screen and nothing anywhere to say what it was.
+
+    The channel may have been removed meanwhile: then there is nothing to record
+    on it. Reading its title for the message used to raise ObjectDeletedError
+    here and end the whole run (#278).
     """
+    from sqlalchemy import inspect as sa_inspect
     detail = f"{type(exc).__name__}: {exc}" if not str(exc) else str(exc)
+    if title is None:
+        from services.youtube.sync import channel_ref
+        title = (channel_ref(channel) or (None, "a removed channel"))[1]
     _refresh_state["errors"] += 1
-    _refresh_state["error_detail"] = f"{channel.title}: {detail}"
+    _refresh_state["error_detail"] = f"{title}: {detail}"
     try:
         db.rollback()
-        channel.last_error = detail[:400]
-        channel.error_count = (channel.error_count or 0) + 1
+        identity = sa_inspect(channel).identity
+        live = db.get(YouTubeChannel, identity[0]) if identity else None
+        if live is None:
+            return
+        live.last_error = detail[:400]
+        live.error_count = (live.error_count or 0) + 1
         db.commit()
     except Exception:                       # never let bookkeeping mask the real error
         logger.debug("[YouTube] Could not record the channel error", exc_info=True)
@@ -1035,11 +1259,15 @@ def _run_refresh(channel_ids=None):
         channel_ids = None if pending_all else pending
 
 
+# Seconds between two channels in a refresh someone started (random in range).
+MANUAL_CHANNEL_GAP_SECONDS = (2.0, 6.0)
+
+
 def _run_refresh_once(channel_ids=None):
     """Index the given channels (or every enabled one) with its own session."""
     from models.database import SessionLocal
     from services.youtube import livetv as yt_livetv
-    from services.youtube.sync import base_url, publish_to_jellyfin, sync_channel
+    from services.youtube.sync import base_url, channel_ref, publish_to_jellyfin, sync_channel
 
     db = SessionLocal()
     try:
@@ -1050,8 +1278,27 @@ def _run_refresh_once(channel_ids=None):
         channels = query.all()
         _refresh_state["channels_total"] = len(channels)
         changed = []
-        for channel in channels:
-            _refresh_state["channel"] = channel.title
+        for i, channel in enumerate(channels):
+            if traffic.paused():
+                problem = traffic.proxy_problem()
+                logger.info(f"[YouTube] Refresh stopped: the saved proxy can't be used ({problem})" if problem
+                            else "[YouTube] Refresh stopped: YouTube requests are paused after a bot check")
+                if problem:
+                    _refresh_state["errors"] += 1
+                    _refresh_state["error_detail"] = f"The saved proxy can't be used: {problem}"
+                break
+            if i:
+                # A few seconds apart, never at a fixed beat: someone waits on
+                # this, but a burst of listings is what YouTube flags.
+                import time as _time
+                _time.sleep(traffic.spacing(*MANUAL_CHANNEL_GAP_SECONDS))
+            ref = channel_ref(channel)
+            if ref is None:
+                # Removed from the page while this run was on an earlier one.
+                _refresh_state["channels_done"] += 1
+                continue
+            title = ref[1]
+            _refresh_state["channel"] = title
             _refresh_state["keep"] = channel.keep_count or 10
             _refresh_state["kept"] = 0
             channel_base = _refresh_state["new"]
@@ -1069,14 +1316,22 @@ def _run_refresh_once(channel_ids=None):
                 _refresh_state["retired"] += r.get("retired", 0)
                 r_written = r.get("written", 0) + r.get("retired", 0)
             except YouTubeError as e:
-                _note_channel_error(db, channel, e)
-                logger.warning(f"[YouTube] Refresh failed for '{channel.title}': {e}")
+                _note_channel_error(db, channel, e, title)
+                logger.warning(f"[YouTube] Refresh failed for '{title}': {e}")
             except Exception as e:
-                _note_channel_error(db, channel, e)
-                logger.error(f"[YouTube] Refresh crashed for '{channel.title}': {e}", exc_info=True)
+                db.rollback()
+                if channel_ref(channel) is None:
+                    # Removed while it was being indexed: its work simply ends.
+                    logger.info(f"[YouTube] '{title}' was removed during its refresh")
+                else:
+                    _note_channel_error(db, channel, e, title)
+                    logger.error(f"[YouTube] Refresh crashed for '{title}': {e}", exc_info=True)
             if r_written:
                 changed.append(channel)
             _refresh_state["channels_done"] += 1
+        # A channel removed during the run is not published either.
+        changed = [c for c in changed if channel_ref(c)]
+        channels = [c for c in channels if channel_ref(c)]
 
         # Publish when something changed — or whenever specific channels were
         # asked for, which is what a newly added one is: its playlist has to
@@ -1208,7 +1463,7 @@ def delete_channel(channel_id: int, db: Session = Depends(get_db)):
         removed += library.remove_video(video)
     # ...and the channel's own folder, which the per-video removals leave empty.
     library.remove_channel_folder(channel.title)
-    title, was_live = channel.title, bool(channel.live_enabled)
+    title, was_live, channel_slug = channel.title, bool(channel.live_enabled), channel.slug
     if was_live:
         from models.database import EPGProgram
         from services.youtube import livetv as yt_livetv
@@ -1216,15 +1471,20 @@ def delete_channel(channel_id: int, db: Session = Depends(get_db)):
             EPGProgram.channel_id == yt_livetv.epg_channel_id(channel)
         ).delete(synchronize_session=False)
     db.delete(channel)   # cascades to videos
+    db.flush()
+    # ...and any row a running refresh committed after the videos above were
+    # read. SQLite does not enforce the foreign key, so it would outlive the
+    # channel and block that video for the channel added again (#278).
+    db.query(YouTubeVideo).filter(YouTubeVideo.channel_fk == channel_id).delete(synchronize_session=False)
     db.commit()
     logger.info(f"[YouTube] Removed channel '{title}' ({removed} file(s) deleted)")
 
-    threading.Thread(target=_cleanup_after_remove, args=(title, was_live), daemon=True,
+    threading.Thread(target=_cleanup_after_remove, args=(title, was_live, channel_slug), daemon=True,
                      name="youtube-remove-cleanup").start()
     return {"success": True, "files_deleted": removed}
 
 
-def _cleanup_after_remove(title: str, was_live: bool) -> None:
+def _cleanup_after_remove(title: str, was_live: bool, slug: str = None) -> None:
     """Take a removed channel out of Jellyfin entirely: rows, playlist, items, guide.
 
     Every step stands on its own and is logged, because a removal that stops
@@ -1254,17 +1514,30 @@ def _cleanup_after_remove(title: str, was_live: bool) -> None:
         for user in db.query(TentacleUser).all():
             # The playlist id Tentacle recorded, captured before the sync below
             # removes the folder that holds it.
-            recorded = next((p["playlist_id"] for p in _get_smartlists_with_playlist_ids(db, user_id=user.id)
-                             if p["name"] == title), None)
+            # Found by the channel's own tag ("yt:<slug>"), never by name: a
+            # user's own playlist called "Cooking" is not the YouTube channel
+            # "Cooking", and matching by name deleted it, with its home row and
+            # hero (#52). Without a slug (an older caller), only YouTube
+            # playlists are considered.
+            smartlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
+            if slug:
+                recorded = next((p["playlist_id"] for p in smartlists
+                                 if f"yt:{slug}" in (p.get("yt_tags") or [])), None)
+            else:
+                recorded = next((p["playlist_id"] for p in smartlists
+                                 if p.get("is_youtube") and p["name"] == title), None)
 
             # 1. The home row and, if it pointed here, the hero — explicitly.
             try:
                 with home_config_lock:
                     config = _read_home_json(user) or {}
                     rows = config.get("rows") or []
-                    kept = [r for r in rows if r.get("display_name") != title]
+                    # By playlist id only. No recorded playlist means there is no
+                    # row of this channel to find, and a same-named row is someone
+                    # else's.
+                    kept = [r for r in rows if not (recorded and r.get("playlist_id") == recorded)]
                     hero = config.get("hero") or {}
-                    hero_hit = hero.get("display_name") == title
+                    hero_hit = bool(recorded) and hero.get("playlist_id") == recorded
                     if len(kept) != len(rows) or hero_hit:
                         for i, r in enumerate(kept, start=1):
                             r["order"] = i
@@ -1287,8 +1560,9 @@ def _cleanup_after_remove(title: str, was_live: bool) -> None:
             if jf and recorded:
                 try:
                     if any(p.get("Id") == recorded for p in jf.get_playlists(user.jellyfin_user_id) or []):
-                        jf.delete_item(recorded)
-                        logger.info(f"[YouTube] Deleted leftover Jellyfin playlist {recorded} ('{title}')")
+                        # Only a playlist Tentacle made (#152).
+                        if jf.delete_tentacle_playlist(recorded, user.jellyfin_user_id):
+                            logger.info(f"[YouTube] Deleted leftover Jellyfin playlist {recorded} ('{title}')")
                 except Exception as e:
                     logger.warning(f"[YouTube] Could not check Jellyfin playlists for user {user.id}: {e}")
 

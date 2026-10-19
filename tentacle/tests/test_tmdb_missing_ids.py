@@ -6,16 +6,16 @@ flagged the lookup as a TMDB failure.
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
-import tempfile
 import unittest
 from unittest import mock
 
 from services.tmdb import TMDBService
+from tmp_dirs import temp_dir
 
 
 class MissingIds(unittest.TestCase):
     def setUp(self):
-        self.tmdb = TMDBService("token", tempfile.mkdtemp())
+        self.tmdb = TMDBService("token", temp_dir(self))
         self.tmdb.session = mock.Mock()
 
     def test_no_request_for_missing_or_invalid_ids(self):

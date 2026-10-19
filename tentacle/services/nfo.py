@@ -4,6 +4,7 @@ Writes complete Jellyfin-compatible NFO files from TMDB metadata.
 Tags are written here — this is the single source of truth for NFO content.
 """
 
+import hashlib
 import logging
 import re
 from pathlib import Path
@@ -31,6 +32,15 @@ def _x(text) -> str:
         return ""
     cleaned = _INVALID_XML_CHARS.sub("", str(text))
     return _xml_escape(cleaned, {'"': "&quot;", "'": "&apos;"})
+
+
+def _date_added(metadata: dict) -> str:
+    """<dateadded>, which Jellyfin reads as the item's DateCreated: the
+    download's own date when the caller has one (metadata["date_added"], a
+    datetime), else now. An NFO created today for a years-old download put it
+    at the top of "Latest" (#266, #649)."""
+    when = metadata.get("date_added")
+    return (when if isinstance(when, datetime) else datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def write_movie_nfo(
@@ -92,7 +102,7 @@ def write_movie_nfo(
             lines.append(f'  <tag>{_x(tag)}</tag>')
 
         # Date added
-        lines.append(f'  <dateadded>{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</dateadded>')
+        lines.append(f'  <dateadded>{_date_added(metadata)}</dateadded>')
 
         # Directors
         for director in (metadata.get("directors") or []):
@@ -168,7 +178,7 @@ def write_series_nfo(
         for tag in tags:
             lines.append(f'  <tag>{_x(tag)}</tag>')
 
-        lines.append(f'  <dateadded>{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</dateadded>')
+        lines.append(f'  <dateadded>{_date_added(metadata)}</dateadded>')
 
         for creator in (metadata.get("creators") or []):
             lines.append(f'  <director>{_x(creator)}</director>')
@@ -198,32 +208,81 @@ def write_series_nfo(
         return False
 
 
-def update_nfo_tags(nfo_path: Path, tags: List[str]) -> bool:
+def update_nfo_tags(nfo_path: Path, tags: List[str], owned: Optional[set] = None) -> bool:
     """
-    Update only the <tag> entries in an existing NFO.
-    Preserves all other content.
+    Update only the <tag> entries in an existing NFO. Preserves all other
+    content. True when the file was written.
+
+    With `owned` (Tentacle's own tag names, services.tagger.tentacle_owned_tags),
+    only those tags are replaced by `tags`: an NFO Jellyfin's NFO saver wrote
+    also carries its own tags (TMDB keywords, hand tags), and they stay. Without
+    it every <tag> line is replaced. A file whose tags already match is not
+    written at all: every Refresh Tags press rewrote about 25k NFOs, and
+    Jellyfin re-read each of them (#165). A file with neither </movie> nor
+    </tvshow> (Radarr's/Sonarr's metadata-URL NFO, a release .nfo) is left
+    alone: there is nowhere to put the tags, and counting it as written made
+    every Radarr/Sonarr scan trigger a full Jellyfin library scan (#628).
     """
     if not nfo_path.exists():
         return False
 
     try:
-        content = nfo_path.read_text(encoding='utf-8')
-
-        # Remove existing tags
+        import html
         import re
-        content = re.sub(r'\s*<tag>.*?</tag>\n?', '', content)
+        original = nfo_path.read_text(encoding='utf-8')
+        existing = [html.unescape(t) for t in re.findall(r'^[ \t]*<tag>(.*?)</tag>', original, flags=re.MULTILINE)]
+        kept = [t for t in existing if owned is not None and t not in owned]
+        final = kept + [t for t in tags if t not in kept]
+        if set(final) == set(existing) and len(final) == len(existing):
+            return False
 
-        # Insert new tags before closing tag
-        tag_xml = '\n'.join(f'  <tag>{_x(t)}</tag>' for t in tags)
-        close_tag = '</movie>' if '</movie>' in content else '</tvshow>'
-        content = content.replace(close_tag, f'{tag_xml}\n{close_tag}')
+        # Tags go in before the closing tag. A file with neither (a
+        # metadata-URL NFO, a release .nfo) is not ours to rewrite.
+        close_tag = next((t for t in ('</movie>', '</tvshow>') if t in original), None)
+        if close_tag is None:
+            logger.debug(f"{nfo_path}: no </movie> or </tvshow>, tags left to the Jellyfin API")
+            return False
 
+        # Remove existing tags, whole lines only. The old pattern also ate the
+        # newline BEFORE each tag, so tags in the middle of the file glued the
+        # lines around them together, a little more on every rewrite.
+        content = re.sub(r'^[ \t]*<tag>.*?</tag>[ \t]*(?:\r?\n|$)', '', original, flags=re.MULTILINE)
+        if final:
+            tag_xml = '\n'.join(f'  <tag>{_x(t)}</tag>' for t in final)
+            content = content.replace(close_tag, f'{tag_xml}\n{close_tag}')
+
+        if content == original:
+            return False
         nfo_path.write_text(content, encoding='utf-8')
         return True
 
     except Exception as e:
         logger.error(f"Failed to update NFO tags {nfo_path}: {e}")
         return False
+
+
+def refresh_arr_nfo(nfo_path: Path, write, metadata: dict, tags: List[str],
+                    owned: Optional[set] = None) -> bool:
+    """The NFO beside a Radarr/Sonarr download: only Tentacle's tags change.
+
+    An existing file keeps everything but Tentacle's <tag> lines, and is
+    written only when those differ (update_nfo_tags). Rebuilding it from the
+    template reset <dateadded>, which Jellyfin reads as the item's
+    DateCreated, so every scan moved every old download to the top of
+    "Latest", and dropped whatever Radarr/Sonarr or Jellyfin wrote there
+    (#266). A missing one is written in full with `write` (write_movie_nfo or
+    write_series_nfo), and owned like everything else Tentacle creates in a
+    library (PUID/PGID, else the folder's owner): a root-owned NFO in
+    Radarr's/Sonarr's folder blocked their own metadata writes (#239). True
+    when the file was written.
+    """
+    if nfo_path.exists():
+        return update_nfo_tags(nfo_path, tags, owned)
+    if not write(nfo_path, metadata, tags):
+        return False
+    from services.sync import chown_path
+    chown_path(nfo_path)
+    return True
 
 
 def sanitize_filename(name: str) -> str:
@@ -241,7 +300,13 @@ def make_folder_name(title: str, year: Optional[str]) -> str:
     return f"{safe} ({year})" if year else safe
 
 
-def vod_folder_name(title: str, year: Optional[str]) -> str:
+# One path component is at most 255 BYTES on ext4, XFS, btrfs and SMB, while
+# sanitize_filename caps characters: 200 characters of CJK is 600 bytes, and
+# such a title raised ENAMETOOLONG on every sync and never imported (#156).
+MAX_NAME_BYTES = 255
+
+
+def vod_folder_name(title: str, year: Optional[str], tag: str = "") -> str:
     """Folder (and file-stem) name for a title Tentacle writes into a VOD folder.
 
     Never starts with a dot. Jellyfin's library scanner ignores every path
@@ -250,9 +315,56 @@ def vod_folder_name(title: str, year: Optional[str]) -> str:
     was written to disk and then never appeared in Jellyfin, with no error
     anywhere. Only for Tentacle's own VOD output: make_folder_name is also used
     to find folders Radarr/Sonarr named, which must not change.
+
+    Always fits a path component with ".strm" on the end (#156): a name that
+    fits is returned unchanged, so no existing folder moves; a longer one is
+    cut on a UTF-8 boundary and given a stable hash, keeping " (year)" and
+    `tag` (e.g. " [tmdbid-2002]", see sync._claim_vod_name).
     """
-    name = make_folder_name(title, year).lstrip(". ")
-    if not name or name.startswith("("):
-        name = make_folder_name("Unknown", year)
-    return name
+    safe = sanitize_filename(title).lstrip(". ")
+    if not safe:
+        # (The old check tested the whole name for a leading "(", which also
+        # turned "(500) Days of Summer" into "Unknown (2009)".)
+        safe = "Unknown"
+    tail = (f" ({year})" if year else "") + tag
+    name = f"{safe}{tail}"
+    if len(name.encode("utf-8")) + _STEM_SUFFIX_BYTES <= MAX_NAME_BYTES:
+        return name
+    # Too long for the filesystem once ".strm" is added: ext4, XFS, btrfs and
+    # SMB cap one name at 255 BYTES, and sanitize_filename's 200-character cap
+    # is 600 bytes of CJK. mkdir raised ENAMETOOLONG and the title failed with
+    # an ERROR on every sync. Only such names change — every name that fits
+    # stays exactly as it was, so no existing Jellyfin item moves. The hash of
+    # the full name keeps two long titles that share a prefix apart, and is
+    # stable, so the same title lands in the same folder on every sync.
+    digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]
+    tail = f" {digest}{tail}"
+    budget = MAX_NAME_BYTES - _STEM_SUFFIX_BYTES - len(tail.encode("utf-8"))
+    return fit_bytes(safe, budget).rstrip(" .") + tail
+
+
+# The longest suffix added to a VOD stem: ".strm" (".nfo" is shorter).
+_STEM_SUFFIX_BYTES = len(".strm")
+
+
+def fit_bytes(text: str, budget: int) -> str:
+    """Truncate to `budget` bytes of UTF-8 without splitting a character."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= budget:
+        return text
+    return encoded[:max(budget, 0)].decode("utf-8", errors="ignore")
+
+
+def fit_file_stem(stem: str, tail: str, suffix_bytes: int) -> str:
+    """stem + tail, unchanged if it fits in one name with the suffix.
+
+    Otherwise `stem` alone is shortened (plus a stable hash) and `tail` — an
+    episode's " S01E02", which Jellyfin parses the episode from — is kept whole.
+    """
+    full = f"{stem}{tail}"
+    if len(full.encode("utf-8")) + suffix_bytes <= MAX_NAME_BYTES:
+        return full
+    digest = hashlib.sha1(full.encode("utf-8")).hexdigest()[:8]
+    budget = MAX_NAME_BYTES - suffix_bytes - len(tail.encode("utf-8")) - len(digest) - 1
+    return f"{fit_bytes(stem, budget).rstrip(' .')} {digest}{tail}"
 

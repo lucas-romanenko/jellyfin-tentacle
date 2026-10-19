@@ -1,5 +1,4 @@
-# Project config (contains credentials/IPs)
-CLAUDE.md
+# Claude Code local state (CLAUDE.md itself is tracked: it holds no secrets)
 .claude
 tentacle/.claude/
 

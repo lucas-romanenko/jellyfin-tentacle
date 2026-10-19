@@ -33,6 +33,61 @@ def get_tmdb_token(db) -> str:
     return token if token else TMDB_DEFAULT_TOKEN
 
 
+def _year_within_one(a, b) -> bool:
+    """Two years ("2020", "2021") at most one apart; False if either is unknown."""
+    try:
+        return abs(int(str(a)[:4]) - int(str(b)[:4])) <= 1
+    except (TypeError, ValueError):
+        return False
+
+
+# A film from the label's year beats a far-year film exactly titled as the
+# label only with at least this share of its TMDB votes (#310). On real
+# answers remakes and sequels have 9.5 % or more (Psycho 1998: 9.5 %, Joker:
+# Folie à Deux: 10.9 %), the namesakes a re-release label finds 1.6 % or less.
+_CREDIBLE_VOTE_SHARE = 0.03
+
+
+def _similarity(a: str, b: str) -> float:
+    a = re.sub(r'[^a-z0-9]', '', (a or '').lower())
+    b = re.sub(r'[^a-z0-9]', '', (b or '').lower())
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def _match_score(title: str, year: Optional[str], tmdb_title: str, tmdb_year: Optional[str],
+                 popularity: float = 0) -> float:
+    score = _similarity(title, tmdb_title)
+    if year and tmdb_year:
+        if str(year) == str(tmdb_year):
+            # Strongly prefer an exact-year match so two same-titled
+            # candidates (remake / re-release) resolve to the right one.
+            score += 0.20
+        else:
+            # Year known but mismatched — small penalty so a matching-year
+            # candidate with comparable title similarity wins.
+            score -= 0.10
+    if (popularity or 0) > 50:
+        score += 0.05
+    return max(0.0, min(score, 1.0))
+
+
+def label_names_film(title: str, year: Optional[str], film_title: str, film_year: Optional[str],
+                     threshold: float = 0.7) -> bool:
+    """Would the scorer accept this film (its title and year) for a provider
+    label? (Without the popularity bonus: a row doesn't keep it.)"""
+    return bool(film_title) and _match_score(title, year, film_title, film_year) >= threshold
+
+
+def _far_exact(title: str, year: Optional[str], tmdb_title: str, tmdb_year: Optional[str]) -> bool:
+    """Exactly the label's title, from two or more years away."""
+    try:
+        apart = abs(int(str(year)[:4]) - int(str(tmdb_year)[:4])) >= 2
+    except (TypeError, ValueError):
+        return False
+    return apart and bool(re.sub(r'[^a-z0-9]', '', (title or '').lower())) \
+        and _similarity(title, tmdb_title) == 1.0
+
+
 class TMDBService:
     def __init__(self, bearer_token: str, cache_dir: str, match_threshold: float = 0.7):
         self.bearer_token = bearer_token
@@ -48,6 +103,11 @@ class TMDBService:
         # Per-thread flag: did a request in the current lookup fail transiently
         # (429/5xx/timeout/unreachable)? The sync runs lookups on a thread pool.
         self._tl = threading.local()
+        # Discover sets fail_fast: once TMDB can't be reached (or doesn't
+        # answer), the rest of that page load reads the cache only, instead of
+        # waiting out a timeout per section (#273). Nothing else sets it.
+        self.fail_fast = False
+        self._offline = False
 
     def _lookup_failed(self) -> bool:
         return getattr(self._tl, "failed", False)
@@ -60,6 +120,9 @@ class TMDBService:
     # Negative matches (no TMDB result) shouldn't be cached for the full 30
     # days — the title may match later (new TMDB entry, fixed metadata).
     NEGATIVE_TTL_SECONDS = 3 * 86400  # 3 days
+    # A details lookup TMDB answered 404 (the id is gone or never existed). Kept
+    # briefly so a burst of scans does not ask again for every row (#182).
+    MISSING_DETAILS_TTL_SECONDS = 6 * 3600
 
     def _cache_get(self, key: str, ttl_seconds: int = 30 * 86400) -> Optional[Any]:
         path = self._cache_path(key)
@@ -75,6 +138,20 @@ class TMDBService:
         except Exception:
             pass
         return None
+
+    def _cache_lookup(self, key: str, ttl_seconds: int = 30 * 86400) -> tuple:
+        """(hit, value). A stored negative (None) is a hit: _cache_get cannot
+        tell it from a miss, so the negative cache was never used (#163, #182)."""
+        path = self._cache_path(key)
+        if not path.exists():
+            return False, None
+        try:
+            data = json.loads(path.read_text())
+            if data.get("ts", 0) > datetime.now().timestamp() - data.get("ttl", ttl_seconds):
+                return True, data.get("v")
+        except Exception:
+            pass
+        return False, None
 
     def _cache_set(self, key: str, value: Any, ttl_seconds: Optional[int] = None):
         # Cache negative results (None) for a shorter window so they expire and
@@ -122,19 +199,33 @@ class TMDBService:
     def _request(self, endpoint: str, params: dict = None) -> Optional[dict]:
         if not self.enabled:
             return None
+        if self._offline:
+            raise TMDBConnectionError("TMDB could not be reached earlier in this request")
         try:
             r = self.session.get(
                 f"{TMDB_BASE}/{endpoint}",
                 params=params or {},
                 timeout=10
             )
+            self._tl.status = r.status_code
             r.raise_for_status()
             return r.json()
         except requests.ConnectionError as e:
+            self._tl.status = None
             self._tl.failed = True
+            self._offline = self.fail_fast
             raise TMDBConnectionError(f"Cannot reach TMDB API: {e}")
+        except requests.Timeout as e:
+            self._tl.status = None
+            self._tl.failed = True
+            if self.fail_fast:
+                self._offline = True
+                raise TMDBConnectionError(f"TMDB did not answer: {e}")
+            logger.debug(f"TMDB request failed {endpoint}: {e}")
+            return None
         except requests.HTTPError as e:
             status = getattr(getattr(e, "response", None), "status_code", None)
+            self._tl.status = status
             # Only a 404 says anything about the title. A refused key (401/403),
             # a rate limit or a server error says nothing — treating those as
             # "no match" cached a negative result for 30 days and let the
@@ -151,34 +242,39 @@ class TMDBService:
     # ── Matching ───────────────────────────────────────────────────────────
 
     def _similarity(self, a: str, b: str) -> float:
-        a = re.sub(r'[^a-z0-9]', '', a.lower())
-        b = re.sub(r'[^a-z0-9]', '', b.lower())
-        return SequenceMatcher(None, a, b).ratio()
+        return _similarity(a, b)
 
     def _find_best_match(self, results: list, title: str, year: Optional[str],
                           title_key: str, year_key: str) -> Optional[Tuple]:
-        best = None
-        best_score = 0
-
+        scored = []  # (score, result, tmdb_title, tmdb_year), TMDB's order
         for result in results[:10]:
             tmdb_title = result.get(title_key, '')
             tmdb_year_raw = result.get(year_key, '')
             tmdb_year = tmdb_year_raw[:4] if tmdb_year_raw else None
+            score = _match_score(title, year, tmdb_title, tmdb_year, result.get('popularity', 0))
+            scored.append((score, result, tmdb_title, tmdb_year))
 
-            score = self._similarity(title, tmdb_title)
-            if year and tmdb_year:
-                if year == tmdb_year:
-                    # Strongly prefer an exact-year match so two same-titled
-                    # candidates (remake / re-release) resolve to the right one.
-                    score += 0.20
-                else:
-                    # Year known but mismatched — small penalty so a matching-year
-                    # candidate with comparable title similarity wins.
-                    score -= 0.10
-            if result.get('popularity', 0) > 50:
-                score += 0.05
-            score = max(0.0, min(score, 1.0))
+        # TMDB's year filter matches ANY release date, re-releases included, so
+        # "Dune (2024)" also brings back Dune (2021), and "Alien (2019)" Alien
+        # (1979) (#310). Between a film exactly titled as the label from 2+
+        # years away and one from the label's year (±1), the near one wins only
+        # if it is credible next to it (_CREDIBLE_VOTE_SHARE of its votes).
+        # A sequel listed under its base title (Dune: Part Two, Top Gun:
+        # Maverick) is; a namesake nobody watched (a 2-vote "Alien" of 2019)
+        # isn't, and the re-release label keeps the film it names.
+        far = [s for s in scored if _far_exact(title, year, s[2], s[3])]
+        if far:
+            votes = max(s[1].get('vote_count') or 0 for s in far)
+            near = [s for s in scored if _year_within_one(year, s[3])
+                    and (s[1].get('vote_count') or 0) >= votes * _CREDIBLE_VOTE_SHARE]
+            pick = [s for s in near if s[0] >= self.match_threshold]
+            if not pick:
+                pick = [s for s in scored if not _year_within_one(year, s[3])]
+            scored = pick
 
+        best = None
+        best_score = 0
+        for score, result, tmdb_title, tmdb_year in scored:
             if score > best_score:
                 best_score = score
                 best = (result.get('id'), tmdb_title, tmdb_year, score)
@@ -202,32 +298,43 @@ class TMDBService:
         self._tl.failed = False
 
         cache_key = f"movie_search:{title.lower()}:{year}"
-        cached = self._cache_get(cache_key)
-        if cached is not None:
-            return cached if cached else None
+        hit, cached = self._cache_lookup(cache_key)
+        if hit:
+            return cached or None
 
-        # Try with year, then without
-        for params in [
-            {"query": title, "year": year} if year else {"query": title},
-            {"query": title}
-        ]:
-            data = self._request("search/movie", params)
-            if data and data.get("results"):
-                match = self._find_best_match(
-                    data["results"], title, year, "title", "release_date"
-                )
-                if match:
-                    tmdb_id, tmdb_title, tmdb_year, score = match
-                    # Fetch full details
-                    full = self.get_movie_details(tmdb_id)
-                    if full:
-                        self._cache_set(cache_key, full)
-                        return full
-                    break
-            if year:
-                break  # Already tried without year in second iteration
+        # With the year, then without it (#265)
+        for params, results in self._search_passes("search/movie", title, year, "year", "release_date"):
+            match = self._find_best_match(results, title, year, "title", "release_date")
+            if match:
+                tmdb_id, tmdb_title, tmdb_year, score = match
+                # Fetch full details
+                full = self.get_movie_details(tmdb_id)
+                if full:
+                    self._cache_set(cache_key, full)
+                    return full
+                break
 
         return self._no_match(cache_key, title, strict)
+
+    def _search_passes(self, endpoint: str, title: str, year: Optional[str], year_param: str, date_key: str):
+        """(params, results) of each search pass, in order, for search_movie /
+        search_series: with the provider's year, then (only when that found
+        nothing good enough) once without it. Providers often label a title
+        with a local or streaming release year one off from TMDB's, which the
+        year filter then never finds (#265). The year-less pass keeps only
+        results within one year of the provider's, so a namesake decades
+        apart (Heat 1986 vs Heat 1995) is never taken for it. No year: one
+        search. A request that failed (429/5xx) stops here, as before."""
+        attempts = [{"query": title, year_param: year}, {"query": title}] if year else [{"query": title}]
+        for n, params in enumerate(attempts):
+            data = self._request(endpoint, params)
+            if self._lookup_failed():
+                return
+            results = (data or {}).get("results") or []
+            if n and year:
+                results = [r for r in results if _year_within_one(year, (r.get(date_key) or "")[:4])]
+            if results:
+                yield params, results
 
     def _no_match(self, cache_key: str, title: str, strict: bool):
         if self._lookup_failed():
@@ -244,27 +351,19 @@ class TMDBService:
         self._tl.failed = False
 
         cache_key = f"series_search:{title.lower()}:{year}"
-        cached = self._cache_get(cache_key)
-        if cached is not None:
-            return cached if cached else None
+        hit, cached = self._cache_lookup(cache_key)
+        if hit:
+            return cached or None
 
-        for params in [
-            {"query": title, "first_air_date_year": year} if year else {"query": title},
-            {"query": title}
-        ]:
-            data = self._request("search/tv", params)
-            if data and data.get("results"):
-                match = self._find_best_match(
-                    data["results"], title, year, "name", "first_air_date"
-                )
-                if match:
-                    tmdb_id, tmdb_title, tmdb_year, score = match
-                    full = self.get_series_details(tmdb_id)
-                    if full:
-                        self._cache_set(cache_key, full)
-                        return full
-                    break
-            if year:
+        for params, results in self._search_passes("search/tv", title, year, "first_air_date_year",
+                                                   "first_air_date"):
+            match = self._find_best_match(results, title, year, "name", "first_air_date")
+            if match:
+                tmdb_id, tmdb_title, tmdb_year, score = match
+                full = self.get_series_details(tmdb_id)
+                if full:
+                    self._cache_set(cache_key, full)
+                    return full
                 break
 
         return self._no_match(cache_key, title, strict)
@@ -290,12 +389,15 @@ class TMDBService:
         if not self._valid_id(tmdb_id):
             return None
         cache_key = f"movie_details:{tmdb_id}"
-        cached = self._cache_get(cache_key)
-        if cached is not None:
-            return cached
+        hit, cached = self._cache_lookup(cache_key)
+        if hit:
+            return cached or None
 
+        self._tl.status = None
         data = self._request(f"movie/{tmdb_id}", {"append_to_response": "credits,videos"})
         if not data:
+            if getattr(self._tl, "status", None) == 404:
+                self._cache_set(cache_key, None, ttl_seconds=self.MISSING_DETAILS_TTL_SECONDS)
             return None
 
         result = {
@@ -333,12 +435,17 @@ class TMDBService:
         if not self._valid_id(tmdb_id):
             return None
         cache_key = f"series_details:{tmdb_id}"
-        cached = self._cache_get(cache_key, ttl_seconds=7 * 86400)
-        if cached is not None and "seasons" in cached:
+        hit, cached = self._cache_lookup(cache_key, ttl_seconds=7 * 86400)
+        if hit and cached is None:
+            return None  # TMDB said 404 a moment ago
+        if hit and "seasons" in cached:
             return cached
 
+        self._tl.status = None
         data = self._request(f"tv/{tmdb_id}", {"append_to_response": "credits,videos"})
         if not data:
+            if getattr(self._tl, "status", None) == 404:
+                self._cache_set(cache_key, None, ttl_seconds=self.MISSING_DETAILS_TTL_SECONDS)
             return None
 
         result = {
@@ -411,20 +518,31 @@ class TMDBService:
         """Look up a movie or series by IMDb ID using TMDB's /find endpoint.
 
         Returns the same metadata dict as get_movie_details/get_series_details,
-        or None if not found.
+        or None if not found. A lookup that could not complete (429/5xx/timeout)
+        also returns None but is never cached as "not found", and leaves
+        lookup_failed() True so the caller can tell the two apart — the same
+        rule search_movie follows. Without it a list refresh during a TMDB
+        hiccup could not tell a failure from a title TMDB lacks, dropped the
+        title from the list and stripped the list's tag from it.
         """
         if not self.enabled or not imdb_id:
             return None
+        self._tl.failed = False
 
-        cache_key = f"find_imdb:{imdb_id}"
-        cached = self._cache_get(cache_key)
-        if cached is not None:
-            return cached if cached else None
+        # "find_imdb2": versions before #163 cached a failed /find (429, 5xx) as
+        # None too. Those entries could not be told from a real "no such title"
+        # and, read now, would drop list items for up to three days.
+        cache_key = f"find_imdb2:{imdb_id}"
+        hit, cached = self._cache_lookup(cache_key)
+        if hit:
+            return cached or None
 
-        data = self._request(f"find/{imdb_id}", {"external_source": "imdb_id"})
+        try:
+            data = self._request(f"find/{imdb_id}", {"external_source": "imdb_id"})
+        except TMDBConnectionError:
+            return None  # the flag is set
         if not data:
-            self._cache_set(cache_key, None)
-            return None
+            return self._no_match(cache_key, imdb_id, False)
 
         # Check movie results first, then TV
         movie_results = data.get("movie_results", [])
@@ -432,6 +550,8 @@ class TMDBService:
             tmdb_id = movie_results[0].get("id")
             if tmdb_id:
                 result = self.get_movie_details(tmdb_id)
+                if result is None:
+                    return self._no_match(cache_key, imdb_id, False)
                 self._cache_set(cache_key, result)
                 return result
 
@@ -440,11 +560,17 @@ class TMDBService:
             tmdb_id = tv_results[0].get("id")
             if tmdb_id:
                 result = self.get_series_details(tmdb_id)
+                if result is None:
+                    return self._no_match(cache_key, imdb_id, False)
                 self._cache_set(cache_key, result)
                 return result
 
         self._cache_set(cache_key, None)
         return None
+
+    def lookup_failed(self) -> bool:
+        """Whether the last lookup on this thread failed rather than found nothing."""
+        return self._lookup_failed()
 
     def find_images_by_tvdb_id(self, tvdb_id: int) -> Optional[dict]:
         """Look up TMDB poster/backdrop by TheTVDB ID. Returns {'poster': '/path.jpg', 'backdrop': '/path.jpg'} or None."""
@@ -748,6 +874,7 @@ class TMDBService:
             })
         all_results = []
         seen = set()
+        self._tl.failed = False
         for page in range(1, pages + 1):
             params = dict(base, page=page)
             data = self._request(endpoint, params)
@@ -758,7 +885,10 @@ class TMDBService:
                 all_results.append(m)
             if not data or not data.get("results"):
                 break
-        self._cache_set(cache_key, all_results)
+        # A rate limit or server error is not an empty genre: keep it out of
+        # the 12 h cache so the next visit asks again.
+        if not self._lookup_failed():
+            self._cache_set(cache_key, all_results)
         return all_results
 
     def get_new_on_provider(self, media_type: str, provider_id: int, region: str = "CA",
@@ -787,6 +917,7 @@ class TMDBService:
 
         all_results = []
         seen = set()
+        self._tl.failed = False
         for page in range(1, pages + 1):
             params = {
                 "page": page,
@@ -812,7 +943,8 @@ class TMDBService:
                 all_results.append(m)
             if not items:
                 break
-        self._cache_set(cache_key, all_results)
+        if not self._lookup_failed():  # a failed page is not the end of the row
+            self._cache_set(cache_key, all_results)
         logger.info(f"TMDB new-on-provider {provider_id} {media_type} ({region}): {len(all_results)} items")
         return all_results
 
