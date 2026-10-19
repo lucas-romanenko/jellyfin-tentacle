@@ -612,6 +612,14 @@ def _resume_provider_relinks() -> None:
         logger.warning(f"[Relink] Could not resume a provider's .strm rewrite: {e}")
 
 
+def _start_vod_route_relink() -> None:
+    from services.provider_relink import start_vod_route_relink
+    try:
+        start_vod_route_relink()
+    except Exception as e:
+        logger.warning(f"[Relink] Could not start the VOD .strm rewrite: {e}")
+
+
 def setup_scheduler(db):
     """Setup cron scheduler from settings"""
     reschedule_main_sync()
@@ -699,6 +707,9 @@ def setup_scheduler(db):
     schedule_once(_resume_youtube_channels, 60, "youtube_resume_first_index")
     # A provider save's .strm rewrite a restart cut short (#149)
     schedule_once(_resume_provider_relinks, 60, "provider_relink_resume")
+    # VOD through Tentacle (the default): existing .strm files move to the
+    # /api/vod route (or back, for an install that opted out) without a sync
+    schedule_once(_start_vod_route_relink, 90, "vod_route_relink")
     # Music module: the daily reconcile (checks the setting itself when it runs),
     # and any request a restart interrupted before its pin and search.
     reschedule_music_reconcile()
