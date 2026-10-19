@@ -87,6 +87,9 @@ class ProviderUpdate(BaseModel):
     user_agent: Optional[str] = None
     priority: Optional[int] = None
     active: Optional[bool] = None
+    # "Use for Live TV" on the provider card. Off takes its channels out of
+    # the tuner (the lineup lists enabled channels only).
+    live_tv_enabled: Optional[bool] = None
     require_tmdb_match: Optional[bool] = None
 
 
@@ -294,6 +297,20 @@ def create_provider(body: ProviderCreate, db: Session = Depends(get_db)):
     return {"id": provider.id, "success": True}
 
 
+def _stop_live_tv(db: Session, provider_id: int) -> None:
+    """Live TV switched off for a provider: its channels leave the tuner.
+
+    The lineup, the M3U and the guide list enabled channels whatever their
+    provider's switch says, so the switch alone would leave every channel in
+    Jellyfin. Its groups and channels are switched off instead; turning Live
+    TV on again starts from an empty choice of groups."""
+    from models.database import LiveChannel, LiveChannelGroup
+    db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id).update(
+        {LiveChannel.enabled: False}, synchronize_session=False)
+    db.query(LiveChannelGroup).filter(LiveChannelGroup.provider_id == provider_id).update(
+        {LiveChannelGroup.enabled: False}, synchronize_session=False)
+
+
 @router.put("/{provider_id}")
 def update_provider(provider_id: int, body: ProviderUpdate, db: Session = Depends(get_db)):
     p = db.query(Provider).filter(Provider.id == provider_id).first()
@@ -324,6 +341,10 @@ def update_provider(provider_id: int, body: ProviderUpdate, db: Session = Depend
         p.priority = body.priority
     if body.active is not None:
         p.active = body.active
+    if body.live_tv_enabled is not None:
+        if p.live_tv_enabled and not body.live_tv_enabled:
+            _stop_live_tv(db, p.id)
+        p.live_tv_enabled = body.live_tv_enabled
     if body.require_tmdb_match is not None:
         p.require_tmdb_match = body.require_tmdb_match
     # A new server or login reaches the Live TV channels now, not at the
@@ -480,6 +501,7 @@ def test_provider(provider_id: int, db: Session = Depends(get_db)):
         p.max_connections = int(info.get("max_connections", 1))
 
         # Probe capabilities
+        had_live = bool(p.has_live)
         base = _api_base(p)
         session = requests.Session()
         session.headers.update(HEADERS)
@@ -490,8 +512,10 @@ def test_provider(provider_id: int, db: Session = Depends(get_db)):
             except Exception:
                 setattr(p, attr, False)
 
-        # Auto-enable live TV if provider has live categories
-        if p.has_live:
+        # Live TV comes on by itself the first time live channels are found.
+        # A later test leaves the provider card's "Use for Live TV" switch as
+        # the admin set it (a re-test used to switch it back on).
+        if p.has_live and not had_live:
             p.live_tv_enabled = True
 
         db.commit()

@@ -617,12 +617,17 @@ def get_dashboard(db: Session = Depends(get_db)):
 
 
 @router.get("/activity")
-def get_activity(limit: int = 15, db: Session = Depends(get_db)):
-    """Recent activity feed, newest first: Health's Recent Activity card."""
+def get_activity(limit: int = 15, offset: int = 0, days: int = 0, db: Session = Depends(get_db)):
+    """Recent activity feed, newest first: Health's log.
+
+    `days` > 0 keeps the last that many days; `offset` pages through them."""
     limit = max(1, min(limit, 500))
-    entries = db.query(ActivityLog).order_by(
-        ActivityLog.created_at.desc()
-    ).limit(limit).all()
+    q = db.query(ActivityLog)
+    if days > 0:
+        q = q.filter(ActivityLog.created_at >= datetime.utcnow() - timedelta(days=min(days, 3650)))
+    entries = q.order_by(
+        ActivityLog.created_at.desc(), ActivityLog.id.desc()
+    ).offset(max(0, offset)).limit(limit).all()
     return [{
         "id": e.id,
         "event": e.event,
