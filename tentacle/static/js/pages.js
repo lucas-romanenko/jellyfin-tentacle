@@ -5931,7 +5931,14 @@ async function fillSetupUrls() {
   try { settings = await api('/api/settings/raw'); } catch (e) { settings = {}; }
   // The saved address is in the settings: no need for the status call, which
   // checks the address over the network and can take a while.
-  if (settings['youtube_base_url']) base = settings['youtube_base_url'];
+  // An address saved for Live TV before wins: it is what Jellyfin's tuner was
+  // set up with (often the LAN one, while Tentacle's address can be public).
+  // Saving Tentacle's address in Settings → Services replaces it.
+  if (settings['live_setup_host']) {
+    const port = settings['live_setup_port'] || '8888';
+    base = `${port === '443' ? 'https' : 'http'}://${settings['live_setup_host']}${port === '80' || port === '443' ? '' : ':' + port}`;
+  }
+  else if (settings['youtube_base_url']) base = settings['youtube_base_url'];
   else try {
     const st = await api('/api/youtube/status');
     if (st && st.base_url) base = st.base_url;
@@ -5940,9 +5947,6 @@ async function fillSetupUrls() {
       note = 'Worked out by Tentacle, not saved yet: save it in Settings → Services.';
     }
   } catch (e) {}
-  if (!base && settings['live_setup_host']) {
-    base = `http://${settings['live_setup_host']}:${settings['live_setup_port'] || '8888'}`;
-  }
   if (!base && location.hostname && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) {
     base = `${location.protocol}//${location.host}`;
     note = 'From this browser: set Tentacle\'s address in Settings → Services.';

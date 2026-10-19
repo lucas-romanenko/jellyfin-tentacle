@@ -90,6 +90,13 @@ class SetupAddress(unittest.TestCase):
         out = self._run({"live_setup_host": "10.0.0.5", "live_setup_port": "9999"}, {"base_url": "", "detected": None})
         self.assertEqual("http://10.0.0.5:9999", out["tuner"])
 
+    def test_the_live_tv_address_set_up_before_wins(self):
+        out = self._run({"live_setup_host": "10.0.0.5", "live_setup_port": "8888",
+                         "youtube_base_url": "https://tentacle.example.com"}, None)
+        self.assertEqual("http://10.0.0.5:8888", out["tuner"])
+        out = self._run({"live_setup_host": "tentacle.example.com", "live_setup_port": "443"}, None)
+        self.assertEqual("https://tentacle.example.com", out["tuner"])
+
     def test_without_anything_the_browser_address_is_used_not_localhost(self):
         out = self._run({}, None, {"hostname": "tentacle.lan", "host": "tentacle.lan:8888", "protocol": "http:"})
         self.assertEqual("http://tentacle.lan:8888", out["tuner"])
