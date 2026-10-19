@@ -258,26 +258,80 @@ class XtreamClient:
 
 def vod_links_for(db: Session, provider: Provider):
     """The Links the sync client writes .strm files with, or None for direct
-    provider URLs. Needs the setting on, an Xtream provider, and Tentacle's
-    own address as clients reach it (the one the YouTube feature already
-    works out and keeps)."""
+    provider URLs. Needs VOD through Tentacle on (the default), an Xtream
+    provider, and Tentacle's own address as players reach it
+    (vod_base_url_for)."""
     from routers.vod import vod_enabled
     from services import vod_tokens
     if not vod_enabled(db) or (provider.provider_type or "xtream") != "xtream":
         return None
-    # `vod_base_url` first: the address every PLAYER reaches Tentacle at on
-    # the LAN. The YouTube address is the fallback; where that is a public
-    # name behind a tunnel or an access gate, every film would go out and
-    # back in through it, so a LAN address here is the right choice.
-    base = (get_setting(db, "vod_base_url", "") or "").strip().rstrip("/")
+    base = vod_base_url_for(db)
     if not base:
-        from services.youtube.sync import base_url
-        base = base_url(db)
-    if not base:
-        logger.warning("[Sync] VOD through Tentacle is on but Tentacle's address is not known "
-                       "(set vod_base_url, or Settings → YouTube → Tentacle address); writing direct provider URLs")
         return None
     return vod_tokens.Links(base, vod_tokens.token_secret(db), provider.id)
+
+
+def _player_unreachable(url: str) -> str:
+    """Why players could not use this address, or "" when they might: no
+    host, a loopback address, or a one-word name (a container name like
+    "tentacle" resolves inside Docker, not on the TV)."""
+    import ipaddress
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        return "not an address"
+    if parsed.scheme not in ("http", "https") or not host:
+        return "not an http address"
+    try:
+        if ipaddress.ip_address(host).is_loopback:
+            return "a loopback address"
+        return ""
+    except ValueError:
+        pass
+    if host == "localhost" or "." not in host:
+        return "a local name only this machine or its containers know"
+    return ""
+
+
+def vod_base_url_for(db: Session) -> str:
+    """The address written into .strm files that play through Tentacle, or ""
+    for direct provider links. Every film and episode depends on it, so an
+    address is used only when it is safe:
+      - `vod_base_url` as saved (the admin's, or one worked out before);
+      - else the Jellyfin plugin's TentacleUrl (how Jellyfin already reaches
+        Tentacle), then the YouTube page's saved Tentacle address: the first
+        that players can resolve and that answers as Tentacle with no login
+        in front (services.youtube.sync.check_base_url) is saved as
+        `vod_base_url`, so the files never flip between addresses;
+      - else "" and a warning saying why: direct links stay."""
+    saved = (get_setting(db, "vod_base_url", "") or "").strip().rstrip("/")
+    if saved:
+        return saved
+    from services.youtube.sync import check_base_url, plugin_tentacle_url
+    tried = []
+    seen = set()
+    for source, url in (("the Jellyfin plugin's Tentacle address", lambda: plugin_tentacle_url(db)),
+                        ("the YouTube Tentacle address", lambda: get_setting(db, "youtube_base_url", ""))):
+        url = (url() or "").strip().rstrip("/")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        why = _player_unreachable(url)
+        if not why:
+            probe = check_base_url(url, timeout=5)
+            if probe.get("ok"):
+                set_setting(db, "vod_base_url", url)
+                logger.info(f"[Sync] VOD streams through Tentacle at {url} ({source})")
+                return url
+            why = probe.get("detail") or "it did not answer as Tentacle"
+        tried.append(f"{source} {url}: {why}")
+    logger.warning("[Sync] VOD keeps direct provider links: Tentacle's address for players is not known "
+                   + ("(" + "; ".join(tried) + ")" if tried else
+                      "(no Jellyfin plugin address and no YouTube Tentacle address)")
+                   + ". Set vod_base_url to the address Jellyfin reaches Tentacle at.")
+    return ""
 
 
 WAITING_FOR_LIVE_TV = "Waiting for live TV / a recording to finish before continuing"

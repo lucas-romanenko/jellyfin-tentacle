@@ -87,24 +87,24 @@ class ProviderEditReachesChannels(unittest.TestCase):
         pid, cid = self._synced("http://old-panel.example:8080")
         providers.update_provider(pid, providers.ProviderUpdate(
             server_url="http://new-panel.example:8080", password="p2"), self.db)
-        self.assertEqual(("streamed", "http://new-panel.example:8080/live/u/p2/101.m3u8"), self._tune(cid))
-        self.assertEqual([("101", "http://new-panel.example:8080/live/u/p2/101.m3u8"),
-                          ("102", "http://new-panel.example:8080/live/u/p2/102.m3u8")], self._urls())
+        self.assertEqual(("streamed", "http://new-panel.example:8080/live/u/p2/101.ts"), self._tune(cid))
+        self.assertEqual([("101", "http://new-panel.example:8080/live/u/p2/101.ts"),
+                          ("102", "http://new-panel.example:8080/live/u/p2/102.ts")], self._urls())
 
     def test_providers_page_new_username(self):
         pid, cid = self._synced("http://old-panel.example:8080")
         providers.update_provider(pid, providers.ProviderUpdate(username="u2"), self.db)
-        self.assertEqual(("streamed", "http://old-panel.example:8080/live/u2/p1/101.m3u8"), self._tune(cid))
+        self.assertEqual(("streamed", "http://old-panel.example:8080/live/u2/p1/101.ts"), self._tune(cid))
 
     def test_live_provider_api_new_password(self):
         pid, cid = self._synced("http://old-panel.example:8080")
         livetv.save_live_provider(livetv.LiveProviderConfig(password="p2"), self.db)
-        self.assertEqual(("streamed", "http://old-panel.example:8080/live/u/p2/101.m3u8"), self._tune(cid))
+        self.assertEqual(("streamed", "http://old-panel.example:8080/live/u/p2/101.ts"), self._tune(cid))
 
     def test_lan_restreamer_on_a_new_host(self):
         pid, cid = self._synced("http://192.168.1.10:8890")
         livetv.save_live_provider(livetv.LiveProviderConfig(server_url="http://192.168.1.20:8890"), self.db)
-        self.assertEqual(("streamed", "http://192.168.1.20:8890/live/u/p1/101.m3u8"), self._tune(cid))
+        self.assertEqual(("streamed", "http://192.168.1.20:8890/live/u/p1/101.ts"), self._tune(cid))
 
     def test_trailing_slash_and_extension_kept(self):
         """The URL reads what a channel sync would write: the server without

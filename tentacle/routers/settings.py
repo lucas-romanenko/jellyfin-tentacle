@@ -160,6 +160,8 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
         # The built-in token stays a default: storing it would pin this install
         # to it after a release changes it (#383). A stored copy is cleared.
         body.settings["tmdb_bearer_token"] = ""
+    from routers.vod import vod_enabled
+    vod_before = vod_enabled(db)
     for key, value in body.settings.items():
         # A secret sent back exactly as the masked listing showed it is unchanged
         if key in sensitive_keys and is_shown_form(value, get_setting(db, key, "") or ""):
@@ -201,6 +203,13 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
         except Exception:
             import logging
             logging.getLogger(__name__).warning("Could not start the first music check", exc_info=True)
+
+    # VOD through Tentacle turned off or back on (`vod_via_tentacle_enabled`,
+    # no dashboard switch): the .strm files follow now, not at the next sync
+    # (services/provider_relink.py, start_vod_route_relink).
+    if vod_enabled(db) != vod_before:
+        from services import provider_relink
+        provider_relink.start_vod_route_relink()
 
     # If the sync schedule changed, reschedule the job live (no restart needed).
     if "sync_schedule" in body.settings:
