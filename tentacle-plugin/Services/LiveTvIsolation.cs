@@ -123,7 +123,7 @@ public class LiveTvIsolation : IHostedService
     {
         _libraryManager.ItemAdded += OnItemChanged;
         _libraryManager.ItemUpdated += OnItemChanged;
-        ProgrammeTagPatch.Apply(_libraryManager, _logger);
+        LiveTvTagPatches.Apply(_libraryManager, _config, _logger);
         return Task.CompletedTask;
     }
 
@@ -175,48 +175,71 @@ public class LiveTvNewUser : IEventConsumer<UserCreatedEventArgs>
         _logger = logger;
     }
 
-    public async Task OnEvent(UserCreatedEventArgs eventArgs)
-    {
-        try
-        {
-            var tuners = (_config.GetConfiguration("livetv") as LiveTvOptions)?.TunerHosts ?? Array.Empty<TunerHostInfo>();
-            var tags = tuners.Select(t => LiveTvIsolation.TagForTunerUrl(t.Url)).OfType<string>().ToList();
-            if (tags.Count == 0)
-            {
-                return;
-            }
+    /// <summary>How long after the event the policy is set: the request creating the user
+    /// is still saving it, and changing it under that request makes it fail (500).</summary>
+    public static TimeSpan Delay { get; set; } = TimeSpan.FromSeconds(5);
 
-            var user = eventArgs.Argument;
-            var policy = _userManager.GetUserDto(user).Policy;
-            policy.BlockedTags = LiveTvIsolation.NewUserBlockedTags(policy.BlockedTags, tags);
-            await _userManager.UpdatePolicyAsync(user.Id, policy).ConfigureAwait(false);
-            _logger.LogInformation("[Tentacle] New user {Name}: Live TV set to All channels", user.Username);
-        }
-        catch (Exception ex)
+    public Task OnEvent(UserCreatedEventArgs eventArgs)
+    {
+        var userId = eventArgs.Argument.Id;
+        _ = Task.Run(async () =>
         {
-            _logger.LogWarning(ex, "[Tentacle] Could not set up Live TV for a new user");
-        }
+            try
+            {
+                await Task.Delay(Delay).ConfigureAwait(false);
+                var tuners = (_config.GetConfiguration("livetv") as LiveTvOptions)?.TunerHosts ?? Array.Empty<TunerHostInfo>();
+                var tags = tuners.Select(t => LiveTvIsolation.TagForTunerUrl(t.Url)).OfType<string>().ToList();
+                var user = _userManager.GetUserById(userId);
+                if (tags.Count == 0 || user == null)
+                {
+                    return;
+                }
+
+                var policy = _userManager.GetUserDto(user).Policy;
+                var blocked = LiveTvIsolation.NewUserBlockedTags(policy.BlockedTags, tags);
+                if (blocked.SequenceEqual(policy.BlockedTags ?? Array.Empty<string>()))
+                {
+                    return;
+                }
+
+                policy.BlockedTags = blocked;
+                await _userManager.UpdatePolicyAsync(userId, policy).ConfigureAwait(false);
+                _logger.LogInformation("[Tentacle] New user {Name}: Live TV set to All channels", user.Username);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Tentacle] Could not set up Live TV for a new user");
+            }
+        });
+        return Task.CompletedTask;
     }
 }
 
 /// <summary>
-/// Harmony postfix on Jellyfin's GuideManager.GetProgram (Jellyfin.LiveTv,
-/// 10.11): the programme it builds from the guide gets its channel's tuner tag.
-/// GetProgram sets a programme's tags afresh from the guide every refresh, so
-/// the prefix notes whether the stored programme already had the tag; only a
-/// programme that didn't is marked updated (saved once, never again after).
-/// If a later Jellyfin renames the method, nothing is patched and a warning is
-/// logged: who sees what stays right, only programme lists come back short.
+/// Harmony patches on Jellyfin's GuideManager (Jellyfin.LiveTv, 10.11), which
+/// builds the Live TV channels and programmes at every guide refresh. Live TV
+/// items raise no ItemAdded event, so the tags are set here:
+///   - GetChannel (prefix): a Tentacle tuner's channel is created (and kept)
+///     with its tuner's tag, so nobody else sees it for a moment first;
+///   - GetProgram (prefix + postfix): the programme gets its channel's tag.
+///     GetProgram sets a programme's tags afresh from the guide, so the prefix
+///     notes whether the stored programme had it; one that didn't is marked
+///     updated (Jellyfin saves XMLTV programmes every refresh anyway).
+/// If a later Jellyfin renames them, nothing is patched and a warning is
+/// logged: the server still tags channels and who sees what stays right; only
+/// programme lists come back short.
 /// </summary>
-public static class ProgrammeTagPatch
+public static class LiveTvTagPatches
 {
     private static readonly Harmony HarmonyInstance = new("jellyfin.plugin.tentacle.livetv");
     private static ILibraryManager? _libraryManager;
+    private static IConfigurationManager? _config;
     private static bool _applied;
 
-    public static void Apply(ILibraryManager libraryManager, ILogger logger)
+    public static void Apply(ILibraryManager libraryManager, IConfigurationManager config, ILogger logger)
     {
         _libraryManager = libraryManager;
+        _config = config;
         if (_applied)
         {
             return;
@@ -228,26 +251,83 @@ public static class ProgrammeTagPatch
                 .Select(a => a.GetType("Jellyfin.LiveTv.Guide.GuideManager", false))
                 .FirstOrDefault(t => t != null)
                 ?? Assembly.Load("Jellyfin.LiveTv").GetType("Jellyfin.LiveTv.Guide.GuideManager", false);
-            var method = type?.GetMethod("GetProgram", BindingFlags.Instance | BindingFlags.NonPublic,
+            var getProgram = type?.GetMethod("GetProgram", BindingFlags.Instance | BindingFlags.NonPublic,
                 new[] { typeof(ProgramInfo), typeof(Dictionary<Guid, LiveTvProgram>), typeof(LiveTvChannel) });
-            if (method == null || method.ReturnType != typeof(ValueTuple<LiveTvProgram, bool, bool>))
+            var getChannel = type?.GetMethod("GetChannel", BindingFlags.Instance | BindingFlags.NonPublic,
+                new[] { typeof(ChannelInfo), typeof(string), typeof(BaseItem), typeof(CancellationToken) });
+
+            // An earlier copy of this plugin in the same process (Jellyfin restarts in-process) patched them too.
+            HarmonyInstance.UnpatchAll(HarmonyInstance.Id);
+            if (getChannel != null && getChannel.ReturnType == typeof(Task<LiveTvChannel>))
             {
-                logger.LogWarning("[Tentacle] Jellyfin's GuideManager.GetProgram not found: programmes won't carry their channel's Live TV tag (lists may come back short)");
-                return;
+                HarmonyInstance.Patch(getChannel, prefix: new HarmonyMethod(Method(nameof(ChannelPrefix))));
+                logger.LogInformation("[Tentacle] Harmony patch applied to GuideManager.GetChannel (Live TV per person)");
+            }
+            else
+            {
+                logger.LogWarning("[Tentacle] Jellyfin's GuideManager.GetChannel not found: new channels get their Live TV tag from Tentacle after the guide refresh");
             }
 
-            // An earlier copy of this plugin in the same process (Jellyfin restarts in-process) patched it too.
-            HarmonyInstance.UnpatchAll(HarmonyInstance.Id);
-            HarmonyInstance.Patch(
-                method,
-                prefix: new HarmonyMethod(typeof(ProgrammeTagPatch).GetMethod(nameof(Prefix), BindingFlags.NonPublic | BindingFlags.Static)),
-                postfix: new HarmonyMethod(typeof(ProgrammeTagPatch).GetMethod(nameof(Postfix), BindingFlags.NonPublic | BindingFlags.Static)));
+            if (getProgram != null && getProgram.ReturnType == typeof(ValueTuple<LiveTvProgram, bool, bool>))
+            {
+                HarmonyInstance.Patch(getProgram, prefix: new HarmonyMethod(Method(nameof(Prefix))), postfix: new HarmonyMethod(Method(nameof(Postfix))));
+                logger.LogInformation("[Tentacle] Harmony patch applied to GuideManager.GetProgram (Live TV per person)");
+            }
+            else
+            {
+                logger.LogWarning("[Tentacle] Jellyfin's GuideManager.GetProgram not found: programmes won't carry their channel's Live TV tag (lists may come back short)");
+            }
+
             _applied = true;
-            logger.LogInformation("[Tentacle] Harmony patch applied to GuideManager.GetProgram (Live TV per person)");
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "[Tentacle] Could not patch GuideManager.GetProgram");
+        }
+    }
+
+    private static MethodInfo Method(string name)
+        => typeof(LiveTvTagPatches).GetMethod(name, BindingFlags.NonPublic | BindingFlags.Static)!;
+
+    /// <summary>The tags a channel Jellyfin is about to build should get: its stored tags with
+    /// the tuner's tag, or null to leave Jellyfin's own handling alone.</summary>
+    public static string[]? ChannelTags(string? channelId, string[]? storedTags, Dictionary<string, string> prefixes)
+    {
+        var tag = LiveTvIsolation.TagForChannel(channelId, prefixes);
+        if (tag == null)
+        {
+            return null;
+        }
+
+        return LiveTvIsolation.WithTag(storedTags, tag) ?? storedTags;
+    }
+
+    private static void ChannelPrefix(ChannelInfo channelInfo)
+    {
+        try
+        {
+            if (_libraryManager == null || _config == null || channelInfo?.Id == null)
+            {
+                return;
+            }
+
+            var tuners = (_config.GetConfiguration("livetv") as LiveTvOptions)?.TunerHosts ?? Array.Empty<TunerHostInfo>();
+            var prefixes = LiveTvIsolation.TunerPrefixes(tuners);
+            if (prefixes.Count == 0)
+            {
+                return;
+            }
+
+            // LiveTvDtoService.GetInternalChannelId with the built-in service "Emby"
+            var id = _libraryManager.GetNewItemId(("Emby" + channelInfo.Id + "4").ToLowerInvariant(), typeof(LiveTvChannel));
+            var stored = (_libraryManager.GetItemById(id) as LiveTvChannel)?.Tags;
+            // Jellyfin keeps a channel's tags when the tuner gives none, and takes these when it
+            // gives some (adding "Kids" itself later, as before).
+            channelInfo.Tags = ChannelTags(channelInfo.Id, stored, prefixes)!;
+        }
+        catch
+        {
+            // Tentacle tags the channel after the refresh instead.
         }
     }
 
