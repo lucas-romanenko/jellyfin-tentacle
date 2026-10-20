@@ -108,6 +108,14 @@ class Lineups(DbCase):
                         True, ["c3", "c1", "c5", "nope", "c3"])
         self.assertEqual([("c3", 1), ("c1", 2)], [(c["key"], c["number"]) for c in L.lineup_for(self.db, BEN.replace("c", "b"))])
 
+    def test_pool_keeps_the_old_tuners_order(self):
+        # Jellyfin listed the old tuner's channels by number: 9 before 10,
+        # whatever their names, unless the admin set an order.
+        self.db.query(mdb.LiveChannel).update({"sort_order": 0})
+        self.db.query(mdb.LiveChannel).filter(mdb.LiveChannel.id == 1).update({"stream_id": "1000"})
+        self.db.commit()
+        self.assertEqual(["c2", "c3", "c4", "c1"], [c["key"] for c in L.pool(self.db)])
+
     def test_without_a_list_everything(self):
         self.assertEqual([1, 2, 3, 4], [c["number"] for c in L.lineup_for(self.db, ANN)])
         L.save_own_list(self.db, ANN, True, ["c2"])

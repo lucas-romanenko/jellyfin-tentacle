@@ -56,7 +56,8 @@ def tag_for_tuner_url(url: str) -> Optional[str]:
 # ── The pool and each person's list ─────────────────────────────────────────
 
 def pool(db: Session) -> list:
-    """Every channel the household has, in the admin's order: dicts with
+    """Every channel the household has, in the admin's order (else by the
+    channel number Jellyfin knew them by): dicts with
     key ("c<id>" / "y<id>"), name, logo_url, xmltv_id (the guide's channel
     id, which is also the old HDHomeRun GuideNumber) and stream_path."""
     from routers.livetv import _unique_numbers
@@ -68,8 +69,16 @@ def pool(db: Session) -> list:
         .order_by(LiveChannel.sort_order, LiveChannel.channel_number, LiveChannel.name)
         .all()
     )
+    def order(pair):
+        # The order Jellyfin showed with the old tuner (by channel number),
+        # unless the admin set an order or a number of their own.
+        ch, number = pair
+        n = str(number)
+        return (ch.sort_order or 0, ch.channel_number if ch.channel_number is not None else float("inf"),
+                int(n) if n.isdigit() else float("inf"), n, ch.guide_name.lower())
+
     out = []
-    for ch, number in _unique_numbers(db, channels):
+    for ch, number in sorted(_unique_numbers(db, channels), key=order):
         out.append({
             "key": f"c{ch.id}",
             "name": ch.guide_name,
