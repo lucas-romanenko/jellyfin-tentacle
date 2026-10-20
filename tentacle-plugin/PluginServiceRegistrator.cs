@@ -5,6 +5,7 @@ using Jellyfin.Plugin.Tentacle.Playlists;
 using Jellyfin.Plugin.Tentacle.Services;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Plugins;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -35,6 +36,11 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<HomeScreenManager>();
         serviceCollection.AddSingleton<PlaylistManager>();
         serviceCollection.AddSingleton<IHostedService, LibraryDeleteHandler>();
+
+        // Tentacle VOD served as HLS re-encodes its video instead of copying
+        // it (a resumed play otherwise skips to the next episode, #17966)
+        serviceCollection.AddSingleton<VodNoVideoCopyFilter>();
+        serviceCollection.Configure<MvcOptions>(options => options.Filters.AddService<VodNoVideoCopyFilter>());
 
         logger?.LogInformation("[Tentacle] Services registered successfully.");
     }
