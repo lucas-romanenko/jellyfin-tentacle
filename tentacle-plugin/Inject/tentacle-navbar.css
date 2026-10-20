@@ -44,6 +44,32 @@ body.moonfin-navbar-active .sectionTabs {
     -webkit-backdrop-filter: blur(12px);
 }
 
+/* Pages with tabs (Live TV, Music): Jellyfin puts its tab bar at the very
+   top, where Tentacle's header sits. Move the bar (centred) below the header
+   and the page below the bar, so nothing overlaps. The JS sets
+   tentacle-page-tabs while the tabs are shown. */
+body.moonfin-navbar-active.tentacle-page-tabs {
+    --tentacle-tabs-top: 92px;
+    --tentacle-tabs-height: 53px;
+}
+
+body.moonfin-navbar-active.tentacle-page-tabs .skinHeader {
+    top: var(--tentacle-tabs-top) !important;
+}
+
+body.moonfin-navbar-active.tentacle-page-tabs .skinHeader [data-tentacle-tab-ancestor] .emby-tabs-slider {
+    width: max-content;
+    margin: 0 auto;
+}
+
+body.moonfin-navbar-active.tentacle-page-tabs .libraryPage.withTabs {
+    padding-top: calc(var(--tentacle-tabs-top) + var(--tentacle-tabs-height) + 12px) !important;
+}
+
+body.moonfin-navbar-active.tentacle-page-tabs .pageWithAbsoluteTabs .absolutePageTabContent {
+    top: calc(var(--tentacle-tabs-top) + var(--tentacle-tabs-height) + 4px) !important;
+}
+
 body.moonfin-navbar-active .cardOverlayContainer {
     --btnMiniPlayBorderColor: #000;
     --btnMiniPlayColor: #0bb8f0;
@@ -448,5 +474,23 @@ body.moonfin-navbar-active .cardOverlayContainer {
 
     .moonfin-navbar-right {
         display: none !important;
+    }
+
+    body.moonfin-navbar-active.tentacle-page-tabs {
+        --tentacle-tabs-top: 72px;
+    }
+
+    /* Only the current page's button shows its label: a tapped button keeps
+       focus, and its label would push the pill past the screen edge */
+    .moonfin-expandable-btn:not(.active):hover .moonfin-expand-label,
+    .moonfin-expandable-btn:not(.active):focus .moonfin-expand-label {
+        max-width: 0;
+        opacity: 0;
+        margin-left: 0;
+    }
+
+    .moonfin-expandable-btn:not(.active):hover,
+    .moonfin-expandable-btn:not(.active):focus {
+        padding: 8px 10px;
     }
 }

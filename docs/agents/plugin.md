@@ -46,7 +46,14 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
 - **Navbar and tabs**: `tentacle-navbar.js` replaces Jellyfin's
   `skinHeader` but keeps page tabs (Live TV guide, Music); `.sectionTabs`
   shows only under `[data-tentacle-tab-ancestor]`, which the JS sets on
-  those pages, never on home.
+  those pages, never on home. With tabs shown the JS also sets
+  `body.tentacle-page-tabs`, and the CSS moves Jellyfin's tab bar and the
+  page below Tentacle's header (`--tentacle-tabs-top`), so they never overlap.
+- **Libraries list**: a fixed element on `<body>` (the pill's
+  backdrop-filter breaks `position: fixed` inside it), so it must be given a
+  top/left on every width, phones included, or it opens far below the
+  screen. Hover opens it only for `pointerType === 'mouse'`: a tap also sends
+  mouseenter, and the click after it would close the list again.
 - **Discover tab**: the JS re-checks `TentacleDiscover/Config` on every home
   visit (no permanent client cache), so turning Discover off removes it.
 - **Activity**: the JS polls `TentacleDiscover/Activity` every 3 s while the
