@@ -91,6 +91,18 @@ class ProviderUpdate(BaseModel):
     # the tuner (the lineup lists enabled channels only).
     live_tv_enabled: Optional[bool] = None
     require_tmdb_match: Optional[bool] = None
+    # Live TV, per provider: streams at once (0 = the default again) and the
+    # first channel number (0 = automatic)
+    live_max_streams: Optional[int] = None
+    channel_number_start: Optional[int] = None
+
+
+class AddressesAdd(BaseModel):
+    text: str
+
+
+class AddressSettings(BaseModel):
+    auto_switch: str
 
 
 class CategoryUpdate(BaseModel):
@@ -262,6 +274,10 @@ def list_providers(db: Session = Depends(get_db)):
             "has_series": p.has_series,
             "live_tv_enabled": p.live_tv_enabled,
             "require_tmdb_match": p.require_tmdb_match if p.require_tmdb_match is not None else True,
+            "address_count": len(p.addresses) or (1 if p.server_url else 0),
+            "address_auto_switch": p.address_auto_switch or "switch",
+            "live_max_streams": p.live_max_streams,
+            "channel_number_start": p.channel_number_start,
         }
         for p in providers
     ]
@@ -292,6 +308,8 @@ def create_provider(body: ProviderCreate, db: Session = Depends(get_db)):
     if body.user_agent:
         provider.user_agent = body.user_agent
     db.add(provider)
+    from services import provider_addresses
+    provider_addresses.ensure_current(db, provider)
     db.commit()
     db.refresh(provider)
     return {"id": provider.id, "success": True}
@@ -352,10 +370,19 @@ def update_provider(provider_id: int, body: ProviderUpdate, db: Session = Depend
     rewrite_xtream_channel_urls(p, before, db)
     # ...and the films and episodes already in the library (#142), recorded in
     # this commit so a restart before the rewrite ran loses nothing (#149)
-    from services import provider_relink
+    from services import provider_relink, provider_addresses
     relink = _xtream_login(p) != before
     if provider_relink.address_changed(p, before, m3u_before):
         provider_relink.record_pending(db, p, before)
+    if provider_addresses.normalize(p.server_url) != provider_addresses.normalize(before[0]):
+        # A new address typed in is a switch like "Use this one" (#704)
+        provider_addresses.ensure_current(db, p)
+        if before[0] and (p.provider_type or "xtream") == "xtream":
+            provider_addresses._start_probation(db, p)
+    if body.live_max_streams is not None:
+        p.live_max_streams = body.live_max_streams if body.live_max_streams > 0 else None
+    if body.channel_number_start is not None:
+        p.channel_number_start = body.channel_number_start if body.channel_number_start > 0 else None
     db.commit()
     if relink:
         provider_relink.start_relink(p.id, before)
@@ -739,3 +766,98 @@ def preview_sync(provider_id: int, db: Session = Depends(get_db)):
         "sample_categories": sample_categories,
         "note": "Estimates based on category sampling. Actual count after TMDB matching may differ."
     }
+
+
+# ─── Several addresses (services/provider_addresses.py) ──────────────────────
+
+def _provider_or_404(db: Session, provider_id: int) -> Provider:
+    p = db.query(Provider).filter(Provider.id == provider_id).first()
+    if not p:
+        raise HTTPException(404, "Provider not found")
+    return p
+
+
+def _addresses_view(db: Session, p: Provider) -> dict:
+    from services import provider_addresses as pa
+    rows = pa.ranked(db, p)
+    db.commit()
+    return {
+        "xtream": (p.provider_type or "xtream") == "xtream",
+        "auto_switch": p.address_auto_switch if p.address_auto_switch in pa.AUTO_SWITCH_MODES else "switch",
+        "addresses": rows,
+        "test": pa.progress(p.id),
+    }
+
+
+@router.get("/{provider_id}/addresses")
+def list_addresses(provider_id: int, db: Session = Depends(get_db)):
+    return _addresses_view(db, _provider_or_404(db, provider_id))
+
+
+@router.post("/{provider_id}/addresses")
+def add_addresses(provider_id: int, body: AddressesAdd, db: Session = Depends(get_db)):
+    """Paste the provider's message: every address in it is added as a backup."""
+    from services import provider_addresses as pa
+    p = _provider_or_404(db, provider_id)
+    if (p.provider_type or "xtream") != "xtream":
+        raise HTTPException(400, "An M3U playlist has one address: edit the provider to change it")
+    result = pa.add_from_text(db, p, body.text or "")
+    if not result["added"] and not result["known"]:
+        raise HTTPException(400, "No address found in that text")
+    return {**result, **_addresses_view(db, p)}
+
+
+@router.delete("/{provider_id}/addresses/{address_id}")
+def remove_address(provider_id: int, address_id: int, db: Session = Depends(get_db)):
+    from services import provider_addresses as pa
+    p = _provider_or_404(db, provider_id)
+    try:
+        pa.remove(db, p, address_id)
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    return _addresses_view(db, p)
+
+
+@router.post("/{provider_id}/addresses/test")
+def test_addresses(provider_id: int, db: Session = Depends(get_db)):
+    """Test every address, one at a time, in the background; GET the list for
+    how far it is. 409 while a test or the hourly check runs."""
+    from services import provider_addresses as pa
+    from services import provider_health
+    p = _provider_or_404(db, provider_id)
+    if (p.provider_type or "xtream") != "xtream":
+        raise HTTPException(400, "Only an Xtream provider has addresses to test")
+    if provider_health.check_running() or not pa.start_test_all(p.id):
+        raise HTTPException(409, "A test is already running: wait for it to finish")
+    return _addresses_view(db, p)
+
+
+@router.post("/{provider_id}/addresses/{address_id}/use")
+def use_address(provider_id: int, address_id: int, db: Session = Depends(get_db)):
+    """"Use this one": the provider moves to this address. Nothing is
+    imported again or deleted (provider_addresses.switch_to)."""
+    from services import provider_addresses as pa
+    from services import provider_health
+    p = _provider_or_404(db, provider_id)
+    a = next((a for a in p.addresses if a.id == address_id), None)
+    if a is None:
+        raise HTTPException(404, "No such address")
+    result = pa.switch_to(db, p, a.url, "chosen by hand", by_hand=True)
+    if result.get("switched"):
+        provider_health.address_switched(db, p.id)
+    return {**result, **_addresses_view(db, p)}
+
+
+@router.put("/{provider_id}/addresses/settings")
+def address_settings(provider_id: int, body: AddressSettings, db: Session = Depends(get_db)):
+    from services import provider_addresses as pa
+    p = _provider_or_404(db, provider_id)
+    if body.auto_switch not in pa.AUTO_SWITCH_MODES:
+        raise HTTPException(400, f"auto_switch is one of {', '.join(pa.AUTO_SWITCH_MODES)}")
+    p.address_auto_switch = body.auto_switch
+    if body.auto_switch == "switch_back" and not p.preferred_address:
+        p.preferred_address = pa.normalize(p.server_url)
+    db.commit()
+    return _addresses_view(db, p)

@@ -2199,11 +2199,20 @@ def sync_provider(
         # fetched everything cleanly AND found at least some content (an empty
         # seen set with fetch_ok almost certainly means a transient/empty
         # response — never wipe the whole provider on that basis).
+        # Just switched to another address (services/provider_addresses.py):
+        # nothing is marked or pruned until a listing on it read everything.
+        from services import provider_addresses
         removed = 0
+        settled = sync_type == "full"
         for media_type, Model, cleanup in (("movie", Movie, m_cleanup), ("series", Series, s_cleanup)):
             if not (cleanup and cleanup.get("seen_ids")):
+                if cleanup is not None and db.query(Model).filter(Model.provider_id == provider.id).count():
+                    settled = False
                 continue
-            if cleanup.get("fetch_ok"):
+            prunable = provider_addresses.may_prune(db, provider, media_type, cleanup["seen_ids"],
+                                                    bool(cleanup.get("fetch_ok")))
+            settled = settled and prunable
+            if cleanup.get("fetch_ok") and prunable:
                 removed += _prune_removed_content(db, provider, media_type, cleanup["seen_ids"])
             else:
                 # Incomplete picture: prune nothing, but what WAS served still
@@ -2212,6 +2221,7 @@ def sync_provider(
                 db.commit()
         if removed:
             logger.info(f"Sync pruned {removed} item(s) removed upstream by provider {provider.name}")
+        provider_addresses.end_probation(db, provider, settled)
 
         # Categories the provider could not be read for (#267): all of them is a
         # failed run, some a completed one with a warning. Pruning already

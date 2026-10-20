@@ -90,9 +90,46 @@ class Provider(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # Several addresses (services/provider_addresses.py): what to do when the
+    # address in use fails and a backup works. "switch" (the default),
+    # "switch_back" (and back to preferred_address once it works again) or
+    # "off" (only say so).
+    address_auto_switch = Column(String, default="switch")
+    # The address the admin chose by hand ("Use this one"), for switch_back.
+    preferred_address = Column(String, nullable=True)
+    # Live TV: streams this provider's account carries at once (None: the
+    # account's own max_connections, else the Live TV default).
+    live_max_streams = Column(Integer, nullable=True)
+    # Live TV: channel numbers of this provider start here (None: in the order
+    # the providers were added, 1000 apart; the first provider keeps its own).
+    channel_number_start = Column(Integer, nullable=True)
+
     categories = relationship("ProviderCategory", back_populates="provider", cascade="all, delete-orphan")
     sync_runs = relationship("SyncRun", back_populates="provider", cascade="all, delete-orphan")
     live_channels = relationship("LiveChannel", back_populates="provider", cascade="all, delete-orphan")
+    addresses = relationship("ProviderAddress", back_populates="provider", cascade="all, delete-orphan",
+                             order_by="ProviderAddress.id")
+
+
+# ─── Provider addresses ───────────────────────────────────────────────────────
+
+class ProviderAddress(Base):
+    """One address a provider can be reached at. The one in use is the
+    provider's server_url; the others are backups. Tests and the hourly
+    health check keep what each answered (services/provider_addresses.py)."""
+    __tablename__ = "provider_addresses"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider_id = Column(Integer, ForeignKey("providers.id"), nullable=False, index=True)
+    url = Column(String, nullable=False)          # scheme://host[:port], no path, no login
+    added_at = Column(DateTime, default=datetime.utcnow)
+    last_result = Column(JSON, nullable=True)     # the latest test (see provider_addresses.test_address)
+    history = Column(JSON, default=list)          # [{"at", "ok", "word"}], newest last, a few days' worth
+
+    provider = relationship("Provider", back_populates="addresses")
+
+    __table_args__ = (
+        UniqueConstraint("provider_id", "url", name="uq_provider_address"),
+    )
 
 
 # ─── Provider Categories ──────────────────────────────────────────────────────

@@ -545,9 +545,36 @@ def check_providers(db, confirm_delay=RETRY_DELAY_SECONDS, sleep=time.sleep) -> 
             if p.id in outcomes:
                 _apply(db, state, p, outcomes[p.id], first_at[p.id], now)
         _save_state(db, state)
+    # The backups of each provider with several addresses, and a switch where
+    # the address in use is failing (services/provider_addresses.py).
+    switched = []
+    try:
+        from services import provider_addresses
+        switched = provider_addresses.check_backups(db, providers, outcomes, state, sleep=sleep)
+    except Exception:
+        logger.exception("[Provider health] checking the backup addresses failed")
+        db.rollback()
+    for done in switched:
+        state = address_switched(db, done["provider_id"]) or state
     failing = [s for s in state.values() if s.get("state") == "failing"]
     checked = sum(1 for o in outcomes.values() if o["verdict"] in ("ok", "fail"))
-    return {"skipped": bool(logged), "checked": checked, "failing": len(failing)}
+    return {"skipped": bool(logged), "checked": checked, "failing": len(failing),
+            "switched": len(switched)}
+
+
+def address_switched(db, provider_id: int):
+    """The provider now uses another address (by hand or by itself): its
+    failure was the old address's. Cleared quietly, since the switch sent its
+    own message; the next check says how the new one does."""
+    with _state_lock:
+        state = _load_fresh(db)
+        entry = state.get(str(provider_id))
+        if not entry:
+            return state
+        entry.update(state="unknown", since=None, step=None, code=None, kind=None, reason=None,
+                     alerted=False, recovery_due=None, suspect=None)
+        _save_state(db, state)
+        return state
 
 
 # ─── What syncs and streams learn ─────────────────────────────────────────────

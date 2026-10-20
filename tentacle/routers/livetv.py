@@ -1077,7 +1077,7 @@ _EPG_COVERAGE_KEY = "livetv_epg_coverage_{}"
 _EPG_SYNCED_KEY = "livetv_epg_synced_{}"
 _M3U_SWITCHED_OFF_KEY = "livetv_m3u_switched_off_{}"
 PROVIDER_SETTING_KEYS = (_OUTPUT_FORMATS_KEY, _EPG_COVERAGE_KEY, _EPG_SYNCED_KEY,
-                         _M3U_SWITCHED_OFF_KEY)
+                         _M3U_SWITCHED_OFF_KEY, "provider_address_probation_{}")
 
 
 def _remembered_output_formats(db, provider_id: int) -> list:
