@@ -1,4 +1,6 @@
 using System.Text.RegularExpressions;
+using Jellyfin.Data;
+using Jellyfin.Database.Implementations.Enums;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using Microsoft.AspNetCore.Mvc.Controllers;
@@ -28,7 +30,10 @@ namespace Jellyfin.Plugin.Tentacle.Services;
 /// (the TV app direct-plays these). The same argument is set on the HLS
 /// video requests (master.m3u8, main.m3u8, the segments) as a backstop for
 /// a client that builds its own URL; all three get it, so the playlist and
-/// the segments agree. Library files and Live TV are never touched.
+/// the segments agree. Library files and Live TV are never touched, nor is
+/// a user who may not transcode video: Jellyfin copies the video for them
+/// whatever the flag says, and on PlaybackInfo the flag would take away the
+/// remux they play through.
 /// </summary>
 public sealed class VodNoVideoCopyFilter : IActionFilter
 {
@@ -50,12 +55,18 @@ public sealed class VodNoVideoCopyFilter : IActionFilter
 
     private const string CopyArgument = "allowVideoStreamCopy";
 
+    // The claim Jellyfin's authentication puts the caller's user id in
+    // (Jellyfin.Api's InternalClaimTypes.UserId, not referenced by plugins).
+    private const string UserIdClaim = "Jellyfin-UserId";
+
     private readonly ILibraryManager _libraryManager;
+    private readonly IUserManager _userManager;
     private readonly ILogger<VodNoVideoCopyFilter> _logger;
 
-    public VodNoVideoCopyFilter(ILibraryManager libraryManager, ILogger<VodNoVideoCopyFilter> logger)
+    public VodNoVideoCopyFilter(ILibraryManager libraryManager, IUserManager userManager, ILogger<VodNoVideoCopyFilter> logger)
     {
         _libraryManager = libraryManager;
+        _userManager = userManager;
         _logger = logger;
     }
 
@@ -83,6 +94,11 @@ public sealed class VodNoVideoCopyFilter : IActionFilter
 
             var item = PlayedItem(itemId, MediaSourceId(args));
             if (item is null || !IsTentacleVod(item))
+            {
+                return;
+            }
+
+            if (!MayTranscodeVideo(context))
             {
                 return;
             }
@@ -118,6 +134,29 @@ public sealed class VodNoVideoCopyFilter : IActionFilter
     /// <summary>Whether the address is Tentacle's signed VOD link.</summary>
     public static bool IsTentacleVodUrl(string? url)
         => !string.IsNullOrEmpty(url) && TentacleVodUrl.IsMatch(url.Trim());
+
+    // Whether the user the stream is for may have its video re-encoded. As
+    // Jellyfin decides it: PlaybackInfo is for the userId it names (query or
+    // body), else for the caller; an HLS request is for the caller. No user
+    // (an API key without one): Jellyfin applies no permission, nor do we.
+    private bool MayTranscodeVideo(ActionExecutingContext context)
+    {
+        var args = context.ActionArguments;
+        var userId = args.TryGetValue("userId", out var query) && query is Guid fromQuery ? fromQuery : Guid.Empty;
+        if (userId == Guid.Empty && args.TryGetValue("playbackInfoDto", out var body) && body is not null
+            && body.GetType().GetProperty("UserId")?.GetValue(body) is Guid fromBody)
+        {
+            userId = fromBody;
+        }
+
+        if (userId == Guid.Empty)
+        {
+            Guid.TryParse(context.HttpContext.User.FindFirst(UserIdClaim)?.Value, out userId);
+        }
+
+        var user = userId == Guid.Empty ? null : _userManager.GetUserById(userId);
+        return user is null || user.HasPermission(PermissionKind.EnableVideoPlaybackTranscoding);
+    }
 
     // The version being played: the media source when the request names one
     // (an item with several versions), else the item itself.

@@ -70,8 +70,9 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   Jellyfin Web runs past what was written and plays the next episode
   (jellyfin/jellyfin#17966). Jellyfin then writes the flag into the
   TranscodingUrl itself; direct play (the TV) is decided as before, and
-  library files, Live TV and .strm files pointing straight at a provider
-  are untouched. Turning off the user policy "Allow video playback that
+  library files, Live TV, .strm files pointing straight at a provider and
+  users without video transcoding permission (their remux is all they can
+  play) are untouched. Turning off the user policy "Allow video playback that
   requires conversion without re-encoding" does not stop the copy.
 - **Home sections**: when Tentacle's home is on, the server turns
   Jellyfin's own home sections off per user (see server.md).

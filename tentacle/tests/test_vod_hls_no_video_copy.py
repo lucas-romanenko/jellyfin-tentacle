@@ -120,6 +120,18 @@ class TestVodNoVideoCopyFilter(unittest.TestCase):
         self.assertLess(guard, self.executing.index("args[CopyArgument] = false"))
         self.assertRegex(self.executing, r"if \(item is null \|\| !IsTentacleVod\(item\)\)\s*\{\s*return;")
 
+    def test_a_user_who_may_not_transcode_video_is_left_alone(self):
+        # Jellyfin copies their video whatever the flag says, and on PlaybackInfo
+        # the flag clears the remux they play through: no stream at all.
+        guard = self.executing.index("MayTranscodeVideo(context)")
+        self.assertLess(guard, self.executing.index("args[CopyArgument] = false"))
+        check = method(self.src, "private bool MayTranscodeVideo(")
+        self.assertIn("PermissionKind.EnableVideoPlaybackTranscoding", check)
+        self.assertIn('"userId"', check, "PlaybackInfo is for the user it names")
+        self.assertIn('GetProperty("UserId")', check, "PlaybackInfo's body names the user too")
+        self.assertIn("UserIdClaim", check, "an HLS request is for the caller")
+        self.assertRegex(self.src, r'UserIdClaim\s*=\s*"Jellyfin-UserId"')
+
     def test_the_version_played_is_the_one_checked(self):
         self.assertIn("PlayedItem(itemId, MediaSourceId(args))", self.executing)
         source_id = method(self.src, "private static string? MediaSourceId(")
@@ -136,6 +148,7 @@ class TestVodNoVideoCopyFilter(unittest.TestCase):
 
     def test_it_is_registered_as_a_global_mvc_filter(self):
         reg = REGISTRATOR.read_text(encoding="utf-8")
+        self.assertRegex(self.src, r"VodNoVideoCopyFilter\(ILibraryManager libraryManager, IUserManager userManager,")
         self.assertRegex(reg, r"AddSingleton<VodNoVideoCopyFilter>\(\)")
         self.assertRegex(reg, r"Configure<MvcOptions>\(\s*options\s*=>\s*options\.Filters\.AddService<VodNoVideoCopyFilter>\(\)\s*\)")
 
