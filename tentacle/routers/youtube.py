@@ -640,6 +640,14 @@ def save_setup(body: SetupBody, request: Request, db: Session = Depends(get_db))
     set_setting(db, "youtube_enabled", "true" if body.enabled else "false")
     if base:
         set_setting(db, "youtube_base_url", base)
+        # One Tentacle address (Settings → Services): IPTV files that carry
+        # the old one follow it (at the next sync, which rewrites them). Files
+        # made with an address of their own (how Jellyfin reached Tentacle
+        # then) keep it; Services says which.
+        vod = (get_setting(db, "vod_base_url", "") or "").strip().rstrip("/")
+        if previous and vod == previous and base.rstrip("/") != previous:
+            set_setting(db, "vod_base_url", base.rstrip("/"))
+            logger.info(f"[YouTube] IPTV files follow Tentacle's new address {base} at the next sync")
 
     # Every existing .strm carries the old address. Leaving them alone means
     # changing this setting appears to do nothing — the videos keep pointing at

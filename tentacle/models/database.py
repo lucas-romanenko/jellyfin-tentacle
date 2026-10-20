@@ -1380,6 +1380,36 @@ def seed_defaults(db):
         except IntegrityError:
             db.rollback()  # another worker inserted it first — fine
     _forget_stored_builtin_tmdb_token(db)
+    _one_tentacle_address(db)
+
+
+# Tentacle's own address used to be asked in six places. One is kept, saved
+# as `youtube_base_url` (Settings → Services, "Tentacle's address"); the
+# others were filled in by older dashboards and the setup wizard.
+_OLD_ADDRESS_KEYS = ("vod_base_url", "hdhr_base_url", "external_url", "webhook_host", "sonarr_webhook_host")
+
+
+def tentacle_address(db) -> str:
+    """Tentacle's address as Jellyfin and the Arr apps reach it, or ""."""
+    return (get_setting(db, "youtube_base_url", "") or "").strip().rstrip("/")
+
+
+def _one_tentacle_address(db):
+    """Once: an install that has no Tentacle address yet takes the first one
+    an older setting holds (with http:// for a bare host:port). The old keys
+    are left as they are: vod_base_url is what the .strm files carry, and
+    changing it repoints every file, which is the admin's call (Services)."""
+    if tentacle_address(db):
+        return
+    for key in _OLD_ADDRESS_KEYS:
+        val = (get_setting(db, key, "") or "").strip().rstrip("/")
+        if not val:
+            continue
+        if not val.lower().startswith(("http://", "https://")):
+            val = f"http://{val}"
+        set_setting(db, "youtube_base_url", val)
+        logger.info(f"[migrate] Tentacle's address is now kept in one place: {val} (was {key})")
+        return
 
 
 def _forget_stored_builtin_tmdb_token(db):

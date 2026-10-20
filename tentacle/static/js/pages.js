@@ -756,106 +756,33 @@ async function dismissNewContentNotice() {
   try { await api('/api/sync/new-content-notice/dismiss', { method: 'POST' }); } catch {}
 }
 
+// The user's lists are a group in the Source dropdown ("list:<id>"): a list
+// shows the titles of it that are in the library.
 async function loadLibListPills() {
-  const container = document.getElementById('lib-list-pills');
-  const row = document.getElementById('lib-list-row');
-  if (!container) return;
   try {
-    const lists = await api('/api/lists');
-    if (!lists.length) {
-      container.innerHTML = '';
-      if (row) row.style.display = 'none';
-      return;
-    }
-    if (row) row.style.display = 'flex';
-    const active = pages.lib.listId;
-    container.innerHTML = lists.map(l =>
-      `<button class="lib-list-pill${active === l.id ? ' active' : ''}" data-list-id="${l.id}" onclick="setLibList(${l.id},this)">${escapeAttr(l.name)}${l.last_item_count ? ` <span style="opacity:0.5;font-size:11px">${l.last_item_count}</span>` : ''}</button>`
-    ).join('');
-    // Check scroll arrows after render
-    setTimeout(() => updateListScrollArrows(), 50);
+    pages.lib.lists = await api('/api/lists');
   } catch (e) {
-    container.innerHTML = '';
-    if (row) row.style.display = 'none';
+    pages.lib.lists = [];
   }
-}
-
-function updateListScrollArrows() {
-  const inner = document.getElementById('lib-list-pills');
-  const leftBtn = document.getElementById('lib-list-scroll-left');
-  const rightBtn = document.getElementById('lib-list-scroll-right');
-  if (!inner || !leftBtn || !rightBtn) return;
-  const hasOverflow = inner.scrollWidth > inner.clientWidth + 2;
-  leftBtn.classList.toggle('hidden', !hasOverflow || inner.scrollLeft <= 0);
-  rightBtn.classList.toggle('hidden', !hasOverflow || inner.scrollLeft >= inner.scrollWidth - inner.clientWidth - 2);
-}
-
-function scrollListPills(dir) {
-  const inner = document.getElementById('lib-list-pills');
-  if (!inner) return;
-  inner.scrollBy({ left: dir * 200, behavior: 'smooth' });
-  setTimeout(() => updateListScrollArrows(), 350);
-}
-
-function setLibList(listId, btn) {
-  const isDeselect = pages.lib.listId === listId;
-  if (isDeselect) {
-    // Exit list mode
-    pages.lib.listId = null;
-    pages.lib.listStatus = null;
-    btn.classList.remove('active');
-    _exitListMode();
-  } else {
-    // Enter list mode
-    pages.lib.listId = listId;
-    pages.lib.listStatus = null;
-    document.querySelectorAll('#lib-list-pills .lib-list-pill').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    _enterListMode();
-  }
-  pages.lib.offset = 0;
-  pages.lib.items = [];
-  fetchLibraryPage();
+  renderSourceOptions(pages.lib.breakdown || {});
 }
 
 function _enterListMode() {
-  // Deselect type + source filters
   pages.lib.type = 'all';
   pages.lib.src = 'all';
   pages.lib.sourceTag = null;
   pages.lib.listStatus = 'in_library';  // Library is browse-only — no missing items
   document.querySelectorAll('[data-libtype]').forEach(b => b.classList.remove('active'));
-  document.querySelectorAll('[data-libsrc]').forEach(b => b.classList.remove('active'));
-  // Dim the type/source groups
   const typeGrp = document.getElementById('lib-type-group');
-  const srcGrp = document.getElementById('lib-src-group');
   if (typeGrp) typeGrp.style.opacity = '0.35';
-  if (srcGrp) srcGrp.style.opacity = '0.35';
-  // Hide list status sub-filter (Library is browse-only, no Missing filter)
-  const statusEl = document.getElementById('lib-list-status');
-  if (statusEl) statusEl.classList.add('hidden');
 }
 
 function _exitListMode() {
-  // Restore type/source filters
+  pages.lib.listId = null;
+  pages.lib.listStatus = null;
   document.querySelector('[data-libtype="all"]')?.classList.add('active');
-  document.querySelector('[data-libsrc="all"]')?.classList.add('active');
   const typeGrp = document.getElementById('lib-type-group');
-  const srcGrp = document.getElementById('lib-src-group');
   if (typeGrp) typeGrp.style.opacity = '1';
-  if (srcGrp) srcGrp.style.opacity = '1';
-  // Hide list status sub-filter
-  const statusEl = document.getElementById('lib-list-status');
-  if (statusEl) statusEl.classList.add('hidden');
-}
-
-function setLibListStatus(status, btn) {
-  pages.lib.listStatus = status === 'all' ? null : status;
-  document.querySelectorAll('[data-liststatus]').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  pages.lib.offset = 0;
-  pages.lib.items = [];
-  fetchLibraryPage();
 }
 
 function setLibSort(value) {
@@ -1612,12 +1539,10 @@ function loadMoreLibrary() {
 }
 
 function setLibType(type, btn) {
-  // Exit list mode if active
   if (pages.lib.listId) {
-    pages.lib.listId = null;
-    pages.lib.listStatus = null;
-    document.querySelectorAll('#lib-list-pills .lib-list-pill').forEach(b => b.classList.remove('active'));
     _exitListMode();
+    const sel = document.getElementById('lib-source');
+    if (sel) sel.value = 'all';
   }
   pages.lib.type = type;
   pages.lib.sourceTag = null;
@@ -1629,12 +1554,15 @@ function setLibType(type, btn) {
 // The Source dropdown: everything, downloads, everything from providers, or
 // one provider source ("Netflix Movies"), each with its own value.
 function setLibSource(value) {
-  if (pages.lib.listId) {
-    pages.lib.listId = null;
-    pages.lib.listStatus = null;
-    document.querySelectorAll('#lib-list-pills .lib-list-pill').forEach(b => b.classList.remove('active'));
-    _exitListMode();
+  if (String(value).startsWith('list:')) {
+    pages.lib.listId = parseInt(String(value).slice(5), 10) || null;
+    _enterListMode();
+    pages.lib.offset = 0;
+    pages.lib.items = [];
+    fetchLibraryPage();
+    return;
   }
+  if (pages.lib.listId) _exitListMode();
   if (String(value).startsWith('tag:')) { pages.lib.src = 'all'; pages.lib.sourceTag = String(value).slice(4); }
   else { pages.lib.src = value || 'all'; pages.lib.sourceTag = null; }
   loadLibrary();
@@ -1650,11 +1578,15 @@ function searchLibrary() {
 function renderSourceOptions(breakdown) {
   const sel = document.getElementById('lib-source');
   if (!sel) return;
+  pages.lib.breakdown = breakdown || {};
   const tags = Object.entries(breakdown || {}).sort((a, b) => b[1] - a[1]);
-  const current = pages.lib.sourceTag ? 'tag:' + pages.lib.sourceTag : (pages.lib.src || 'all');
+  const lists = pages.lib.lists || [];
+  const current = pages.lib.listId ? 'list:' + pages.lib.listId
+    : pages.lib.sourceTag ? 'tag:' + pages.lib.sourceTag : (pages.lib.src || 'all');
   const opt = (value, label) => `<option value="${escapeAttr(value)}">${escapeAttr(label)}</option>`;
   sel.innerHTML = opt('all', 'All sources') + opt('radarr', 'Downloaded') + opt('vod', 'From IPTV providers')
-    + (tags.length ? '<optgroup label="Provider sources">' + tags.map(([tag, n]) => opt('tag:' + tag, `${tag} (${n})`)).join('') + '</optgroup>' : '');
+    + (tags.length ? '<optgroup label="Provider sources">' + tags.map(([tag, n]) => opt('tag:' + tag, `${tag} (${n})`)).join('') + '</optgroup>' : '')
+    + (lists.length ? '<optgroup label="Your lists">' + lists.map(l => opt('list:' + l.id, l.name)).join('') + '</optgroup>' : '');
   sel.value = current;
   if (sel.value !== current) sel.value = 'all';
 }
@@ -1662,12 +1594,7 @@ function renderSourceOptions(breakdown) {
 function filterByTag(tag) {
   const search = document.getElementById('lib-search');
   if (search) search.value = '';
-  if (pages.lib.listId) {
-    pages.lib.listId = null;
-    pages.lib.listStatus = null;
-    document.querySelectorAll('#lib-list-pills .lib-list-pill').forEach(b => b.classList.remove('active'));
-    _exitListMode();
-  }
+  if (pages.lib.listId) _exitListMode();
   pages.lib.sourceTag = tag || null;
   const sel = document.getElementById('lib-source');
   if (sel) sel.value = tag ? 'tag:' + tag : 'all';
@@ -2302,7 +2229,6 @@ async function loadListCards() {
               <div style="font-size:12px;color:var(--text3);margin-top:4px">
                 ${typeLabel} · Last fetched: ${lastFetched}${list.last_item_count ? ` · ${list.last_item_count} items` : ''}
               </div>
-              <div style="font-size:12px;color:var(--text3);margin-top:2px">Tag: ${escapeAttr(list.tag)}</div>
               ${list.last_fetch_note ? `<div class="list-fetch-note" style="font-size:12px;color:var(--amber);margin-top:4px">⚠️ ${escapeHtml(list.last_fetch_note)}</div>` : ''}
             </div>
           </div>
@@ -3257,10 +3183,22 @@ async function ytSaveTraffic() {
 }
 
 async function loadTentacleAddress() {
-  // Settings → Integrations: populate from the same source of truth.
+  // Settings → Services: populate from the same source of truth.
   try {
     const st = await api('/api/youtube/status');
     ytShowAddress('settings-tentacle-address', st);
+    const input = document.getElementById('settings-tentacle-address');
+    if (input) input.dataset.saved = (st.base_url || '').trim();
+    // IPTV files made with an address of their own keep it: say so
+    const note = document.getElementById('settings-tentacle-address-vod');
+    if (note) {
+      const vod = (((await api('/api/settings/raw')).vod_base_url) || '').trim().replace(/\/+$/, '');
+      const own = (st.base_url || '').trim().replace(/\/+$/, '');
+      note.textContent = vod && own && vod !== own
+        ? `IPTV video files use ${vod} (how Jellyfin reached Tentacle when they were made). Save an address here to move them to it.`
+        : '';
+      note.style.display = note.textContent ? '' : 'none';
+    }
   } catch { /* the YouTube page shows the same thing */ }
 }
 
@@ -3464,51 +3402,6 @@ function ytStartPolling() {
 
 // ── SMARTLISTS ───────────────────────────────────────────────────────────
 
-async function loadSmartLists() {
-  const el = document.getElementById('smartlists-table');
-  const statusEl = document.getElementById('smartlists-path-status');
-  try {
-    const data = await api('/api/smartlists');
-    const lists = data.smartlists || [];
-
-    statusEl.innerHTML = data.path_accessible
-      ? `<span style="color:var(--green)">${escapeAttr(data.path)}</span>`
-      : `<span style="color:var(--red)">${escapeAttr(data.path)} (not accessible)</span>`;
-
-    if (!lists.length) {
-      el.innerHTML = '<div class="empty-state" style="padding:24px"><p>No SmartLists to manage yet. Run a sync first.</p></div>';
-      return;
-    }
-
-    let html = `<table style="width:100%;font-size:12px;border-collapse:collapse">
-      <thead><tr style="text-align:left;color:var(--text3);border-bottom:1px solid var(--border)">
-        <th style="padding:8px 12px;font-weight:500">Name</th>
-        <th style="padding:8px 12px;font-weight:500">Tag</th>
-        <th style="padding:8px 12px;font-weight:500">Media</th>
-        <th style="padding:8px 12px;font-weight:500;text-align:center">Status</th>
-      </tr></thead><tbody>`;
-
-    for (const sl of lists) {
-      const mediaLabel = sl.media_type.join(', ');
-      const statusBadge = sl.exists_on_disk
-        ? '<span class="badge badge-green">On disk</span>'
-        : '<span class="badge" style="background:var(--amber-dim);color:var(--amber)">Missing</span>';
-
-      html += `<tr style="border-bottom:1px solid var(--border)">
-        <td style="padding:8px 12px;color:var(--text)">${escapeAttr(sl.name)}</td>
-        <td style="padding:8px 12px"><span class="badge badge-accent">${escapeAttr(sl.tag)}</span></td>
-        <td style="padding:8px 12px;color:var(--text2)">${escapeAttr(mediaLabel)}</td>
-        <td style="padding:8px 12px;text-align:center">${statusBadge}</td>
-      </tr>`;
-    }
-
-    html += '</tbody></table>';
-    el.innerHTML = html;
-  } catch (e) {
-    el.innerHTML = '<div class="empty-state" style="padding:24px"><p>Failed to load SmartLists</p></div>';
-  }
-}
-
 async function syncSmartLists() {
   toast('Syncing playlists to Jellyfin...', 'info');
   try {
@@ -3593,10 +3486,6 @@ async function loadHomeScreen() {
     }
 
     // Card focus previews: all / local_only / off (absent = local_only, androidtv#47)
-    const previewsSelect = document.getElementById('card-previews-select');
-    if (previewsSelect) {
-      previewsSelect.value = ['all', 'local_only', 'off'].includes(config.card_previews) ? config.card_previews : 'local_only';
-    }
 
     if (!homeRows.length) {
       listEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text3);font-size:13px">No rows configured — the default Jellyfin home screen will be used.</div>';
@@ -3704,10 +3593,33 @@ function makeSortable(listEl, itemSelector, onReorder) {
   listEl.addEventListener('contextmenu', e => { if (drag) e.preventDefault(); });
 }
 
+// A card that folds away (class "collapsible"): the header opens and closes
+// it, and the browser remembers which are open.
+function toggleCard(header) {
+  const card = header.closest('.card.collapsible');
+  if (!card) return;
+  const open = card.classList.toggle('collapsed') === false;
+  header.setAttribute('aria-expanded', open ? 'true' : 'false');
+  try { localStorage.setItem(`card-open:${card.id}`, open ? '1' : '0'); } catch (e) { /* private mode */ }
+}
+
+function restoreCardStates() {
+  document.querySelectorAll('.card.collapsible[id]').forEach(card => {
+    let open = null;
+    try { open = localStorage.getItem(`card-open:${card.id}`); } catch (e) { /* private mode */ }
+    if (open === null) return;
+    card.classList.toggle('collapsed', open !== '1');
+    card.querySelector('.card-header')?.setAttribute('aria-expanded', open === '1' ? 'true' : 'false');
+  });
+}
+
 function renderToolbarButtons(buttons) {
   toolbarButtons = buttons;
   const listEl = document.getElementById('toolbar-buttons-list');
   if (!listEl) return;
+  restoreCardStates();
+  const sum = document.getElementById('toolbar-buttons-sum');
+  if (sum) sum.textContent = `— ${toolbarButtons.filter(b => b.enabled).length} of ${toolbarButtons.length} shown`;
 
   listEl.innerHTML = toolbarButtons.map((btn, i) => `
     <div class="home-row-item" data-toolbar-idx="${i}" style="padding:8px 12px;border-radius:6px;margin-bottom:0">
@@ -5959,8 +5871,6 @@ async function fillSetupUrls() {
   }
   const hint = document.getElementById('live-setup-detected');
   if (hint) hint.textContent = liveState.setupBase ? note : 'Set Tentacle\'s address in Settings → Services first.';
-  const limit = document.getElementById('livetv_max_concurrent_streams');
-  if (limit && document.activeElement !== limit) limit.value = settings['livetv_max_concurrent_streams'] || '';
   updateSetupUrls();
 }
 
@@ -6453,17 +6363,6 @@ async function saveMergeContinueWatching(checked) {
   }
 }
 
-async function saveCardPreviews(mode) {
-  const labels = { all: 'Previews on for all cards', local_only: 'Previews only for local files', off: 'Card previews off' };
-  try {
-    await api('/api/smartlists/card-previews', { method: 'POST', body: { mode } });
-    toast(labels[mode] || 'Saved', 'success');
-  } catch (e) {
-    toast('Failed to save setting', 'error');
-    loadHomeScreen();   // show what is actually saved
-  }
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Health page — housekeeping, downloads & audit trail
 // ═══════════════════════════════════════════════════════════════════════════
@@ -6851,8 +6750,8 @@ const _DELETION_KIND_META = {
   'jellyfin-delete':   { label: 'Jellyfin delete', cls: 'badge-red' },
   'provider-cascade':  { label: 'Provider delete', cls: 'badge-red' },
   'duplicate-resolve': { label: 'Duplicate', cls: 'badge-amber' },
-  'orphan-sweep':      { label: 'Orphan sweep', cls: 'badge-accent' },
-  'vod-sweep':         { label: 'VOD sweep', cls: 'badge-accent' },
+  'orphan-sweep':      { label: 'Download gone', cls: 'badge-accent' },
+  'vod-sweep':         { label: 'IPTV file gone', cls: 'badge-accent' },
   'stale-cleanup':     { label: 'Stale cleanup', cls: 'badge-amber' },
   'download-fix':      { label: 'Download fix', cls: 'badge-amber' },
   'stream-health':     { label: 'Stream health', cls: 'badge-amber' },
@@ -6861,16 +6760,16 @@ const _DELETION_KIND_META = {
   'bad-copy':          { label: 'Bad copy', cls: 'badge-amber' },
   'wrong-match':       { label: 'Wrong match', cls: 'badge-amber' },
   'rematch':           { label: 'Rematch', cls: 'badge-amber' },
-  'strm-optout':       { label: '.strm opt-out', cls: 'badge-amber' },
+  'strm-optout':       { label: 'IPTV copy turned off', cls: 'badge-amber' },
   'music-extra-track': { label: 'Extra track', cls: 'badge-amber' },
   'radarr-scan':       { label: 'Gone from Radarr', cls: 'badge-accent' },
   'sonarr-scan':       { label: 'Gone from Sonarr', cls: 'badge-accent' },
   'sync-prune':        { label: 'Gone from provider', cls: 'badge-accent' },
   'smartlist-orphan':  { label: 'Playlist cleanup', cls: 'badge-accent' },
   // Removals a safety limit refused: nothing was deleted
-  'sync-prune-blocked':   { label: 'Prune refused', cls: 'badge-gray' },
-  'orphan-sweep-blocked': { label: 'Orphan sweep refused', cls: 'badge-gray' },
-  'vod-sweep-blocked':    { label: 'VOD sweep refused', cls: 'badge-gray' },
+  'sync-prune-blocked':   { label: 'Removal held back', cls: 'badge-gray' },
+  'orphan-sweep-blocked': { label: 'Removal held back', cls: 'badge-gray' },
+  'vod-sweep-blocked':    { label: 'Removal held back', cls: 'badge-gray' },
 };
 
 // ── Recent activity (the Activity feed: /api/sync/activity) ────────────────
@@ -6888,11 +6787,11 @@ const _ACTIVITY_EVENT_META = {
   'livetv_config':            { label: 'Live TV', cls: 'badge-blue' },
   'epg_sync':                 { label: 'Guide', cls: 'badge-blue' },
   'new_live_groups':          { label: 'Live TV', cls: 'badge-blue' },
-  'vod_sync':                 { label: 'VOD sync', cls: 'badge-accent' },
-  'sync':                     { label: 'VOD sync', cls: 'badge-accent' },
-  'new_categories':           { label: 'VOD', cls: 'badge-accent' },
-  'vod_sweep':                { label: 'VOD sweep', cls: 'badge-accent' },
-  'orphan_sweep':             { label: 'Orphan sweep', cls: 'badge-accent' },
+  'vod_sync':                 { label: 'Library sync', cls: 'badge-accent' },
+  'sync':                     { label: 'Library sync', cls: 'badge-accent' },
+  'new_categories':           { label: 'Provider', cls: 'badge-accent' },
+  'vod_sweep':                { label: 'IPTV files', cls: 'badge-accent' },
+  'orphan_sweep':             { label: 'Downloads', cls: 'badge-accent' },
   'radarr_scan':              { label: 'Radarr', cls: 'badge-gray' },
   'radarr_remove':            { label: 'Radarr', cls: 'badge-gray' },
   'sonarr_scan':              { label: 'Sonarr', cls: 'badge-gray' },
@@ -6901,6 +6800,8 @@ const _ACTIVITY_EVENT_META = {
   'list_fetch':               { label: 'List', cls: 'badge-gray' },
   'lists_refresh':            { label: 'List', cls: 'badge-gray' },
   'new_playlists':            { label: 'Playlist', cls: 'badge-gray' },
+  'provider_address':         { label: 'Provider address', cls: 'badge-blue' },
+  'provider_health':          { label: 'Provider', cls: 'badge-amber' },
 };
 
 function _activityMeta(e) {
@@ -7084,12 +6985,12 @@ function renderHealthLog() {
     loadJellyfinPage, loadAutoPlaylists, toggleAutoPlaylist, dismissAutoPlaylistBanner,
     showAddTagRule, editTagRule, deleteTagRule, saveTagRule, onContentSourceChange, toggleAdvancedFilters,
     addRuleCondition, updateCondOps, onCollectionNameInput, syncSmartLists, refreshTags, syncPlaylistsToJellyfin, resyncAllPlaylists, setPlaylistSort,
-    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, saveRowShapeByKey, toggleNotificationsFromCheckbox, saveMergeContinueWatching, saveCardPreviews, dismissNewContentNotice, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
+    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, saveRowShapeByKey, toggleNotificationsFromCheckbox, saveMergeContinueWatching, dismissNewContentNotice, toggleCard, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
     showAddHomeRow, hideAddHomeRow, confirmAddHomeRow, removeHomeRow, removeHomeRowByKey,
     reorderHomeRows, rowKey,
     // Library
     openSyncDetailModal, closeSyncDetailModal,
-    loadLibListPills, setLibList, setLibListStatus, setLibSort, scrollListPills,
+    loadLibListPills, setLibSort,
     showMediaDetail, showCoverageDetail, filterByTag, searchLibrary, setLibType, setLibSource,
     loadMoreLibrary, showAddToRadarrModal, showAddToArrModal, confirmAddToRadarr, confirmAddToArr,
     onMonitorPresetChange, toggleSeasonAccordion, toggleSeasonAll, updateSeasonCheckbox, epPickerSelectAll, epPickerSelectNone,
@@ -7112,7 +7013,9 @@ function renderHealthLog() {
     showSourcesTab, loadProviders, setProviderUse, toggleProviderPanel,
     setProvCatFilter, renderProvCats, provCatToggle, provCatsSelectShown, provCatsRefresh, provCatsSave,
     renderProvGroups, provGroupToggle, provGroupsSelectShown, provGroupsRefresh, provGroupsSave,
-    loadArrSources, saveTentacleAddress, onLiveProviderChange, saveLiveStreamLimit,
+    loadArrSources, saveTentacleAddress, onLiveProviderChange,
+    addProviderAddresses, removeProviderAddress, useProviderAddress, testProviderAddresses, setAddressAutoSwitch,
+    saveProviderLiveNumber,
     // Activity
     loadActivity, startActivityPolling, stopActivityPolling,
     // Health

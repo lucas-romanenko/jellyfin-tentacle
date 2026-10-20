@@ -437,7 +437,7 @@ body {
 
 .form-hint { font-size: 11px; color: var(--text3); margin-top: 4px; }
 
-/* Test results: one line per step (Settings → Connections / Music) */
+/* Test results: one line per step (Settings → Services / Music) */
 .svc-checks { margin-top: 8px; font-size: 12px; display: grid; gap: 3px; }
 .svc-checks:empty { display: none; }
 .svc-check { display: flex; gap: 8px; align-items: baseline; }
@@ -680,6 +680,43 @@ td.primary { color: var(--text); font-weight: 500; }
 .provider-panel-tools .form-input { width: 220px; padding: 5px 10px; font-size: 12px; }
 .provider-panel-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .provider-panel .cat-list { max-height: 380px; }
+.provider-section.flush { margin: 0 0 14px; }
+.card.collapsible > .card-header { cursor: pointer; user-select: none; }
+.card.collapsible.collapsed > :not(.card-header) { display: none; }
+.card.collapsible.collapsed > .card-header { margin-bottom: 0; }
+.card-chevron { color: var(--text3); font-size: 12px; transition: transform .15s; }
+.card.collapsible.collapsed .card-chevron { transform: rotate(-90deg); }
+.card-sum { font-weight: 400; color: var(--text3); font-size: 12px; margin-left: 6px; }
+.provider-section .mono, .addr-url { font-family: 'DM Mono', monospace; font-size: 12px; }
+.addr-word { font-size: 12px; }
+.addr-word.green { color: var(--green); } .addr-word.amber { color: var(--amber); } .addr-word.red { color: var(--red); } .addr-word.gray { color: var(--text3); }
+.addr-list { display: flex; flex-direction: column; gap: 4px; }
+.addr-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
+.addr-row.in-use { border-color: rgba(108,99,255,0.4); }
+.addr-row .dot { flex-shrink: 0; }
+.addr-main { flex: 1; min-width: 0; }
+.addr-url { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.addr-result { font-size: 12px; margin-top: 1px; }
+.addr-detail, .addr-day { color: var(--text3); }
+.addr-day { margin-left: 4px; white-space: nowrap; }
+.addr-pref { font-family: inherit; font-size: 11px; color: var(--text3); }
+.addr-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.addr-inuse { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); padding: 0 6px; }
+.addr-remove { padding: 2px 8px; font-size: 18px; line-height: 1; color: var(--text3); background: none; border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; }
+.addr-remove:hover { color: var(--red); border-color: var(--border); }
+.addr-add { display: flex; gap: 8px; align-items: flex-start; margin-top: 10px; }
+.addr-add textarea { flex: 1; min-height: 40px; font-size: 12px; resize: vertical; }
+.addr-mode { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: var(--text2); }
+.addr-mode select { width: auto; padding: 4px 8px; font-size: 12px; }
+.provider-live-limits { margin: 0 0 6px 48px; display: flex; align-items: center; gap: 6px 14px; flex-wrap: wrap; font-size: 12px; color: var(--text2); }
+.provider-live-limits label { display: flex; align-items: center; gap: 6px; }
+.provider-live-limits input { width: 64px; padding: 4px 8px; font-size: 12px; }
+.provider-live-limits input.wide { width: 110px; }
+@media (max-width: 600px) {
+  .addr-row { flex-wrap: wrap; }
+  .addr-actions { width: 100%; justify-content: flex-end; }
+  .provider-live-limits { margin-left: 0; }
+}
 .cat-found { font-size: 10px; font-family: 'DM Mono', monospace; white-space: nowrap; }
 .arr-status-row { display: flex; gap: 10px; align-items: baseline; font-size: 13px; color: var(--text2); flex-wrap: wrap; }
 .arr-status-row .dot { flex-shrink: 0; position: relative; top: -1px; }
@@ -1150,6 +1187,8 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 /* ── Library filter bar ── */
 .lib-filters { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
 .lib-filters-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.lib-filters-row #lib-search { flex: 1 1 200px; max-width: 420px; }
+.lib-filters-row #lib-stats { margin-left: auto; }
 
 /* Sort dropdown */
 .lib-sort-select {
@@ -1642,8 +1681,9 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
   .lib-card-info { padding: 6px; }
 
   /* Library filter bar */
-  #lib-search { width: auto !important; flex: 1 1 150px; min-width: 0; }
-  .lib-filters-row > [style*="margin-left:auto"] { margin-left: 0 !important; flex-basis: 100%; }
+  #lib-search { width: auto !important; flex: 1 1 100%; max-width: none; min-width: 0; }
+  .lib-filters-row .lib-sort-select { flex: 1 1 40%; min-width: 0; }
+  .lib-filters-row #lib-stats { margin-left: 0; }
   .lib-list-status { margin-left: 0; padding-left: 0; border-left: none; }
   /* List pills: swipe to scroll instead of arrow buttons */
   .lib-pill-strip-inner { overflow-x: auto; scrollbar-width: none; }
@@ -1849,7 +1889,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <div class="tabs-bar" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
           <button class="live-tab active" data-libtab="browse" onclick="showLibTab('browse')">Browse</button>
           <button class="live-tab" data-libtab="music" data-music-only onclick="showLibTab('music')">Music</button>
-          <button class="live-tab" data-libtab="following" onclick="showLibTab('following')">Following <span class="nav-badge" id="lib-follow-badge" style="display:none;margin-left:6px">0</span></button>
+          <button class="live-tab" data-libtab="following" onclick="showLibTab('following')">Following <span class="nav-badge nav-badge-quiet" id="lib-follow-badge" style="display:none;margin-left:6px">0</span></button>
         </div>
 
         <div id="lib-tab-music" style="display:none">
@@ -1862,34 +1902,15 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <button class="filter-btn" data-musicfilter="needs_review" onclick="setMusicLibFilter('needs_review',this)">Needs review<span id="music-count-needs_review"></span></button>
               <button class="filter-btn" data-musicfilter="fix" data-admin-only onclick="setMusicLibFilter('fix',this)">Fix library<span id="music-count-fix"></span></button>
             </div>
-            <div data-admin-only style="margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-              <span id="music-status-summary" style="font-size:12px;color:var(--text3)"></span>
-              <button class="btn btn-secondary btn-sm" onclick="startMusicReconcile(this)">Check library now</button>
-            </div>
           </div>
           <div id="music-library"><div class="loading-state"><div class="spinner"></div></div></div>
         </div>
 
         <div id="lib-tab-browse">
-        <!-- Filter bar -->
+        <!-- Filter bar: one row (wraps on a phone). Lists are in the Source dropdown. -->
         <div class="lib-filters">
-          <!-- Row 1: Search + Sort -->
           <div class="lib-filters-row">
-            <input class="search-box" id="lib-search" placeholder="Search titles..." oninput="searchLibrary()" style="width:220px">
-            <select class="lib-sort-select" id="lib-sort" aria-label="Sort library" onchange="setLibSort(this.value)">
-              <option value="date_desc">Recently Added</option>
-              <option value="title_asc">Title A–Z</option>
-              <option value="title_desc">Title Z–A</option>
-              <option value="rating">Highest Rated</option>
-              <option value="year_desc">Year (Newest)</option>
-              <option value="year_asc">Year (Oldest)</option>
-            </select>
-            <div style="margin-left:auto">
-              <span class="lib-stats-bar" id="lib-stats"></span>
-            </div>
-          </div>
-          <!-- Row 2: Media type + Source -->
-          <div class="lib-filters-row">
+            <input class="search-box" id="lib-search" placeholder="Search titles..." aria-label="Search titles" oninput="searchLibrary()">
             <div class="filter-group" id="lib-type-group">
               <button class="filter-btn active" data-libtype="all" onclick="setLibType('all',this)">All</button>
               <button class="filter-btn" data-libtype="movie" onclick="setLibType('movie',this)">Movies</button>
@@ -1900,23 +1921,15 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <option value="radarr">Downloaded</option>
               <option value="vod">From IPTV providers</option>
             </select>
-          </div>
-          <!-- Row 3: Scrollable list pills -->
-          <div class="lib-filters-row" id="lib-list-row" style="display:none">
-            <span style="font-size:11px;color:var(--text3);white-space:nowrap;font-weight:500">Lists</span>
-            <div class="lib-pill-strip" id="lib-list-strip">
-              <button class="lib-pill-strip-btn left hidden" id="lib-list-scroll-left" onclick="scrollListPills(-1)">‹</button>
-              <div class="lib-pill-strip-inner" id="lib-list-pills"></div>
-              <button class="lib-pill-strip-btn right hidden" id="lib-list-scroll-right" onclick="scrollListPills(1)">›</button>
-            </div>
-            <!-- List mode sub-filter -->
-            <div class="lib-list-status hidden" id="lib-list-status">
-              <div class="filter-group">
-                <button class="filter-btn active" data-liststatus="all" onclick="setLibListStatus('all',this)">All</button>
-                <button class="filter-btn" data-liststatus="in_library" onclick="setLibListStatus('in_library',this)">In Library</button>
-                <button class="filter-btn" data-liststatus="missing" onclick="setLibListStatus('missing',this)">Missing</button>
-              </div>
-            </div>
+            <select class="lib-sort-select" id="lib-sort" aria-label="Sort library" onchange="setLibSort(this.value)">
+              <option value="date_desc">Recently Added</option>
+              <option value="title_asc">Title A–Z</option>
+              <option value="title_desc">Title Z–A</option>
+              <option value="rating">Highest Rated</option>
+              <option value="year_desc">Year (Newest)</option>
+              <option value="year_asc">Year (Oldest)</option>
+            </select>
+            <span class="lib-stats-bar" id="lib-stats"></span>
           </div>
         </div>
 
@@ -2038,37 +2051,6 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
             </div>
           </div>
 
-          <!-- Notifications -->
-          <div class="card" style="margin-top:16px">
-            <div class="card-header">
-              <div class="card-title">Download notifications</div>
-            </div>
-            <div style="padding:0 16px 16px">
-              <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
-                <div style="flex:1">
-                  <div style="font-size:13px;color:var(--text)">Download notifications</div>
-                  <div style="font-size:11px;color:var(--text3);margin-top:2px">Get notified when a movie or episode finishes downloading and is ready to watch. Shows a toast popup in Jellyfin and the Android TV app.</div>
-                </div>
-                <label style="position:relative;display:inline-block;width:40px;height:22px;flex-shrink:0">
-                  <input type="checkbox" id="notif-enabled-checkbox" aria-label="Download notifications" onchange="toggleNotificationsFromCheckbox(this.checked)" style="opacity:0;width:0;height:0">
-                  <span style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:var(--bg3);border-radius:11px;transition:.2s"></span>
-                  <span id="notif-slider" style="position:absolute;height:16px;width:16px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.2s"></span>
-                </label>
-              </div>
-            </div>
-          </div>
-
-          <!-- Toolbar buttons -->
-          <div class="card" style="margin-top:16px">
-            <div class="card-header">
-              <div class="card-title">Toolbar buttons</div>
-              <span class="card-header-hint">Drag the handle to reorder. Applies to Jellyfin and the Android TV app.</span>
-            </div>
-            <div style="padding:0 16px 16px">
-              <div id="toolbar-buttons-list" style="display:flex;flex-direction:column;gap:6px"></div>
-            </div>
-          </div>
-
           <!-- Home rows -->
           <div class="card" style="margin-top:16px">
             <div class="card-header">
@@ -2088,18 +2070,6 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                   <span id="merge-continue-slider" style="position:absolute;height:16px;width:16px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.2s"></span>
                 </label>
               </div>
-              <!-- Card focus previews -->
-              <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:12px;border-bottom:1px solid var(--border);margin-bottom:12px">
-                <div style="flex:1">
-                  <div style="font-size:13px;color:var(--text)">Previews when a card is focused</div>
-                  <div style="font-size:11px;color:var(--text3);margin-top:2px">Android TV plays a preview of a focused card. For a provider (IPTV) title that opens a provider connection per card scrolled over, which can cut off a running recording. "Local files only" (the default) keeps previews for downloaded media.</div>
-                </div>
-                <select id="card-previews-select" aria-label="Card previews" onchange="saveCardPreviews(this.value)" style="flex-shrink:0;font-size:12px;padding:4px 6px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px">
-                  <option value="all">All cards</option>
-                  <option value="local_only">Local files only</option>
-                  <option value="off">Off</option>
-                </select>
-              </div>
               <div id="add-row-inline" style="display:none;margin-bottom:8px">
                 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
                   <select id="add-row-select" class="form-input" style="flex:1">
@@ -2112,6 +2082,36 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <div id="home-rows-list"></div>
             </div>
           </div>
+
+          <!-- Toolbar buttons -->
+          <div class="card collapsible collapsed" id="card-toolbar-buttons" style="margin-top:16px">
+            <div class="card-header" role="button" tabindex="0" aria-expanded="false" onclick="toggleCard(this)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleCard(this)}">
+              <div class="card-title">Toolbar buttons <span class="card-sum" id="toolbar-buttons-sum"></span></div>
+              <span class="card-chevron" aria-hidden="true">&#9662;</span>
+            </div>
+            <div class="card-body" style="padding:0 16px 16px">
+              <p class="form-hint" style="margin:0 0 8px">Drag the handle to reorder. Applies to Jellyfin and the Android TV app.</p>
+              <div id="toolbar-buttons-list" style="display:flex;flex-direction:column;gap:6px"></div>
+            </div>
+          </div>
+
+          <!-- Notifications -->
+          <div class="card" style="margin-top:16px">
+            <div class="card-header">
+              <div class="card-title">Download notifications</div>
+            </div>
+            <div style="padding:0 16px 16px">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+                <div style="flex:1;font-size:12px;color:var(--text2)">A message in Jellyfin and the Android TV app when something you asked for is ready to watch.</div>
+                <label style="position:relative;display:inline-block;width:40px;height:22px;flex-shrink:0">
+                  <input type="checkbox" id="notif-enabled-checkbox" aria-label="Download notifications" onchange="toggleNotificationsFromCheckbox(this.checked)" style="opacity:0;width:0;height:0">
+                  <span style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:var(--bg3);border-radius:11px;transition:.2s"></span>
+                  <span id="notif-slider" style="position:absolute;height:16px;width:16px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.2s"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+
         </div>
 
         <!-- ── PLAYLISTS TAB ── -->
@@ -2250,7 +2250,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
             <p style="color:var(--text3);font-size:13px;margin-bottom:12px">You schedule and watch recordings in Jellyfin (Live TV &rarr; Guide &rarr; Record; they appear under Live TV &rarr; Recordings). Tentacle is the tuner they record from.</p>
             <ul style="font-size:13px;color:var(--text2);line-height:1.7;margin:0 0 0 18px">
               <li>A recording keeps its connection to the provider: if the provider drops it, Tentacle reconnects and the recording carries on.</li>
-              <li>The number of channels you can record at once is <strong>Channels at once</strong> under <a href="#" onclick="showLiveTab('setup');return false" style="color:var(--accent)">Jellyfin setup</a>.</li>
+              <li>How many channels can record at once is <strong>Streams at once</strong> on each provider&rsquo;s card under <a href="#" onclick="showSourcesTab('providers');return false" style="color:var(--accent)">IPTV providers</a>.</li>
               <li>Problems with a recording (a damaged file, a channel the provider replaced with a placeholder) are listed on the <a href="#" onclick="showPage('health');return false" style="color:var(--accent)">Health</a> page.</li>
             </ul>
           </div>
@@ -2273,15 +2273,8 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <p style="color:var(--text3);font-size:11px;margin-top:4px">As your Jellyfin server reaches Tentacle. Set once, in Settings &rarr; Services.</p>
             </div>
 
-            <!-- Connection limit: the provider account's, the tuner follows it -->
-            <div style="margin-bottom:24px">
-              <div class="form-label">Channels at once</div>
-              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                <input class="form-input" id="livetv_max_concurrent_streams" type="number" min="0" max="50" placeholder="6" style="width:100px">
-                <button class="btn btn-secondary" style="padding:5px 12px;font-size:12px" onclick="saveLiveStreamLimit()">Save</button>
-              </div>
-              <p style="color:var(--text3);font-size:11px;margin-top:4px">How many channels your provider lets you watch or record at the same time (its &ldquo;connections&rdquo;). Jellyfin gets this many tuners. 0 = no limit.</p>
-            </div>
+            <!-- Connection limits are per provider (its card, Sources → IPTV providers) -->
+            <p style="color:var(--text3);font-size:12px;margin:-8px 0 24px">How many channels each provider lets you watch or record at once is <strong>Streams at once</strong> on its card under <a href="#" onclick="showSourcesTab('providers');return false" style="color:var(--accent)">IPTV providers</a>. Jellyfin gets that many tuners in all.</p>
 
             <!-- Step 1: Tuner -->
             <div style="margin-bottom:24px">
@@ -2472,6 +2465,10 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
               <label class="settings-toggle"><input type="checkbox" id="music_enabled" onchange="onMusicEnabledChange()"> <span><strong>Enable the music module</strong></span></label>
               <div id="music-status-line" class="form-hint" style="margin:-4px 0 8px 22px"></div>
+              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 8px 22px">
+                <span id="music-status-summary" style="font-size:12px;color:var(--text3)"></span>
+                <button class="btn btn-secondary btn-sm" onclick="startMusicReconcile(this)">Check the library now</button>
+              </div>
 
               <div id="music-settings-body">
                 <hr class="divider">
@@ -2563,14 +2560,14 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <div class="card" id="jellyfin-error-banner" style="display:none;margin-bottom:16px;border-left:3px solid var(--red)">
           <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
             <strong style="color:var(--red)" id="jellyfin-banner-title">Jellyfin Connection Failed</strong>
-            <p style="margin:4px 0 0" id="jellyfin-banner-msg">Check your API key in Settings → Connections</p>
+            <p style="margin:4px 0 0" id="jellyfin-banner-msg">Check its API key in Settings → Services</p>
           </div>
         </div>
 
         <!-- Stale VOD files warning (moved from Dashboard) -->
         <div class="card" id="stale-files-banner" style="display:none;margin-bottom:16px;border-left:3px solid var(--amber)">
           <div class="card-header">
-            <div class="card-title" style="color:var(--amber)">Existing VOD Files Detected</div>
+            <div class="card-title" style="color:var(--amber)">IPTV files Tentacle didn&rsquo;t make</div>
           </div>
           <div style="padding:0 16px 16px;font-size:13px;color:var(--text2);line-height:1.5">
             <p style="margin:0 0 8px">Found <strong id="stale-strm-count">0</strong> existing .strm files in your VOD folders that weren't created by Tentacle.</p>
@@ -2790,10 +2787,10 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                 <div style="display:flex;gap:8px;flex-wrap:wrap">
                   <input class="form-input" id="settings-tentacle-address" placeholder="http://192.168.1.10:8888" style="flex:1;min-width:min(260px,100%)">
                   <button class="btn btn-secondary" onclick="ytDetectAddress('settings-tentacle-address')">Detect</button>
-                  <button class="btn btn-secondary" onclick="saveTentacleAddress('settings-tentacle-address')">Save</button>
                 </div>
                 <div id="settings-tentacle-address-status" style="font-size:12px;margin-top:4px;color:var(--text3)"></div>
-                <div class="form-hint">Used everywhere Tentacle hands out its own address: YouTube and IPTV video files, the Live TV tuner and guide, and the Radarr, Sonarr and Lidarr webhooks (shown ready to copy under Sources).</div>
+                <div id="settings-tentacle-address-vod" class="form-hint" style="display:none;color:var(--amber)"></div>
+                <div class="form-hint">Used everywhere Tentacle hands out its own address: YouTube and IPTV video files, the Live TV setup, and the Radarr, Sonarr and Lidarr webhooks (shown ready to copy under Sources). Saved with the Save button below.</div>
               </div>
 
               <hr class="divider">
@@ -3726,7 +3723,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
       <div class="form-group">
         <div class="form-label">Tentacle URL</div>
         <input class="form-input" id="setup-webhook-host" placeholder="http://192.168.1.100:8888" oninput="updateSetupWebhookUrls()">
-        <div class="form-hint">The address Radarr/Sonarr can reach Tentacle at</div>
+        <div class="form-hint">Tentacle&rsquo;s address as your Jellyfin server and Radarr/Sonarr reach it. Change it later in Settings &rarr; Services.</div>
       </div>
 
       <div id="setup-webhook-urls" style="display:none">

@@ -796,7 +796,7 @@ async function testSetupArr(type) {
     select.innerHTML = '<option value="">— Pick a default —</option>' +
       (opts.quality_profiles || []).map(p => `<option value="${escHtml(String(p.id))}">${escHtml(p.name)}</option>`).join('');
     wrap.style.display = '';
-  } catch (_) { /* pick it later in Settings → Connections */ }
+  } catch (_) { /* pick it later in Settings → Services */ }
 }
 
 async function setupStep3Next() {
@@ -878,12 +878,11 @@ async function completeSetup() {
   if (trakt) settings.trakt_client_id = trakt;
   if (logodev) settings.logodev_api_key = logodev;
 
-  // Save webhook host if it was set
-  const webhookHost = document.getElementById('setup-webhook-host').value.trim();
-  if (webhookHost) {
-    const host = webhookHost.replace(/^https?:\/\//, '');
-    settings.webhook_host = host;
-    settings.sonarr_webhook_host = host;
+  // Tentacle's one address (Settings → Services shows it): webhooks, the
+  // Live TV tuner, YouTube and IPTV files all hand it out
+  const address = document.getElementById('setup-webhook-host').value.trim();
+  if (address) {
+    settings.youtube_base_url = (/^https?:\/\//i.test(address) ? address : `http://${address}`).replace(/\/+$/, '');
   }
 
   settings.setup_complete = 'true';
@@ -1691,6 +1690,13 @@ async function saveSettings() {
   // "0 */6 * * *" or weekdays-only cron became "daily at H:M" on any Save).
   const _st = document.getElementById('sync_schedule_time');
   if (_st && _st.value !== (_st.dataset.shown ?? _st.defaultValue)) settings.sync_schedule = timeToCron(_st.value);
+  // Tentacle's address (Services) is saved with the rest, through its own
+  // check (it must answer as Tentacle; the files that carry it follow)
+  const addr = document.getElementById('settings-tentacle-address');
+  if (addr && state.currentSettingsSection === 'services' && addr.value.trim()
+      && addr.value.trim().replace(/\/+$/, '') !== (addr.dataset.saved || '').replace(/\/+$/, '')) {
+    if (!(await saveTentacleAddress('settings-tentacle-address'))) return;
+  }
   try {
     await api('/api/settings', { method: 'POST', body: { settings } });
     if (_st) _st.dataset.shown = _st.value;
@@ -2059,7 +2065,7 @@ async function dashRefreshTags(btn) {
   btn.textContent = 'Pushing...';
   try {
     const r = await api('/api/sync/refresh-tags', { method: 'POST' });
-    toast(`Tags pushed — ${r.jellyfin_tagged || 0} items updated in Jellyfin`, 'success');
+    toast(`Jellyfin updated: ${r.jellyfin_tagged || 0} items`, 'success');
   } catch (e) {
     toast(e.message, 'error');
   } finally {

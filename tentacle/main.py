@@ -825,7 +825,7 @@ def _build_cors_origins() -> list[str]:
         db = SessionLocal()
         try:
             from models.database import get_setting
-            for key in ("jellyfin_url", "external_url", "hdhr_base_url"):
+            for key in ("jellyfin_url", "youtube_base_url", "external_url", "hdhr_base_url"):
                 val = (get_setting(db, key, "") or "").strip().rstrip("/")
                 if not val:
                     continue

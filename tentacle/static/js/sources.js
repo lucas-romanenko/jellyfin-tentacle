@@ -34,7 +34,7 @@ function showSourcesTab(tab) {
   if (tab === 'live') loadLiveTV();
   if (tab === 'youtube') loadYouTubePage();
   if (tab === 'arr') loadArrSources();
-  if (tab === 'music') loadSettings();
+  if (tab === 'music') { loadSettings(); if (typeof loadMusicStatusLine === 'function') loadMusicStatusLine(); }
   setRoute('sources', tab);
 }
 
@@ -76,6 +76,7 @@ async function loadProviders(opts = {}) {
   for (const p of providers) {
     if (p.active) _loadProviderCats(p.id);
     if (p.live_tv_enabled) _loadProviderGroups(p.id);
+    if (document.getElementById(`prov-addr-${p.id}`)) _loadProviderAddresses(p.id);
   }
 }
 
@@ -125,6 +126,10 @@ function renderProviderCard(p) {
   if (p.last_synced) meta.push(`Synced ${dashTimeAgo(p.last_synced)}`);
   else if (p.last_tested) meta.push(`Tested ${new Date(p.last_tested).toLocaleDateString()}`);
 
+  // Several addresses (Xtream): the one in use and its backups, tested and ranked
+  const xtream = !p.provider_type || p.provider_type === 'xtream';
+  const addresses = xtream && p.server_url ? _providerSection(p.id, 'addr', 'Address', 'Addresses', true) : '';
+
   let uses = '';
   // A switch is shown for what the provider offers (and for one that is on,
   // so it can always be switched off).
@@ -136,7 +141,10 @@ function renderProviderCard(p) {
   if (p.has_live || p.live_tv_enabled) {
     uses += _switchRow(p, 'live', !!p.live_tv_enabled, 'Use for Live TV',
       'The channel groups you choose become channels in Jellyfin&rsquo;s Live TV, with a TV guide.');
-    if (p.live_tv_enabled) uses += _providerSection(p.id, 'groups', 'Channel groups');
+    if (p.live_tv_enabled) {
+      uses += _providerSection(p.id, 'groups', 'Channel groups');
+      uses += _liveLimitsRow(p);
+    }
   }
 
   return `
@@ -153,6 +161,7 @@ function renderProviderCard(p) {
       </div>
       ${meta.length ? `<div class="provider-meta">${meta.map(m => `<div class="provider-meta-item">${escHtml(m)}</div>`).join('')}</div>` : ''}
       <div class="provider-offers"><span class="provider-offers-label">Offers</span> ${offersHtml}</div>
+      ${addresses}
       ${uses ? `<div class="provider-uses">${uses}</div>` : ''}
       <div class="provider-actions">
         <button class="btn btn-secondary btn-sm" onclick="refreshProvider(${p.id})">Test</button>
@@ -162,14 +171,14 @@ function renderProviderCard(p) {
     </div>`;
 }
 
-function _providerSection(id, kind, title) {
+function _providerSection(id, kind, title, button = 'Choose', flush = false) {
   const key = `${id}:${kind}`;
   const open = !!srcState.open[key];
   return `
-    <div class="provider-section" id="prov-${kind}-${id}">
+    <div class="provider-section${flush ? ' flush' : ''}" id="prov-${kind}-${id}">
       <div class="provider-section-head">
-        <div><strong>${title}</strong> <span class="provider-section-sum" id="prov-${kind}-sum-${id}">Loading&hellip;</span></div>
-        <button class="btn btn-secondary btn-sm" id="prov-${kind}-btn-${id}" onclick="toggleProviderPanel(${id}, '${escapeJS(kind)}')">${open ? 'Close' : 'Choose'}</button>
+        <div style="min-width:0"><strong>${title}</strong> <span class="provider-section-sum" id="prov-${kind}-sum-${id}">Loading&hellip;</span></div>
+        <button class="btn btn-secondary btn-sm" id="prov-${kind}-btn-${id}" data-label="${escapeAttr(button)}" onclick="toggleProviderPanel(${id}, '${escapeJS(kind)}')">${open ? 'Close' : button}</button>
       </div>
       <div class="provider-panel" id="prov-${kind}-panel-${id}" style="${open ? '' : 'display:none'}"></div>
     </div>`;
@@ -207,8 +216,12 @@ function toggleProviderPanel(id, kind) {
   const panel = document.getElementById(`prov-${kind}-panel-${id}`);
   const btn = document.getElementById(`prov-${kind}-btn-${id}`);
   if (panel) panel.style.display = srcState.open[key] ? '' : 'none';
-  if (btn) btn.textContent = srcState.open[key] ? 'Close' : 'Choose';
-  if (srcState.open[key]) kind === 'cats' ? renderProvCatsPanel(id) : renderProvGroupsPanel(id);
+  if (btn) btn.textContent = srcState.open[key] ? 'Close' : (btn.dataset.label || 'Choose');
+  if (srcState.open[key]) {
+    if (kind === 'cats') renderProvCatsPanel(id);
+    else if (kind === 'groups') renderProvGroupsPanel(id);
+    else if (kind === 'addr') renderProvAddrPanel(id);
+  }
 }
 
 // ── Categories (Movies & Series) ─────────────────────────────────────────
@@ -513,6 +526,231 @@ function _pollProviderLive(id) {
   }, 1500);
 }
 
+// ── Addresses (several per provider) ─────────────────────────────────────
+// The provider's own address and the backups it sent. Tested from the
+// server one at a time (a one-connection account cuts a stream for a second
+// one), re-tested every hour by the provider check, ranked best first.
+srcState.addr = {};      // provider id -> GET /api/providers/{id}/addresses
+srcState.addrPoll = {};
+
+async function _loadProviderAddresses(id) {
+  try {
+    srcState.addr[id] = await api(`/api/providers/${id}/addresses`);
+  } catch (e) {
+    const sum = document.getElementById(`prov-addr-sum-${id}`);
+    if (sum) sum.textContent = `Could not read them: ${e.message}`;
+    return;
+  }
+  _updateAddrSummary(id);
+  if (srcState.open[`${id}:addr`]) renderProvAddrPanel(id);
+  if (srcState.addr[id].test && srcState.addr[id].test.running) _pollAddrTest(id);
+}
+
+function _addrHost(url) { return String(url || '').replace(/^https?:\/\//, ''); }
+
+function _addrWord(row) {
+  if (!row.tested_at) return { text: 'Not tested yet', cls: 'gray' };
+  if (row.word === 'works') return { text: 'Works', cls: 'green' };
+  if (row.ok) return { text: 'Login works', cls: 'amber' };
+  const w = row.word || 'fails';
+  return { text: w.charAt(0).toUpperCase() + w.slice(1), cls: 'red' };
+}
+
+function _updateAddrSummary(id) {
+  const sum = document.getElementById(`prov-addr-sum-${id}`);
+  const data = srcState.addr[id];
+  if (!sum || !data) return;
+  const rows = data.addresses || [];
+  const cur = rows.find(r => r.in_use);
+  const backups = rows.length - (cur ? 1 : 0);
+  const word = cur ? _addrWord(cur) : null;
+  sum.innerHTML = `${cur ? `<span class="mono">${escHtml(_addrHost(cur.url))}</span>` : ''}`
+    + (word && cur.tested_at ? ` <span class="addr-word ${word.cls}">${escHtml(word.text.toLowerCase())}</span>` : '')
+    + ` <span style="color:var(--text3)">· ${backups ? `${backups} backup${backups === 1 ? '' : 's'}` : 'no backups'}</span>`;
+  sum.style.color = '';
+}
+
+function _addrDetails(r) {
+  const bits = [];
+  if (r.connections && r.connections.max != null) bits.push(`${r.connections.active ?? 0}/${r.connections.max} in use`);
+  if (r.live_seconds != null) bits.push(`live ${r.live_seconds} s`);
+  else if (r.live_word) bits.push(`live: ${r.live_word}`);
+  if (r.vod_seconds != null) bits.push(`film ${r.vod_seconds} s`);
+  else if (r.vod_word) bits.push(`film: ${r.vod_word}`);
+  if (r.streams_skipped) bits.push(`streams not tried: ${r.streams_skipped}`);
+  if (r.cloudflare) bits.push('Cloudflare');
+  return bits.join(' · ');
+}
+
+function _addrDay(r) {
+  const n = (r.day_good || 0) + (r.day_bad || 0);
+  if (!n) return '';
+  return `<span class="addr-day" title="Tests and hourly checks in the last 24 hours">${r.day_good}/${n} today</span>`;
+}
+
+function renderProvAddrPanel(id) {
+  const panel = document.getElementById(`prov-addr-panel-${id}`);
+  const data = srcState.addr[id];
+  if (!panel) return;
+  if (!data) { panel.innerHTML = '<div class="form-hint">Loading&hellip;</div>'; return; }
+  const running = data.test && data.test.running;
+  const rows = (data.addresses || []).map(r => {
+    const w = _addrWord(r);
+    const details = _addrDetails(r);
+    const actions = r.in_use
+      ? '<span class="addr-inuse">In use</span>'
+      : `<button class="btn btn-secondary btn-sm" onclick="useProviderAddress(${id}, ${r.id})">Use this one</button>
+         <button class="addr-remove" title="Remove" aria-label="Remove ${escapeAttr(_addrHost(r.url))}" onclick="removeProviderAddress(${id}, ${r.id})">&times;</button>`;
+    return `
+      <div class="addr-row${r.in_use ? ' in-use' : ''}">
+        <div class="dot dot-${w.cls}"></div>
+        <div class="addr-main">
+          <div class="addr-url mono" title="${escapeAttr(r.url)}">${escHtml(_addrHost(r.url))}${r.preferred && !r.in_use ? ' <span class="addr-pref">your choice</span>' : ''}</div>
+          <div class="addr-result"><span class="addr-word ${w.cls}">${escHtml(w.text)}</span>${details ? ` <span class="addr-detail">· ${escHtml(details)}</span>` : ''} ${_addrDay(r)}</div>
+        </div>
+        <div class="addr-actions">${actions}</div>
+      </div>`;
+  }).join('');
+  const prog = running
+    ? `Testing ${escHtml(_addrHost(data.test.current || ''))} (${(data.test.done || 0) + 1} of ${data.test.total || '?'})&hellip;`
+    : 'One address at a time; streams are skipped while anyone is watching.';
+  const mode = data.auto_switch || 'switch';
+  panel.innerHTML = `
+    <div class="addr-list">${rows}</div>
+    <div class="provider-panel-foot">
+      <span class="form-hint" id="prov-addr-prog-${id}" style="margin:0">${prog}</span>
+      <button class="btn btn-secondary btn-sm" id="prov-addr-test-${id}" onclick="testProviderAddresses(${id})" ${running ? 'disabled' : ''}>${running ? 'Testing&hellip;' : 'Test all'}</button>
+    </div>
+    <div class="addr-add">
+      <textarea class="form-input" id="prov-addr-text-${id}" rows="2" placeholder="Paste the provider&rsquo;s message with its other addresses" aria-label="Addresses to add"></textarea>
+      <button class="btn btn-secondary btn-sm" onclick="addProviderAddresses(${id})">Add</button>
+    </div>
+    <label class="addr-mode">When the address in use fails
+      <select class="form-input" onchange="setAddressAutoSwitch(${id}, this.value)" aria-label="When the address in use fails">
+        <option value="switch" ${mode === 'switch' ? 'selected' : ''}>switch to the best backup</option>
+        <option value="switch_back" ${mode === 'switch_back' ? 'selected' : ''}>switch, and come back when it works again</option>
+        <option value="off" ${mode === 'off' ? 'selected' : ''}>only tell me</option>
+      </select>
+    </label>`;
+}
+
+async function addProviderAddresses(id) {
+  const el = document.getElementById(`prov-addr-text-${id}`);
+  const text = (el?.value || '').trim();
+  if (!text) { toast('Paste the addresses first', 'error'); return; }
+  try {
+    const res = await api(`/api/providers/${id}/addresses`, { method: 'POST', body: { text } });
+    srcState.addr[id] = res;
+    const n = res.added.length;
+    toast(n ? `${n} address${n === 1 ? '' : 'es'} added. Test all to see which work.`
+      : 'Those addresses are already in the list', n ? 'success' : 'info', 5000);
+    renderProvAddrPanel(id);
+    _updateAddrSummary(id);
+  } catch (e) {
+    toast(e.message, 'error', 6000);
+  }
+}
+
+async function removeProviderAddress(id, addressId) {
+  try {
+    srcState.addr[id] = await api(`/api/providers/${id}/addresses/${addressId}`, { method: 'DELETE' });
+    renderProvAddrPanel(id);
+    _updateAddrSummary(id);
+  } catch (e) {
+    toast(e.message, 'error', 6000);
+  }
+}
+
+async function useProviderAddress(id, addressId) {
+  const data = srcState.addr[id] || {};
+  const row = (data.addresses || []).find(r => r.id === addressId);
+  const p = srcState.providers.find(x => x.id === id);
+  if (!row || !p) return;
+  if (!confirm(`Use ${_addrHost(row.url)} for ${p.name}?\n\nNothing is imported again or deleted: the library, channels, guide and recordings stay as they are. Streams already playing finish on the old address.`)) return;
+  try {
+    const res = await api(`/api/providers/${id}/addresses/${addressId}/use`, { method: 'POST' });
+    srcState.addr[id] = res;
+    toast(res.switched ? `${p.name} now uses ${_addrHost(row.url)}` : 'That one is already in use', 'success', 5000);
+    await loadProviders();
+  } catch (e) {
+    toast(e.message, 'error', 8000);
+  }
+}
+
+async function testProviderAddresses(id) {
+  try {
+    srcState.addr[id] = await api(`/api/providers/${id}/addresses/test`, { method: 'POST' });
+    renderProvAddrPanel(id);
+    _pollAddrTest(id);
+  } catch (e) {
+    toast(e.message, 'error', 6000);
+  }
+}
+
+function _pollAddrTest(id) {
+  clearInterval(srcState.addrPoll[id]);
+  srcState.addrPoll[id] = setInterval(async () => {
+    let data;
+    try { data = await api(`/api/providers/${id}/addresses`); } catch (e) { return; }
+    srcState.addr[id] = data;
+    if (srcState.open[`${id}:addr`]) renderProvAddrPanel(id);
+    _updateAddrSummary(id);
+    if (!data.test || !data.test.running) {
+      clearInterval(srcState.addrPoll[id]);
+      delete srcState.addrPoll[id];
+      const works = (data.addresses || []).filter(r => r.word === 'works').length;
+      toast(`Tested: ${works} of ${(data.addresses || []).length} work`, works ? 'success' : 'error', 5000);
+    }
+  }, 2000);
+}
+
+async function setAddressAutoSwitch(id, mode) {
+  try {
+    srcState.addr[id] = await api(`/api/providers/${id}/addresses/settings`, { method: 'PUT', body: { auto_switch: mode } });
+    toast(mode === 'off' ? 'Saved: you are told, nothing switches' : 'Saved', 'success');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+// ── Live TV per provider: streams at once, channel numbers ───────────────
+function _liveLimitsRow(p) {
+  const account = p.max_connections ? `The account says ${p.max_connections}.` : '';
+  const off = p.channel_number_offset;
+  return `
+    <div class="provider-live-limits">
+      <label>Streams at once
+        <input type="number" min="0" max="50" class="form-input" value="${p.live_max_streams ?? ''}" placeholder="6"
+          aria-label="Streams at once (${escapeAttr(p.name)})" onchange="saveProviderLiveNumber(${p.id}, 'live_max_streams', this)">
+      </label>
+      <span class="form-hint" style="margin:0">${account} Live TV, recordings and films share them.</span>
+      <label>Channel numbers +
+        <input type="number" min="0" step="1000" class="form-input wide" value="${off ?? ''}" placeholder="automatic"
+          aria-label="Added to the channel numbers (${escapeAttr(p.name)})" onchange="saveProviderLiveNumber(${p.id}, 'channel_number_offset', this)">
+      </label>
+    </div>`;
+}
+
+async function saveProviderLiveNumber(id, field, el) {
+  const raw = (el.value || '').trim();
+  const n = raw === '' ? 0 : parseInt(raw, 10);
+  if (isNaN(n) || n < 0) { toast('Enter a whole number', 'error'); return; }
+  if (field === 'channel_number_offset' && !confirm('Jellyfin sees this provider\u2019s channels under new numbers at its next guide refresh. Recordings set up on the old numbers need setting up again. Change them?')) {
+    loadProviders();
+    return;
+  }
+  try {
+    await api(`/api/providers/${id}`, { method: 'PUT', body: { [field]: n } });
+    toast(field === 'live_max_streams'
+      ? (n ? `Saved: ${n} at once` : 'Saved: the default (6)')
+      : 'Saved: Jellyfin picks the numbers up at its next guide refresh', 'success', 5000);
+    const p = srcState.providers.find(x => x.id === id);
+    if (p) p[field] = n || null;
+  } catch (e) {
+    toast(e.message, 'error', 6000);
+  }
+}
+
 // ── Radarr & Sonarr ──────────────────────────────────────────────────────
 async function loadArrSources() {
   const list = document.getElementById('arr-status-list');
@@ -580,7 +818,7 @@ async function fillArrWebhookUrls() {
 // every existing video); the Live TV setup's stored host and port follow it.
 async function saveTentacleAddress(inputId) {
   const ok = await ytSaveAddress(inputId);
-  if (!ok) return;
+  if (!ok) return false;
   const base = (document.getElementById(inputId)?.value || '').trim();
   try {
     const u = new URL(base);
@@ -588,27 +826,16 @@ async function saveTentacleAddress(inputId) {
     await api('/api/settings', { method: 'POST', body: { settings: { live_setup_host: u.hostname, live_setup_port: port } } });
   } catch (e) { /* the address itself is saved; Live TV reads it from there */ }
   fillArrWebhookUrls();
+  if (typeof loadTentacleAddress === 'function') loadTentacleAddress();
+  return true;
 }
 
-// ── Live TV: which provider, and the connection limit ────────────────────
+// ── Live TV: which provider's channels are shown ────────────────────────
 function onLiveProviderChange(value) {
   liveState.providerId = parseInt(value, 10) || null;
   liveState.chPage = 1;
   liveState.dirtyChannels = {};
   loadLiveTV();
-}
-
-async function saveLiveStreamLimit() {
-  const el = document.getElementById('livetv_max_concurrent_streams');
-  const raw = (el?.value || '').trim();
-  const n = raw === '' ? '' : parseInt(raw, 10);
-  if (raw !== '' && (isNaN(n) || n < 0)) { toast('Enter a whole number, or 0 for no limit', 'error'); return; }
-  try {
-    await api('/api/settings', { method: 'POST', body: { settings: { livetv_max_concurrent_streams: raw === '' ? '' : String(n) } } });
-    toast(n === 0 ? 'Saved: no limit' : `Saved: ${raw === '' ? 'the default' : n} at once. Jellyfin sees the new tuner count at its next guide refresh.`, 'success', 6000);
-  } catch (e) {
-    toast(e.message, 'error');
-  }
 }
 
 // Old words in messages the server writes ("EPG sync: …") read as the page does.

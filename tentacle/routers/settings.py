@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from typing import Optional, Dict
 import requests
 
-from models.database import get_db, Setting, get_setting, set_setting
+from models.database import get_db, Setting, get_setting, set_setting, tentacle_address
 from routers.auth import require_admin, get_user_from_request
 from services.music.settings import SECRET_KEYS as MUSIC_SECRET_KEYS
 from services.secret_mask import looks_masked
@@ -835,7 +835,7 @@ def test_pushover(body: PushoverTest, db: Session = Depends(get_db)):
     user = saved_user if not user or looks_masked(user) else user
     ok, error = pushover.post(token, user, "Tentacle: test message",
                               "Provider alerts from Tentacle will arrive like this.",
-                              (get_setting(db, "external_url", "") or "").strip())
+                              (get_setting(db, "external_url", "") or "").strip() or tentacle_address(db))
     if not ok:
         raise HTTPException(400, error)
     return {"success": True, "message": "Test message sent"}

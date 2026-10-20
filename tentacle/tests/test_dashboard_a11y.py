@@ -61,7 +61,7 @@ class TestDashboardA11y(unittest.TestCase):
 
     def test_filters_and_pickers_have_a_name(self):
         for id_ in ("lib-sort", "lib-source", "live-ch-group-filter", "live-ch-epg-filter",
-                    "home-hero-select", "home-hero-sort", "home-hero-item-count", "card-previews-select"):
+                    "home-hero-select", "home-hero-sort", "home-hero-item-count"):
             with self.subTest(id=id_):
                 self.assertRegex(self.html, rf'id="{id_}" aria-label="[^"]+"')
 

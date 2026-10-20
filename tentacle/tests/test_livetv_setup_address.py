@@ -50,7 +50,6 @@ fillSetupUrls().then(() => {
     tuner: el('live-setup-tuner-preview').textContent,
     xmltv: el('live-setup-xmltv-preview').textContent,
     hint: el('live-setup-detected').textContent,
-    limit: el('livetv_max_concurrent_streams').value,
     calls, saved }));
 });
 """
@@ -107,10 +106,6 @@ class SetupAddress(unittest.TestCase):
         self.assertNotIn("localhost", out["tuner"] + out["xmltv"])
         self.assertEqual("Not set", out["shown"])
         self.assertIn("Settings → Services", out["hint"])
-
-    def test_the_connection_limit_is_shown(self):
-        out = self._run({"livetv_max_concurrent_streams": "2"}, {"base_url": "http://192.0.2.10:8888"})
-        self.assertEqual("2", out["limit"])
 
 
 if __name__ == "__main__":

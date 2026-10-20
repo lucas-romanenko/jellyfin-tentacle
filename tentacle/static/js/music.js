@@ -770,13 +770,36 @@ async function loadMusicLibrary() {
         ? 'No monitored albums yet. Search for music in Discover → Music.' : 'Nothing here.'}</p></div>`;
       return;
     }
-    el.innerHTML = data.artists.map(artist => `
+    musicState.libData = data;
+    musicState.libShown = 0;
+    el.innerHTML = '';
+    showMoreMusicArtists();
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state" style="padding:40px"><p>${escapeAttr(e.message)}</p></div>`;
+  }
+}
+
+// A big library is drawn a page of artists at a time, not every album at once.
+const MUSIC_ARTISTS_PER_PAGE = 30;
+
+function showMoreMusicArtists() {
+  const el = document.getElementById('music-library');
+  const data = musicState.libData;
+  if (!el || !data) return;
+  const isAdmin = state.currentUser && state.currentUser.is_admin;
+  const from = musicState.libShown || 0;
+  const page = data.artists.slice(from, from + MUSIC_ARTISTS_PER_PAGE);
+  musicState.libShown = from + page.length;
+  document.getElementById('music-lib-more')?.remove();
+  el.insertAdjacentHTML('beforeend', page.map(artist => `
       <div class="music-lib-artist">
         <div class="music-lib-artist-name"><a href="#" onclick="openMusicArtist('${escapeJS(artist.mbid)}');return false">${escapeAttr(artist.name)}</a></div>
         ${artist.albums.map(a => _musicLibraryRow(a, data.players, isAdmin)).join('')}
-      </div>`).join('');
-  } catch (e) {
-    el.innerHTML = `<div class="empty-state" style="padding:40px"><p>${escapeAttr(e.message)}</p></div>`;
+      </div>`).join(''));
+  const left = data.artists.length - musicState.libShown;
+  if (left > 0) {
+    el.insertAdjacentHTML('beforeend', `<div id="music-lib-more" style="text-align:center;margin:16px 0">
+      <button class="btn btn-secondary" onclick="showMoreMusicArtists()">Show more artists (${left} more)</button></div>`);
   }
 }
 
@@ -830,9 +853,9 @@ async function startMusicReconcile(btn) {
 // ── Library: Fix library (the reconcile review page, admins) ──────────────
 
 const _FIX_GROUPS = [
-  ['repin', 'Re-pin', 'Your files already fit the original release. Tentacle pins it; Lidarr re-matches the files.'],
-  ['repin_trim', 'Re-pin and remove extra tracks', 'Pins the original, then Lidarr deletes the tracks it no longer has (deluxe and bonus tracks).'],
-  ['repin_download', 'Re-pin and download', 'Pins the original, then Lidarr searches for the missing tracks.'],
+  ['repin', 'Fix to original album', 'Your files already fit the original release. Tentacle pins it; Lidarr re-matches the files.'],
+  ['repin_trim', 'Fix to original album, remove extra tracks', 'Pins the original, then Lidarr deletes the tracks it no longer has (deluxe and bonus tracks).'],
+  ['repin_download', 'Fix to original album, download the rest', 'Pins the original, then Lidarr searches for the missing tracks.'],
 ];
 
 let _musicRecycleBin = null;
@@ -934,7 +957,7 @@ async function loadMusicFix(el) {
 }
 
 async function applyMusicFix(mbids, btn, trimCount) {
-  if (trimCount && !confirm(`Re-pin and have Lidarr delete ${trimCount} extra track${trimCount === 1 ? '' : 's'}?${_deleteWarning()}`)) return;
+  if (trimCount && !confirm(`Fix to the original album and have Lidarr delete ${trimCount} extra track${trimCount === 1 ? '' : 's'}?${_deleteWarning()}`)) return;
   if (btn) btn.disabled = true;
   try {
     const r = await api('/api/music/apply', { method: 'POST', body: { mbids } });

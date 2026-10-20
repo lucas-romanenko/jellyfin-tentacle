@@ -561,3 +561,37 @@ class TheSyncAfterASwitch(NightlyHarness):
         self.night()
         self.night()
         self.assertIsNone(self.movie(1000))
+
+
+class OneTentacleAddress(unittest.TestCase):
+    """Roadmap §1: one "Tentacle address" instead of six. An install that has
+    none yet takes it from the first older setting that holds one, once."""
+
+    def setUp(self):
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
+        mdb.Base.metadata.create_all(engine)
+        self.addCleanup(engine.dispose)
+        self.db = sessionmaker(bind=engine)()
+        self.addCleanup(self.db.close)
+
+    def test_taken_from_the_wizards_bare_host(self):
+        mdb.set_setting(self.db, "webhook_host", "192.0.2.5:8888")
+        mdb._one_tentacle_address(self.db)
+        self.assertEqual("http://192.0.2.5:8888", mdb.tentacle_address(self.db))
+
+    def test_the_vod_address_comes_first_and_stays(self):
+        mdb.set_setting(self.db, "webhook_host", "192.0.2.5:8888")
+        mdb.set_setting(self.db, "vod_base_url", "http://192.0.2.6:8888/")
+        mdb._one_tentacle_address(self.db)
+        self.assertEqual("http://192.0.2.6:8888", mdb.tentacle_address(self.db))
+        self.assertEqual("http://192.0.2.6:8888/", mdb.get_setting(self.db, "vod_base_url"))
+
+    def test_a_saved_address_is_kept(self):
+        mdb.set_setting(self.db, "youtube_base_url", "https://tentacle.example.com")
+        mdb.set_setting(self.db, "external_url", "http://192.0.2.7:8888")
+        mdb._one_tentacle_address(self.db)
+        self.assertEqual("https://tentacle.example.com", mdb.tentacle_address(self.db))
+
+    def test_nothing_known_nothing_set(self):
+        mdb._one_tentacle_address(self.db)
+        self.assertEqual("", mdb.tentacle_address(self.db))

@@ -51,7 +51,7 @@ import requests
 
 from models.database import (
     SessionLocal, Provider, ProviderAddress, Movie, Series, ProviderCategory,
-    get_setting, set_setting, log_activity,
+    get_setting, log_activity, tentacle_address,
 )
 
 logger = logging.getLogger(__name__)
@@ -505,7 +505,7 @@ def switch_to(db, p: Provider, url: str, why: str, by_hand: bool) -> dict:
     if not by_hand:
         from services import pushover
         pushover.send(db, f"Tentacle: {p.name} switched address", f"Now {new}: {why}.",
-                      (get_setting(db, "external_url", "") or "").strip())
+                      (get_setting(db, "external_url", "") or "").strip() or tentacle_address(db))
     return {"switched": True, "provider_id": p.id, "channels": channels, "from": old, "to": new}
 
 

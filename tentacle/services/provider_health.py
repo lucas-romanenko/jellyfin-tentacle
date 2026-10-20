@@ -421,7 +421,8 @@ def _stand_aside(db) -> bool:
 
 
 def _link(db) -> str:
-    return (get_setting(db, "external_url", "") or "").strip()
+    from models.database import tentacle_address
+    return (get_setting(db, "external_url", "") or "").strip() or tentacle_address(db)
 
 
 def _apply(db, state: dict, p: Provider, outcome: dict, first_at: datetime, now: datetime) -> None:

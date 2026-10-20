@@ -100,14 +100,11 @@ class PluginHandsItToClients(unittest.TestCase):
                       "absent = local_only: nobody's cards open provider connections unless they choose all")
         self.assertIn("cardPreviews = string.IsNullOrEmpty(config.CardPreviews)", cs)
 
-    def test_dashboard_offers_the_three_choices(self):
+    def test_it_is_a_default_not_a_setting(self):
+        """Roadmap §1 (redesign): card previews are a default ("local_only",
+        the plugin's answer when nothing is saved), not a dashboard choice."""
         html = (Path(__file__).resolve().parents[1] / "static" / "index.html").read_text(encoding="utf-8")
-        js = (Path(__file__).resolve().parents[1] / "static" / "js" / "pages.js").read_text(encoding="utf-8")
-        self.assertIn('id="card-previews-select"', html)
-        for v in ("all", "local_only", "off"):
-            self.assertIn(f'<option value="{v}">', html)
-        self.assertIn("/api/smartlists/card-previews", js)
-        self.assertIn("config.card_previews", js)
+        self.assertNotIn('id="card-previews-select"', html)
 
 
 if __name__ == "__main__":
