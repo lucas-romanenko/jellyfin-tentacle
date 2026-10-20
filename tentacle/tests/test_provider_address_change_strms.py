@@ -149,16 +149,6 @@ class TheProvidersPageStartsIt(_Base):
                                       self.db)
         start.assert_not_called()
 
-    def test_the_live_tv_page_saves_the_same_row_and_starts_it_too(self):
-        import routers.livetv as livetv
-        self.provider.live_tv_enabled = True
-        self.db.commit()
-        with mock.patch("services.provider_relink.start_relink") as start:
-            livetv.save_live_provider(livetv.LiveProviderConfig(server_url=NEW), self.db)
-            livetv.save_live_provider(livetv.LiveProviderConfig(epg_url=NEW + "/xmltv.php"), self.db)
-        start.assert_called_once_with(self.provider.id, (OLD, "u", "p1"))
-
-
 class TheBackgroundRun(_Base):
     """start_relink's run: rewrite, then a Jellyfin scan (Jellyfin keeps the
     old URL until it sees the file changed) and an Activity entry that

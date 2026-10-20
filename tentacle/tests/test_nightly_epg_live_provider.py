@@ -46,17 +46,22 @@ class NightlyEpgForLiveProvider(unittest.TestCase):
         self.db = sessionmaker(bind=engine)()
         mdb.set_setting(self.db, "data_dir", str(self.tmp))
 
-        # Set up exactly as the Live TV page does.
+        # Set up as the provider card does for Live TV only: "Use for Movies &
+        # Series" off, "Use for Live TV" on.
+        import routers.providers as providers_router
         app = FastAPI()
-        app.include_router(livetv_router.router)
+        app.include_router(providers_router.router)
         app.dependency_overrides[mdb.get_db] = lambda: self.db
-        app.dependency_overrides[livetv_router.require_admin] = lambda: None
-        r = TestClient(app).post("/api/live/provider", json={
+        app.dependency_overrides[providers_router.require_admin] = lambda: None
+        client = TestClient(app)
+        r = client.post("/api/providers", json={
             "name": "Live", "provider_type": "xtream", "server_url": "http://192.0.2.10",
             "username": "u", "password": "p"})
         self.assertEqual(200, r.status_code, r.text)
+        r = client.put(f"/api/providers/{r.json()['id']}", json={"active": False, "live_tv_enabled": True})
+        self.assertEqual(200, r.status_code, r.text)
         self.provider = self.db.query(mdb.Provider).one()
-        self.assertFalse(self.provider.active, "the Live TV page no longer creates it inactive?")
+        self.assertFalse(self.provider.active)
         self.pid = self.provider.id
         self.db.add(mdb.LiveChannel(provider_id=self.provider.id, name="C", stream_id="1",
                                     stream_url="http://192.0.2.10/live/1.ts",

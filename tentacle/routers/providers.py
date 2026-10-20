@@ -91,10 +91,10 @@ class ProviderUpdate(BaseModel):
     # the tuner (the lineup lists enabled channels only).
     live_tv_enabled: Optional[bool] = None
     require_tmdb_match: Optional[bool] = None
-    # Live TV, per provider: streams at once (0 = the default again) and the
-    # first channel number (0 = automatic)
+    # Live TV, per provider: streams at once (0 = the default again) and what
+    # is added to its channel numbers
     live_max_streams: Optional[int] = None
-    channel_number_start: Optional[int] = None
+    channel_number_offset: Optional[int] = None
 
 
 class AddressesAdd(BaseModel):
@@ -277,7 +277,7 @@ def list_providers(db: Session = Depends(get_db)):
             "address_count": len(p.addresses) or (1 if p.server_url else 0),
             "address_auto_switch": p.address_auto_switch or "switch",
             "live_max_streams": p.live_max_streams,
-            "channel_number_start": p.channel_number_start,
+            "channel_number_offset": p.channel_number_offset,
         }
         for p in providers
     ]
@@ -381,8 +381,8 @@ def update_provider(provider_id: int, body: ProviderUpdate, db: Session = Depend
             provider_addresses._start_probation(db, p)
     if body.live_max_streams is not None:
         p.live_max_streams = body.live_max_streams if body.live_max_streams > 0 else None
-    if body.channel_number_start is not None:
-        p.channel_number_start = body.channel_number_start if body.channel_number_start > 0 else None
+    if body.channel_number_offset is not None:
+        p.channel_number_offset = max(0, body.channel_number_offset)
     db.commit()
     if relink:
         provider_relink.start_relink(p.id, before)

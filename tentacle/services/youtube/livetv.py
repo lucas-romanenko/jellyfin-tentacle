@@ -43,11 +43,10 @@ def epg_channel_id(channel: YouTubeChannel) -> str:
 def iptv_guide_numbers(db: Session) -> set:
     """Guide numbers the enabled IPTV channels use (what hdhr_lineup lists)."""
     from models.database import LiveChannel
-    return {
-        str(stream_id or ch_id)
-        for stream_id, ch_id in db.query(LiveChannel.stream_id, LiveChannel.id).filter(
-            LiveChannel.enabled == True)  # noqa: E712
-    }
+    from routers.livetv import guide_number, _offsets
+    offsets = _offsets(db)
+    return {guide_number(ch, offsets)
+            for ch in db.query(LiveChannel).filter(LiveChannel.enabled == True)}  # noqa: E712
 
 
 def guide_number(channel: YouTubeChannel, taken: set = None) -> str:

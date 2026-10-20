@@ -100,9 +100,10 @@ class Provider(Base):
     # Live TV: streams this provider's account carries at once (None: the
     # account's own max_connections, else the Live TV default).
     live_max_streams = Column(Integer, nullable=True)
-    # Live TV: channel numbers of this provider start here (None: in the order
-    # the providers were added, 1000 apart; the first provider keeps its own).
-    channel_number_start = Column(Integer, nullable=True)
+    # Live TV: added to this provider's own channel numbers, so two providers
+    # never hand Jellyfin the same one (routers/livetv.py guide_number). The
+    # first Live TV provider keeps its own (0); others get one once, kept.
+    channel_number_offset = Column(Integer, nullable=True)
 
     categories = relationship("ProviderCategory", back_populates="provider", cascade="all, delete-orphan")
     sync_runs = relationship("SyncRun", back_populates="provider", cascade="all, delete-orphan")

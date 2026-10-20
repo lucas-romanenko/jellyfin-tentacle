@@ -777,7 +777,7 @@ class ProtectedWaitIsWallTimePerRun(unittest.TestCase):
 class ButtonsRefuse(unittest.TestCase):
     """The guarded routes themselves answer 503 during a protected recording."""
 
-    def test_live_provider_test_and_syncs(self):
+    def test_live_syncs_and_provider_tests(self):
         livetv = _livetv()
         db = _fresh_db()
         from models.database import Provider, set_setting
@@ -788,7 +788,7 @@ class ButtonsRefuse(unittest.TestCase):
         with mock.patch.object(livetv, "_stream_slots", fake_slots), \
                 mock.patch("requests.get", side_effect=AssertionError("provider contacted")), \
                 mock.patch("requests.Session.get", side_effect=AssertionError("provider contacted")):
-            for call in (lambda: livetv.test_live_provider(db), lambda: livetv.sync_live_groups(1, db),
+            for call in (lambda: livetv.sync_live_groups(1, db),
                          lambda: livetv.sync_live_channels(1, db), lambda: livetv.sync_epg(1, db)):
                 with self.assertRaises(HTTPException) as cm:
                     call()
