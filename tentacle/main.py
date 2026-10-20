@@ -292,7 +292,8 @@ def _run_scheduled_sync():
         logger.info("Syncing Live TV EPG data")
         try:
             from models.database import LiveChannel
-            from routers.livetv import _epg_provider_data, _run_epg_sync_background, live_tv_providers
+            from routers.livetv import (_epg_provider_data, _run_epg_sync_background,
+                                         live_tv_providers, start_jellyfin_guide_refresh)
             from services.provider_activity import wait_for_recordings, EPG_WAIT_FOR_RECORDING_SECONDS
             epg_may_download = True
             live_providers = live_tv_providers(db)
@@ -322,19 +323,7 @@ def _run_scheduled_sync():
 
             # Trigger Jellyfin guide refresh so it picks up new EPG data
             if epg_synced:
-                try:
-                    import requests as req
-                    jf_url = get_setting(db, "jellyfin_url")
-                    jf_key = get_setting(db, "jellyfin_api_key")
-                    if jf_url and jf_key:
-                        headers = {"X-Emby-Token": jf_key}
-                        tasks = req.get(f"{jf_url}/ScheduledTasks", headers=headers, timeout=10).json()
-                        guide_task = next((t for t in tasks if t.get("Key") == "RefreshGuide"), None)
-                        if guide_task:
-                            req.post(f"{jf_url}/ScheduledTasks/Running/{guide_task['Id']}", headers=headers, timeout=10)
-                            logger.info("Jellyfin guide refresh triggered after EPG sync")
-                except Exception as e:
-                    logger.error(f"Jellyfin guide refresh failed: {e}")
+                start_jellyfin_guide_refresh(db)
         except Exception as e:
             _rollback(db)
             logger.error(f"EPG sync failed: {e}")
@@ -711,6 +700,20 @@ def setup_scheduler(db):
     )
     schedule_once(run_provider_health, 120, "provider_health_first")
     logger.info("Provider health check scheduled: hourly")
+
+    # Live TV guide: a nightly download that failed, or a feed that reaches
+    # only a day or so ahead, left an empty guide until the next night. The
+    # guide is synced again when it is running out (routers.livetv).
+    from routers.livetv import run_guide_top_up
+    scheduler.add_job(
+        run_guide_top_up,
+        IntervalTrigger(hours=1),
+        id="guide_top_up",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info("Live TV guide top-up scheduled: hourly")
 
     # YouTube source: check enabled channels for new uploads and live streams.
     # The job checks the youtube_enabled setting itself, so the schedule can

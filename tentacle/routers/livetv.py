@@ -3273,7 +3273,15 @@ def sync_epg(provider_id: int, db: Session = Depends(get_db)):
 
 
 def _run_epg_sync_background(provider_data: dict):
-    """Background EPG sync — stream-parses full XMLTV, keeps programs for ALL provider channels."""
+    """Background EPG sync — stream-parses full XMLTV, keeps programs for ALL provider channels.
+    Every outcome is remembered for the guide top-up (run_guide_top_up)."""
+    ok = _sync_epg_once(provider_data)
+    _note_epg_attempt(provider_data["id"], bool(ok))
+    return ok
+
+
+def _sync_epg_once(provider_data: dict):
+    """One guide sync of one provider (see _run_epg_sync_background)."""
     pid = provider_data["id"]
     channels = provider_data["channels"]
     total = len(channels)
@@ -3503,6 +3511,133 @@ def _run_epg_sync_background(provider_data: dict):
         logger.error(f"[LiveTV] EPG sync failed: {e}")
         _set_sync_status(pid, {"phase": "epg", "status": "error", "progress": 0, "message": str(e)})
         return False
+
+
+# ─── Guide top-up ───────────────────────────────────────────────────────────
+#
+# The nightly job downloads the guide once a day and, if the download fails,
+# keeps the old guide until the next night. On a live install the provider's
+# feed reaches only a day or so ahead (a sync at 07:17 UTC kept programmes up
+# to 05:15 the next morning), and the provider refused the nightly download
+# on 19 of 20 nights (403) while it served the same feed at other hours:
+# "kept existing guide data" kept a guide that had already ended, and every
+# channel showed an empty guide for days. So once an hour the
+# guide of each Live TV provider is checked, and synced again when what is
+# stored ends within GUIDE_TOP_UP_BELOW -- after a failed download not before
+# _GUIDE_RETRY_AFTER has passed, longer after each failure in a row.
+
+GUIDE_TOP_UP_BELOW = timedelta(hours=12)
+_GUIDE_RETRY_AFTER = (timedelta(hours=1), timedelta(hours=2), timedelta(hours=4), timedelta(hours=6))
+# After a sync that worked: what it could get is stored, another one within
+# this long would read the same feed (8 h disk cache) or a barely newer one.
+_GUIDE_RESYNC_AFTER = timedelta(hours=6)
+# provider id -> (UTC end of its last guide sync, failed syncs in a row). In
+# memory: after a restart the first check may sync at once, which is what a
+# guide that is running out needs anyway.
+_epg_attempts: dict = {}
+
+
+def _note_epg_attempt(provider_id: int, ok: bool) -> None:
+    _, failures = _epg_attempts.get(provider_id, (None, 0))
+    _epg_attempts[provider_id] = (datetime.utcnow(), 0 if ok else failures + 1)
+
+
+def _guide_ends_at(db: Session, provider_id: int):
+    """When the last stored programme of the provider's enabled channels ends
+    (None: none of them has any)."""
+    gid = _guide_id_expr()
+    ids = sorted({row[0] for row in db.query(gid).filter(
+        LiveChannel.provider_id == provider_id, LiveChannel.enabled == True,  # noqa: E712
+        gid.isnot(None)).distinct()})
+    end = None
+    for chunk in _chunked(ids):
+        last = db.query(func.max(EPGProgram.stop)).filter(EPGProgram.channel_id.in_(chunk)).scalar()
+        if last is not None and (end is None or last > end):
+            end = last
+    return end
+
+
+def guide_top_up_due(db: Session, provider, now: datetime | None = None) -> str | None:
+    """Why the provider's guide should be synced now, or None."""
+    now = now or datetime.utcnow()
+    if not db.query(LiveChannel).filter(LiveChannel.provider_id == provider.id,
+                                        LiveChannel.enabled == True).count():  # noqa: E712
+        return None
+    status = _get_sync_status(provider.id)
+    if status.get("phase") == "epg" and status.get("status") == "running":
+        return None
+    last = _epg_attempts.get(provider.id)
+    if last is not None:
+        at, failures = last
+        wait = (_GUIDE_RETRY_AFTER[min(failures, len(_GUIDE_RETRY_AFTER)) - 1]
+                if failures else _GUIDE_RESYNC_AFTER)
+        if now - at < wait:
+            return None
+    end = _guide_ends_at(db, provider.id)
+    if end is None:
+        # No enabled channel has ever had programmes: a feed that matches
+        # none of them is what the coverage report explains, and downloading
+        # it every few hours can't change that. Only a sync that failed is
+        # tried again.
+        return "has no guide after a failed sync" if last is not None and last[1] else None
+    if end - now > GUIDE_TOP_UP_BELOW:
+        return None
+    if end <= now:
+        return f"ran out at {end:%Y-%m-%d %H:%M} UTC"
+    return f"ends at {end:%Y-%m-%d %H:%M} UTC"
+
+
+def start_jellyfin_guide_refresh(db: Session) -> None:
+    """Start Jellyfin's Refresh Guide task, so it reads the guide just synced."""
+    import requests as req
+    jf_url = get_setting(db, "jellyfin_url")
+    jf_key = get_setting(db, "jellyfin_api_key")
+    if not (jf_url and jf_key):
+        return
+    try:
+        headers = {"X-Emby-Token": jf_key}
+        tasks = req.get(f"{jf_url}/ScheduledTasks", headers=headers, timeout=10).json()
+        guide_task = next((t for t in tasks if t.get("Key") == "RefreshGuide"), None)
+        if guide_task:
+            req.post(f"{jf_url}/ScheduledTasks/Running/{guide_task['Id']}", headers=headers, timeout=10)
+            logger.info("Jellyfin guide refresh triggered after EPG sync")
+    except Exception as e:
+        logger.error(f"Jellyfin guide refresh failed: {e}")
+
+
+def run_guide_top_up() -> None:
+    """Scheduled hourly: sync the guide of every Live TV provider whose guide
+    is running out (guide_top_up_due). Stands aside for a protected recording,
+    like the nightly download, and while a VOD sync or the nightly job runs
+    (that job syncs the guide itself, and one more request in the middle of
+    its burst is one more the provider may refuse); the next hour tries again."""
+    from services.provider_activity import recording_protected
+    from routers.sync import _after_sync, _running_syncs
+    if _running_syncs or "nightly" in _after_sync:
+        logger.info("[LiveTV] Guide top-up waits: a sync is running")
+        return
+    db = SessionLocal()
+    try:
+        synced = False
+        for provider in live_tv_providers(db):
+            reason = guide_top_up_due(db, provider)
+            if not reason:
+                continue
+            if recording_protected(db):
+                logger.info("[LiveTV] Guide top-up waits: a recording is running and recording protection is on")
+                break
+            rows = db.query(LiveChannel).filter(LiveChannel.provider_id == provider.id).all()
+            logger.info(f"[LiveTV] The guide of '{provider.name}' {reason}: syncing it again")
+            _set_sync_status(provider.id, {"phase": "epg", "status": "running", "progress": 0,
+                                           "message": f"The guide {reason}: syncing it again..."})
+            if _run_epg_sync_background(_epg_provider_data(provider, rows)):
+                synced = True
+        if synced:
+            start_jellyfin_guide_refresh(db)
+    except Exception as e:
+        logger.error(f"[LiveTV] Guide top-up failed: {e}")
+    finally:
+        db.close()
 
 
 # ─── Channel management ────────────────────────────────────────────────────
