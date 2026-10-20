@@ -1544,11 +1544,29 @@ function setLibType(type, btn) {
     const sel = document.getElementById('lib-source');
     if (sel) sel.value = 'all';
   }
-  pages.lib.type = type;
-  pages.lib.sourceTag = null;
   document.querySelectorAll('[data-libtype]').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
+  _showLibMusic(type === 'music');
+  if (type === 'music') {
+    if (typeof loadMusicLibrary === 'function') loadMusicLibrary();
+    setRoute('library', 'music');
+    return;
+  }
+  setRoute('library', null);
+  pages.lib.type = type;
+  pages.lib.sourceTag = null;
   loadLibrary();
+}
+
+// Music has its own list and filters: it replaces the grid, the search, Source and Sort.
+function _showLibMusic(on) {
+  const show = (id, visible) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = visible ? (id === 'lib-grid' ? 'grid' : '') : 'none';
+  };
+  show('lib-music-panel', on);
+  ['lib-grid', 'lib-search', 'lib-source', 'lib-sort', 'lib-stats'].forEach(id => show(id, !on));
+  if (on) show('lib-load-more', false);
 }
 
 // The Source dropdown: everything, downloads, everything from providers, or

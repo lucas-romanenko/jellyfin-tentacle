@@ -1890,22 +1890,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <!-- Library tabs -->
         <div class="tabs-bar" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
           <button class="live-tab active" data-libtab="browse" onclick="showLibTab('browse')">Browse</button>
-          <button class="live-tab" data-libtab="music" data-music-only onclick="showLibTab('music')">Music</button>
           <button class="live-tab" data-libtab="following" onclick="showLibTab('following')">Following <span class="nav-badge nav-badge-quiet" id="lib-follow-badge" style="display:none;margin-left:6px">0</span></button>
-        </div>
-
-        <div id="lib-tab-music" style="display:none">
-          <div class="lib-filters-row" style="margin-bottom:14px;flex-wrap:wrap;gap:8px">
-            <div class="filter-group music-filter-group">
-              <button class="filter-btn active" data-musicfilter="all" onclick="setMusicLibFilter('all',this)">All<span id="music-count-all"></span></button>
-              <button class="filter-btn" data-musicfilter="in_library" onclick="setMusicLibFilter('in_library',this)">In library<span id="music-count-in_library"></span></button>
-              <button class="filter-btn" data-musicfilter="downloading" onclick="setMusicLibFilter('downloading',this)">Downloading<span id="music-count-downloading"></span></button>
-              <button class="filter-btn" data-musicfilter="wanted" onclick="setMusicLibFilter('wanted',this)">Wanted<span id="music-count-wanted"></span></button>
-              <button class="filter-btn" data-musicfilter="needs_review" onclick="setMusicLibFilter('needs_review',this)">Needs review<span id="music-count-needs_review"></span></button>
-              <button class="filter-btn" data-musicfilter="fix" data-admin-only onclick="setMusicLibFilter('fix',this)">Fix library<span id="music-count-fix"></span></button>
-            </div>
-          </div>
-          <div id="music-library"><div class="loading-state"><div class="spinner"></div></div></div>
         </div>
 
         <div id="lib-tab-browse">
@@ -1917,6 +1902,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <button class="filter-btn active" data-libtype="all" onclick="setLibType('all',this)">All</button>
               <button class="filter-btn" data-libtype="movie" onclick="setLibType('movie',this)">Movies</button>
               <button class="filter-btn" data-libtype="series" onclick="setLibType('series',this)">Shows</button>
+              <button class="filter-btn" data-libtype="music" data-music-only onclick="setLibType('music',this)">Music</button>
             </div>
             <select class="lib-sort-select" id="lib-source" aria-label="Source" onchange="setLibSource(this.value)">
               <option value="all">All sources</option>
@@ -1936,6 +1922,21 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         </div>
 
         <div style="height:12px"></div>
+
+        <!-- Music: shown instead of the grid when the Music type is picked -->
+        <div id="lib-music-panel" style="display:none">
+          <div class="lib-filters-row" style="margin-bottom:14px;flex-wrap:wrap;gap:8px">
+            <div class="filter-group music-filter-group">
+              <button class="filter-btn active" data-musicfilter="all" onclick="setMusicLibFilter('all',this)">All<span id="music-count-all"></span></button>
+              <button class="filter-btn" data-musicfilter="in_library" onclick="setMusicLibFilter('in_library',this)">In library<span id="music-count-in_library"></span></button>
+              <button class="filter-btn" data-musicfilter="downloading" onclick="setMusicLibFilter('downloading',this)">Downloading<span id="music-count-downloading"></span></button>
+              <button class="filter-btn" data-musicfilter="wanted" onclick="setMusicLibFilter('wanted',this)">Wanted<span id="music-count-wanted"></span></button>
+              <button class="filter-btn" data-musicfilter="needs_review" onclick="setMusicLibFilter('needs_review',this)">Needs review<span id="music-count-needs_review"></span></button>
+              <button class="filter-btn" data-musicfilter="fix" data-admin-only onclick="setMusicLibFilter('fix',this)">Fix library<span id="music-count-fix"></span></button>
+            </div>
+          </div>
+          <div id="music-library"><div class="loading-state"><div class="spinner"></div></div></div>
+        </div>
 
         <!-- Library grid -->
         <div id="lib-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px"></div>

@@ -498,15 +498,18 @@ async function loadVersionLabel() {
 // ── Tab switching helpers ──────────────────────────────────────────────────
 
 function showLibTab(tab) {
+  // Music is a type inside Browse (beside Movies and Shows); old #library/music links still land there
+  const wantMusic = tab === 'music';
   if (!document.querySelector(`[data-libtab="${tab}"]`)) tab = 'browse';
   document.querySelectorAll('[data-libtab]').forEach(t => t.classList.remove('active'));
   document.querySelector(`[data-libtab="${tab}"]`)?.classList.add('active');
   document.getElementById('lib-tab-browse').style.display = tab === 'browse' ? '' : 'none';
   document.getElementById('lib-tab-following').style.display = tab === 'following' ? '' : 'none';
-  const musicTab = document.getElementById('lib-tab-music');
-  if (musicTab) musicTab.style.display = tab === 'music' ? '' : 'none';
-  if (tab === 'music' && typeof loadMusicLibrary === 'function') loadMusicLibrary();
   if (tab === 'following') loadFollowing();
+  if (wantMusic) {
+    const btn = document.querySelector('[data-libtype="music"]');
+    if (btn && btn.offsetParent !== null) { setLibType('music', btn); return; }
+  }
   setRoute('library', tab === 'browse' ? null : tab);
 }
 
