@@ -73,6 +73,39 @@ The code wins where they differ.
 - **API key**: Jellyfin → Dashboard → API Keys; Tentacle checks it at
   startup and logs a warning if it's invalid. Invalid key = no playlists.
 
+### Live TV per person (proven on 10.11.8, Oct 2026)
+
+- M3U channel id: `m3u_` + MD5(tuner URL) + MD5(stream URL) (`M3UTunerHost`,
+  `M3uParser.cs:104`); `string.GetMD5()` is MD5 of the UTF-16LE text read
+  as a .NET Guid. Item id = MD5("MediaBrowser.Controller.LiveTv.LiveTvChannel"
+  + lower("Emby" + external id + "4")). The number is only `tvg-chno`:
+  renumbering keeps favourites and timers. HDHomeRun keys on `hdhr_<n>`.
+- M3U stream lines must be http(s)/rtsp: a file path is skipped.
+- XMLTV programme ids get `_<channel id>` appended (`ListingsManager`), so
+  one guide serves any number of tuners mapping the same feed channel.
+- BlockedTags: channels are filtered in the database query (own tags).
+  Programmes are not (they don't carry the channel's tag), but every list
+  goes through `DtoService.GetBaseItemDtos` → `IsVisible` (inherited tags
+  walk up to the channel), so nobody sees them; pages come back short and
+  TotalRecordCount counts everyone's. The plugin copies the tag onto the
+  programme (Harmony on `GuideManager.GetProgram`) to fix that. Programme
+  ids of another person's channel: 0 items. `/Items/{id}` of another's
+  channel: 404. `/Items?ids=` *without* userId is unfiltered.
+- `GuideManager.GetChannel` keeps a channel's tags when the tuner gives
+  none (M3U never does) and only adds "Kids". Live TV items raise no
+  `ItemAdded` (`SourceType.LiveTV` is skipped).
+- Timers and series timers have no owner: `/LiveTv/Timers` lists all to
+  everyone with Live TV. Recording needs `EnableLiveTvManagement`.
+  Recordings are one library; a tag on a recording item hides it like a
+  channel (survives scans; recording NFOs are locked).
+- Saving a tuner or listing provider cancels a running RefreshGuide and
+  queues a new one. XMLTV programmes have no etag: every refresh re-saves
+  every programme.
+- Changing a user's policy inside the `UserCreatedEventArgs` consumer makes
+  `POST /Users/New` fail (DbUpdateConcurrencyException, 500): do it later.
+- Favourite (`POST /UserFavoriteItems/{id}?userId=`) on a channel the user
+  can't see: 404.
+
 ## Radarr and Sonarr
 
 - **Paths differ per container**: the paths Tentacle sees

@@ -1,22 +1,29 @@
 # Live TV
 
-Tentacle replaces tools like Threadfin as an HDHomeRun tuner emulator for Jellyfin. Add your IPTV provider and get live channels with full EPG guide data inside Jellyfin.
+Tentacle is the tuner for Jellyfin's Live TV: add your IPTV provider and get live channels with a full TV guide inside Jellyfin, without tools like Threadfin. Everyone in the household gets their own channel list.
 
 ## How It Works
 
-Tentacle emulates an HDHomeRun network tuner device. When Jellyfin discovers the tuner, it sees Tentacle as a native TV device — no third-party tools needed.
-
-1. You add your IPTV provider in Tentacle (Sources → IPTV providers)
-2. Tentacle fetches the channel groups
-3. You enable the groups you want
-4. Tentacle serves channel data via HDHomeRun endpoints
-5. Jellyfin discovers the tuner and loads your channels with EPG
+1. An admin adds the IPTV provider in Tentacle (**Sources → IPTV providers**) and switches on the **channel groups** the household should have. Those channels are what everyone can watch.
+2. Everyone else sees channels only, never the provider's groups. Under **My Channels** in Tentacle (signed in with their Jellyfin login), each person picks **All channels** or **My own list**: the channels they want, in their order, with their own favourites.
+3. Tentacle sets Live TV up in Jellyfin itself: one tuner for everyone on All channels, one per person with a list of their own, and the TV guide for all of them. Nobody adds a tuner by hand.
+4. In every Jellyfin app (the web, the TV app, phones) each person sees only their own channels: the guide, the channel list, search, "On now" and their numbers (1, 2, 3... in the order they chose).
 
 ```
-Jellyfin  ←→  HDHomeRun API  ←→  Tentacle  ←→  IPTV Provider
-              (discover.json)      (stream
-               lineup.json)        proxy)
+Jellyfin  ←→  one M3U tuner per list  ←→  Tentacle  ←→  IPTV Provider
+              + Tentacle's TV guide        (stream proxy)
 ```
+
+Two people watching the same channel use one connection to the provider. Recordings and recording schedules are the household's, like a family recorder: everyone sees them.
+
+## My Channels
+
+Everyone (admins too) has **My Channels** in Tentacle's sidebar once the household has Live TV channels.
+
+- **All channels** (where everyone starts): everything the household has, in the admin's order. Star the channels you watch most: they come first in Jellyfin's guide.
+- **My own list**: search and **+ Add** the channels you watch, drag them (or use the arrows) into the order you like (that is their numbers), star your favourites, and **✕** removes one. Switching to your own list the first time starts it with your favourites. Switching back to All channels keeps your list for later.
+
+Changes save by themselves, and your TV and apps show them about a minute later. Favourites carry over when you switch between the two.
 
 ## Adding a Provider
 
@@ -72,9 +79,9 @@ After syncing channels, the **Channels** tab lets you:
 - **Rename** a channel as Jellyfin's guide shows it
 - **See EPG status** — "Has EPG" or "No EPG" badges based on actual program data; click a badge to set the guide id (XMLTV channel id) a channel takes its guide from
 
-### Stable Channel IDs
+### Stable channels
 
-Tentacle uses your provider's stream ID as the channel number (plus the provider's offset when several providers are used for Live TV), not sequential numbering. This means channel numbers stay consistent even when you add or remove channels — your Jellyfin recordings and favorites won't break.
+Jellyfin knows each channel by the tuner's address and the channel's stream address in Tentacle, never by its number. So numbers can change freely (each person's list is numbered 1, 2, 3... in their order) while favourites and recordings stay with the channel.
 
 ## EPG (Electronic Program Guide)
 
@@ -92,26 +99,15 @@ Multiple channels can share the same EPG data (e.g., an HD channel and its backu
 
 ## Connecting to Jellyfin
 
-### Add the Tuner
+There is nothing to set up in Jellyfin. Once Tentacle is connected to Jellyfin (the setup wizard, or **Settings → Services**) and a provider has Live TV channels, Tentacle adds the tuners and the TV guide to Jellyfin itself within a few minutes, and keeps them in line: whenever someone changes their channels, when the admin switches groups or channels on or off, and every hour (which also catches people added in Jellyfin). **Sources → Live TV → In Jellyfin** shows when it last did so, and **Set up again now** runs it at once. **People** on the same page shows who uses All channels and who has a list of their own.
 
-1. In Jellyfin, go to **Dashboard → Live TV → Tuner Devices → Add**
-2. Select **HD Homerun** as the tuner type
-3. Enter the Tentacle address: `http://<tentacle-ip>:8888`
-4. Jellyfin will discover the device automatically
+Each person's channels are tagged in Jellyfin and everyone else's are blocked for them (Jellyfin's per-user "blocked tags"). Tentacle manages only its own tags: blocked tags an admin set by hand are kept.
 
-### Add the Guide Provider
+!!! info "Coming from an earlier version"
+    An install that used Tentacle as an HDHomeRun tuner (or an M3U tuner on `/api/live/playlist.m3u`) is moved by itself: everyone's favourite channels and the recording schedules go to the new tuner, then the old tuner is removed from Jellyfin. Channel numbers become 1, 2, 3... Before any change, Tentacle saves what Jellyfin had (tuners, favourites, schedules, blocked tags) to `livetv-backups/` in its data folder.
 
-1. In Jellyfin, go to **Dashboard → Live TV → TV Guide Data Providers → Add**
-2. Select **XMLTV**
-3. Enter the guide URL: `http://<tentacle-ip>:8888/api/live/xmltv.xml`
-4. Save and click **Refresh Guide**
-
-!!! tip "Automatic guide refresh"
-    Save Tentacle's address in **Settings → Services** (the **Jellyfin setup** tab under Sources → Live TV shows the tuner and guide addresses made from it). Then, after every TV guide update, Tentacle refreshes Jellyfin's guide by itself: it re-creates the XMLTV listing provider in Jellyfin (which forces a full channel remap) and triggers a guide refresh. This ensures new channels get properly mapped to EPG data.
-
-### Verify
-
-After setup, you should see your enabled channels in Jellyfin's Live TV section with program guide data. If channels are missing EPG, sync EPG in Tentacle and refresh the guide in Jellyfin.
+!!! info "Tentacle's address"
+    Jellyfin knows every channel by the tuner's address, so Tentacle chooses it once (the address Jellyfin already reached Tentacle at, else the plugin's Tentacle address, else Settings → Services) and keeps it.
 
 ## Stream Proxy
 
@@ -129,22 +125,22 @@ A recording also waits out a provider refusing it (HTTP 401/403, for example a s
 
 When the provider interrupts a recording, or serves a placeholder (a black "channel unavailable" video) instead of the channel, Tentacle notes it under **Health → Recent Activity**: a recording that may be missing content shows as **Recording damaged**, a placeholder as **Channel placeholder**. The guide sync, stream checks and nightly sweeps report there too, and anything that failed is shown in red.
 
-## HDHomeRun Endpoints
+## Tuner Endpoints
 
-These endpoints are served automatically — you don't need to configure them manually:
+Tentacle gives these to Jellyfin itself:
 
 | Endpoint | Purpose |
 |----------|---------|
-| `/hdhr/discover.json` | Device discovery |
-| `/hdhr/lineup.json` | Channel lineup |
-| `/hdhr/lineup_status.json` | Lineup scan status |
-| `/hdhr/device.xml` | Device description |
+| `/api/live/tuner/all.m3u` | The shared tuner: every channel |
+| `/api/live/users/<jellyfin user id>/tuner.m3u` | One person's own list |
 | `/api/live/xmltv.xml` | XMLTV guide data |
+
+The HDHomeRun endpoints (`/hdhr/discover.json`, `/hdhr/lineup.json`, `/hdhr/device.xml`) and `/api/live/playlist.m3u` are still served for anything set up by hand, but carry every channel and know nothing of people.
 
 ## Troubleshooting
 
 !!! warning "Channels missing after enable"
-    If you enable new channel groups but they don't appear in Jellyfin, check that Tentacle's address is saved in **Settings → Services**, then click **Update TV guide** on the Live TV tab's Channels: when the sync finishes, Tentacle re-creates the XMLTV listing provider in Jellyfin, which makes it re-discover all channels. Simply clicking "Refresh Guide" in Jellyfin alone won't pick up new channels.
+    Tentacle refreshes Jellyfin's guide a few seconds after you switch groups or channels on; Jellyfin then takes a few minutes for a large lineup. If they still don't appear, open **Sources → Live TV → In Jellyfin**: it says why the last try didn't work (Jellyfin not reachable, for example). **Set up again now** tries again.
 
 !!! warning "No EPG data"
     EPG badges in Tentacle ("Has EPG" / "No EPG") reflect actual program data in the database. If channels show "No EPG" after a fresh setup, run an EPG sync first. The auto-chain after channel sync usually handles this automatically.

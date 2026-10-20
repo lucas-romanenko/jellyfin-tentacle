@@ -5815,7 +5815,7 @@ async function loadLiveTV() {
       renderLiveStats(data);
       await loadLiveGroups();
       await loadLiveChannels();
-      if (document.getElementById('live-panel-setup')?.classList.contains('active')) fillSetupUrls();
+      if (document.getElementById('live-panel-setup')?.classList.contains('active')) loadLiveSetup();
     } else {
       liveState.providerId = null;
       if (pick) pick.style.display = 'none';
@@ -5848,73 +5848,8 @@ function showLiveTab(name) {
   document.getElementById(`live-panel-${name}`)?.classList.add('active');
 
   if (name === 'channels') loadLiveChannels();
-  if (name === 'setup') fillSetupUrls();
-}
-
-// The tuner and guide addresses are Tentacle's own address (Settings →
-// Services) plus a path. Never http://localhost: in Docker that is Jellyfin
-// itself (#291). Not saved yet: the address Tentacle works out for itself,
-// then an older Live TV address, then this browser's, each said as such.
-async function fillSetupUrls() {
-  let base = '', note = '';
-  let settings = {};
-  try { settings = await api('/api/settings/raw'); } catch (e) { settings = {}; }
-  // The saved address is in the settings: no need for the status call, which
-  // checks the address over the network and can take a while.
-  // An address saved for Live TV before wins: it is what Jellyfin's tuner was
-  // set up with (often the LAN one, while Tentacle's address can be public).
-  // Saving Tentacle's address in Settings → Services replaces it.
-  if (settings['live_setup_host']) {
-    const port = settings['live_setup_port'] || '8888';
-    base = `${port === '443' ? 'https' : 'http'}://${settings['live_setup_host']}${port === '80' || port === '443' ? '' : ':' + port}`;
-  }
-  else if (settings['youtube_base_url']) base = settings['youtube_base_url'];
-  else try {
-    const st = await api('/api/youtube/status');
-    if (st && st.base_url) base = st.base_url;
-    else if (st && st.detected && st.detected.url) {
-      base = st.detected.url;
-      note = 'Worked out by Tentacle, not saved yet: save it in Settings → Services.';
-    }
-  } catch (e) {}
-  if (!base && location.hostname && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) {
-    base = `${location.protocol}//${location.host}`;
-    note = 'From this browser: set Tentacle\'s address in Settings → Services.';
-  }
-  liveState.setupBase = (base || '').replace(/\/+$/, '');
-  const shown = document.getElementById('live-setup-address-display');
-  if (shown) {
-    shown.textContent = liveState.setupBase || 'Not set';
-    shown.style.color = liveState.setupBase ? 'var(--green)' : 'var(--red)';
-  }
-  const hint = document.getElementById('live-setup-detected');
-  if (hint) hint.textContent = liveState.setupBase ? note : 'Set Tentacle\'s address in Settings → Services first.';
-  updateSetupUrls();
-}
-
-function getSetupBase() {
-  return liveState.setupBase || '';
-}
-
-function updateSetupUrls() {
-  const base = getSetupBase();
-  document.getElementById('live-setup-tuner-preview').textContent = base || '—';
-  document.getElementById('live-setup-xmltv-preview').textContent = base ? `${base}/hdhr/xmltv.xml` : '—';
-}
-
-async function copyLiveSetup(type, btn) {
-  const base = getSetupBase();
-  if (!base) { toast('Set Tentacle\'s address in Settings → Services first', 'error'); return; }
-  const url = type === 'tuner' ? base : `${base}/hdhr/xmltv.xml`;
-  try {
-    await navigator.clipboard.writeText(url);
-  } catch (_) {
-    toast('Copy failed — use HTTPS or copy manually', 'error');
-    return;
-  }
-  const orig = btn.textContent;
-  btn.textContent = 'Copied!';
-  setTimeout(() => btn.textContent = orig, 1500);
+  if (name === 'setup') loadLiveSetup();
+  if (name === 'people') loadLivePeople();
 }
 
 function renderLiveStats(data) {
@@ -7065,7 +7000,7 @@ function renderHealthLog() {
     onDiscoverSearchInput, clearDiscoverSearch,
     // Live TV
     loadLiveTV, showLiveTab,
-    liveSyncChannels, liveSyncEpg, fillSetupUrls, updateSetupUrls, copyLiveSetup,
+    liveSyncChannels, liveSyncEpg,
     loadLiveChannels, toggleLiveChannel, renameLiveChannel, setLiveChannelGuideId, toggleAllChannels, saveLiveChannels, searchLiveChannels, filterLiveChannels, filterLiveChannelsByEpg, liveChPage,
   ];
   for (const fn of fns) {

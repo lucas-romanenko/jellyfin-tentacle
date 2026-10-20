@@ -326,6 +326,8 @@ function applyUserRole() {
   document.querySelectorAll('[data-admin-only]').forEach(el => {
     el.style.display = isAdmin ? '' : 'none';
   });
+  // My Channels in the sidebar once the household has Live TV
+  if (typeof mychCheckNav === 'function') mychCheckNav();
   // Show user name in sidebar
   const userEl = document.getElementById('sidebar-user');
   if (userEl) {
@@ -399,6 +401,7 @@ const PAGE_TITLES = {
   library: ['Library', 'Everything you can watch'],
   discover: ['Discover', 'Find something new and add it'],
   jellyfin: ['My Home Screen', 'Your Jellyfin home rows and playlists'],
+  mychannels: ['My Channels', 'Your own Live TV channels'],
   sources: ['Sources', 'Where the library comes from'],
   health: ['Health', 'Problems, downloads and what happened'],
   settings: ['Settings', 'Services, schedule and users'],
@@ -461,6 +464,7 @@ function showPage(name, tab) {
     if (name === 'library') { loadLibrary(); if (tab) showLibTab(tab); }
     if (name === 'discover') { loadDiscoverPage(); if (tab) showDiscoverTab(tab); }
     if (name === 'jellyfin') { loadJellyfinPage(); if (tab) showJellyfinTab(tab); }
+    if (name === 'mychannels' && typeof loadMyChannels === 'function') loadMyChannels();
     if (name === 'sources') showSourcesTab(tab || state.sourcesTab || 'providers');
     if (name === 'health') loadHealthPage();
   } finally {

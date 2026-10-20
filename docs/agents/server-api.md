@@ -132,16 +132,20 @@ provider names, URLs or logins).
 | GET | `/api/live/groups` | admin | livetv.py:list_groups |
 | PUT | `/api/live/groups/bulk` | admin | livetv.py:bulk_update_groups |
 | PUT | `/api/live/groups/{group_id}` | admin | livetv.py:update_group |
+| GET | `/api/live/people` | admin | my_livetv.py:live_people |
 | GET | `/api/live/playlist.m3u` | none | livetv.py:live_playlist_m3u |
 | POST | `/api/live/refresh-guide` | admin | livetv.py:refresh_jellyfin_guide |
 | POST | `/api/live/reserve` | admin or internal | livetv.py:live_reserve |
 | DELETE | `/api/live/reserve/{channel_id}` | admin or internal | livetv.py:live_unreserve |
+| POST | `/api/live/setup` | admin | my_livetv.py:live_setup_now |
 | GET | `/api/live/status` | admin | livetv.py:live_status |
 | GET | `/api/live/stream/{channel_id}` | none | livetv.py:stream_proxy |
 | GET | `/api/live/streams` | admin or internal | livetv.py:live_streams |
 | POST | `/api/live/sync-channels/{provider_id}` | admin | livetv.py:sync_live_channels |
 | POST | `/api/live/sync-epg/{provider_id}` | admin | livetv.py:sync_epg |
 | GET | `/api/live/sync-status` | admin | livetv.py:sync_status_endpoint |
+| GET | `/api/live/tuner/all.m3u` | none | livetv.py:live_tuner_all |
+| GET | `/api/live/users/{user_id}/tuner.m3u` | none | livetv.py:live_tuner_user |
 | POST | `/api/live/sync/{provider_id}` | admin | livetv.py:sync_live_groups |
 | GET | `/api/live/xmltv.xml` | none | livetv.py:hdhr_xmltv |
 | GET | `/api/music/album/{rgid}` | user | music.py:music_album |
@@ -176,6 +180,9 @@ provider names, URLs or logins).
 | GET | `/api/music/webhook-info` | admin | music.py:webhook_info |
 | POST | `/api/music/webhook/regenerate` | admin | music.py:regenerate_webhook_secret |
 | POST | `/api/music/webhook/test` | admin | music.py:test_webhook |
+| GET | `/api/my/channels` | user | my_livetv.py:my_channels |
+| PUT | `/api/my/channels` | user | my_livetv.py:save_my_channels |
+| PUT | `/api/my/channels/favourite` | user | my_livetv.py:set_my_favourite |
 | GET | `/api/notifications` | user | notifications.py:get_notifications |
 | POST | `/api/notifications/dismiss-all` | user | notifications.py:dismiss_all |
 | POST | `/api/notifications/toggle` | user | notifications.py:toggle_notifications |

@@ -3,7 +3,9 @@ using Jellyfin.Plugin.Tentacle.HomeScreen;
 using Jellyfin.Plugin.Tentacle.Patching;
 using Jellyfin.Plugin.Tentacle.Playlists;
 using Jellyfin.Plugin.Tentacle.Services;
+using Jellyfin.Data.Events.Users;
 using MediaBrowser.Controller;
+using MediaBrowser.Controller.Events;
 using MediaBrowser.Controller.Plugins;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
@@ -36,6 +38,9 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<HomeScreenManager>();
         serviceCollection.AddSingleton<PlaylistManager>();
         serviceCollection.AddSingleton<IHostedService, LibraryDeleteHandler>();
+        // Live TV per person: tags on channels and programmes, new users' blocked tags
+        serviceCollection.AddSingleton<IHostedService, LiveTvIsolation>();
+        serviceCollection.AddScoped<IEventConsumer<UserCreatedEventArgs>, LiveTvNewUser>();
 
         // Tentacle VOD served as HLS re-encodes its video instead of copying
         // it (a resumed play otherwise skips to the next episode, #17966)

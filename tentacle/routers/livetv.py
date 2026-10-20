@@ -3630,7 +3630,16 @@ def update_channel(channel_id: int, update: ChannelUpdate, db: Session = Depends
 
     ch.updated_at = datetime.utcnow()
     db.commit()
+    if update.enabled is not None or update.custom_name is not None or update.sort_order is not None:
+        _pool_changed(f"channel '{ch.guide_name}' changed")
     return {"success": True}
+
+
+def _pool_changed(what: str) -> None:
+    """The channels the household has changed: everyone's tuner in Jellyfin
+    follows (services/livetv_tuners.py, a few seconds later)."""
+    from services.livetv_tuners import schedule_sync
+    schedule_sync(what, refresh=True)
 
 
 # SQLite caps host parameters per statement (SQLITE_MAX_VARIABLE_NUMBER, 999 on
@@ -3656,6 +3665,7 @@ def bulk_update_channels(update: BulkChannelUpdate, db: Session = Depends(get_db
             LiveChannel.id.in_(chunk)
         ).update({LiveChannel.enabled: update.enabled}, synchronize_session=False)
     db.commit()
+    _pool_changed("channels switched on or off")
     return {"success": True, "updated": count}
 
 
@@ -3675,6 +3685,7 @@ def bulk_update_channels_by_filter(update: BulkChannelFilter, db: Session = Depe
             q = q.filter(guide_id.is_(None))
     count = q.update({LiveChannel.enabled: update.enabled}, synchronize_session=False)
     db.commit()
+    _pool_changed("channels switched on or off")
     return {"success": True, "updated": count}
 
 
@@ -3731,6 +3742,8 @@ def bulk_update_groups(update: BulkGroupUpdate, db: Session = Depends(get_db)):
             ).update({LiveChannel.enabled: update.enabled}, synchronize_session=False)
 
     db.commit()
+    if changing_names:
+        _pool_changed("channel groups switched on or off")
     return {"success": True, "updated": len(groups)}
 
 
@@ -3749,6 +3762,7 @@ def update_group(group_id: int, update: GroupUpdate, db: Session = Depends(get_d
     ).update({LiveChannel.enabled: update.enabled}, synchronize_session=False)
 
     db.commit()
+    _pool_changed("a channel group switched on or off")
     return {"success": True}
 
 
@@ -3859,7 +3873,7 @@ def refresh_jellyfin_guide(db: Session = Depends(get_db)):
 
     try:
         from services.jellyfin_guide import GuideRefreshError, refresh_jellyfin_guide
-        refresh_jellyfin_guide(jf_url, jf_key)
+        refresh_jellyfin_guide(jf_url, jf_key, then_tag=True)
         msg = "Jellyfin guide refresh triggered"
         if epg_resynced:
             msg = "EPG data synced for new channels + Jellyfin guide refresh triggered"
@@ -5643,6 +5657,42 @@ def live_playlist_m3u(request: Request, db: Session = Depends(get_db)):
         media_type="audio/x-mpegurl",
         headers={"Content-Disposition": "inline; filename=tentacle.m3u"},
     )
+
+
+def _tuner_m3u(db, request: Request, user_id: Optional[str], tuner_url: str) -> Response:
+    """One person's tuner (or the shared one): their channels in their order,
+    numbered 1..N. The streams sit under the address the tuner was given, not
+    the one this request came in on: Jellyfin keys every channel on the tuner
+    URL and the stream URL, so they must stay the same whatever it calls."""
+    from services import livetv_lineups
+    base = livetv_lineups.tuner_base(tuner_url) if tuner_url else str(request.base_url).rstrip("/")
+    content = livetv_lineups.m3u(livetv_lineups.lineup_for(db, user_id), base)
+    return Response(content=content, media_type="audio/x-mpegurl",
+                    headers={"Content-Disposition": "inline; filename=tentacle.m3u"})
+
+
+@router.get("/api/live/tuner/all.m3u")
+def live_tuner_all(request: Request, db: Session = Depends(get_db)):
+    """The shared "All channels" tuner Tentacle adds to Jellyfin."""
+    from services.livetv_tuners import all_tuner_url
+    return _tuner_m3u(db, request, None, all_tuner_url(db))
+
+
+@router.get("/api/live/users/{user_id}/tuner.m3u")
+def live_tuner_user(user_id: str, request: Request, db: Session = Depends(get_db)):
+    """A person's own tuner. Like the lineup it has no login (Jellyfin reads
+    it as a tuner); it lists channel names and Tentacle stream addresses.
+    Always their own list, also while they switch back to all channels: the
+    tuner is removed then, and a channel new to it would be untagged (seen
+    by everyone) until Tentacle or the plugin tags it."""
+    from services import livetv_lineups
+    if not re.fullmatch(r"[0-9a-fA-F-]{32,36}", user_id or ""):
+        raise HTTPException(404, "No such tuner")
+    row = livetv_lineups.lineup_row(db, user_id)
+    base = livetv_lineups.tuner_base(row.tuner_url) if row and row.tuner_url else str(request.base_url).rstrip("/")
+    entries = livetv_lineups.own_lineup(db, user_id) if row else []
+    return Response(content=livetv_lineups.m3u(entries, base), media_type="audio/x-mpegurl",
+                    headers={"Content-Disposition": "inline; filename=tentacle.m3u"})
 
 
 def _emit_sub_titles(db) -> bool:
