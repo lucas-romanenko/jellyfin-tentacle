@@ -27,6 +27,24 @@ When you save it, Tentacle tests the connection. If the account has live channel
 !!! info "M3U providers"
     An M3U URL or M3U file provider added in Sources → IPTV providers is used for VOD only. Live TV needs an Xtream Codes provider.
 
+### Several providers
+
+Any number of providers can be used for Live TV: switch **Use for Live TV** on for each. Under it, each card has:
+
+- **Streams at once**: how many channels that provider's account can play or record at the same time (its "connections"). Live TV, recordings and films played through Tentacle share them. The card shows what the account says; empty means 6. Jellyfin gets as many tuners as all providers' streams together.
+- **Channel numbers +**: what is added to the provider's own channel numbers, so two providers never give Jellyfin the same number. The first Live TV provider keeps its own numbers (0); every other one is given its own range once and keeps it. Change it only if you have a reason: Jellyfin then sees that provider's channels under new numbers, and recordings set up on the old ones need setting up again.
+
+### Several addresses
+
+Providers often have more than one address and send a list of others when one stops working (an internet provider blocking one address in the evening, for example). On the provider's card, **Address → Addresses** keeps them:
+
+1. Paste the provider's whole message: Tentacle picks out the addresses (a login or a path in them is dropped) and adds them as backups.
+2. **Test all** checks each address from the server, one at a time: whether the name resolves, whether it is behind Cloudflare, whether the login works (account status, connections in use), and how long a live channel and a film take to start. Stream tests are skipped while anyone is watching, so a one-connection account is never cut off. The list is ranked best first, with how often each worked over the last day.
+3. The hourly provider check tests the backups too, so the ranking covers the evening.
+4. **Use this one** switches the provider to an address. When the address in use fails its checks, Tentacle switches to the best backup by itself and says so in Activity (and on your phone, with Pushover). You can choose **switch, and come back when it works again**, or **only tell me**.
+
+A switch keeps everything: nothing is imported again or deleted, channels keep their numbers, the guide and recordings stay, and a stream that is playing finishes on the old address. Until a sync on the new address has read the whole catalogue, titles it does not list are not treated as gone.
+
 ### User-Agent
 
 Tentacle connects to your provider with a TiviMate User-Agent (`TiviMate/4.7.0 (Linux; Android 12)`), which most providers accept. The dashboard has no setting to change it.
@@ -56,7 +74,7 @@ After syncing channels, the **Channels** tab lets you:
 
 ### Stable Channel IDs
 
-Tentacle uses your provider's stream ID as the channel number, not sequential numbering. This means channel numbers stay consistent even when you add or remove channels — your Jellyfin recordings and favorites won't break.
+Tentacle uses your provider's stream ID as the channel number (plus the provider's offset when several providers are used for Live TV), not sequential numbering. This means channel numbers stay consistent even when you add or remove channels — your Jellyfin recordings and favorites won't break.
 
 ## EPG (Electronic Program Guide)
 

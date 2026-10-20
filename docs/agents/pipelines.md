@@ -155,8 +155,9 @@ renames), but its playlist refresh runs first and can leave the playlist
 empty until the next refresh. The sync reads the name from the DB (`_user_display_name`), not a
 `TentacleUser` loaded earlier (#454).
 
-**A provider is saved** (Providers page `PUT /api/providers/{id}`, or
-`POST /api/live/provider`): a new server, username or password on an Xtream
+**A provider is saved** (the provider card's Edit, `PUT /api/providers/{id}`,
+or a switch to another of its addresses, `services/provider_addresses.switch_to`:
+"Use this one" or the hourly check): a new server, username or password on an Xtream
 provider rewrites its Live TV channels' `stream_url`
 (`{server}/live/{user}/{pass}/{id}.{ext}`, keeping each channel's format) in
 the same commit, `rewrite_xtream_channel_urls()` in `routers/livetv.py`; no

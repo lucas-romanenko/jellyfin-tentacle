@@ -635,11 +635,12 @@ class BackgroundWork(unittest.TestCase):
         from pathlib import Path
         root = Path(__file__).resolve().parents[1]
         livetv_src = (root / "routers" / "livetv.py").read_text()
-        for what in ("Testing the provider", "A channel group sync", "A channel sync", "An EPG sync"):
+        for what in ("A channel group sync", "A channel sync", "An EPG sync"):
             self.assertIn(f'refuse_while_recording(db, "{what}")', livetv_src)
         self.assertIn("recording protection is on — not downloading the guide now", livetv_src)
         providers_src = (root / "routers" / "providers.py").read_text()
-        for what in ("Testing the provider", "Fetching the provider's categories", "A sync preview"):
+        for what in ("Testing the provider", "Fetching the provider's categories", "A sync preview",
+                     "Testing the provider's addresses"):
             self.assertIn(f'refuse_while_recording(db, "{what}")', providers_src)
         self.assertIn('refuse_while_recording(db, "A stream check")', (root / "routers" / "health.py").read_text())
         radarr_src = (root / "routers" / "radarr.py").read_text()

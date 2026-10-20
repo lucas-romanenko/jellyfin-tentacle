@@ -595,3 +595,26 @@ class OneTentacleAddress(unittest.TestCase):
     def test_nothing_known_nothing_set(self):
         mdb._one_tentacle_address(self.db)
         self.assertEqual("", mdb.tentacle_address(self.db))
+
+
+class TheAddressInUseInTheTable(_Db):
+    def test_short_words_from_the_health_check(self):
+        cases = [({"kind": "unreachable", "detail": "name not found"}, "name not found"),
+                 ({"kind": "http", "code": 403, "step": "api"}, "refused (403)"),
+                 ({"kind": "http", "code": 511, "step": "stream", "api_ok": True},
+                  "login works, streams refused (511): refuses this connection, as for a VPN"),
+                 ({"kind": "login"}, "login rejected"),
+                 ({"kind": "expired", "detail": "2026-01-01"}, "account expired")]
+        for outcome, word in cases:
+            with self.subTest(word):
+                self.assertEqual(word, pa._word_for(outcome))
+
+    def test_recorded_by_the_hourly_check(self):
+        pa.ensure_current(self.db, self.p)
+        self.db.commit()
+        failing = {"verdict": "fail", "kind": "unreachable", "detail": "no answer", "step": "api"}
+        with mock.patch.object(pa, "_maybe_switch", lambda db, p, f: None):
+            pa.check_backups(self.db, [self.p], {self.p.id: failing}, {}, sleep=lambda s: None)
+        current = self.p.addresses[0]
+        self.assertEqual("no answer", current.last_result["word"])
+        self.assertFalse(current.history[-1]["ok"])

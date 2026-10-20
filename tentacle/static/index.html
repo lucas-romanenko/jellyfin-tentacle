@@ -713,8 +713,9 @@ td.primary { color: var(--text); font-weight: 500; }
 .provider-live-limits input { width: 64px; padding: 4px 8px; font-size: 12px; }
 .provider-live-limits input.wide { width: 110px; }
 @media (max-width: 600px) {
-  .addr-row { flex-wrap: wrap; }
-  .addr-actions { width: 100%; justify-content: flex-end; }
+  .addr-row:not(.in-use) { flex-wrap: wrap; }
+  .addr-row:not(.in-use) .addr-actions { width: 100%; justify-content: flex-end; }
+  .addr-mode select { max-width: 100%; }
   .provider-live-limits { margin-left: 0; }
 }
 .cat-found { font-size: 10px; font-family: 'DM Mono', monospace; white-space: nowrap; }
@@ -1189,6 +1190,7 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 .lib-filters-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .lib-filters-row #lib-search { flex: 1 1 200px; max-width: 420px; }
 .lib-filters-row #lib-stats { margin-left: auto; }
+.lib-filters-row #lib-source { max-width: 260px; }
 
 /* Sort dropdown */
 .lib-sort-select {
@@ -1682,7 +1684,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
   /* Library filter bar */
   #lib-search { width: auto !important; flex: 1 1 100%; max-width: none; min-width: 0; }
-  .lib-filters-row .lib-sort-select { flex: 1 1 40%; min-width: 0; }
+  .lib-filters-row .lib-sort-select { flex: 1 1 40%; min-width: 0; max-width: none !important; }
   .lib-filters-row #lib-stats { margin-left: 0; }
   .lib-list-status { margin-left: 0; padding-left: 0; border-left: none; }
   /* List pills: swipe to scroll instead of arrow buttons */

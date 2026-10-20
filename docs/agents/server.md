@@ -571,8 +571,37 @@ User docs: `docs/features/live-tv.md`.
   dashboard adds providers only in Sources → IPTV providers, and one row serves
   VOD and Live TV: `POST /api/providers/{id}/test` sets `live_tv_enabled`
   when an Xtream account has live categories (an M3U one never gets it).
-  `/api/live/provider` (GET, POST, test) has no form in the dashboard, and
-  `user_agent` / `epg_url` no field: API only.
+  `user_agent` / `epg_url` have no field: API only. (The one-provider
+  `/api/live/provider` routes are gone: Live TV is a switch per card.)
+- Several Live TV providers (#704): each account carries its own streams
+  at once (`Provider.live_max_streams`, else `livetv_max_concurrent_streams`,
+  default 6; `provider_stream_limit`), the overall ceiling and the tuner
+  count are their sum (`overall_stream_limit`). `_StreamSlots.acquire_lease`
+  takes `provider_id` / `provider_limit`: a full account takes a slot only
+  from its own pulls and never holds up another provider's. Recording
+  protection stays global. Channel numbers: the GuideNumber is
+  `guide_number(ch, offsets)`, the stream_id plus the provider's
+  `channel_number_offset` (the first Live TV provider 0, every other one a
+  round number above all ids, given once by `ensure_channel_offsets` and
+  kept); Jellyfin's `hdhr_<n>` from timers and reservations maps back with
+  `channels_for_guide_numbers`. A number two channels would share is left
+  out of the lineup, XMLTV and M3U (logged), never handed out twice.
+- Several addresses per provider (#704, `services/provider_addresses.py`,
+  table `provider_addresses`): the address in use is `server_url`, the rest
+  backups. `add_from_text` picks addresses out of a pasted message
+  (scheme://host[:port] only). `test_address`: DNS, Cloudflare, login
+  (status, connections), first bytes of a live channel and a film, one
+  connection at a time, streams skipped while anyone uses the account
+  (`_someone_watching` or the account's `active_cons`). The hourly provider
+  health check calls `check_backups` after the addresses in use; a failing
+  address (two failed checks: the check and its confirmation) is replaced by
+  the best backup whose streams worked (`address_auto_switch`: switch,
+  switch_back to `preferred_address` after two good checks, off). `switch_to`
+  is the save path (`rewrite_xtream_channel_urls`, `provider_relink`) plus a
+  probation: marks from the old address's listings are cleared and the sync
+  marks and prunes nothing until a full sync on the new address read
+  everything and served 95% of the known titles (`may_prune`,
+  `end_probation`, setting `provider_address_probation_<pid>`).
 
 ## Music (Lidarr + MusicBrainz; off by default)
 

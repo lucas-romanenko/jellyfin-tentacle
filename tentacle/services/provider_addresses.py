@@ -568,6 +568,28 @@ def end_probation(db, provider: Provider, settled: bool) -> None:
 
 # ─── The hourly check ─────────────────────────────────────────────────────────
 
+def _word_for(outcome: dict) -> str:
+    """The table's short word for what the health check found
+    (services.provider_health's outcome), like test_address's."""
+    kind, code = outcome.get("kind"), outcome.get("code")
+    streams = outcome.get("step") == "stream"
+    if kind == "unreachable":
+        word = outcome.get("detail") or "no answer"
+    elif kind == "login":
+        word = "login rejected"
+    elif kind in ("expired", "status"):
+        word = f"account {(outcome.get('detail') or 'expired') if kind == 'status' else 'expired'}"
+    elif kind in ("not_json", "not_m3u"):
+        word = "answers with a web page, not the provider"
+    elif kind == "streams_gone":
+        word = "test streams not found (404)"
+    elif kind == "empty":
+        word = "sends nothing"
+    else:
+        word = _refused_word(code) if code else "fails"
+    return f"login works, streams {word}" if streams and outcome.get("api_ok") else word
+
+
 def _backups(p: Provider) -> list:
     return [a for a in p.addresses if not is_current(p, a)]
 
@@ -586,7 +608,7 @@ def check_backups(db, providers, outcomes: dict, state: dict, sleep=time.sleep) 
         if current is not None and out.get("verdict") in ("ok", "fail"):
             # What the check itself found for the address in use
             _record(current, {"at": datetime.utcnow().isoformat() + "Z", "ok": out["verdict"] == "ok",
-                              "word": WORKS if out["verdict"] == "ok" else (state.get(str(p.id)) or {}).get("reason") or "fails",
+                              "word": WORKS if out["verdict"] == "ok" else _word_for(out),
                               **{k: (current.last_result or {}).get(k) for k in ("ip", "cloudflare", "login", "live", "vod")},
                               "streams_skipped": None})
         backups = _backups(p)

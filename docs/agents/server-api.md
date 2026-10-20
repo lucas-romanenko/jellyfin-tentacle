@@ -133,9 +133,6 @@ provider names, URLs or logins).
 | PUT | `/api/live/groups/bulk` | admin | livetv.py:bulk_update_groups |
 | PUT | `/api/live/groups/{group_id}` | admin | livetv.py:update_group |
 | GET | `/api/live/playlist.m3u` | none | livetv.py:live_playlist_m3u |
-| GET | `/api/live/provider` | admin | livetv.py:get_live_provider |
-| POST | `/api/live/provider` | admin | livetv.py:save_live_provider |
-| POST | `/api/live/provider/test` | admin | livetv.py:test_live_provider |
 | POST | `/api/live/refresh-guide` | admin | livetv.py:refresh_jellyfin_guide |
 | POST | `/api/live/reserve` | admin or internal | livetv.py:live_reserve |
 | DELETE | `/api/live/reserve/{channel_id}` | admin or internal | livetv.py:live_unreserve |
@@ -187,6 +184,12 @@ provider names, URLs or logins).
 | POST | `/api/providers` | admin | providers.py:create_provider |
 | DELETE | `/api/providers/{provider_id}` | admin | providers.py:delete_provider |
 | PUT | `/api/providers/{provider_id}` | admin | providers.py:update_provider |
+| GET | `/api/providers/{provider_id}/addresses` | admin | providers.py:list_addresses |
+| POST | `/api/providers/{provider_id}/addresses` | admin | providers.py:add_addresses |
+| DELETE | `/api/providers/{provider_id}/addresses/{address_id}` | admin | providers.py:remove_address |
+| POST | `/api/providers/{provider_id}/addresses/test` | admin | providers.py:test_addresses |
+| POST | `/api/providers/{provider_id}/addresses/{address_id}/use` | admin | providers.py:use_address |
+| PUT | `/api/providers/{provider_id}/addresses/settings` | admin | providers.py:address_settings |
 | GET | `/api/providers/{provider_id}/categories` | admin | providers.py:get_categories |
 | POST | `/api/providers/{provider_id}/categories/update` | admin | providers.py:update_categories |
 | POST | `/api/providers/{provider_id}/categories/{category_id}/tag` | admin | providers.py:update_category_tag |

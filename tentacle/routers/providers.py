@@ -829,7 +829,12 @@ def test_addresses(provider_id: int, db: Session = Depends(get_db)):
     p = _provider_or_404(db, provider_id)
     if (p.provider_type or "xtream") != "xtream":
         raise HTTPException(400, "Only an Xtream provider has addresses to test")
-    if provider_health.check_running() or not pa.start_test_all(p.id):
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "Testing the provider's addresses")
+    if provider_health.check_running():
+        raise HTTPException(409, "The hourly provider check is running (one connection at a time): "
+                                 "try again in a few minutes")
+    if not pa.start_test_all(p.id):
         raise HTTPException(409, "A test is already running: wait for it to finish")
     return _addresses_view(db, p)
 

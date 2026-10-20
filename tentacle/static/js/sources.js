@@ -564,9 +564,9 @@ function _updateAddrSummary(id) {
   const cur = rows.find(r => r.in_use);
   const backups = rows.length - (cur ? 1 : 0);
   const word = cur ? _addrWord(cur) : null;
-  sum.innerHTML = `${cur ? `<span class="mono">${escHtml(_addrHost(cur.url))}</span>` : ''}`
-    + (word && cur.tested_at ? ` <span class="addr-word ${word.cls}">${escHtml(word.text.toLowerCase())}</span>` : '')
-    + ` <span style="color:var(--text3)">· ${backups ? `${backups} backup${backups === 1 ? '' : 's'}` : 'no backups'}</span>`;
+  // The address itself is under the provider's name: here, how it does and the backups
+  sum.innerHTML = (word && cur.tested_at ? `— <span class="addr-word ${word.cls}">${escHtml(word.text.toLowerCase())}</span> · ` : '— ')
+    + `<span style="color:var(--text3)">${backups ? `${backups} backup${backups === 1 ? '' : 's'}` : 'no backups yet'}</span>`;
   sum.style.color = '';
 }
 
