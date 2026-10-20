@@ -30,6 +30,7 @@
   --accent: #6c63ff;
   --accent-dim: rgba(108,99,255,0.15);
   --accent-hover: #7d75ff;
+  --accent-text: #958fff;  /* accent as text on --accent-dim: 5.8:1 on --bg1, 5.3:1 on --bg2 (#6c63ff was 3.7:1) */
   --green: #4ade80;
   --green-dim: rgba(74,222,128,0.12);
   --red: #f87171;
@@ -152,7 +153,7 @@ body {
 
 .nav-item.active {
   background: var(--accent-dim);
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 500;
 }
 
@@ -725,7 +726,7 @@ td.primary { color: var(--text); font-weight: 500; }
 }
 
 .settings-nav-item:hover { background: var(--bg2); color: var(--text); }
-.settings-nav-item.active { background: var(--accent-dim); color: var(--accent); font-weight: 500; }
+.settings-nav-item.active { background: var(--accent-dim); color: var(--accent-text); font-weight: 500; }
 
 .settings-section { display: none; }
 .settings-section.active { display: block; }
@@ -3223,9 +3224,9 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <!-- Edit mode -->
               <div id="live-setup-edit" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
                 <span style="color:var(--text3);font-size:13px;font-family:monospace">http://</span>
-                <input class="form-input" id="live-setup-host" placeholder="192.168.1.100" style="width:180px;font-family:monospace;font-size:13px" oninput="updateSetupUrls()">
+                <input class="form-input" id="live-setup-host" aria-label="Tentacle server address" placeholder="192.168.1.100" style="width:180px;font-family:monospace;font-size:13px" oninput="updateSetupUrls()">
                 <span style="color:var(--text3);font-size:13px;font-family:monospace">:</span>
-                <input class="form-input" id="live-setup-port" value="8888" style="width:70px;font-family:monospace;font-size:13px" oninput="updateSetupUrls()">
+                <input class="form-input" id="live-setup-port" aria-label="Tentacle port" value="8888" style="width:70px;font-family:monospace;font-size:13px" oninput="updateSetupUrls()">
                 <button class="btn btn-primary" style="padding:5px 14px;font-size:12px" onclick="saveSetupAddress()">Save</button>
               </div>
               <!-- Locked mode -->
