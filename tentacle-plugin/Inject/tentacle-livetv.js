@@ -15,6 +15,7 @@
     active: false,
     refreshTimer: null,
     container: null,
+    notice: '',      // Tentacle's plain words while Live TV is down ("" = fine)
   };
 
   // ── Helpers ────────────────────────────────────────────────────────
@@ -76,9 +77,25 @@
 
   // ── Fetch & Render ─────────────────────────────────────────────────
 
+  // Family: "Live TV is unavailable right now. Lucas knows." from Tentacle
+  // (TentacleDiscover/FamilyStatus), shown above the grid while it lasts.
+  function loadNotice() {
+    var uid = window.ApiClient.getCurrentUserId();
+    return apiGet('TentacleDiscover/FamilyStatus?userId=' + encodeURIComponent(uid))
+      .then(function (r) {
+        var m = ((r && r.messages) || []).filter(function (x) { return x.area === 'livetv'; })[0];
+        LIVETV.notice = m ? String(m.text || '') : '';
+      })
+      .catch(function () { LIVETV.notice = ''; });
+  }
+
   function refresh() {
     if (!LIVETV.active) return;
     ensureContainer();
+    loadNotice().then(function () {
+      var n = LIVETV.container && LIVETV.container.querySelector('.tltv-notice');
+      if (n) { n.textContent = LIVETV.notice; n.style.display = LIVETV.notice ? '' : 'none'; }
+    });
 
     apiGet('LiveTv/Channels?IsFavorite=true&AddCurrentProgram=true&SortBy=SortName&SortOrder=Ascending')
       .then(function (result) {
@@ -119,7 +136,8 @@
         '<svg viewBox="0 0 24 24"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>' +
         'Guide' +
       '</button>' +
-    '</div>';
+    '</div>' +
+    '<div class="tltv-notice" role="status"' + (LIVETV.notice ? '' : ' style="display:none"') + '>' + esc(LIVETV.notice) + '</div>';
   }
 
   function renderCard(channel) {

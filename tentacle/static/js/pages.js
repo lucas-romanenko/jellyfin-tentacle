@@ -899,6 +899,20 @@ function _imgUrl(path, size) {
   return 'https://image.tmdb.org/t/p/' + size + path;
 }
 
+// What the add button says: family members whose requests wait for an admin
+// "Request" (services/approvals.py), everyone else "Add to Radarr/Sonarr".
+function _arrAddLabel(isSeries) {
+  return state.requestMode && state.requestMode.mode === 'ask' ? 'Request' : `Add to ${isSeries ? 'Sonarr' : 'Radarr'}`;
+}
+
+// A request that now waits for an admin: say so, as good news.
+function _arrPending(r) {
+  if (!r || !(r.pending > 0)) return false;
+  toast(r.detail || 'Sent for approval', 'success', 6000);
+  closeModal('modal-add-to-radarr');
+  return true;
+}
+
 async function showAddToRadarrModal(tmdbId, title, year, posterPath) {
   showAddToArrModal(tmdbId, title, year, posterPath, 'movie');
 }
@@ -912,7 +926,10 @@ async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType, tvd
   const isSeries = _addArrMediaType === 'series';
   const arrName = isSeries ? 'Sonarr' : 'Radarr';
 
-  document.getElementById('add-arr-modal-title').textContent = `Add to ${arrName}`;
+  document.getElementById('add-arr-modal-title').textContent = _arrAddLabel(isSeries);
+  // Family members don't pick quality: the admin's default is used.
+  const asking = state.requestMode && state.requestMode.mode === 'ask';
+  document.getElementById('add-radarr-quality-group').style.display = asking ? 'none' : '';
 
   const modalBox = document.getElementById('add-arr-modal-box');
   modalBox.className = 'modal modal-arr';
@@ -947,7 +964,7 @@ async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType, tvd
 
   const btn = document.getElementById('add-radarr-confirm-btn');
   btn.disabled = false;
-  btn.textContent = `Add to ${arrName}`;
+  btn.textContent = _arrAddLabel(isSeries);
   showModal('modal-add-to-radarr');
 }
 
@@ -970,7 +987,7 @@ async function confirmAddToArr() {
       if (selected.length === 0) {
         toast('Select at least one episode', 'error');
         btn.disabled = false;
-        btn.textContent = `Add to ${arrName}`;
+        btn.textContent = _arrAddLabel(isSeries);
         return;
       }
       body.monitor = 'none';
@@ -982,6 +999,7 @@ async function confirmAddToArr() {
   const endpoint = isSeries ? '/api/lists/add-to-sonarr' : '/api/lists/add-to-radarr';
   try {
     const r = await api(endpoint, { method: 'POST', body });
+    if (_arrPending(r)) return;
     if (r.added > 0) {
       if (r.release_date && new Date(r.release_date) > new Date()) {
         const rd = new Date(r.release_date);
@@ -999,12 +1017,12 @@ async function confirmAddToArr() {
       // one — a bare "Failed to add" leaves the user nothing to act on.
       toast(r.detail || 'Failed to add', 'error', r.detail ? 8000 : undefined);
       btn.disabled = false;
-      btn.textContent = `Add to ${arrName}`;
+      btn.textContent = _arrAddLabel(isSeries);
     }
   } catch (e) {
     toast(e.message, 'error');
     btn.disabled = false;
-    btn.textContent = `Add to ${arrName}`;
+    btn.textContent = _arrAddLabel(isSeries);
   }
 }
 
@@ -1340,8 +1358,10 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
     : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
   info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${escapeAttr(title || 'Unknown')}</div><div style="color:var(--text2);font-size:14px">${escapeAttr(year || '')}</div></div>`;
 
-  // Show quality profile selector (needed for Sonarr add)
-  document.getElementById('add-radarr-quality').parentElement.style.display = '';
+  // Show quality profile selector (needed for Sonarr add), not to family
+  // members whose requests wait for an admin (the default profile is used).
+  document.getElementById('add-radarr-quality').parentElement.style.display =
+    state.requestMode && state.requestMode.mode === 'ask' ? 'none' : '';
   document.getElementById('sonarr-extra-fields').style.display = 'none';
 
   // Load Sonarr quality profiles
@@ -1379,7 +1399,7 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
 
   const btn = document.getElementById('add-radarr-confirm-btn');
   btn.disabled = false;
-  btn.textContent = 'Add to Sonarr';
+  btn.textContent = _arrAddLabel(true);
   btn.setAttribute('onclick', 'confirmDownloadMore()');
 
   showModal('modal-add-to-radarr');
@@ -1488,6 +1508,7 @@ async function confirmDownloadMore() {
         monitor_new: document.getElementById('dl-more-monitor-new')?.checked || false,
       },
     });
+    if (_arrPending(r)) return;
     if (r.added > 0) {
       const monitorMsg = document.getElementById('dl-more-monitor-new')?.checked ? ' + monitoring new episodes' : '';
       toast(`Added to Sonarr — downloading ${selected.length} episode${selected.length !== 1 ? 's' : ''}${monitorMsg}`);
@@ -1495,16 +1516,16 @@ async function confirmDownloadMore() {
     } else if (r.already_exists > 0) {
       toast('Already in Sonarr', 'error');
       btn.disabled = false;
-      btn.textContent = 'Add to Sonarr';
+      btn.textContent = _arrAddLabel(true);
     } else {
       toast(r.detail || 'Failed to add', 'error');
       btn.disabled = false;
-      btn.textContent = 'Add to Sonarr';
+      btn.textContent = _arrAddLabel(true);
     }
   } catch (e) {
     toast(e.message, 'error');
     btn.disabled = false;
-    btn.textContent = 'Add to Sonarr';
+    btn.textContent = _arrAddLabel(true);
   }
 }
 
@@ -5604,7 +5625,7 @@ function renderDiscoverGrid(items) {
       badge = `<span class="badge badge-blue" style="font-size:9px;padding:1px 5px">In ${item.media_type === 'series' ? 'Sonarr' : 'Radarr'}</span>`;
     } else {
       badge = `<span class="badge" style="font-size:9px;padding:1px 5px;background:var(--bg3);color:var(--text3)">${item.media_type === 'movie' ? 'Movie' : 'Show'}</span>`;
-      addBtn = `<button onclick="event.stopPropagation();showAddToArrModal(${tmdbId},'${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}','${escapeJS(item.media_type)}',${tvdbId})" class="lib-card-add-btn" title="Add to ${item.media_type === 'series' ? 'Sonarr' : 'Radarr'}">+</button>`;
+      addBtn = `<button onclick="event.stopPropagation();showAddToArrModal(${tmdbId},'${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}','${escapeJS(item.media_type)}',${tvdbId})" class="lib-card-add-btn" title="${escapeAttr(_arrAddLabel(item.media_type === 'series'))}">+</button>`;
     }
     const clickHandler = `onclick="showDiscoverDetail(${tmdbId},'${escapeJS(item.media_type)}','${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}',${!!item.in_library},${tvdbId})"`;
     const listTag = item.list_name ? `<div style="font-size:10px;color:var(--accent);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeAttr(item.list_name)}</div>` : '';
@@ -5670,8 +5691,15 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
       actionBtn = `<span class="badge badge-amber" style="font-size:12px;padding:4px 10px">⏳ Awaiting Release</span> <span style="font-size:12px;color:var(--text3);margin-left:6px">${escapeAttr(ulLabel)}</span>`;
     } else if (data.requested) {
       actionBtn = `<span class="badge badge-blue" style="font-size:12px;padding:4px 10px">In ${isSeries ? 'Sonarr' : 'Radarr'} — searching for release</span>`;
+    } else if (data.request && data.request.status === 'pending') {
+      const who = (state.requestMode && state.requestMode.approver) || 'your admin';
+      actionBtn = `<span class="badge badge-amber" style="font-size:12px;padding:4px 10px">Asked · waiting for ${escapeAttr(who)}</span>`;
     } else {
-      actionBtn = `<button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}','${escapeJS(mediaType)}',${detailTvdbId})">Add to ${arrLabel}</button>`;
+      const addBtn = `<button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}','${escapeJS(mediaType)}',${detailTvdbId})">${data.request_mode === 'ask' ? 'Request' : `Add to ${arrLabel}`}</button>`;
+      const no = data.request && data.request.status === 'declined'
+        ? `<div style="font-size:12px;color:var(--text3);margin-bottom:8px">${escapeAttr(data.request.decided_by || 'Your admin')} said no last time${data.request.note ? ': ' + escapeAttr(data.request.note) : '.'}</div>`
+        : '';
+      actionBtn = no + addBtn;
     }
     document.getElementById('detail-title').textContent = data.title || title || 'Unknown';
     const detailPosterSrc = _imgUrl(data.poster_path, 'w185');

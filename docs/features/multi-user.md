@@ -27,7 +27,8 @@ Full access to everything:
 - **Live TV** — Manage channels, groups, EPG
 - **Library** — Browse all content, follow series, manage episodes
 - **Jellyfin** — Playlists, home screen, Discover tab
-- **Settings** — All configuration, user management
+- **People and Requests** — Accounts, kids profiles, request approvals
+- **Settings** — All configuration
 
 ### Non-Admin
 
@@ -77,13 +78,30 @@ These are shared across all users:
 !!! example "How it works in practice"
     Admin Alice adds a Netflix provider and syncs it. The content appears in the library for everyone. Non-admin Bob goes to Jellyfin → Playlists and enables "Netflix Movies" — a private playlist is created in his Jellyfin account. Alice does the same — a separate private playlist is created in her account. Each can customize their home screen independently.
 
-## Managing Users
+## Your household (People)
 
-Admins can manage users at **Settings → Users**:
+Tentacle is built for one person running a home server for their family. Admins manage everyone at **People** (in the sidebar):
 
-- See all Jellyfin users who have logged into Tentacle
-- Toggle admin status for other users (updates both Tentacle and Jellyfin's policy)
-- The owner cannot be modified
+- **Invite someone:** type a name and Tentacle makes the Jellyfin account with an easy password (two words and two digits), starts them on the household's defaults, and shows an invite card to pass on: their name, password, the server address and how to set up the TV.
+- **New people start with:** pick once whose home screen and whose Live TV channel list new people copy (or Tentacle's standard rows and all channels). They change their own afterwards.
+- **Age limit (kids profiles):** one choice per person: *Young kids* (up to TV-Y7), *Kids* (up to PG) or *Teens* (up to PG-13 and TV-14). It uses Jellyfin's own parental controls, so every Jellyfin app follows it. Movies and shows without an age rating are hidden from kids too. In Live TV kids see only the **kids channels** you pick on People (none picked: no Live TV for kids). Switching it off puts back exactly what the person had before.
+- **Their requests:** *Ask me first* (the default for everyone who isn't an admin, and always for kids) or *Straight away*.
+- **Admin:** make someone an admin (both in Tentacle and in Jellyfin). The owner stays an admin.
+- **Sign in a TV:** on the TV, open Tentacle, choose *Use Quick Connect* and type the code it shows into Tentacle. Everyone can do this for their own TV (sidebar → *Sign in a TV*); admins can do it for anyone. If Quick Connect is off in Jellyfin, People offers to turn it on.
+- **New password:** gives someone a fresh password when they lost theirs.
+- Each person's row shows which Tentacle TV app version their TV runs, and when a newer one is waiting.
+
+## Requests with approval
+
+When someone whose requests need approval asks for a movie, show or album (in Tentacle, in Jellyfin's Discover or on the TV), nothing downloads yet: they see "Sent to (admin) to approve", and every admin gets a message in Jellyfin (and on their phone with Pushover). Admins answer at **Requests**: *Approve* sends it to Radarr, Sonarr or Lidarr as if that person had asked (their Downloads playlist and "ready to watch" message work as usual), *Decline* takes an optional reason. The person gets a message either way and sees their requests in Discover → Activity, where they can take one back while it waits. Admins' own requests go straight through.
+
+## Problems go to the admin
+
+Every 10 minutes Tentacle checks what can break for the household: an IPTV provider failing, Radarr or Sonarr unreachable, a disk nearly full, downloads stuck, Live TV not set up in Jellyfin, Jellyfin down. Admins get one message when a problem starts and one when it's over. The family never sees error details, only a plain line where it matters, such as "Live TV is unavailable right now. (admin) knows." (Tentacle's pages, Jellyfin's Live TV page and the TV app).
+
+## The TV app
+
+The Tentacle Android TV app isn't in an app store. On each Android TV or Fire TV, install the free **Downloader** app, open it and type your Tentacle address followed by `/tv` (for example `http://192.168.1.10:8888/tv`): it downloads the newest release. After that the app offers every new version itself: *Update now*, then *Install*.
 
 ## Session Management
 

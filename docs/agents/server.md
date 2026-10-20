@@ -74,7 +74,7 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   every login; the first user (lowest id) is the owner and can't lose admin;
   the login refuses a non-admin while no user exists (the owner becomes
   `jellyfin_user_id`, the account Tentacle reads Jellyfin as);
-  Settings → Users toggles admin through Jellyfin's policy API. Non-admins
+  People toggles admin through Jellyfin's policy API. Non-admins
   see only Library, Discover and My Home Screen (`data-admin-only` in the
   nav, `applyUserRole()`; `showPage()` sends them from a server page to
   Library).
@@ -85,6 +85,51 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   `/data/smartlists/{jellyfin_user_id}/`, `/data/home-configs/{jellyfin_user_id}.json`.
 - `DownloadRequest` (tmdb_id, media_type, user_id) records who asked for a
   download; non-admins may delete only what they requested.
+
+## Family (Roadmap 1c: `routers/family.py`, `services/family.py`, `approvals.py`, `admin_alerts.py`, `tv_app.py`)
+
+- People (admins): every Jellyfin account gets a `TentacleUser` row when
+  People is opened (`_ensure_rows`; a new row starts on the defaults as at a
+  first sign-in). Settings → Users is People now (old links redirect).
+- Invite: `POST /Users/New {Name, Password}` with a readable password
+  (`make_password`), the row is made at once (`invited_by`, `request_mode`),
+  then `start_new_person` in the background: the defaults (`family_defaults`
+  setting: whose home screen and whose own channel list to copy;
+  `copy_home` copies the auto-playlist toggles, builds the playlists, then
+  maps the template's rows by playlist name and leaves out the template's
+  personal ones), else the usual new-user playlists.
+- Kids profile (`kids_level` young/kids/teens = Jellyfin scores 7/10/14):
+  MaxParentalRating, BlockUnratedItems += Movie, Series, LiveTvProgram,
+  Trailer; Live TV = the household's kids channels (`livetv_kids_channels`)
+  as the kid's own list (their own tuner, 1b), or EnableLiveTvAccess off
+  while none are picked. The fields it changes, the person's channel choice
+  and request mode are saved in `kids_saved_policy` first and restored when
+  it's switched off. A kid's My Channels is read-only. Policy posts are
+  always the full policy re-read just before (the Live TV sync's
+  `apply_policies` re-reads too, so it never puts an old policy back).
+- TV codes: `POST /QuickConnect/Authorize?code=&userId=<dashed id>` with the
+  admin key (Jellyfin allows an administrator to authorize for any user);
+  404 = no device shows that code, 401 = Quick Connect off.
+- Requests: `approvals.needs_approval(user)` (non-admin and `request_mode`
+  not "direct") makes add-to-radarr/sonarr and music/request keep a
+  `MediaRequest` (the original body in `payload`) and answer
+  `{added:0, already_exists:0, failed:0, pending:N, detail}`. Approve replays
+  the body through media_requests as the requester (`via` "approved by X");
+  a refusal keeps it as `failed` with the reason for another try. A list's
+  auto-add never runs for someone whose requests wait.
+- Notifications: `Notification.kind` download | request | problem; `force`
+  sends requests and problems to admins whatever their download switch says.
+- Problems (`admin_alerts.check`, every 10 min): providers failing (from
+  provider_health's state; it sends its own Pushover), Radarr/Sonarr
+  unreachable and disk errors (arr_insight), stuck downloads, Live TV set-up
+  failing, Jellyfin down. `AdminAlert` rows: told once when new, once when
+  over. A check that fails itself leaves its alerts alone.
+  `family_messages()` gives one plain line per area for everyone (no app
+  names, addresses or codes): `/api/family/status`, the dashboard banner,
+  the plugin's Live TV page and the TV app.
+- TV app: `GET /tv` redirects to the newest release APK (GitHub API, cached
+  6 h); People shows each person's Tentacle TV app version from Jellyfin's
+  `/Devices` (`AppName` "Tentacle Android TV", debug builds left out).
 
 ## Key concepts
 

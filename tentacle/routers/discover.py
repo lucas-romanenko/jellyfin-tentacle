@@ -25,7 +25,19 @@ from services.tmdb import TMDBService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/discover", tags=["discover"])
+def _not_on_kids_profiles(request: Request, db: Session = Depends(get_db)):
+    """Discover is TMDB's whole catalogue, whatever its rating: not on a kids
+    profile (their navbar has no Discover either: services/family.py). Callers
+    that aren't signed in get the route's own answer."""
+    try:
+        user = get_user_from_request(request, db)
+    except HTTPException:
+        return
+    if getattr(user, "kids_level", None):
+        raise HTTPException(403, "Discover isn't available on a kids profile.")
+
+
+router = APIRouter(prefix="/api/discover", tags=["discover"], dependencies=[Depends(_not_on_kids_profiles)])
 
 TMDB_UNREACHABLE = "TMDB could not be reached: showing what is available."
 
@@ -667,6 +679,19 @@ def get_discover_detail(
             ).first())
         except HTTPException:
             pass
+
+    # request: this viewer's request waiting for an admin, or answered lately
+    # ({"status": "pending" | "declined" | ...}), and whether theirs wait
+    # at all ("ask") — the button then reads "Request" (services/approvals.py).
+    details["request"] = None
+    details["request_mode"] = "direct"
+    try:
+        from services import approvals
+        user = get_user_from_request(request, db)
+        details["request"] = approvals.status_for(db, user, media_type, tmdb_id)
+        details["request_mode"] = approvals.request_mode(db, user)["mode"]
+    except Exception:
+        pass  # never breaks the detail itself
 
     return details
 

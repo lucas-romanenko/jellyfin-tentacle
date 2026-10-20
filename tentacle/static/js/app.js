@@ -52,6 +52,9 @@ async function postLoginInit() {
   }
   // Music module: show its tabs and search only when it is on.
   if (typeof loadMusicConfig === 'function') loadMusicConfig();
+  // Family: how this person's requests work, the plain-words banner, and
+  // the admins' count of requests waiting (family.js).
+  if (typeof famInit === 'function') famInit();
   // The page in the address, else Library
   showRouteFromHash();
 }
@@ -352,7 +355,7 @@ function stopAllPolling() {
   if (state._syncPollInterval) { clearInterval(state._syncPollInterval); state._syncPollInterval = null; }
   if (state._runNowTimer) { clearInterval(state._runNowTimer); state._runNowTimer = null; }
   for (const fn of ['stopActivityPolling', 'stopDownloadPolling', 'stopHealthPolling',
-                    'stopYouTubePolling', 'stopLivePolling',
+                    'stopYouTubePolling', 'stopLivePolling', 'stopFamilyPolling',
                     'disconnectLibraryStream', 'stopLogStream']) {
     if (typeof window[fn] === 'function') { try { window[fn](); } catch (_) {} }
   }
@@ -391,7 +394,7 @@ async function checkSetup() {
 // so a link, a reload or the browser's Back button lands on the same place.
 // Server pages are the admins'; anyone else asking for one is sent to Library
 // (the API refuses them anyway; an empty page explained nothing).
-const ADMIN_PAGES = new Set(['sources', 'health', 'settings']);
+const ADMIN_PAGES = new Set(['people', 'requests', 'sources', 'health', 'settings']);
 // Pages that moved: old links and buttons still land where the thing now is.
 const PAGE_ALIASES = {
   vod: ['sources', 'providers'], 'live-tv': ['sources', 'live'], youtube: ['sources', 'youtube'],
@@ -402,9 +405,11 @@ const PAGE_TITLES = {
   discover: ['Discover', 'Find something new and add it'],
   jellyfin: ['My Home Screen', 'Your Jellyfin home rows and playlists'],
   mychannels: ['My Channels', 'Your own Live TV channels'],
+  people: ['People', 'Your household: accounts, age limits and TVs'],
+  requests: ['Requests', 'What your household asked for'],
   sources: ['Sources', 'Where the library comes from'],
   health: ['Health', 'Problems, downloads and what happened'],
-  settings: ['Settings', 'Services, schedule and users'],
+  settings: ['Settings', 'Services, schedule and more'],
 };
 const PAGE_HASH = { jellyfin: 'home' };
 
@@ -431,6 +436,7 @@ function showPage(name, tab) {
   if (PAGE_ALIASES[name]) { const [n, t] = PAGE_ALIASES[name]; name = n; tab = tab || t; }
   if (!document.getElementById(`page-${name}`)) { name = 'library'; tab = null; }
   if (ADMIN_PAGES.has(name) && !(state.currentUser && state.currentUser.is_admin)) { name = 'library'; tab = null; }
+  if (name === 'discover' && state.kidsProfile) { name = 'library'; tab = null; }
 
   // Disconnect library SSE when leaving library page
   if (state.currentPage === 'library' && name !== 'library') {
@@ -465,6 +471,8 @@ function showPage(name, tab) {
     if (name === 'discover') { loadDiscoverPage(); if (tab) showDiscoverTab(tab); }
     if (name === 'jellyfin') { loadJellyfinPage(); if (tab) showJellyfinTab(tab); }
     if (name === 'mychannels' && typeof loadMyChannels === 'function') loadMyChannels();
+    if (name === 'people') loadPeople();
+    if (name === 'requests') { loadRequests(); famReqTab(tab === 'decided' ? 'decided' : 'pending'); }
     if (name === 'sources') showSourcesTab(tab || state.sourcesTab || 'providers');
     if (name === 'health') loadHealthPage();
   } finally {
@@ -541,7 +549,7 @@ function showDiscoverTab(tab) {
   document.getElementById('discover-tab-activity').style.display = tab === 'activity' ? '' : 'none';
   if (tab === 'browse') loadDiscover();
   if (tab === 'lists') loadLists();
-  if (tab === 'activity') { startActivityPolling(); renderActivity(); }
+  if (tab === 'activity') { startActivityPolling(); renderActivity(); if (typeof famLoadMyRequests === 'function') famLoadMyRequests(); }
   else stopActivityPolling();
   setRoute('discover', tab === 'browse' ? null : tab);
 }
@@ -549,11 +557,13 @@ function showDiscoverTab(tab) {
 // Settings sections that moved, by their old names (old links still work).
 const SETTINGS_ALIASES = {
   connections: 'services', integrations: 'services', paths: 'advanced',
-  'playlists-info': 'services', providers: null, music: null,
+  'playlists-info': 'services', providers: null, music: null, users: null,
 };
 function showSettingsSection(name) {
   if (name in SETTINGS_ALIASES) {
     // Providers and Music are Sources now
+    // Users is People now
+    if (name === 'users') { showPage('people'); return; }
     if (SETTINGS_ALIASES[name] === null) { showPage('sources', name === 'music' ? 'music' : 'providers'); return; }
     name = SETTINGS_ALIASES[name];
   }
@@ -563,7 +573,6 @@ function showSettingsSection(name) {
   document.querySelectorAll('.settings-nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById(`section-${name}`)?.classList.add('active');
   document.querySelector(`.settings-nav-item[data-section="${name}"]`)?.classList.add('active');
-  if (name === 'users') loadUsers();
   if (state.currentPage === 'settings') setRoute('settings', name);
 }
 
@@ -575,65 +584,6 @@ function escHtml(str) {
   return String(str)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
-async function loadUsers() {
-  const el = document.getElementById('users-list');
-  try {
-    const users = await api('/api/auth/managed-users');
-    if (!users.length) {
-      el.innerHTML = '<div style="color:var(--text3)">No users found.</div>';
-      return;
-    }
-    const jfUrl = state.currentUser?.jellyfin_url || '';
-    el.innerHTML = users.map(u => {
-      const avatarUrl = u.image_tag
-        ? `${jfUrl}/Users/${u.id}/Images/Primary?tag=${u.image_tag}&quality=90&maxWidth=80`
-        : '';
-      const avatar = avatarUrl
-        ? `<img alt="" src="${escHtml(avatarUrl)}" style="width:36px;height:36px;border-radius:50%;object-fit:cover">`
-        : `<div style="width:36px;height:36px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;color:var(--text2)">${escHtml(u.name.charAt(0).toUpperCase())}</div>`;
-      const ownerBadge = u.is_owner ? ' <span style="font-size:10px;padding:2px 6px;background:var(--accent-dim);color:var(--accent);border-radius:4px;font-weight:500">OWNER</span>' : '';
-      const badge = u.is_admin
-        ? '<span style="font-size:10px;padding:2px 6px;background:var(--green-dim);color:var(--green);border-radius:4px;font-weight:500">ADMIN</span>' + ownerBadge
-        : '<span style="font-size:10px;padding:2px 6px;background:var(--bg3);color:var(--text3);border-radius:4px">USER</span>';
-      const loginStatus = u.has_logged_in
-        ? ''
-        : ' <span style="font-size:10px;color:var(--text3)">(never logged in)</span>';
-      const toggleDisabled = u.is_owner
-        ? ' disabled title="Owner — admin cannot be removed"'
-        : u.id === state.currentUser?.jellyfin_user_id
-          ? ' disabled title="Cannot change your own admin status"'
-          : '';
-      const toggleChecked = u.is_admin ? ' checked' : '';
-      return `<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
-        ${avatar}
-        <div style="flex:1;min-width:0">
-          <div style="font-size:13px;font-weight:500">${escHtml(u.name)}${loginStatus}</div>
-          <div style="margin-top:2px">${badge}</div>
-        </div>
-        <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text3);cursor:pointer">
-          Admin
-          <input type="checkbox"${toggleChecked}${toggleDisabled} onchange="toggleUserAdmin('${escapeJS(u.id)}', this.checked)">
-        </label>
-      </div>`;
-    }).join('');
-  } catch (e) {
-    el.innerHTML = `<div style="color:var(--red)">Failed to load users: ${escHtml(e.message)}</div>`;
-  }
-}
-
-async function toggleUserAdmin(jellyfinUserId, isAdmin) {
-  try {
-    await api('/api/auth/set-admin', {
-      method: 'POST',
-      body: { jellyfin_user_id: jellyfinUserId, is_admin: isAdmin },
-    });
-    loadUsers();
-  } catch (e) {
-    alert('Failed to update admin status: ' + e.message);
-    loadUsers();
-  }
 }
 
 // ── API Helper ────────────────────────────────────────────────────────────

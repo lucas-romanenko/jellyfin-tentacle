@@ -713,6 +713,10 @@
         // In Radarr/Sonarr with no file yet: show search/remove, not "Add to …".
         if (details.requested !== undefined && !item._fromSearching) item.requested = details.requested;
         if (details.can_manage !== undefined && !item._fromSearching) item.can_manage = details.can_manage;
+        // Family: a request of theirs waiting for an admin, and whether theirs
+        // wait at all ("ask": the button reads "Request"). Older servers: none.
+        item.request = details.request || null;
+        item.request_mode = details.request_mode || 'direct';
         // Opened from Activity → Searching: it IS still being searched for, even
         // when some episodes are already downloaded — keep that state so Search
         // again / Remove are offered (Remove then deletes the downloaded ones too).
@@ -845,9 +849,15 @@
               : '') +
             '<div id="mdDownloadStatus" class="md-download-status"></div>'
           : '');
+    } else if (item.request && item.request.status === 'pending') {
+      downloadSection =
+        '<div class="md-inlib-row">' +
+          '<div class="md-requested-badge">\u23F3 Asked \u2014 waiting for approval</div>' +
+        '</div>';
     } else {
       var isSeries = item.media_type === 'series';
       var arrLabel = isSeries ? 'Sonarr' : 'Radarr';
+      var asking = item.request_mode === 'ask';
       var monitorSelect = isSeries
         ? '<select id="mdMonitorSelect" class="md-select">' +
             '<option value="all">All Episodes (including future)</option>' +
@@ -867,11 +877,16 @@
             '<div id="mdEpSeasons" class="md-ep-seasons"></div>' +
           '</div>'
         : '';
-      downloadSection =
+      var declined = item.request && item.request.status === 'declined'
+        ? '<div class="md-arr-note">' + esc(item.request.decided_by || 'Your admin') + ' said no last time' +
+            (item.request.note ? ': ' + esc(item.request.note) : '.') + '</div>'
+        : '';
+      downloadSection = declined +
         '<div class="md-download-row">' +
-          '<select id="mdProfileSelect" class="md-select"><option>Loading...</option></select>' +
+          // Family members don't pick quality: the admin's default is used.
+          '<select id="mdProfileSelect" class="md-select"' + (asking ? ' style="display:none"' : '') + '><option>Loading...</option></select>' +
           monitorSelect +
-          '<button id="mdDownloadBtn" class="md-download-btn">Add to ' + arrLabel + '</button>' +
+          '<button id="mdDownloadBtn" class="md-download-btn">' + (asking ? 'Request' : 'Add to ' + arrLabel) + '</button>' +
         '</div>' +
         episodePicker +
         '<div id="mdDownloadStatus" class="md-download-status"></div>';
@@ -1501,7 +1516,10 @@
         if (profileId) body.quality_profile_override = parseInt(profileId, 10);
         apiPost('TentacleDiscover/AddToSonarr?userId=' + uid2, body).then(function (r) {
           var status2 = document.getElementById('mdDownloadStatus');
-          if (r.added > 0) {
+          if (r && r.pending > 0) {
+            if (status2) { status2.style.color = '#4caf50'; status2.textContent = '\u2713 ' + (r.detail || 'Sent for approval'); }
+            saveBtn.textContent = 'Requested';
+          } else if (r.added > 0) {
             if (status2) { status2.style.color = '#4caf50'; status2.textContent = '\u2713 Added \u2014 downloading ' + selected.length + ' episode(s)'; }
             saveBtn.textContent = 'Done!';
           } else if (r.already_exists > 0) {
@@ -1711,7 +1729,7 @@
           status.style.color = '#f44336';
           status.textContent = 'Select at least one episode';
           btn.disabled = false;
-          btn.textContent = 'Add to Sonarr';
+          btn.textContent = item.request_mode === 'ask' ? 'Request' : 'Add to Sonarr';
           return;
         }
         body.monitor = 'none';
@@ -1726,7 +1744,13 @@
       r = r || {};
       // The backend returns 200 with counts \u2014 inspect them instead of
       // blind-trusting the status code ("added: 0" is not a success)
-      if (r.added > 0) {
+      if (r.pending > 0) {
+        // Waiting for an admin (a family member's request): good news.
+        status.style.color = '#4caf50';
+        status.textContent = '\u2713 ' + (r.detail || 'Sent for approval');
+        btn.textContent = 'Requested';
+        item.request = { status: 'pending' };
+      } else if (r.added > 0) {
         status.style.color = '#4caf50';
         var extra = r.release_date
           ? ' \u2014 releases ' + r.release_date + ', will download when available'
@@ -1738,7 +1762,7 @@
         status.style.color = '#ff9800';
         status.textContent = 'Already in ' + arrName;
         btn.disabled = false;
-        btn.textContent = 'Add to ' + arrName;
+        btn.textContent = item.request_mode === 'ask' ? 'Request' : 'Add to ' + arrName;
       } else {
         status.style.color = '#f44336';
         status.textContent = r.detail || ('Failed to add \u2014 check ' + arrName + ' settings/logs');

@@ -116,6 +116,7 @@ Gotchas:
 | GET | `/TentacleDiscover/FixMatch/movie/{tmdbId}/Suggestions` | user | FixMatchSuggestions | yes |
 | POST | `/TentacleDiscover/Follow/{tmdbId}` | user | ToggleFollow | yes |
 | GET | `/TentacleDiscover/Genre` | user | GetByGenre | yes |
+| GET | `/TentacleDiscover/FamilyStatus` | user | GetFamilyStatus | yes |
 | GET | `/TentacleDiscover/Genres` | user | GetGenres | yes |
 | GET | `/TentacleDiscover/ImageProxy/{cacheKey}` | none | ImageProxy |  |
 | GET | `/TentacleDiscover/Items` | user | GetDiscoverItems | yes |
@@ -128,6 +129,7 @@ Gotchas:
 | POST | `/TentacleDiscover/Notifications/Toggle` | user | ToggleNotifications |  |
 | POST | `/TentacleDiscover/Notifications/{notificationId}/Dismiss` | user | DismissNotification | yes |
 | GET | `/TentacleDiscover/Providers` | user | GetStreamingProviders | yes |
+| GET | `/TentacleDiscover/RequestMode` | user | GetRequestMode | yes |
 | GET | `/TentacleDiscover/RadarrFolders` | user | GetRadarrFolders |  |
 | GET | `/TentacleDiscover/RadarrProfiles` | user | GetRadarrProfiles | yes |
 | POST | `/TentacleDiscover/ReplaceCopy/{mediaType}/{tmdbId}` | user | ReplaceCopy | yes |

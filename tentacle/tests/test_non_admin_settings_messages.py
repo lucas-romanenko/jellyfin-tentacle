@@ -72,7 +72,10 @@ class _Base(unittest.TestCase):
         self.db = sessionmaker(bind=engine)()
         self.addCleanup(self.db.close)
         self.admin = TentacleUser(id=1, jellyfin_user_id="a1", display_name="admin", is_admin=True)
-        self.nora = TentacleUser(id=2, jellyfin_user_id="n2", display_name="nora", is_admin=False)
+        # Her requests go straight through (no admin approval), so they reach
+        # the *arr and its refusals: those messages are what is tested here.
+        self.nora = TentacleUser(id=2, jellyfin_user_id="n2", display_name="nora", is_admin=False,
+                                 request_mode="direct")
         self.db.add_all([self.admin, self.nora])
         self.db.commit()
         for k, v in (("radarr_url", url), ("radarr_api_key", "k"),

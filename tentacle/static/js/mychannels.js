@@ -63,6 +63,16 @@ function mychRender() {
     document.getElementById('mych-own').style.display = 'none';
     return;
   }
+  // A kids profile: the channels an admin picked, to watch and star, not to change.
+  const kids = !!d.kids;
+  document.querySelector('#page-mychannels .mych-mode').style.display = kids ? 'none' : '';
+  document.querySelector('#page-mychannels .mych-sub').textContent = kids
+    ? `${d.kids.chosen_by} picked these channels for you. Star the ones you like best: they come first in the guide.`
+    : 'What you see in Live TV on every TV, phone and browser. Only you see your list.';
+  const hint = document.querySelector('#mych-all .mych-hint');
+  if (hint) hint.textContent = kids ? 'Your channels.'
+    : 'Everything your household has. Star the ones you watch most: they come first in the guide.';
+  if (kids) mych.ownList = false;
   const all = document.getElementById('mych-mode-all');
   const own = document.getElementById('mych-mode-own');
   all.classList.toggle('active', !mych.ownList);
