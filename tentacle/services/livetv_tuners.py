@@ -208,10 +208,12 @@ _ITEM_FIELDS = "Tags,Genres,Studios,People,ProviderIds,Overview,OriginalTitle,Ta
 
 
 def _items(jf: Jellyfin, admin_id: str, ids: list) -> list:
+    """Items by id, asked without a user: an admin's own blocked tags (every
+    other person's channels) would hide them otherwise."""
     out = []
     for i in range(0, len(ids), 100):
         chunk = ids[i:i + 100]
-        res = jf.get("/Items", userId=admin_id, ids=",".join(chunk), fields=_ITEM_FIELDS,
+        res = jf.get("/Items", ids=",".join(chunk), fields=_ITEM_FIELDS,
                      enableUserData="false", enableImages="false")
         out.extend((res or {}).get("Items") or [])
     return out
@@ -229,6 +231,16 @@ def tag_channels(jf: Jellyfin, admin_id: str, item_ids: list, tag: str) -> int:
         jf.post(f"/Items/{item['Id']}", _item_update_payload(item, Tags=tags))
         done += 1
     return done
+
+
+def tags_on_channels(jf: Jellyfin) -> set:
+    """Tentacle's tuner tags on the channels Jellyfin has now (asked without
+    a user, so nothing is hidden): a tag stays blocked while any channel
+    still carries it, e.g. a removed tuner's until Jellyfin drops them."""
+    res = jf.get("/Items", includeItemTypes="LiveTvChannel", recursive="true", fields="Tags",
+                 enableImages="false", enableUserData="false") or {}
+    return {str(t).lower() for i in res.get("Items") or [] for t in i.get("Tags") or []
+            if str(t).lower().startswith(L.TAG_PREFIX)}
 
 
 def favourite_ids(jf: Jellyfin, user_id: str) -> set:
@@ -257,8 +269,13 @@ def carry_favourites(jf: Jellyfin, user_id: str, from_ids: dict, to_ids: dict,
     for key in keys:
         target = by_key.get(key)
         if target and target not in favs:
-            set_favourite(jf, user_id, target, True)
-            carried += 1
+            try:
+                set_favourite(jf, user_id, target, True)
+                carried += 1
+            except requests.HTTPError as e:
+                if e.response is None or e.response.status_code != 404:
+                    raise
+                logger.warning(f"[LiveTV] Favourite not carried: channel {target} isn't in Jellyfin")
     return carried
 
 
@@ -276,8 +293,11 @@ def move_schedules(jf: Jellyfin, from_ids: dict, to_ids: dict) -> int:
         target = by_key.get(key) if key else None
         if not target:
             continue
-        progs = (jf.get("/LiveTv/Programs", channelIds=target, searchTerm=st.get("Name") or "",
-                        hasAired="false", limit=1) or {}).get("Items") or []
+        # The next showing of the same title (Jellyfin's searchTerm matches
+        # loosely: "Hour 5" finds "Hour 2").
+        progs = [p for p in (jf.get("/LiveTv/Programs", channelIds=target, hasAired="false",
+                                    limit=1000) or {}).get("Items") or []
+                 if (p.get("Name") or "") == (st.get("Name") or "")]
         if not progs:
             logger.warning(f"[LiveTV] Recording schedule '{st.get('Name')}': no programme of that name "
                            f"on the new channel yet, kept on the old one")
@@ -343,13 +363,43 @@ def _guide_task(jf: Jellyfin) -> Optional[dict]:
     return next((t for t in jf.get("/ScheduledTasks") or [] if t.get("Key") == "RefreshGuide"), None)
 
 
+def _finished_after(task: Optional[dict], since: datetime) -> Optional[str]:
+    """The status of the guide refresh's last run if it ended after `since`."""
+    last = (task or {}).get("LastExecutionResult") or {}
+    end = (last.get("EndTimeUtc") or "")[:19]
+    try:
+        ended = datetime.fromisoformat(end)
+    except ValueError:
+        return None
+    return last.get("Status") if ended >= since else None
+
+
 def refresh_and_wait(db, jf: Jellyfin) -> bool:
-    """Have Jellyfin read every tuner and the guide again, and wait until it
-    is done (it creates the channels first, then the programmes)."""
+    """Have Jellyfin read every tuner and the guide again, and wait until a
+    refresh started after now has completed. Jellyfin cancels a running
+    refresh and queues a new one whenever a tuner or guide source is saved,
+    so "not running" alone isn't "done"."""
     from services.jellyfin_guide import refresh_jellyfin_guide
+    since = datetime.utcnow().replace(microsecond=0)
     refresh_jellyfin_guide(jf.url, jf.headers["X-Emby-Token"], then_tag=False)
-    time.sleep(_POLL_SECONDS)
-    return wait_for_guide(jf)
+    deadline = time.monotonic() + GUIDE_WAIT_SECONDS
+    idle_since = time.monotonic()
+    while time.monotonic() < deadline:
+        time.sleep(_POLL_SECONDS)
+        task = _guide_task(jf)
+        if task is None:
+            return False
+        if task.get("State") == "Running":
+            idle_since = time.monotonic()
+            continue
+        if _finished_after(task, since) == "Completed":
+            return True
+        if time.monotonic() - idle_since > 60:
+            # Cancelled and not queued again (or never started): ask once more.
+            idle_since = time.monotonic()
+            jf.post(f"/ScheduledTasks/Running/{task['Id']}")
+    logger.warning("[LiveTV] Jellyfin's guide refresh is still running; tagging what is there")
+    return False
 
 
 def wait_for_guide(jf: Jellyfin) -> bool:
@@ -480,7 +530,7 @@ def sync(db, refresh: bool = False) -> dict:
 
     done["guide_added"] = ensure_guide(jf, cfg, base)
 
-    tags_in_use = {L.tag_for_tuner_url(url) for url in list(have) + list(want)}
+    tags_in_use = {L.tag_for_tuner_url(url) for url in list(have) + list(want)} | tags_on_channels(jf)
     tags_in_use.discard(None)
     done["policies"] += apply_policies(db, jf, people, tags_in_use)
 
@@ -504,12 +554,27 @@ def sync(db, refresh: bool = False) -> dict:
         mine = L.item_ids_for(row.tuner_url, L.own_lineup(db, u["Id"], channels)) if row.tuner_url else {}
         everyone = L.item_ids_for(all_url, channels)
         src, dst = (everyone, mine) if row.own_list else (mine, everyone)
-        if src and dst:
-            done["favourites"] += carry_favourites(jf, u["Id"], src, dst)
+        if dst and admin_id and not _items(jf, admin_id, list(dst)):
+            # Jellyfin hasn't made the channels yet: the next sync carries on.
+            logger.warning(f"[LiveTV] {u.get('Name')}'s channels aren't in Jellyfin yet; trying again later")
+            continue
+        # Their favourites are read while they still see the old channels,
+        # then they see the new ones: Jellyfin refuses a favourite on a
+        # channel the person can't see (404).
+        favs = favourite_ids(jf, u["Id"])
         row.synced_own_list = bool(row.own_list)
         db.commit()
+        done["policies"] += apply_policies(db, jf, [u], tags_in_use)
+        if src and dst:
+            done["favourites"] += carry_favourites(jf, u["Id"], src, dst, favs)
 
-    # Off the old single tuner: everyone's favourites and the schedules
+    # Off the old single tuner: everyone's favourites and the schedules. Not
+    # before the new channels are in Jellyfin: the old one stays until then.
+    all_ids = L.item_ids_for(all_url, channels)
+    if olds and admin_id and not _items(jf, admin_id, list(all_ids)[:100]):
+        logger.warning("[LiveTV] The shared tuner's channels aren't in Jellyfin yet; "
+                       "the old tuner stays until the next sync")
+        olds = []
     if olds:
         for old in olds:
             from_ids = old_tuner_item_ids(old, channels)
@@ -518,7 +583,7 @@ def sync(db, refresh: bool = False) -> dict:
                 dst_ids = L.item_ids_for(dst, entries_for.get(dst) or [])
                 done["favourites"] += carry_favourites(jf, u["Id"], from_ids, dst_ids, old_favs.get(u["Id"]))
             # Schedules have no owner in Jellyfin: they go to the shared tuner.
-            done["schedules"] += move_schedules(jf, from_ids, L.item_ids_for(all_url, channels))
+            done["schedules"] += move_schedules(jf, from_ids, all_ids)
             jf.delete("/LiveTv/TunerHosts", id=old["Id"])
             done["removed"] += 1
             logger.info(f"[LiveTV] Moved everyone off the old {old.get('Type')} tuner and removed it")
@@ -536,16 +601,13 @@ def sync(db, refresh: bool = False) -> dict:
         if row.jellyfin_user_id not in known:
             L.forget_user(db, row.jellyfin_user_id)
 
-    tags_in_use = {L.tag_for_tuner_url(url) for url in want}
+    if done["removed"]:
+        # Jellyfin drops a removed tuner's channels at its next guide refresh;
+        # until then they stay blocked (their tag is still on them).
+        refresh_and_wait(db, jf)
+    tags_in_use = {L.tag_for_tuner_url(url) for url in want} | tags_on_channels(jf)
     tags_in_use.discard(None)
     done["policies"] += apply_policies(db, jf, people, tags_in_use)
-    if done["removed"]:
-        # Jellyfin drops a removed tuner's channels at its next guide refresh.
-        from services.jellyfin_guide import refresh_jellyfin_guide
-        try:
-            refresh_jellyfin_guide(jf.url, jf.headers["X-Emby-Token"], then_tag=False)
-        except requests.RequestException as e:
-            logger.warning(f"[LiveTV] Guide refresh after removing a tuner failed: {e}")
     return done
 
 
