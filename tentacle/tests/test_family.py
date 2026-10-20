@@ -237,6 +237,66 @@ class Kids(Case):
         self.assertEqual(["c2", "c4"], L.own_keys(self.db, ANN))
 
 
+class KidsInTentaclesOwnPages(Case):
+    def _client(self, user, router):
+        from routers.auth import get_user_from_request
+        app = FastAPI()
+        app.include_router(router)
+        app.dependency_overrides[mdb.get_db] = lambda: self.db
+        app.dependency_overrides[get_user_from_request] = lambda: user
+        return TestClient(app)
+
+    def test_library_shows_a_kid_only_what_jellyfin_lets_them_open(self):
+        from routers import library
+        for t, title in ((1, "Little Bear"), (2, "Night Terror")):
+            self.db.add(mdb.Movie(tmdb_id=t, title=title, source="radarr"))
+        self.db.commit()
+        self.ann.kids_level = "young"
+        self.db.commit()
+        with mock.patch("services.family.visible_titles", return_value={("movie", 1)}):
+            c = self._client(self.ann, library.router)
+            self.assertEqual(["Little Bear"], [i["title"] for i in c.get("/api/library/items").json()["items"]])
+            self.assertEqual(404, c.get("/api/library/item/movie/2").status_code)
+        c = self._client(self.ben, library.router)   # not a kid: everything
+        self.assertEqual(2, c.get("/api/library/items").json()["total"])
+
+    def test_visible_titles_come_from_jellyfin_as_the_kid(self):
+        self.jf.get = mock.Mock(return_value={"Items": [
+            {"Type": "Movie", "ProviderIds": {"Tmdb": "1"}}, {"Type": "Series", "ProviderIds": {"Tmdb": "9"}},
+            {"Type": "Movie", "ProviderIds": {}}]})
+        F.forget_visible(ANN)
+        self.assertEqual({("movie", 1), ("series", 9)}, F.visible_titles(self.db, self.ann))
+        self.assertEqual("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", self.jf.get.call_args.kwargs["userId"])
+        self.jf.get.side_effect = requests.ConnectionError()
+        F.forget_visible(ANN)
+        self.assertEqual(set(), F.visible_titles(self.db, self.ann))   # nothing rather than everything
+
+    def test_no_discover_on_a_kids_profile(self):
+        from routers import discover
+        from fastapi import HTTPException
+        self.ann.kids_level = "kids"
+        with mock.patch("routers.discover.get_user_from_request", return_value=self.ann):
+            with self.assertRaises(HTTPException) as e:
+                discover._not_on_kids_profiles(mock.Mock(), self.db)
+        self.assertEqual(403, e.exception.status_code)
+        with mock.patch("routers.discover.get_user_from_request", return_value=self.ben):
+            self.assertIsNone(discover._not_on_kids_profiles(mock.Mock(), self.db))
+
+    def test_a_kids_navbar_has_no_discover_and_gets_it_back(self):
+        cfg = {"toolbar": [{"id": "search", "enabled": True}, {"id": "discover", "enabled": True},
+                           {"id": "activity", "enabled": False}]}
+        written = []
+        with mock.patch("services.smartlists.get_home_config", side_effect=lambda db, user_id: cfg), \
+                mock.patch("services.smartlists._user_home_config_path", return_value="p"), \
+                mock.patch("services.smartlists.write_home_json", side_effect=lambda p, c: written.append(json.loads(json.dumps(c)))), \
+                mock.patch("services.smartlists.bump_playlist_version"), \
+                mock.patch("services.smartlists._notify_jellyfin_plugin"):
+            F.set_kids(self.db, self.ann, "kids")
+            self.assertEqual([True, False, False], [t["enabled"] for t in written[-1]["toolbar"]])
+            F.set_kids(self.db, self.ann, None)
+            self.assertEqual([True, True, False], [t["enabled"] for t in written[-1]["toolbar"]])
+
+
 # ── Invites, passwords, TV codes, defaults ──────────────────────────────────
 
 class Invites(Case):

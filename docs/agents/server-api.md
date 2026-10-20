@@ -69,6 +69,18 @@ provider names, URLs or logins).
 | GET | `/api/duplicates` | admin | duplicates.py:get_duplicates |
 | POST | `/api/duplicates/resolve-all` | admin | duplicates.py:resolve_all |
 | POST | `/api/duplicates/{dup_id}/resolve` | admin | duplicates.py:resolve_duplicate |
+| GET | `/api/family/kids-channels` | admin | family.py:kids_channels |
+| PUT | `/api/family/kids-channels` | admin | family.py:save_kids_channels |
+| POST | `/api/family/invite` | admin | family.py:invite |
+| GET | `/api/family/me` | user | family.py:me |
+| GET | `/api/family/people` | admin | family.py:people |
+| PUT | `/api/family/people/{user_id}` | admin | family.py:update_person |
+| POST | `/api/family/people/{user_id}/password` | admin | family.py:reset_password |
+| POST | `/api/family/people/{user_id}/tv-code` | admin | family.py:sign_in_tv_for |
+| PUT | `/api/family/defaults` | admin | family.py:save_defaults |
+| POST | `/api/family/quick-connect` | admin | family.py:turn_on_codes |
+| GET | `/api/family/status` | user | family.py:status |
+| POST | `/api/family/tv-code` | user | family.py:sign_in_my_tv |
 | GET | `/api/health/arr-problems` | admin | health.py:arr_problems |
 | GET | `/api/health/deletions` | admin | health.py:get_deletions |
 | POST | `/api/health/downloads/fix` | admin | health.py:fix_stuck_download |
@@ -203,6 +215,13 @@ provider names, URLs or logins).
 | POST | `/api/providers/{provider_id}/fetch-categories` | admin | providers.py:fetch_categories |
 | GET | `/api/providers/{provider_id}/preview` | admin | providers.py:preview_sync |
 | POST | `/api/providers/{provider_id}/test` | admin | providers.py:test_provider |
+| GET | `/api/requests` | admin | family.py:all_requests |
+| GET | `/api/requests/count` | admin | family.py:waiting_count |
+| GET | `/api/requests/mine` | user | family.py:my_requests |
+| DELETE | `/api/requests/mine/{request_id}` | user | family.py:take_back |
+| GET | `/api/requests/mode` | user | family.py:my_request_mode |
+| POST | `/api/requests/{request_id}/approve` | admin | family.py:approve |
+| POST | `/api/requests/{request_id}/decline` | admin | family.py:decline |
 | GET | `/api/radarr/logs/recent` | admin | radarr.py:get_recent_log_entries |
 | GET | `/api/radarr/logs/stream` | admin | radarr.py:stream_logs |
 | GET | `/api/radarr/migration/preview` | admin | radarr.py:preview_migration_endpoint |
@@ -317,3 +336,7 @@ provider names, URLs or logins).
 | GET | `/lineup.json` | none | livetv.py:hdhr_lineup |
 | POST | `/lineup.post` | none | livetv.py:hdhr_lineup_post |
 | GET | `/lineup_status.json` | none | livetv.py:hdhr_lineup_status |
+
+Outside `/api`: `GET /tv` (no sign-in, family.py:tv_app_download) redirects
+to the newest TV app APK on GitHub; people type Tentacle's address + `/tv`
+into the Downloader app on a TV.

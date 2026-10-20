@@ -254,3 +254,13 @@ body.tentacle-livetv-active #tentacleLiveTvContainer {
         font-size: 13px;
     }
 }
+
+/* Family: Tentacle's plain words while Live TV is down */
+.tltv-notice {
+    margin: 0 0 16px;
+    padding: 10px 14px;
+    border-radius: 6px;
+    border: 1px solid rgba(251, 191, 36, 0.35);
+    background: rgba(251, 191, 36, 0.12);
+    font-size: 14px;
+}

@@ -39,8 +39,8 @@ logger = logging.getLogger(__name__)
 # (Emby.Server.Implementations/Localization/Ratings): G/TV-Y 0, TV-Y7 7,
 # PG/TV-PG 10, PG-13 13, TV-14 14, R/TV-MA 17.
 KIDS_LEVELS = {
-    "young": {"score": 7, "name": "Young kids", "allows": "G, TV-Y and TV-Y7"},
-    "kids": {"score": 10, "name": "Kids", "allows": "up to PG and TV-PG"},
+    "young": {"score": 7, "name": "Young kids", "allows": "up to G and TV-Y7"},
+    "kids": {"score": 10, "name": "Kids", "allows": "up to PG"},
     "teens": {"score": 14, "name": "Teens", "allows": "up to PG-13 and TV-14"},
 }
 # Unrated movies, shows and guide programmes are hidden from kids: about a
@@ -345,6 +345,10 @@ def set_kids(db: Session, user: TentacleUser, level: Optional[str]) -> dict:
             row = L.lineup_row(db, uid)
             saved["lineup"] = {"own_list": bool(row and row.own_list), "keys": L.own_keys(db, uid)}
             saved["request_mode"] = user.request_mode
+            try:
+                saved["toolbar"] = _kids_toolbar(db, user, True)
+            except Exception as e:   # no home config yet: the defaults give one
+                logger.info(f"[Family] Navbar for {user.display_name} not changed: {e}")
             user.kids_saved_policy = json.dumps(saved)
         keys = kids_channels(db)
         new = kids_policy(policy, level, bool(keys))
@@ -382,10 +386,15 @@ def set_kids(db: Session, user: TentacleUser, level: Optional[str]) -> dict:
                 db.add(LiveUserChannel(jellyfin_user_id=uid, channel_key=k, position=pos))
         if saved.get("request_mode"):
             user.request_mode = saved["request_mode"]
+        try:
+            _kids_toolbar(db, user, False, saved.get("toolbar") or {})
+        except Exception as e:
+            logger.info(f"[Family] Navbar for {user.display_name} not put back: {e}")
         user.kids_level = None
         user.kids_saved_policy = None
         db.commit()
         logger.info(f"[Family] Kids profile off for {user.display_name}")
+    forget_visible(uid)
     livetv_tuners.schedule_sync(f"kids profile for {user.display_name}", refresh=True)
     return person(db, user)
 
@@ -419,6 +428,71 @@ def set_kids_channels(db: Session, keys: list) -> dict:
                 L.save_own_list(db, uid, True, ordered)
         livetv_tuners.schedule_sync("kids channels changed", refresh=True)
     return {"keys": ordered, "kids": len(kids)}
+
+
+# What a kid may see in Tentacle's own pages: Tentacle keeps no age ratings,
+# so its Library asks Jellyfin which titles the kid's account can open (their
+# parental limit applied by Jellyfin itself), cached a few minutes.
+_VISIBLE_TTL = 300
+_visible_cache = {}   # jellyfin user id -> (time, {(media_type, tmdb_id)})
+_visible_lock = threading.Lock()
+
+
+def visible_titles(db: Session, user: TentacleUser) -> set:
+    """{("movie"|"series", tmdb_id)} the person can open in Jellyfin. Empty when
+    Jellyfin can't say: a kid then sees nothing rather than everything."""
+    import time
+    uid = L.norm_user_id(user.jellyfin_user_id)
+    now = time.time()
+    with _visible_lock:
+        hit = _visible_cache.get(uid)
+        if hit and now - hit[0] < _VISIBLE_TTL:
+            return hit[1]
+    out = set()
+    try:
+        jf = jellyfin(db)
+        res = jf.get("/Items", userId=dashed(uid), Recursive="true", IncludeItemTypes="Movie,Series",
+                     Fields="ProviderIds", EnableImages="false", EnableUserData="false") or {}
+        for it in res.get("Items") or []:
+            tmdb = (it.get("ProviderIds") or {}).get("Tmdb")
+            if tmdb and str(tmdb).isdigit():
+                out.add(("series" if it.get("Type") == "Series" else "movie", int(tmdb)))
+    except (FamilyError, requests.RequestException) as e:
+        logger.info(f"[Family] What {user.display_name} may see wasn't read from Jellyfin: {e}")
+        return set()
+    with _visible_lock:
+        _visible_cache[uid] = (now, out)
+    return out
+
+
+def forget_visible(user_id: str) -> None:
+    with _visible_lock:
+        _visible_cache.pop(L.norm_user_id(user_id), None)
+
+
+KIDS_TOOLBAR_OFF = ("discover", "activity")
+
+
+def _kids_toolbar(db: Session, user: TentacleUser, on: bool, saved: Optional[dict] = None) -> dict:
+    """Discover (TMDB's whole catalogue, any rating) and Activity off in a
+    kid's Jellyfin and TV navbar; back as they were when the profile goes.
+    Returns the toolbar switches as they were."""
+    from services.smartlists import (
+        _notify_jellyfin_plugin, _user_home_config_path, bump_playlist_version, get_home_config,
+        write_home_json,
+    )
+    cfg = get_home_config(db, user_id=user.id) or {}
+    toolbar = cfg.get("toolbar")
+    if not toolbar:
+        return {}
+    before = {t.get("id"): bool(t.get("enabled")) for t in toolbar}
+    for t in toolbar:
+        if t.get("id") in KIDS_TOOLBAR_OFF:
+            t["enabled"] = False if on else bool((saved or {}).get(t["id"], True))
+    write_home_json(_user_home_config_path(db, user.id), cfg)
+    bump_playlist_version()
+    _notify_jellyfin_plugin(db)
+    return {k: v for k, v in before.items() if k in KIDS_TOOLBAR_OFF}
 
 
 # ── TV sign-in codes ────────────────────────────────────────────────────────

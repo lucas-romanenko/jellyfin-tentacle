@@ -25,7 +25,19 @@ from services.tmdb import TMDBService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/discover", tags=["discover"])
+def _not_on_kids_profiles(request: Request, db: Session = Depends(get_db)):
+    """Discover is TMDB's whole catalogue, whatever its rating: not on a kids
+    profile (their navbar has no Discover either: services/family.py). Callers
+    that aren't signed in get the route's own answer."""
+    try:
+        user = get_user_from_request(request, db)
+    except HTTPException:
+        return
+    if getattr(user, "kids_level", None):
+        raise HTTPException(403, "Discover isn't available on a kids profile.")
+
+
+router = APIRouter(prefix="/api/discover", tags=["discover"], dependencies=[Depends(_not_on_kids_profiles)])
 
 TMDB_UNREACHABLE = "TMDB could not be reached: showing what is available."
 

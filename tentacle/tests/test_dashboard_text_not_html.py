@@ -3,8 +3,8 @@
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 
 A few dashboard spots still put text they did not write into innerHTML as it
-came: the "Failed to load users" line on the sign-in screen and in Settings >
-Users (the error text of the reply), the Live TV EPG line in the last-sync
+came: the "Failed to load users" line on the sign-in screen and the
+"Couldn't load your household" line on People (the error text of the reply), the Live TV EPG line in the last-sync
 details (the server's summary), and the source and list pickers of a playlist
 rule's condition row (provider source tags, list names from IMDb, Letterboxd
 or Trakt). A name with `&`, `<` or quotes then showed wrong: `<Live>` vanished,
@@ -24,6 +24,7 @@ from pathlib import Path
 JS = Path(__file__).resolve().parents[1] / "static" / "js"
 APP = (JS / "app.js").read_text(encoding="utf-8")
 PAGES = (JS / "pages.js").read_text(encoding="utf-8")
+FAMILY = (JS / "family.js").read_text(encoding="utf-8")
 
 # Ordinary text that happens to contain every character HTML treats specially.
 NAME = """Rock & Roll <Live> "Best of" O'Brien"""
@@ -49,6 +50,7 @@ function el(id) { return els[id] || (els[id] = { id, innerHTML: '', value: '', s
   setAttribute() {}, removeAttribute() {}, querySelector() { return null; } }); }
 const document = { getElementById: el, querySelector() { return null; } };
 const state = { currentUser: null };
+const fam = {};
 function dashTimeAgo() { return ''; }
 function _fmtDuration(s) { return s + 's'; }
 function loginShowManual() {}
@@ -62,7 +64,7 @@ let _conditionOptions = { sources: [NAME, 'Netflix Movies'], lists: [{ name: NAM
 def _run(body: str) -> dict:
     script = STUBS % json.dumps(NAME) + "\n".join([
         _function(APP, "escHtml"), _function(PAGES, "escapeAttr"),
-        _function(APP, "showLoginOverlay"), _function(APP, "loadUsers"),
+        _function(APP, "showLoginOverlay"), _function(FAMILY, "loadPeople"),
         _function(PAGES, "_syncStepHtml"), _function(PAGES, "_buildSyncDetailHtml"),
         _function(PAGES, "_renderCondValueInput"),
     ]) + "\n(async () => { const out = {};\n" + body + "\nprocess.stdout.write(JSON.stringify(out)); })();"
@@ -83,9 +85,9 @@ class TextIsShownAsText(unittest.TestCase):
         self.assertIn("Failed to load users", out["html"])
         self.assertText(out["html"])
 
-    def test_settings_users_failed_to_load(self):
-        out = _run("await loadUsers(); out.html = els['users-list'].innerHTML;")
-        self.assertIn("Failed to load users", out["html"])
+    def test_people_failed_to_load(self):
+        out = _run("await loadPeople(); out.html = els['fam-people'].innerHTML;")
+        self.assertIn("load your household", out["html"])
         self.assertText(out["html"])
 
     def test_last_sync_details_epg_line(self):
@@ -117,7 +119,7 @@ class SourceEscapesTheText(unittest.TestCase):
     def test_no_raw_interpolation_left(self):
         spots = [
             (APP, "showLoginOverlay", r"Failed to load users: \$\{e\.message\}"),
-            (APP, "loadUsers", r"Failed to load users: \$\{e\.message\}"),
+            (FAMILY, "loadPeople", r"household: \$\{e\.message\}"),
             (PAGES, "_buildSyncDetailHtml", r"'ok', d\.epg_details \|\|"),
             (PAGES, "_renderCondValueInput", r">\$\{s\}</option>"),
             (PAGES, "_renderCondValueInput", r">\$\{l\.name\}</option>"),

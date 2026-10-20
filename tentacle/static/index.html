@@ -172,6 +172,7 @@ body {
 }
 
 .nav-badge-quiet { background: var(--bg3); color: var(--text2); }
+.nav-badge-accent { background: var(--accent); color: #fff; }
 
 .sidebar-footer {
   padding: 12px 10px 20px;
@@ -1331,6 +1332,88 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
   .mych-num { width: 22px; }
 }
 
+/* ── Family: People, Requests, invites (family.js) ── */
+.family-banner { margin: 0 0 16px; padding: 10px 14px; border-radius: var(--radius-sm); border: 1px solid rgba(251,191,36,.35);
+  background: var(--amber-dim); color: var(--text); font-size: 13px; line-height: 1.5; }
+.card.fam-head { display: flex; align-items: center; gap: 14px 20px; flex-wrap: wrap; margin-bottom: 16px; }
+.fam-head-text { flex: 1; min-width: 240px; }
+.fam-title { font-size: 16px; font-weight: 600; }
+.fam-sub { font-size: 13px; color: var(--text2); margin-top: 4px; max-width: 640px; }
+.fam-note { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; padding: 10px 14px; border-radius: var(--radius-sm); font-size: 13px; }
+.fam-note.warn { background: var(--amber-dim); border: 1px solid rgba(251,191,36,.3); }
+.fam-note span { flex: 1; min-width: 200px; }
+.card.fam-people { padding: 0; overflow: hidden; margin-bottom: 16px; }
+.fam-person { display: flex; align-items: center; gap: 12px 20px; flex-wrap: wrap; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.fam-person:last-child { border-bottom: none; }
+.fam-who { display: flex; align-items: center; gap: 12px; flex: 1 1 220px; min-width: 0; }
+.fam-avatar { width: 38px; height: 38px; border-radius: 50%; object-fit: cover; background: var(--bg3); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; font-weight: 600; color: var(--text2); }
+.fam-who-text { min-width: 0; }
+.fam-name { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.fam-name .badge { font-size: 10px; padding: 1px 6px; }
+.fam-meta { display: flex; flex-wrap: wrap; gap: 2px 12px; margin-top: 3px; font-size: 12px; color: var(--text3); }
+.fam-warn-text { color: var(--amber); }
+.fam-controls { display: flex; align-items: flex-end; gap: 10px 14px; flex-wrap: wrap; }
+.fam-ctl { display: flex; flex-direction: column; gap: 4px; }
+.fam-ctl-label { font-size: 11px; color: var(--text3); }
+.fam-select { padding: 6px 8px; font-size: 13px; width: 200px; }
+.fam-fixed { font-size: 13px; color: var(--text2); padding: 6px 0; width: 200px; }
+.fam-ctl-admin { align-items: center; }
+.fam-ctl-admin input { width: 16px; height: 16px; margin: 7px 0; cursor: pointer; }
+.fam-actions { display: flex; gap: 6px; min-width: 206px; justify-content: flex-end; }
+.fam-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.fam-hint { font-size: 12px; color: var(--text3); line-height: 1.5; margin: 6px 0 12px; }
+.fam-box .form-group { margin-bottom: 12px; }
+.fam-copy { display: flex; align-items: center; gap: 8px; }
+.fam-copy code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-family: 'DM Mono', monospace; font-size: 13px; padding: 7px 10px; background: var(--bg3); border-radius: var(--radius-sm); }
+.fam-error { padding: 20px 16px; color: var(--red); font-size: 13px; }
+.fam-radio { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 4px 0; cursor: pointer; }
+.fam-card { border: 1px solid var(--border2); border-radius: var(--radius-sm); padding: 12px 14px; background: var(--bg2); }
+.fam-card-row { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
+.fam-card-row span { color: var(--text3); }
+.fam-card-row strong { font-family: 'DM Mono', monospace; font-weight: 500; overflow-wrap: anywhere; text-align: right; }
+.fam-card-steps { font-size: 13px; color: var(--text2); margin-top: 10px; line-height: 1.6; }
+.fam-card-steps ol, .fam-steps { padding-left: 20px; margin-top: 4px; }
+.fam-steps { font-size: 13px; color: var(--text2); line-height: 1.7; margin-bottom: 16px; }
+.fam-code { font-family: 'DM Mono', monospace; font-size: 22px; letter-spacing: .2em; text-align: center; }
+.fam-result { font-size: 13px; min-height: 18px; }
+.fam-result.good { color: var(--green); }
+.fam-result.bad { color: var(--red); }
+.fam-chlist { max-height: 50vh; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+.fam-ch { display: flex; align-items: center; gap: 8px; padding: 7px 10px; font-size: 13px; cursor: pointer; border-bottom: 1px solid var(--border); min-width: 0; }
+.fam-ch span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.req-list { display: flex; flex-direction: column; gap: 10px; }
+.card.my-requests { margin-bottom: 16px; }
+.my-req { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); font-size: 13px; }
+.my-req:first-of-type { border-top: none; }
+.my-req-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.my-req .fam-hint { margin: 2px 0 0; }
+.card.req-item { display: flex; align-items: center; gap: 14px; padding: 12px 14px; }
+.req-poster { width: 46px; height: 69px; object-fit: cover; border-radius: 4px; flex-shrink: 0; background: var(--bg3); }
+.req-poster.none { display: flex; align-items: center; justify-content: center; color: var(--text3); font-weight: 600; }
+.req-text { flex: 1; min-width: 0; }
+.req-title { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.req-what { font-size: 12px; color: var(--text2); margin-top: 2px; }
+.req-who { font-size: 12px; color: var(--text3); margin-top: 4px; }
+.req-note { font-size: 12px; color: var(--text2); margin-top: 4px; font-style: italic; }
+.req-note.bad { color: var(--red); font-style: normal; }
+.req-buttons { display: flex; gap: 6px; flex-shrink: 0; }
+.req-answer { text-align: right; flex-shrink: 0; }
+.req-answer .fam-hint { margin: 4px 0 0; }
+@media (max-width: 760px) {
+  .fam-controls { width: 100%; }
+  .fam-ctl { flex: 1 1 140px; }
+  .fam-select, .fam-fixed { width: 100%; }
+  .fam-ctl-admin { flex: 0 0 auto; }
+  .fam-actions { width: 100%; }
+  .fam-actions .btn { flex: 1; }
+  .card.req-item { flex-wrap: wrap; }
+  .req-buttons { width: 100%; }
+  .req-buttons .btn { flex: 1; padding: 9px 10px; }
+  .req-answer { width: 100%; text-align: left; }
+}
+
 .mych-people { width: 100%; border-collapse: collapse; font-size: 13px; }
 .mych-people th { text-align: left; font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: .05em; padding: 0 12px 8px 0; }
 .mych-people td { padding: 9px 12px 9px 0; border-top: 1px solid var(--border); }
@@ -1894,10 +1977,22 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <button class="nav-item" data-page="mychannels" id="nav-mychannels" style="display:none">
           <span class="icon">▤</span> My Channels
         </button>
+        <!-- A dialog, not a page: type the code a TV shows (family.js) -->
+        <button class="nav-item" id="nav-tvcode" onclick="famShowTvCode(null)">
+          <span class="icon">▭</span> Sign in a TV
+        </button>
       </div>
       <!-- Server pages: what the admins run for everyone -->
       <div class="nav-section" data-admin-only>
         <div class="nav-section-label">Server</div>
+        <button class="nav-item" data-page="people">
+          <span class="icon">☺</span> People
+        </button>
+        <button class="nav-item" data-page="requests">
+          <span class="icon">✉</span> Requests
+          <!-- Requests waiting for an answer: accent, not red (nothing is broken) -->
+          <span class="nav-badge nav-badge-accent" id="requests-badge" style="display:none" title="Requests waiting for your answer">0</span>
+        </button>
         <button class="nav-item" data-page="sources">
           <span class="icon">◉</span> Sources
         </button>
@@ -1941,6 +2036,8 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
     <!-- Pages -->
     <div class="page-content">
+      <!-- Family: one plain line when something is down (admins see Health) -->
+      <div id="family-banner" class="family-banner" style="display:none" role="status"></div>
 
       <!-- Pages: Library, Discover, My Home Screen for everyone; Sources, Health, Settings for admins -->
 
@@ -2049,6 +2146,8 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         </div>
 
         <div id="discover-tab-activity" style="display:none">
+          <!-- Your requests waiting for an admin, or answered lately (family.js) -->
+          <div id="my-requests" class="card my-requests" style="display:none"></div>
           <div id="activity-content">
             <div class="activity-empty">Loading…</div>
           </div>
@@ -2263,6 +2362,57 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
             <div class="mych-list" id="mych-add-list"></div>
           </div>
         </div>
+      </div>
+
+      <!-- ── PEOPLE (admins): the household's accounts (family.js) ── -->
+      <div class="page" id="page-people">
+        <div class="card fam-head">
+          <div class="fam-head-text">
+            <div class="fam-title">Your household</div>
+            <p class="fam-sub">Everyone who watches on this server. Invite family, set an age limit for kids and choose whose requests you approve first.</p>
+          </div>
+          <button class="btn btn-primary" onclick="famShowInvite()">+ Invite someone</button>
+        </div>
+        <div id="fam-qc-warning" class="fam-note warn" style="display:none">
+          <span>TV sign-in codes are off in Jellyfin, so a TV can only be signed in by typing a password.</span>
+          <button class="btn btn-secondary btn-sm" onclick="famTurnOnCodes()">Turn them on</button>
+        </div>
+        <div class="card fam-people" id="fam-people"><div class="loading-state"><div class="spinner"></div> Loading&hellip;</div></div>
+
+        <div class="fam-grid">
+          <div class="card fam-box">
+            <div class="card-title">New people start with</div>
+            <p class="fam-hint">Picked once, used for everyone you invite. They can change their own afterwards.</p>
+            <div class="form-group">
+              <label class="form-label" for="fam-default-home">Home screen</label>
+              <select class="form-input" id="fam-default-home" onchange="famSaveDefaults()"></select>
+            </div>
+            <div class="form-group" id="fam-default-channels-group">
+              <label class="form-label" for="fam-default-channels">Live TV channels</label>
+              <select class="form-input" id="fam-default-channels" onchange="famSaveDefaults()"></select>
+            </div>
+          </div>
+          <div class="card fam-box" id="fam-kids-box">
+            <div class="card-title">Kids channels</div>
+            <p class="fam-hint" id="fam-kids-summary"></p>
+            <button class="btn btn-secondary btn-sm" onclick="famShowKidsChannels()">Choose kids channels</button>
+          </div>
+          <div class="card fam-box">
+            <div class="card-title">The TV app</div>
+            <p class="fam-hint">On each Android TV or Fire TV: install the free <strong>Downloader</strong> app from the store, open it and type this address. It installs Tentacle. After that the app offers every new version itself.</p>
+            <div class="fam-copy"><code id="fam-tv-address">&mdash;</code><button class="btn btn-secondary btn-sm" onclick="famCopy(document.getElementById('fam-tv-address').textContent)">Copy</button></div>
+            <p class="fam-hint" id="fam-tv-newest"></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── REQUESTS (admins): what family asked for (family.js) ── -->
+      <div class="page" id="page-requests">
+        <div class="tabs-bar" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
+          <button class="live-tab active" data-reqtab="pending" onclick="famReqTab('pending')">Waiting <span class="mych-count" id="req-count-pending"></span></button>
+          <button class="live-tab" data-reqtab="decided" onclick="famReqTab('decided')">Answered</button>
+        </div>
+        <div id="req-list" class="req-list"><div class="loading-state"><div class="spinner"></div> Loading&hellip;</div></div>
       </div>
 
       <div class="page" id="page-sources">
@@ -2818,7 +2968,6 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           <div class="settings-nav">
             <button class="settings-nav-item active" data-section="services">Services</button>
             <button class="settings-nav-item" data-section="schedule">Schedule &amp; notifications</button>
-            <button class="settings-nav-item" data-section="users">Users</button>
             <button class="settings-nav-item" data-section="advanced">Advanced</button>
           </div>
 
@@ -3127,16 +3276,6 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                 <button class="btn btn-primary" onclick="saveSettings()">Save</button>
               </div>
             </div>
-
-            <!-- Users Section -->
-            <div class="settings-section card" id="section-users">
-              <h3>Users</h3>
-              <p class="section-desc">Manage Jellyfin user permissions. Admin users get full access to Tentacle. Non-admin users can only browse the library and customize their home screen.</p>
-              <div id="users-list" style="margin-top:16px">
-                <div style="color:var(--text3);font-size:13px">Loading users...</div>
-              </div>
-            </div>
-
 
             <!-- Advanced: the few things that really differ between installs -->
             <div class="settings-section card" id="section-advanced">
@@ -3585,6 +3724,88 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
   </div>
 </div>
 
+<!-- Invite someone (family.js) -->
+<div class="modal-overlay" id="modal-invite" style="display:none">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-header">
+      <div class="modal-title" id="invite-title">Invite someone</div>
+      <button class="modal-close" onclick="closeModal('modal-invite')">✕</button>
+    </div>
+    <div id="invite-step-form">
+      <div class="form-group">
+        <label class="form-label" for="invite-name">Their name</label>
+        <input class="form-input" id="invite-name" maxlength="64" autocomplete="off" placeholder="For example Grandma or Mia" onkeydown="if(event.key==='Enter')famInvite()">
+        <div class="form-hint">This is the name they pick when they sign in.</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="invite-kids">Age limit</label>
+        <select class="form-input" id="invite-kids"></select>
+      </div>
+      <div class="form-group">
+        <div class="form-label">When they ask for a movie or show</div>
+        <label class="fam-radio"><input type="radio" name="invite-requests" value="ask" checked> I approve it first</label>
+        <label class="fam-radio" id="invite-direct-row"><input type="radio" name="invite-requests" value="direct"> It downloads straight away</label>
+      </div>
+      <div class="form-hint" id="invite-defaults-hint"></div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('modal-invite')">Cancel</button>
+        <button class="btn btn-primary" id="invite-go" onclick="famInvite()">Create account</button>
+      </div>
+    </div>
+    <div id="invite-step-card" style="display:none">
+      <p class="fam-hint" id="invite-card-lead"></p>
+      <div class="fam-card" id="invite-card"></div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="famCopyInvite()">Copy</button>
+        <button class="btn btn-secondary" onclick="famInviteTvCode()">Sign in their TV</button>
+        <button class="btn btn-primary" onclick="closeModal('modal-invite')">Done</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Sign in a TV with the code it shows (family.js) -->
+<div class="modal-overlay" id="modal-tvcode" style="display:none">
+  <div class="modal" style="max-width:440px">
+    <div class="modal-header">
+      <div class="modal-title" id="tvcode-title">Sign in a TV</div>
+      <button class="modal-close" onclick="closeModal('modal-tvcode')">✕</button>
+    </div>
+    <ol class="fam-steps">
+      <li>On the TV, open <strong>Tentacle</strong>.</li>
+      <li>Choose <strong>Add account</strong> (or your server), then <strong>Use Quick Connect</strong>.</li>
+      <li>Type the code the TV shows here.</li>
+    </ol>
+    <div class="form-group">
+      <label class="form-label" for="tvcode-input">Code on the TV</label>
+      <input class="form-input fam-code" id="tvcode-input" inputmode="numeric" autocomplete="off" maxlength="12" placeholder="123456" onkeydown="if(event.key==='Enter')famSubmitTvCode()">
+    </div>
+    <div class="fam-result" id="tvcode-result" aria-live="polite"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-tvcode')">Close</button>
+      <button class="btn btn-primary" id="tvcode-go" onclick="famSubmitTvCode()">Sign in</button>
+    </div>
+  </div>
+</div>
+
+<!-- Kids channels (family.js) -->
+<div class="modal-overlay" id="modal-kidschannels" style="display:none">
+  <div class="modal modal-wide">
+    <div class="modal-header">
+      <div class="modal-title">Kids channels</div>
+      <button class="modal-close" onclick="closeModal('modal-kidschannels')">✕</button>
+    </div>
+    <p class="fam-hint">Kids see only these channels in Live TV. With none picked, kids have no Live TV.</p>
+    <input class="form-input" id="kidsch-search" placeholder="Search channels" aria-label="Search channels" oninput="famRenderKidsChannels()" style="margin-bottom:10px">
+    <div class="fam-chlist" id="kidsch-list"></div>
+    <div class="modal-footer">
+      <span class="fam-hint" id="kidsch-count" style="margin:0 auto 0 0"></span>
+      <button class="btn btn-secondary" onclick="closeModal('modal-kidschannels')">Cancel</button>
+      <button class="btn btn-primary" onclick="famSaveKidsChannels()">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- Add to Radarr/Sonarr modal -->
 <div class="modal-overlay" id="modal-add-to-radarr" style="display:none">
   <div class="modal" id="add-arr-modal-box">
@@ -3593,7 +3814,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
       <button class="modal-close" onclick="closeModal('modal-add-to-radarr')">&#10005;</button>
     </div>
     <div id="add-radarr-movie-info" style="display:flex;gap:16px;margin-bottom:20px"></div>
-    <div class="form-group">
+    <div class="form-group" id="add-radarr-quality-group">
       <div class="form-label">Quality Profile</div>
       <select class="form-input" id="add-radarr-quality"></select>
     </div>
@@ -3903,6 +4124,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 <script src="/static/js/pages.js?v=42"></script>
 <script src="/static/js/music.js?v=42"></script>
 <script src="/static/js/mychannels.js?v=42"></script>
+<script src="/static/js/family.js?v=42"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {

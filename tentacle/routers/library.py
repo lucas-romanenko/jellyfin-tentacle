@@ -79,6 +79,8 @@ def get_library_items(
             owned = owned.filter(ListSubscription.user_id == user.id)
         if owned.first() is None:
             raise HTTPException(404, "List not found")
+        if user.kids_level:
+            raise HTTPException(404, "List not found")
         return _get_list_items(list_id, search, sort, list_status, limit, offset, db)
 
     movies_q = db.query(Movie)
@@ -173,6 +175,14 @@ def get_library_items(
         for (tag,) in s_q.all():
             if tag:
                 breakdown[tag] = breakdown.get(tag, 0) + 1
+
+    if user.kids_level:
+        # A kids profile: only what Jellyfin lets this person open (their age
+        # limit), and no per-source counts that would hint at the rest.
+        from services.family import visible_titles
+        allowed = visible_titles(db, user)
+        items = [i for i in items if (i["media_type"], i["tmdb_id"]) in allowed]
+        breakdown = {}
 
     total = len(items)
     paginated = items[offset:offset + limit]
@@ -293,6 +303,10 @@ def get_item_detail(
     """Library item detail. Requires a session (#74): the response carries the
     on-disk .strm path and the playlist tags for the title. The dashboard
     sends its cookie and the plugin forwards the caller's token."""
+    if user.kids_level:
+        from services.family import visible_titles
+        if (("series" if media_type == "series" else "movie"), tmdb_id) not in visible_titles(db, user):
+            raise HTTPException(404, "Not found")
     if media_type == "movie":
         item = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
         if not item:

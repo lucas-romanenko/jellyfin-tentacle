@@ -93,11 +93,13 @@ def people(db: Session = Depends(get_db)):
         p["has_own_channels"] = L.has_own_list(db, row.jellyfin_user_id)
         out.append(p)
     kids_keys = F.kids_channels(db)
+    names = {c["key"]: c["name"] for c in L.pool(db)}
     return {
         "people": out,
         "defaults": F.defaults(db),
         "kids_levels": [{"id": k, **v} for k, v in F.KIDS_LEVELS.items()],
         "kids_channels": len(kids_keys),
+        "kids_channel_names": [names[k] for k in kids_keys[:6] if k in names],
         "quick_connect": F.quick_connect_enabled(db),
         "addresses": F.addresses(db),
         "tv_app": {"newest": newest["version"] if newest else None},

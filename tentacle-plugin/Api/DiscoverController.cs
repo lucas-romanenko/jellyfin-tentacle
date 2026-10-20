@@ -1260,6 +1260,72 @@ public class TentacleDiscoverController : ControllerBase
     /// Proxies notifications for the current user from Tentacle.
     /// No cache — polled periodically by JS/Android clients.
     /// </summary>
+    /// <summary>
+    /// How this person's requests work: "ask" (an admin approves first, the
+    /// buttons say "Request") or "direct". Older Tentacle servers, or no answer:
+    /// "direct", so the buttons stay as they were.
+    /// </summary>
+    [HttpGet("RequestMode")]
+    [Authorize]
+    public async Task<ActionResult> GetRequestMode()
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            return Ok(new { mode = "direct", approver = "" });
+        }
+
+        try
+        {
+            var response = await HttpClient.GetAsync(AppendUserId($"{baseUrl}/api/requests/mode"));
+            var body = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode)
+            {
+                return Ok(new { mode = "direct", approver = "" });
+            }
+
+            return new ContentResult { Content = body, ContentType = "application/json", StatusCode = 200 };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("[Tentacle Discover] Request mode not read: {Error}", ex.Message);
+            return Ok(new { mode = "direct", approver = "" });
+        }
+    }
+
+    /// <summary>
+    /// Plain-words problems for everyone ("Live TV is unavailable right now.
+    /// Lucas knows."): {"messages": [{"area", "text"}]}. Empty when Tentacle
+    /// can't say: a client then shows its own error as before.
+    /// </summary>
+    [HttpGet("FamilyStatus")]
+    [Authorize]
+    public async Task<ActionResult> GetFamilyStatus()
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            return Ok(new { messages = Array.Empty<object>() });
+        }
+
+        try
+        {
+            var response = await HttpClient.GetAsync(AppendUserId($"{baseUrl}/api/family/status"));
+            var body = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode)
+            {
+                return Ok(new { messages = Array.Empty<object>() });
+            }
+
+            return new ContentResult { Content = body, ContentType = "application/json", StatusCode = 200 };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("[Tentacle Discover] Family status not read: {Error}", ex.Message);
+            return Ok(new { messages = Array.Empty<object>() });
+        }
+    }
+
     [HttpGet("Notifications")]
     [Authorize]
     public async Task<ActionResult> GetNotifications()
