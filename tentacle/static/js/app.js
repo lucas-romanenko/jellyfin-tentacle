@@ -508,7 +508,7 @@ function showLibTab(tab) {
   if (tab === 'following') loadFollowing();
   if (wantMusic) {
     const btn = document.querySelector('[data-libtype="music"]');
-    if (btn && btn.offsetParent !== null) { setLibType('music', btn); return; }
+    if (btn) { setLibType('music', btn); return; }
   }
   setRoute('library', tab === 'browse' ? null : tab);
 }
