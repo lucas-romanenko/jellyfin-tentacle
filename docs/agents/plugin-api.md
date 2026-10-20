@@ -44,6 +44,15 @@ Gotchas:
   (#257): clients keep the rows and hero they show. `/TentacleHome/Toolbar`
   still answers 200 with the default buttons, marked `fallback: true`, so a
   client that already has the user's own toolbar keeps it.
+- **Home version**: `/TentacleHome/Sections`, `/Toolbar` and `/HeroConfig`
+  carry `homeVersion`, the user's home version from the server's
+  `/api/smartlists/home-config` (0 from an older server). `POST
+  /Tentacle/Refresh?userId=<id>&homeVersion=<v>` (a save of one user's home
+  or toolbar) clears only that user's home caches and pushes only to that
+  user; without `userId` it is the full refresh (every cache, every user).
+  The LibraryChanged push carries one `CollectionFolders` entry
+  `tentacle-home:<user id without dashes, or *>:<version>`; the TV app
+  remembers it and catches up on view, foreground and reconnect.
 - `POST /Tentacle/Playlists/PruneDead` with `"Async": true` answers 202
   `{runId}` at once and prunes in the background (one prune at a time); the
   server polls `GET .../PruneDead/{runId}` (running / done with the summary /

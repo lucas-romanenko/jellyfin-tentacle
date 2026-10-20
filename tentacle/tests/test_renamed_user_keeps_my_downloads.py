@@ -96,7 +96,7 @@ class RenamedUserKeepsMyDownloads(unittest.TestCase):
         home_dir.mkdir()
         for p in (mock.patch.object(sl, "_create_jellyfin_playlist", create),
                   mock.patch.object(sl, "_mark_linked_playlists", lambda *a, **k: 0),
-                  mock.patch.object(sl, "_notify_jellyfin_plugin", lambda db: {}),
+                  mock.patch.object(sl, "_notify_jellyfin_plugin", lambda db, user=None: {}),
                   mock.patch.object(jellyfin_mod, "JellyfinService", _FakeJellyfin),
                   mock.patch.object(sl, "_user_home_config_path",
                                     lambda db, user_id=None: home_dir / f"{BOB}.json"),

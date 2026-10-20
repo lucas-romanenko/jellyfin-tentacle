@@ -70,7 +70,11 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
 ## Caches
 
 All cleared by `POST /Tentacle/Refresh` (admin: the server calls it with
-its API key after the nightly sync and settings changes).
+its API key after the nightly sync and settings changes). With `?userId=`
+(a save of one user's home or toolbar) only that user's home config and
+home-row entries go. A home-config fetch that started before a clear does
+not cache its answer (a generation counter in HomeScreenManager), so an old
+config can't be served for 5 s after a save.
 
 | What | Where | Lifetime |
 |---|---|---|

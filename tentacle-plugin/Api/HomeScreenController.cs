@@ -43,6 +43,19 @@ public class TentacleHomeController : ControllerBase
 
     /// <summary>Drops cached home-row contents (called by POST /Tentacle/Refresh).</summary>
     public static void ClearSectionCache() => _sectionCache.Clear();
+
+    /// <summary>Drops one user's cached home-row contents (a save of that user's home).</summary>
+    public static void ClearSectionCache(Guid userId)
+    {
+        var marker = $":{userId:N}:";
+        foreach (var key in _sectionCache.Keys)
+        {
+            if (key.Contains(marker, StringComparison.Ordinal))
+            {
+                _sectionCache.TryRemove(key, out _);
+            }
+        }
+    }
     private static readonly HttpClient ProxyClient = new() { Timeout = TimeSpan.FromSeconds(15) };
 
     // The home JS polls Version every 5 s without waiting for the previous answer.
@@ -144,7 +157,8 @@ public class TentacleHomeController : ControllerBase
         var config = home.Config;
         if (config == null)
         {
-            return Ok(new { enabled = false, sections = Array.Empty<object>() });
+            // Home off (a 200, unlike the 503 above): a client switches to its own rows.
+            return Ok(new { enabled = false, sections = Array.Empty<object>(), homeVersion = home.Version });
         }
 
         var sections = new List<object>();
@@ -208,6 +222,9 @@ public class TentacleHomeController : ControllerBase
             sections,
             mergeContinueWatching = config.MergeContinueWatching,
             cardPreviews = string.IsNullOrEmpty(config.CardPreviews) ? "local_only" : config.CardPreviews,
+            // The user's home version (0 from an older server): a client that remembers
+            // it can tell, after a missed push, that its home is old (see POST /Tentacle/Refresh).
+            homeVersion = home.Version,
         });
     }
 
@@ -667,12 +684,13 @@ public class TentacleHomeController : ControllerBase
                 sortOrder = hero.SortOrder,
                 requireLogo = hero.RequireLogo,
                 requireTrailer = hero.RequireTrailer,
+                homeVersion = home.Version,
             });
         }
 
         // Return whatever the backend has — defaults are set by the Tentacle dashboard, not the plugin
         var fallbackHero = homeConfig?.Hero;
-        return Ok(new { enabled = false, playlistId = "", displayName = "", trailerAudio = fallbackHero?.TrailerAudio ?? false, itemCount = fallbackHero?.ItemCount ?? 10 });
+        return Ok(new { enabled = false, playlistId = "", displayName = "", trailerAudio = fallbackHero?.TrailerAudio ?? false, itemCount = fallbackHero?.ItemCount ?? 10, homeVersion = home.Version });
     }
 
     private static readonly object[] DefaultToolbar =
@@ -712,7 +730,7 @@ public class TentacleHomeController : ControllerBase
         var toolbar = homeConfig?.Toolbar;
         if (toolbar != null && toolbar.Count > 0)
         {
-            return Ok(new { buttons = toolbar, cardPreviews });
+            return Ok(new { buttons = toolbar, cardPreviews, homeVersion = home.Version });
         }
 
         // No toolbar in the user's home config yet. The backend's write_home_config() skips a
@@ -722,7 +740,7 @@ public class TentacleHomeController : ControllerBase
         // included. Answer with the same defaults write_home_config() uses (services/smartlists.py).
         // When the config could not be read at all, the defaults are only a stand-in:
         // `fallback` tells a client that already shows the user's own toolbar to keep it (#257).
-        return Ok(new { buttons = DefaultToolbar, cardPreviews, fallback = home.Failed });
+        return Ok(new { buttons = DefaultToolbar, cardPreviews, fallback = home.Failed, homeVersion = home.Version });
     }
 
     /// <summary>

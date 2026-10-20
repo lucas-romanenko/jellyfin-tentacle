@@ -104,7 +104,7 @@ class NightlySync(_Db):
             mock.patch.object(sl, "write_home_config", lambda db, user_id=None: {}),
             mock.patch.object(sl, "migrate_global_smartlists_to_user", lambda db, uid: None),
             mock.patch.object(sl, "cleanup_orphaned_playlists", lambda db, uid: 0),
-            mock.patch.object(sl, "_notify_jellyfin_plugin", lambda db: {}),
+            mock.patch.object(sl, "_notify_jellyfin_plugin", lambda db, user=None: {}),
             mock.patch.object(jellyfin, "push_tags_to_jellyfin", lambda db, log_prefix="": 0),
             mock.patch.object(jellyfin, "sweep_orphaned_downloads", lambda db: 0),
             mock.patch.object(tagger, "refresh_recently_added_tags", lambda db: None),
