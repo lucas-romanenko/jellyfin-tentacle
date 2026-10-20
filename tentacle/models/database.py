@@ -893,6 +893,39 @@ class LiveChannelGroup(Base):
     )
 
 
+class LiveUserLineup(Base):
+    """One person's Live TV: everything the household has (the shared "All
+    channels" tuner), or a list of their own (a tuner of their own in
+    Jellyfin). No row = all channels."""
+    __tablename__ = "live_user_lineups"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    jellyfin_user_id = Column(String, unique=True, nullable=False, index=True)  # no dashes
+    own_list = Column(Boolean, default=False)
+    # The address Jellyfin was given for this person's tuner, kept as it was
+    # first given: Jellyfin keys every channel (and so its favourites and
+    # recordings) on the tuner's URL, so it must never change by itself.
+    tuner_url = Column(String, nullable=True)
+    # What Jellyfin was last set up with (own_list as of the last sync), so a
+    # switch is noticed and the person's favourites are carried across.
+    synced_own_list = Column(Boolean, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class LiveUserChannel(Base):
+    """A channel on someone's own list, in their order (their numbers are
+    1, 2, 3... in this order). `channel_key` is "c<live_channels.id>" or
+    "y<youtube_channels.id>"."""
+    __tablename__ = "live_user_channels"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    jellyfin_user_id = Column(String, nullable=False, index=True)
+    channel_key = Column(String, nullable=False)
+    position = Column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("jellyfin_user_id", "channel_key", name="uq_live_user_channel"),
+    )
+
+
 class EPGProgram(Base):
     __tablename__ = "epg_programs"
     id = Column(Integer, primary_key=True, autoincrement=True)

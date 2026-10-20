@@ -724,6 +724,21 @@ def setup_scheduler(db):
     # VOD through Tentacle (the default): existing .strm files move to the
     # /api/vod route (or back, for an install that opted out) without a sync
     schedule_once(_start_vod_route_relink, 90, "vod_route_relink")
+    # Live TV per person: Tentacle keeps Jellyfin's tuners, tags and blocked
+    # tags in line (services/livetv_tuners.py). Hourly catches people added
+    # in Jellyfin; once after start-up moves an install off the old tuner.
+    from services.livetv_tuners import enable as _livetv_enable, run_sync as _livetv_sync
+    _livetv_enable()
+    scheduler.add_job(
+        _livetv_sync,
+        IntervalTrigger(hours=1),
+        kwargs={"reason": "hourly check"},
+        id="livetv_setup",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    schedule_once(lambda: _livetv_sync("start-up"), 150, "livetv_setup_first")
     # Music module: the daily reconcile (checks the setting itself when it runs),
     # and any request a restart interrupted before its pin and search.
     reschedule_music_reconcile()
@@ -866,6 +881,8 @@ app.include_router(smartlists_router.router)
 app.include_router(discover_router.router)
 app.include_router(activity_router.router)
 app.include_router(livetv_router.router)
+from routers import my_livetv as my_livetv_router
+app.include_router(my_livetv_router.router)
 # A refused tuner open answers 503 with no body: Jellyfin's tuner copies any
 # body as if it were the stream (#140).
 app.add_exception_handler(livetv_router._TunerRefusal, livetv_router.tuner_refusal_handler)

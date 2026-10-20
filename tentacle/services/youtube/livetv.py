@@ -160,7 +160,7 @@ def refresh_jellyfin_guide(db: Session) -> bool:
         logger.info("[YouTube] Jellyfin is not configured — guide refresh skipped")
         return False
     try:
-        _refresh(url, key)
+        _refresh(url, key, then_tag=True)
         logger.info("[YouTube] Asked Jellyfin to refresh its Live TV guide")
         return True
     except Exception as e:
