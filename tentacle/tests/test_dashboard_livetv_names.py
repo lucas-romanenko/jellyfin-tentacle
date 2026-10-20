@@ -27,12 +27,25 @@ class LiveTvNames(unittest.TestCase):
 
     def test_provider_card(self):
         src = ESC + "const srcState = {open: {}};\n" + functions(
-            "sources.js", ["renderProviderCard", "_providerAddress", "_switchRow", "_providerSection"])
+            "sources.js", ["renderProviderCard", "_providerAddress", "_switchRow", "_providerSection", "_liveLimitsRow"])
         for i, name in enumerate(NAMES):
             p = {"id": 1, "name": name, "server_url": f"http://prov.test/{i}?a=1&b=2", "status": "ok",
                  "has_vod": True, "has_live": True, "active": True, "live_tv_enabled": True}
             html = render(src, "", "written.card = [renderProviderCard(%s)]" % json.dumps(p))
             self.assertShown([name, p["server_url"]], html)
+
+    def test_address_panel(self):
+        """What a provider's address test says (and the addresses pasted
+        from its message) show as written (#704)."""
+        src = ESC + "const srcState = {open: {}, addr: {}};\n" + functions(
+            "sources.js", ["renderProvAddrPanel", "_addrWord", "_addrDetails", "_addrDay", "_addrHost"])
+        rows = [{"id": i, "url": f"http://h{i}.test", "in_use": i == 0, "preferred": False,
+                 "tested_at": "2026-10-20T10:00:00Z", "ok": False, "word": n, "live_word": n,
+                 "vod_word": None, "streams_skipped": None, "day_good": 1, "day_bad": 2}
+                for i, n in enumerate(NAMES)]
+        data = {"addresses": rows, "auto_switch": "switch", "test": {"running": False}}
+        html = render(src, "", "srcState.addr[1] = %s; renderProvAddrPanel(1)" % json.dumps(data))
+        self.assertShown([n[:1].upper() + n[1:] for n in NAMES], html)
 
     def test_category_list(self):
         src = ESC + "const state = {catFilter: 'all', categories: []};\n" + functions("app.js", ["renderCatList"])

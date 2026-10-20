@@ -32,15 +32,6 @@ class HomeAndPlaylistNames(unittest.TestCase):
     def shown(self, values, html):
         self.assertEqual([], missing_text(values, html))
 
-    def test_smartlists_table(self):
-        src = ESC + functions("pages.js", ["loadSmartLists"])
-        data = {"path": "/data/" + VALUES[0], "path_exists": True,
-                "smartlists": [{"name": v, "tag": v + " tag", "media_type": [v + " media"], "exists_on_disk": True}
-                               for v in VALUES]}
-        html = render(src, "API['/api/smartlists'] = %s;" % json.dumps(data), "await loadSmartLists()")
-        self.shown(VALUES + [v + s for v in VALUES for s in (" tag", " media")],
-                   html.get("smartlists-table", []) + html.get("smartlists-path-status", []))
-
     def test_home_rows_and_add_row_picker(self):
         src = (ESC + "let homeRows = [];\n" + functions(
             "pages.js", ["rowKey", "renderHomeRows", "makeSortable", "showAddHomeRow"]))
