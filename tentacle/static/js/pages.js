@@ -6385,6 +6385,13 @@ function loadHealthPage() {
 
 // ── Stream health ───────────────────────────────────────────────────────────
 
+function toggleHealthStreamsAll() {
+  const el = document.getElementById('health-streams');
+  if (!el) return;
+  el.dataset.all = el.dataset.all === '1' ? '' : '1';
+  loadHealthStreams();
+}
+
 async function loadHealthStreams() {
   const el = document.getElementById('health-streams');
   const summaryEl = document.getElementById('health-streams-summary');
@@ -6427,7 +6434,7 @@ async function loadHealthStreams() {
       <thead><tr><th>Title</th><th>Type</th><th>First failed</th><th>Last checked</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>` + (entries.length > SHOWN
-      ? `<div style="text-align:center;margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="const el=document.getElementById('${el.id}');el.dataset.all=el.dataset.all==='1'?'':'1';loadHealthStreams()">${showAll ? 'Show fewer' : `Show all ${entries.length}`}</button></div>` : '');
+      ? `<div style="text-align:center;margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="toggleHealthStreamsAll()">${showAll ? 'Show fewer' : `Show all ${entries.length}`}</button></div>` : '');
   } catch (e) {
     el.innerHTML = '<div class="empty-state"><p>Failed to load stream health</p></div>';
   }
@@ -6772,9 +6779,9 @@ const _DELETION_KIND_META = {
   'sync-prune':        { label: 'Gone from provider', cls: 'badge-accent' },
   'smartlist-orphan':  { label: 'Playlist cleanup', cls: 'badge-accent' },
   // Removals a safety limit refused: nothing was deleted
-  'sync-prune-blocked':   { label: 'Removal held back', cls: 'badge-gray' },
-  'orphan-sweep-blocked': { label: 'Removal held back', cls: 'badge-gray' },
-  'vod-sweep-blocked':    { label: 'Removal held back', cls: 'badge-gray' },
+  'sync-prune-blocked':   { label: 'Removal refused', cls: 'badge-gray' },
+  'orphan-sweep-blocked': { label: 'Removal refused', cls: 'badge-gray' },
+  'vod-sweep-blocked':    { label: 'Removal refused', cls: 'badge-gray' },
 };
 
 // ── Recent activity (the Activity feed: /api/sync/activity) ────────────────
@@ -7034,7 +7041,7 @@ function renderHealthLog() {
     loadHealthPage, setHealthLogKind, loadHealthLog, renderHealthLog, loadHealthDownloads, stopHealthPolling,
     healthFixDownload, healthRemoveDownload, healthImportDownload,
     showHealthMissingTab, loadHealthMissing, healthDiagnose, healthGrabRelease, healthSearchMissing,
-    loadHealthStreams, healthRecheckStreams, healthRunStreamSweep, healthClearStream, healthRemoveStream,
+    loadHealthStreams, toggleHealthStreamsAll, healthRecheckStreams, healthRunStreamSweep, healthClearStream, healthRemoveStream,
     // Discover
     loadDiscoverPage, loadDiscover, setDiscoverType, switchDiscoverSection, selectStreamingProvider, selectGenre, setGenreMode, selectList, showDiscoverDetail,
     onDiscoverSearchInput, clearDiscoverSearch,
