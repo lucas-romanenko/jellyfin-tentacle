@@ -72,7 +72,7 @@ class TestAddRowCarriesSortAndShape(unittest.TestCase):
         with mock.patch.object(rsl, "HOME_CONFIG_DIR", str(tmp / "home-configs")), \
              mock.patch.object(rsl, "_get_smartlists_with_playlist_ids", lambda db, user_id=None: SMARTLISTS), \
              mock.patch.object(rsl, "bump_playlist_version"), \
-             mock.patch.object(rsl, "_notify_jellyfin_plugin", lambda db: {}):
+             mock.patch.object(rsl, "_notify_jellyfin_plugin", lambda db, user=None: {}):
             rsl._write_home_json(user, {"hero": {"enabled": False}, "rows": []})
             out = rsl.add_row(rsl.AddRowRequest(playlist_id=pid), db=db, user=user)
             self.assertTrue(out["success"], out)
@@ -202,7 +202,7 @@ class TestRandomSortShuffles(unittest.TestCase):
                  mock.patch.object(ssl, "_scan_existing", lambda p: {"Netflix Movies": (folder, json.loads((folder / "config.json").read_text()))}), \
                  mock.patch.object(ssl, "refresh_smartlist_playlists", lambda db, **kw: calls.append(kw) or {}), \
                  mock.patch.object(ssl, "write_home_config", lambda db, user_id=None: {}), \
-                 mock.patch.object(ssl, "_notify_jellyfin_plugin", lambda db: {}), \
+                 mock.patch.object(ssl, "_notify_jellyfin_plugin", lambda db, user=None: {}), \
                  mock.patch.object(ssl, "bump_playlist_version"):
                 out = ssl.update_playlist_sort("Netflix Movies", sort, "Descending", db=None, user_id=1)
             self.assertTrue(out["success"], out)

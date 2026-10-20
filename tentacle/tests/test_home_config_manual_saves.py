@@ -107,7 +107,7 @@ class TestRemoveRowIsRecoverable(unittest.TestCase):
         with mock.patch.object(rsl, "HOME_CONFIG_DIR", str(tmp / "home-configs")):
             rsl._write_home_json(user, ROWS)
             with mock.patch.object(rsl, "bump_playlist_version"), \
-                 mock.patch.object(rsl, "_notify_jellyfin_plugin", lambda db: {}):
+                 mock.patch.object(rsl, "_notify_jellyfin_plugin", lambda db, user=None: {}):
                 rsl.remove_row(rsl.RemoveRowRequest(row_key="playlist:pl-b"), db=db, user=user)
 
             path = Path(tmp / "home-configs" / "jf-1.json")

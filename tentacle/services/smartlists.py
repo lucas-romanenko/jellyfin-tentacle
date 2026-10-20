@@ -60,6 +60,46 @@ def get_playlist_version() -> int:
     return _playlist_version
 
 
+# Per-user home version: goes up on every save of a user's home or toolbar
+# (and, for every user at once, on a change that isn't one user's: a sync, a
+# Settings save). The plugin hands it out with the home sections and the
+# toolbar and puts it in its push, so a client that missed a push (another
+# screen, asleep, offline) sees on its next look that its home is old.
+# Clients only compare for "different", and numbers are at least the time in
+# ms, so a restart (which forgets this dict) never repeats an old number.
+_home_versions: dict = {}
+_home_version_floor = 0
+_home_version_lock = threading.Lock()
+
+
+def _next_home_version(current: int) -> int:
+    import time
+    return max(current + 1, int(time.time() * 1000))
+
+
+def get_home_version(user_id: int) -> int:
+    """The user's current home version (read it before reading the config)."""
+    global _home_version_floor
+    with _home_version_lock:
+        if not _home_version_floor:
+            _home_version_floor = _next_home_version(0)
+        return max(_home_versions.get(user_id, 0), _home_version_floor)
+
+
+def bump_home_version(user_id: int = None) -> int:
+    """A new home version for one user, or for every user (None)."""
+    global _home_version_floor
+    with _home_version_lock:
+        if user_id is None:
+            top = max([_home_version_floor, *_home_versions.values()])
+            _home_version_floor = _next_home_version(top)
+            _home_versions.clear()
+            return _home_version_floor
+        version = _next_home_version(max(_home_versions.get(user_id, 0), _home_version_floor))
+        _home_versions[user_id] = version
+        return version
+
+
 PRESERVED_FIELDS = ["LastRefreshed", "DateCreated", "ItemCount", "Order"]
 
 # Tag rule condition fields that map directly to Jellyfin API filters
@@ -1532,8 +1572,18 @@ def get_home_config(db: Session, user_id: int = None) -> dict:
 
 
 
-def _notify_jellyfin_plugin(db: Session) -> dict:
-    """POST to the Tentacle Jellyfin plugin refresh endpoint. Returns result dict."""
+def _notify_jellyfin_plugin(db: Session, user: TentacleUser = None) -> dict:
+    """POST to the Tentacle Jellyfin plugin refresh endpoint. Returns result dict.
+
+    Bumps the home version first (call it after the config is written). With
+    `user` (a save of that user's home or toolbar only) the plugin clears just
+    the home caches and pushes to that user; without, everything as before.
+    An older plugin ignores the query and does the full refresh."""
+    if user is not None:
+        params = {"userId": user.jellyfin_user_id.replace("-", ""),
+                  "homeVersion": bump_home_version(user.id)}
+    else:
+        params = {"homeVersion": bump_home_version()}
     jellyfin_url = get_setting(db, "jellyfin_url", "")
     jellyfin_key = get_setting(db, "jellyfin_api_key", "")
     if not jellyfin_url or not jellyfin_key:
@@ -1542,6 +1592,7 @@ def _notify_jellyfin_plugin(db: Session) -> dict:
         r = requests.post(
             f"{jellyfin_url.rstrip('/')}/Tentacle/Refresh",
             headers={"X-Emby-Token": jellyfin_key},
+            params=params,
             timeout=5,
         )
         if r.ok:

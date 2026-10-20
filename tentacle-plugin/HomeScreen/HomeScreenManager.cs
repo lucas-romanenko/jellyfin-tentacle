@@ -15,8 +15,10 @@ namespace Jellyfin.Plugin.Tentacle.HomeScreen;
 /// What one home-config read gave: the config (null when the user has none), and
 /// whether the read failed (timeout, refused, non-2xx, unreadable body). A failed
 /// read is not "no home": clients keep what they show instead of tearing it down.
+/// Version is the user's home version from Tentacle (0 from an older server, or
+/// when the read failed): it goes up on every save of the user's home or toolbar.
 /// </summary>
-public readonly record struct HomeConfigResult(HomeConfig? Config, bool Failed);
+public readonly record struct HomeConfigResult(HomeConfig? Config, bool Failed, long Version = 0);
 
 /// <summary>
 /// Fetches and caches home configuration from the Tentacle API.
@@ -34,8 +36,12 @@ public class HomeScreenManager
     // Jellyfin thread. The blocking fetch behind a per-user lock this replaces
     // starved Jellyfin's thread pool on a burst of home loads (#256). Guarded by
     // _cacheLock.
-    private readonly Dictionary<string, Task<HomeConfigResult>> _inflight = new();
+    private readonly Dictionary<string, (Task<HomeConfigResult> Task, long Generation)> _inflight = new();
     private const int PruneAbove = 64;
+    // Goes up on every clear. A fetch caches its answer only if no clear came
+    // after it started: one that began before a save and ended after it would
+    // otherwise store the old config for CacheDuration (M4). Guarded by _cacheLock.
+    private long _generation;
 
     public HomeScreenManager(ILogger<HomeScreenManager> logger, IHttpClientFactory httpClientFactory)
     {
@@ -78,10 +84,14 @@ public class HomeScreenManager
                 return Task.FromResult(entry.Value);
             }
 
-            if (!_inflight.TryGetValue(flightKey, out fetch))
+            if (_inflight.TryGetValue(flightKey, out var running))
             {
-                fetch = FetchAndCacheAsync(plugin.Configuration.TentacleUrl, userId, apiKey, cacheKey, flightKey);
-                _inflight[flightKey] = fetch;
+                fetch = running.Task;
+            }
+            else
+            {
+                fetch = FetchAndCacheAsync(plugin.Configuration.TentacleUrl, userId, apiKey, cacheKey, flightKey, _generation);
+                _inflight[flightKey] = (fetch, _generation);
             }
         }
 
@@ -91,19 +101,35 @@ public class HomeScreenManager
     }
 
     /// <summary>
-    /// Clears all cached configs so the next call re-fetches from the API.
+    /// Clears the cached configs (one user's, or everyone's) so the next call
+    /// re-fetches from the API. A fetch already running is not joined by later
+    /// callers and does not cache its answer: it may have read the old config.
     /// </summary>
-    public void ClearCache()
+    public void ClearCache(Guid? userId = null)
     {
         lock (_cacheLock)
         {
-            _userCache.Clear();
+            _generation++;
+            if (userId is { } id && id != Guid.Empty)
+            {
+                var cacheKey = id.ToString("N");
+                _userCache.Remove(cacheKey);
+                foreach (var key in _inflight.Keys.Where(k => k.StartsWith(cacheKey + "\n", StringComparison.Ordinal)).ToList())
+                {
+                    _inflight.Remove(key);
+                }
+            }
+            else
+            {
+                _userCache.Clear();
+                _inflight.Clear();
+            }
         }
 
-        _logger.LogInformation("[Tentacle] Home config cache cleared");
+        _logger.LogInformation("[Tentacle] Home config cache cleared ({Scope})", userId is { } u && u != Guid.Empty ? "one user" : "all users");
     }
 
-    private async Task<HomeConfigResult> FetchAndCacheAsync(string tentacleUrl, Guid userId, string apiKey, string cacheKey, string flightKey)
+    private async Task<HomeConfigResult> FetchAndCacheAsync(string tentacleUrl, Guid userId, string apiKey, string cacheKey, string flightKey, long generation)
     {
         await Task.Yield(); // never finish inline: the caller registers this task first
         try
@@ -120,6 +146,14 @@ public class HomeScreenManager
             {
                 lock (_cacheLock)
                 {
+                    if (generation != _generation)
+                    {
+                        // A save cleared the cache while this fetch ran: its answer
+                        // may be the old config. Hand it to the callers who waited,
+                        // but don't keep it.
+                        return home;
+                    }
+
                     _userCache[cacheKey] = (home, DateTime.UtcNow.Add(CacheDuration));
                     if (_userCache.Count > PruneAbove)
                     {
@@ -138,7 +172,11 @@ public class HomeScreenManager
         {
             lock (_cacheLock)
             {
-                _inflight.Remove(flightKey);
+                // Only this fetch's own entry: after a clear, a newer fetch may hold the key.
+                if (_inflight.TryGetValue(flightKey, out var entry) && entry.Generation == generation)
+                {
+                    _inflight.Remove(flightKey);
+                }
             }
         }
     }
@@ -186,11 +224,11 @@ public class HomeScreenManager
             if (wrapper?.Config == null)
             {
                 _logger.LogDebug("Tentacle returned empty home config");
-                return (new HomeConfigResult(null, false), false);
+                return (new HomeConfigResult(null, false, wrapper?.HomeVersion ?? 0), false);
             }
 
             _logger.LogInformation("[Tentacle] Loaded home config with {RowCount} rows from API", wrapper.Config.Rows?.Count ?? 0);
-            return (new HomeConfigResult(wrapper.Config, false), false);
+            return (new HomeConfigResult(wrapper.Config, false, wrapper.HomeVersion), false);
         }
         catch (Exception ex)
         {
@@ -219,6 +257,10 @@ internal class HomeConfigResponse
 
     [JsonPropertyName("config")]
     public HomeConfig? Config { get; set; }
+
+    /// <summary>The user's home version (absent from an older server: 0).</summary>
+    [JsonPropertyName("home_version")]
+    public long HomeVersion { get; set; }
 }
 
 /// <summary>

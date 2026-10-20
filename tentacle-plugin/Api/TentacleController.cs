@@ -72,15 +72,24 @@ public class TentacleController : ControllerBase
     /// Full refresh: clears caches and broadcasts a library-changed event.
     /// Called by Tentacle server after every sync.
     /// Requires Jellyfin API key auth (X-Emby-Token header).
+    /// With <paramref name="userId"/> (a save of that user's home or toolbar) it clears
+    /// only the home caches, for that user, and tells only that user's clients; ratings,
+    /// TMDB and Discover stay cached and nobody else reloads.
+    /// <paramref name="homeVersion"/> goes into the message (see <see cref="HomeVersionMarker"/>).
     /// </summary>
+    /// <param name="userId">The user whose home was saved; absent means everything.</param>
+    /// <param name="homeVersion">The home version the save made (Tentacle sends it; 0 = none).</param>
     [HttpPost("Refresh")]
     // Admin only: the Tentacle server calls this with the server API key, which
     // satisfies the policy. A bare [Authorize] let any signed-in account, a child
     // profile included, wipe every cache and reload every client in a loop (#79).
     [Authorize(Policy = "RequiresElevation")]
-    public async Task<ActionResult> Refresh()
+    public async Task<ActionResult> Refresh([FromQuery] Guid? userId = null, [FromQuery] long homeVersion = 0)
     {
-        _logger.LogInformation("Tentacle refresh triggered — full pipeline starting");
+        var homeOnly = userId is { } one && one != Guid.Empty;
+        _logger.LogInformation(
+            "Tentacle refresh triggered — {Scope}",
+            homeOnly ? "home of one user" : "full pipeline starting");
 
         // Step 1: (Removed) Legacy disk-based playlist rebuild.
         // Playlists are now managed per-user by the Tentacle backend via the Jellyfin API
@@ -89,28 +98,43 @@ public class TentacleController : ControllerBase
         // backend-driven playlists. This endpoint only clears caches and broadcasts now.
         const int playlistCount = 0;
 
-        // Step 2: Clear home config + discover + ratings caches
-        _homeScreenManager.ClearCache();
-        TentacleHomeController.ClearSectionCache();
-        TentacleDiscoverController.ClearCache();
-        TentacleMdbListController.ClearSettingsCache();
-        Services.MdbListCacheService.Clear();
-        TentacleTmdbController.ClearCache();
-        TentacleConfigController.ClearCache();
+        // Step 2: Clear caches. A home save only needs the user's home config (and their
+        // cached row contents); the 7-day ratings, TMDB and Discover caches stay.
+        if (homeOnly)
+        {
+            _homeScreenManager.ClearCache(userId);
+            TentacleHomeController.ClearSectionCache(userId!.Value);
+        }
+        else
+        {
+            _homeScreenManager.ClearCache();
+            TentacleHomeController.ClearSectionCache();
+            TentacleDiscoverController.ClearCache();
+            TentacleMdbListController.ClearSettingsCache();
+            Services.MdbListCacheService.Clear();
+            TentacleTmdbController.ClearCache();
+            TentacleConfigController.ClearCache();
+        }
 
-        // Step 3: Broadcast LibraryChanged to all connected WebSocket clients
-        // This triggers instant home screen refresh on Android TV and Jellyfin web
+        // Step 3: Send LibraryChanged to the connected WebSocket clients (the user's own,
+        // or everyone's). This triggers instant home screen refresh on Android TV and
+        // Jellyfin web; the marker lets the TV app remember the version it was told of.
         int broadcastCount = 0;
         try
         {
-            var userIds = _sessionManager.Sessions
-                .Where(s => s.UserId != Guid.Empty)
-                .Select(s => s.UserId)
-                .Distinct()
-                .ToList();
+            var userIds = homeOnly
+                ? new List<Guid> { userId!.Value }
+                : _sessionManager.Sessions
+                    .Where(s => s.UserId != Guid.Empty)
+                    .Select(s => s.UserId)
+                    .Distinct()
+                    .ToList();
 
             if (userIds.Count > 0)
             {
+                var marker = homeVersion > 0
+                    ? new[] { HomeVersionMarker(homeOnly ? userId : null, homeVersion) }
+                    : Array.Empty<string>();
                 await _sessionManager.SendMessageToUserSessions(
                     userIds,
                     SessionMessageType.LibraryChanged,
@@ -119,7 +143,7 @@ public class TentacleController : ControllerBase
                         ItemsAdded = Array.Empty<string>(),
                         ItemsUpdated = Array.Empty<string>(),
                         ItemsRemoved = Array.Empty<string>(),
-                        CollectionFolders = Array.Empty<string>(),
+                        CollectionFolders = marker,
                         FoldersAddedTo = Array.Empty<string>(),
                         FoldersRemovedFrom = Array.Empty<string>(),
                         IsEmpty = true
@@ -139,11 +163,21 @@ public class TentacleController : ControllerBase
         return Ok(new
         {
             status = "ok",
-            message = "Full refresh complete",
+            message = homeOnly ? "Home refresh complete" : "Full refresh complete",
             playlistsRefreshed = playlistCount,
             broadcastedTo = broadcastCount,
+            homeOnly,
         });
     }
+
+    /// <summary>
+    /// The home version in a LibraryChanged message: one CollectionFolders entry
+    /// "tentacle-home:&lt;user id, no dashes, or *&gt;:&lt;version&gt;". It rides in a field
+    /// every client already parses as a list of strings (the Jellyfin SDK drops unknown
+    /// fields), and clients that don't know it ignore it, as they did the empty list.
+    /// </summary>
+    internal static string HomeVersionMarker(Guid? userId, long homeVersion) =>
+        $"tentacle-home:{(userId is { } id ? id.ToString("N") : "*")}:{homeVersion}";
 
     /// <summary>
     /// Moves one entry of a user's playlist to a new position, in-process.

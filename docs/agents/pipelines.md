@@ -342,8 +342,14 @@ read that row.
 | Channel | Client | How |
 |---|---|---|
 | Version polling | Jellyfin web (`tentacle-home.js`) | polls `GET /api/smartlists/version`; a new number re-fetches and redraws the rows |
-| WebSocket | Android TV (`HomeRowsFragment.kt`) | Jellyfin's `LibraryChangedMessage` (fired when playlists change) triggers a row refresh; no polling |
-| Plugin cache clear | the plugin | `POST /Tentacle/Refresh` after the nightly sync and settings changes |
+| WebSocket + home version | Android TV (`SocketHandler`, `HomeRowsFragment.kt`, navbars) | the plugin's `LibraryChanged` push carries the user's home version (`tentacle-home:<user\|*>:<v>` in `CollectionFolders`); the app keeps the newest one and, on Home, the navbar, a return to the front or a WebSocket reconnect, compares it with what it shows and refreshes only if it moved; no polling |
+| Plugin cache clear | the plugin | `POST /Tentacle/Refresh` after the nightly sync and Settings saves (everything, every user), or `?userId=&homeVersion=` after a save of one user's home or toolbar (that user's home caches and clients only) |
+
+The home version (`services/smartlists.py`: `get_home_version`,
+`bump_home_version`) is per user and in memory; `_notify_jellyfin_plugin`
+bumps it (one user's with `user=`, everyone's without), so call it after
+the config is written. Numbers are at least the time in ms, so a restart
+never repeats one a client remembers.
 
 ## Known inefficiencies (improvement ideas)
 
