@@ -635,11 +635,12 @@ class BackgroundWork(unittest.TestCase):
         from pathlib import Path
         root = Path(__file__).resolve().parents[1]
         livetv_src = (root / "routers" / "livetv.py").read_text()
-        for what in ("Testing the provider", "A channel group sync", "A channel sync", "An EPG sync"):
+        for what in ("A channel group sync", "A channel sync", "An EPG sync"):
             self.assertIn(f'refuse_while_recording(db, "{what}")', livetv_src)
         self.assertIn("recording protection is on — not downloading the guide now", livetv_src)
         providers_src = (root / "routers" / "providers.py").read_text()
-        for what in ("Testing the provider", "Fetching the provider's categories", "A sync preview"):
+        for what in ("Testing the provider", "Fetching the provider's categories", "A sync preview",
+                     "Testing the provider's addresses"):
             self.assertIn(f'refuse_while_recording(db, "{what}")', providers_src)
         self.assertIn('refuse_while_recording(db, "A stream check")', (root / "routers" / "health.py").read_text())
         radarr_src = (root / "routers" / "radarr.py").read_text()
@@ -777,7 +778,7 @@ class ProtectedWaitIsWallTimePerRun(unittest.TestCase):
 class ButtonsRefuse(unittest.TestCase):
     """The guarded routes themselves answer 503 during a protected recording."""
 
-    def test_live_provider_test_and_syncs(self):
+    def test_live_syncs_and_provider_tests(self):
         livetv = _livetv()
         db = _fresh_db()
         from models.database import Provider, set_setting
@@ -788,7 +789,7 @@ class ButtonsRefuse(unittest.TestCase):
         with mock.patch.object(livetv, "_stream_slots", fake_slots), \
                 mock.patch("requests.get", side_effect=AssertionError("provider contacted")), \
                 mock.patch("requests.Session.get", side_effect=AssertionError("provider contacted")):
-            for call in (lambda: livetv.test_live_provider(db), lambda: livetv.sync_live_groups(1, db),
+            for call in (lambda: livetv.sync_live_groups(1, db),
                          lambda: livetv.sync_live_channels(1, db), lambda: livetv.sync_epg(1, db)):
                 with self.assertRaises(HTTPException) as cm:
                     call()

@@ -300,17 +300,9 @@ async function loadLibrary() {
   pages.lib.offset = 0;
   pages.lib.items = [];
   loadLibListPills();
-  if (state.currentUser?.is_admin) {
-    loadLibStats();
-    loadLibSyncSummary();
-    checkStaleFiles();
-    checkNewContentNotice();
-    loadMatchSuspects();
-  }
-  loadLibDownloads();
+  // Library is content only: the admin notices (problems, new categories,
+  // duplicates, the last sync) are on Health, counted in the sidebar.
   await fetchLibraryPage();
-  // Update duplicates tab badge
-  if (state.currentUser?.is_admin) _updateDupBadges();
   // Update following tab badge
   _updateFollowBadge();
 }
@@ -325,28 +317,22 @@ async function loadLibStats() {
     el('lib-stat-series', (lib.total_series ?? 0).toLocaleString());
     el('lib-stat-downloaded', ((lib.radarr_movies || 0) + (lib.sonarr_series || 0)).toLocaleString());
     el('lib-stat-vod', ((lib.vod_movies || 0) + (lib.vod_series || 0)).toLocaleString());
-    // Duplicate badge
-    const dup = document.getElementById('dup-badge');
-    if (dup) {
-      const pending = lib.pending_duplicates || 0;
-      if (pending > 0) { dup.style.display = 'inline'; dup.textContent = pending; }
-      else { dup.style.display = 'none'; }
-    }
-    // Jellyfin connection banner
+    // Jellyfin connection banner (Health)
     const cfg = d.config || {};
     const jfBanner = document.getElementById('jellyfin-error-banner');
     if (jfBanner) {
       if (!cfg.jellyfin_url_configured) {
-        document.getElementById('jellyfin-banner-title').textContent = 'Jellyfin Not Configured';
-        document.getElementById('jellyfin-banner-msg').textContent = 'Set up your Jellyfin connection in Settings → Connections';
+        document.getElementById('jellyfin-banner-title').textContent = 'Jellyfin is not set up';
+        document.getElementById('jellyfin-banner-msg').textContent = 'Add its address and API key in Settings → Services.';
         jfBanner.style.display = '';
       } else if (cfg.jellyfin_connected === false) {
-        document.getElementById('jellyfin-banner-title').textContent = 'Jellyfin Connection Failed';
-        document.getElementById('jellyfin-banner-msg').textContent = 'Check your API key in Settings → Connections';
+        document.getElementById('jellyfin-banner-title').textContent = 'Tentacle can\'t reach Jellyfin';
+        document.getElementById('jellyfin-banner-msg').textContent = 'Check its address and API key in Settings → Services.';
         jfBanner.style.display = '';
       } else {
         jfBanner.style.display = 'none';
       }
+      if (typeof setHealthAlert === 'function') setHealthAlert('jellyfin', jfBanner.style.display === '' ? 1 : 0, true);
     }
     // Update sidebar last sync
     const ts = d.status?.vod_sync?.timestamp;
@@ -686,7 +672,7 @@ function _buildSyncDetailHtml(d) {
 
   // 6. EPG
   if (d.epg_synced) {
-    html += _syncStepHtml('📡', 'Live TV EPG', 'ok', escapeAttr(d.epg_details || 'EPG data refreshed'));
+    html += _syncStepHtml('📡', 'TV guide', 'ok', escapeAttr(d.epg_details || 'TV guide refreshed'));
   }
 
   // 7. Cleanup
@@ -721,10 +707,12 @@ async function checkStaleFiles() {
   if (!state.currentUser?.is_admin) return;
   try {
     const data = await api('/api/settings/stale-files');
-    if (data.show || data.has_stale) {
+    const show = !!(data.show || data.has_stale);
+    if (show) {
       document.getElementById('stale-files-banner').style.display = '';
       document.getElementById('stale-strm-count').textContent = data.strm_count || 0;
     }
+    if (typeof setHealthAlert === 'function') setHealthAlert('stale', show ? 1 : 0, false);
   } catch (e) { /* ignore */ }
 }
 
@@ -735,6 +723,7 @@ async function checkNewContentNotice() {
     const n = await api('/api/sync/new-content-notice');
     const banner = document.getElementById('new-content-banner');
     if (!banner) return;
+    if (typeof setHealthAlert === 'function') setHealthAlert('newContent', n.exists ? 1 : 0, false);
     if (!n.exists) { banner.style.display = 'none'; return; }
 
     const parts = [];
@@ -745,15 +734,15 @@ async function checkNewContentNotice() {
     if (vodTotal) {
       const shown = vodNames.slice(0, 4).join(', ');
       const extra = vodTotal > 4 ? ` and ${vodTotal - 4} more` : '';
-      parts.push(`${vodTotal} new VOD categor${vodTotal !== 1 ? 'ies' : 'y'} (${shown}${extra})`);
+      parts.push(`${vodTotal} new movie and series categor${vodTotal !== 1 ? 'ies' : 'y'} (${shown}${extra})`);
     }
     if (liveTotal) {
       const shown = liveNames.slice(0, 4).join(', ');
       const extra = liveTotal > 4 ? ` and ${liveTotal - 4} more` : '';
-      parts.push(`${liveTotal} new Live TV group${liveTotal !== 1 ? 's' : ''} (${shown}${extra})`);
+      parts.push(`${liveTotal} new channel group${liveTotal !== 1 ? 's' : ''} (${shown}${extra})`);
     }
     document.getElementById('new-content-msg').textContent =
-      `Your providers added ${parts.join(' and ')}. They're disabled until you enable the ones you want.`;
+      `Your providers added ${parts.join(' and ')}. They stay off until you choose them on the provider's card.`;
     document.getElementById('new-content-vod-btn').style.display = vodTotal ? '' : 'none';
     document.getElementById('new-content-live-btn').style.display = liveTotal ? '' : 'none';
     banner.style.display = '';
@@ -763,109 +752,37 @@ async function checkNewContentNotice() {
 async function dismissNewContentNotice() {
   const banner = document.getElementById('new-content-banner');
   if (banner) banner.style.display = 'none';
+  if (typeof setHealthAlert === 'function') setHealthAlert('newContent', 0, false);
   try { await api('/api/sync/new-content-notice/dismiss', { method: 'POST' }); } catch {}
 }
 
+// The user's lists are a group in the Source dropdown ("list:<id>"): a list
+// shows the titles of it that are in the library.
 async function loadLibListPills() {
-  const container = document.getElementById('lib-list-pills');
-  const row = document.getElementById('lib-list-row');
-  if (!container) return;
   try {
-    const lists = await api('/api/lists');
-    if (!lists.length) {
-      container.innerHTML = '';
-      if (row) row.style.display = 'none';
-      return;
-    }
-    if (row) row.style.display = 'flex';
-    const active = pages.lib.listId;
-    container.innerHTML = lists.map(l =>
-      `<button class="lib-list-pill${active === l.id ? ' active' : ''}" data-list-id="${l.id}" onclick="setLibList(${l.id},this)">${escapeAttr(l.name)}${l.last_item_count ? ` <span style="opacity:0.5;font-size:11px">${l.last_item_count}</span>` : ''}</button>`
-    ).join('');
-    // Check scroll arrows after render
-    setTimeout(() => updateListScrollArrows(), 50);
+    pages.lib.lists = await api('/api/lists');
   } catch (e) {
-    container.innerHTML = '';
-    if (row) row.style.display = 'none';
+    pages.lib.lists = [];
   }
-}
-
-function updateListScrollArrows() {
-  const inner = document.getElementById('lib-list-pills');
-  const leftBtn = document.getElementById('lib-list-scroll-left');
-  const rightBtn = document.getElementById('lib-list-scroll-right');
-  if (!inner || !leftBtn || !rightBtn) return;
-  const hasOverflow = inner.scrollWidth > inner.clientWidth + 2;
-  leftBtn.classList.toggle('hidden', !hasOverflow || inner.scrollLeft <= 0);
-  rightBtn.classList.toggle('hidden', !hasOverflow || inner.scrollLeft >= inner.scrollWidth - inner.clientWidth - 2);
-}
-
-function scrollListPills(dir) {
-  const inner = document.getElementById('lib-list-pills');
-  if (!inner) return;
-  inner.scrollBy({ left: dir * 200, behavior: 'smooth' });
-  setTimeout(() => updateListScrollArrows(), 350);
-}
-
-function setLibList(listId, btn) {
-  const isDeselect = pages.lib.listId === listId;
-  if (isDeselect) {
-    // Exit list mode
-    pages.lib.listId = null;
-    pages.lib.listStatus = null;
-    btn.classList.remove('active');
-    _exitListMode();
-  } else {
-    // Enter list mode
-    pages.lib.listId = listId;
-    pages.lib.listStatus = null;
-    document.querySelectorAll('#lib-list-pills .lib-list-pill').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    _enterListMode();
-  }
-  pages.lib.offset = 0;
-  pages.lib.items = [];
-  fetchLibraryPage();
+  renderSourceOptions(pages.lib.breakdown || {});
 }
 
 function _enterListMode() {
-  // Deselect type + source filters
   pages.lib.type = 'all';
   pages.lib.src = 'all';
   pages.lib.sourceTag = null;
   pages.lib.listStatus = 'in_library';  // Library is browse-only — no missing items
   document.querySelectorAll('[data-libtype]').forEach(b => b.classList.remove('active'));
-  document.querySelectorAll('[data-libsrc]').forEach(b => b.classList.remove('active'));
-  // Dim the type/source groups
   const typeGrp = document.getElementById('lib-type-group');
-  const srcGrp = document.getElementById('lib-src-group');
   if (typeGrp) typeGrp.style.opacity = '0.35';
-  if (srcGrp) srcGrp.style.opacity = '0.35';
-  // Hide list status sub-filter (Library is browse-only, no Missing filter)
-  const statusEl = document.getElementById('lib-list-status');
-  if (statusEl) statusEl.classList.add('hidden');
 }
 
 function _exitListMode() {
-  // Restore type/source filters
+  pages.lib.listId = null;
+  pages.lib.listStatus = null;
   document.querySelector('[data-libtype="all"]')?.classList.add('active');
-  document.querySelector('[data-libsrc="all"]')?.classList.add('active');
   const typeGrp = document.getElementById('lib-type-group');
-  const srcGrp = document.getElementById('lib-src-group');
   if (typeGrp) typeGrp.style.opacity = '1';
-  if (srcGrp) srcGrp.style.opacity = '1';
-  // Hide list status sub-filter
-  const statusEl = document.getElementById('lib-list-status');
-  if (statusEl) statusEl.classList.add('hidden');
-}
-
-function setLibListStatus(status, btn) {
-  pages.lib.listStatus = status === 'all' ? null : status;
-  document.querySelectorAll('[data-liststatus]').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  pages.lib.offset = 0;
-  pages.lib.items = [];
-  fetchLibraryPage();
 }
 
 function setLibSort(value) {
@@ -903,8 +820,7 @@ async function fetchLibraryPage() {
     if (offset === 0) {
       pages.lib.items = data.items;
       el.innerHTML = '';
-      if (!listId) renderSourcePills(data.source_breakdown || {});
-      else document.getElementById('lib-source-pills').innerHTML = '';
+      if (!listId && !sourceTag) renderSourceOptions(data.source_breakdown || {});
       // Update stats bar
       const statsEl = document.getElementById('lib-stats');
       if (statsEl) statsEl.textContent = `${data.total.toLocaleString()} item${data.total !== 1 ? 's' : ''}`;
@@ -1623,32 +1539,50 @@ function loadMoreLibrary() {
 }
 
 function setLibType(type, btn) {
-  // Exit list mode if active
   if (pages.lib.listId) {
-    pages.lib.listId = null;
-    pages.lib.listStatus = null;
-    document.querySelectorAll('#lib-list-pills .lib-list-pill').forEach(b => b.classList.remove('active'));
     _exitListMode();
+    const sel = document.getElementById('lib-source');
+    if (sel) sel.value = 'all';
   }
-  pages.lib.type = type;
-  pages.lib.sourceTag = null;
   document.querySelectorAll('[data-libtype]').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
+  _showLibMusic(type === 'music');
+  if (type === 'music') {
+    if (typeof loadMusicLibrary === 'function') loadMusicLibrary();
+    setRoute('library', 'music');
+    return;
+  }
+  setRoute('library', null);
+  pages.lib.type = type;
+  pages.lib.sourceTag = null;
   loadLibrary();
 }
 
-function setLibSrc(src, btn) {
-  // Exit list mode if active
-  if (pages.lib.listId) {
-    pages.lib.listId = null;
-    pages.lib.listStatus = null;
-    document.querySelectorAll('#lib-list-pills .lib-list-pill').forEach(b => b.classList.remove('active'));
-    _exitListMode();
+// Music has its own list and filters: it replaces the grid, the search, Source and Sort.
+function _showLibMusic(on) {
+  const show = (id, visible) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = visible ? (id === 'lib-grid' ? 'grid' : '') : 'none';
+  };
+  show('lib-music-panel', on);
+  ['lib-grid', 'lib-search', 'lib-source', 'lib-sort', 'lib-stats'].forEach(id => show(id, !on));
+  if (on) show('lib-load-more', false);
+}
+
+// The Source dropdown: everything, downloads, everything from providers, or
+// one provider source ("Netflix Movies"), each with its own value.
+function setLibSource(value) {
+  if (String(value).startsWith('list:')) {
+    pages.lib.listId = parseInt(String(value).slice(5), 10) || null;
+    _enterListMode();
+    pages.lib.offset = 0;
+    pages.lib.items = [];
+    fetchLibraryPage();
+    return;
   }
-  pages.lib.src = src;
-  pages.lib.sourceTag = null;
-  document.querySelectorAll('[data-libsrc]').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
+  if (pages.lib.listId) _exitListMode();
+  if (String(value).startsWith('tag:')) { pages.lib.src = 'all'; pages.lib.sourceTag = String(value).slice(4); }
+  else { pages.lib.src = value || 'all'; pages.lib.sourceTag = null; }
   loadLibrary();
 }
 
@@ -1659,32 +1593,29 @@ function searchLibrary() {
   libSearchTimer = setTimeout(loadLibrary, 350);
 }
 
-function renderSourcePills(breakdown) {
-  const el = document.getElementById('lib-source-pills');
-  if (!Object.keys(breakdown).length) { el.innerHTML = ''; return; }
-  const active = pages.lib.sourceTag;
-  const allBtn = `<button class="badge ${!active ? 'badge-accent' : 'badge-gray'}" style="cursor:pointer;font-size:12px;padding:4px 10px"
-    onclick="filterByTag(null)">All</button>`;
-  const pills = Object.entries(breakdown)
-    .sort((a,b) => b[1]-a[1])
-    .map(([tag, count]) => `
-      <button class="badge ${active === tag ? 'badge-accent' : 'badge-gray'}" style="cursor:pointer;font-size:12px;padding:4px 10px"
-        onclick="filterByTag('${escapeJS(tag)}')">
-        ${escapeAttr(tag)} <span style="opacity:0.6;margin-left:4px">${count}</span>
-      </button>`).join('');
-  el.innerHTML = allBtn + pills;
+function renderSourceOptions(breakdown) {
+  const sel = document.getElementById('lib-source');
+  if (!sel) return;
+  pages.lib.breakdown = breakdown || {};
+  const tags = Object.entries(breakdown || {}).sort((a, b) => b[1] - a[1]);
+  const lists = pages.lib.lists || [];
+  const current = pages.lib.listId ? 'list:' + pages.lib.listId
+    : pages.lib.sourceTag ? 'tag:' + pages.lib.sourceTag : (pages.lib.src || 'all');
+  const opt = (value, label) => `<option value="${escapeAttr(value)}">${escapeAttr(label)}</option>`;
+  sel.innerHTML = opt('all', 'All sources') + opt('radarr', 'Downloaded') + opt('vod', 'From IPTV providers')
+    + (tags.length ? '<optgroup label="Provider sources">' + tags.map(([tag, n]) => opt('tag:' + tag, `${tag} (${n})`)).join('') + '</optgroup>' : '')
+    + (lists.length ? '<optgroup label="Your lists">' + lists.map(l => opt('list:' + l.id, l.name)).join('') + '</optgroup>' : '');
+  sel.value = current;
+  if (sel.value !== current) sel.value = 'all';
 }
 
 function filterByTag(tag) {
   const search = document.getElementById('lib-search');
   if (search) search.value = '';
-  if (pages.lib.listId) {
-    pages.lib.listId = null;
-    pages.lib.listStatus = null;
-    document.querySelectorAll('#lib-list-pills .lib-list-pill').forEach(b => b.classList.remove('active'));
-    _exitListMode();
-  }
+  if (pages.lib.listId) _exitListMode();
   pages.lib.sourceTag = tag || null;
+  const sel = document.getElementById('lib-source');
+  if (sel) sel.value = tag ? 'tag:' + tag : 'all';
   loadLibrary();
 }
 
@@ -1932,6 +1863,7 @@ async function loadMatchSuspects() {
   try {
     const [s, b] = await Promise.all([api('/api/library/match-suspects'), api('/api/library/blocked-streams')]);
     const suspects = s.suspects || [], blocked = b.blocked || [];
+    if (typeof setHealthAlert === 'function') setHealthAlert('wrong', suspects.length, false);
     if (!suspects.length && !blocked.length) { card.style.display = 'none'; return; }
     card.style.display = '';
     document.getElementById('wrong-match-list').innerHTML = suspects.length ? suspects.map(x => `
@@ -2315,7 +2247,6 @@ async function loadListCards() {
               <div style="font-size:12px;color:var(--text3);margin-top:4px">
                 ${typeLabel} · Last fetched: ${lastFetched}${list.last_item_count ? ` · ${list.last_item_count} items` : ''}
               </div>
-              <div style="font-size:12px;color:var(--text3);margin-top:2px">Tag: ${escapeAttr(list.tag)}</div>
               ${list.last_fetch_note ? `<div class="list-fetch-note" style="font-size:12px;color:var(--amber);margin-top:4px">⚠️ ${escapeHtml(list.last_fetch_note)}</div>` : ''}
             </div>
           </div>
@@ -3174,7 +3105,7 @@ async function ytSaveAddress(inputId) {
   // one that cannot be Tentacle, and repoints every existing video. The
   // on/off state is left exactly as it was.
   const base = (document.getElementById(inputId)?.value || '').trim();
-  if (!base) { toast('Enter Tentacle\'s own address', 'error'); return; }
+  if (!base) { toast('Enter Tentacle\'s own address', 'error'); return false; }
   try {
     const st = await api('/api/youtube/status');
     const r = await api('/api/youtube/setup', { method: 'POST', body: { enabled: !!st.enabled, base_url: base } });
@@ -3182,10 +3113,11 @@ async function ytSaveAddress(inputId) {
       ? `Address saved — ${r.rewritten} video${r.rewritten === 1 ? '' : 's'} repointed at it`
       : 'Address saved', r.reachable && !r.reachable.ok ? 'info' : 'success', 6000);
     const fresh = await api('/api/youtube/status');
-    ytShowAddress('yt-address', fresh);
     ytShowAddress('settings-tentacle-address', fresh);
+    return true;
   } catch (e) {
     toast(e.message, 'error', 10000);
+    return false;
   }
 }
 
@@ -3206,7 +3138,7 @@ function ytShowTraffic(t) {
     summary.textContent = t.proxy_error ? "— held: the saved proxy can't be used"
       : t.pause && t.pause.paused
       ? `— paused after a bot check until ${String(t.pause.until || '').replace('T', ' ')}`
-      : (t.background_checks ? `— about every ${t.interval_minutes} min` : '— background checks off');
+      : (t.api && t.api.configured ? '— API key in use' : '');
     summary.style.color = t.proxy_error || (t.pause && t.pause.paused) ? 'var(--red)' : 'var(--text3)';
   }
   if (apiStatus) {
@@ -3232,9 +3164,11 @@ function ytShowTraffic(t) {
   }
 }
 
+let _ytTraffic = null;
 async function ytLoadTraffic() {
   try {
     const t = await api('/api/youtube/traffic');
+    _ytTraffic = t;
     const set = (id, fn) => { const el = document.getElementById(id); if (el && document.activeElement !== el) fn(el); };
     set('yt-bg-checks', el => { el.checked = !!t.background_checks; });
     set('yt-interval', el => { el.value = t.interval_minutes; el.min = t.min_interval_minutes; });
@@ -3246,15 +3180,18 @@ async function ytLoadTraffic() {
 
 async function ytSaveTraffic() {
   const body = {
-    background_checks: !!document.getElementById('yt-bg-checks')?.checked,
-    interval_minutes: parseInt(document.getElementById('yt-interval')?.value || '60', 10) || 60,
+    background_checks: document.getElementById('yt-bg-checks')
+      ? !!document.getElementById('yt-bg-checks').checked : (_ytTraffic ? _ytTraffic.background_checks !== false : true),
+    interval_minutes: parseInt(document.getElementById('yt-interval')?.value || (_ytTraffic && _ytTraffic.interval_minutes) || '60', 10) || 60,
     api_key: (document.getElementById('yt-api-key')?.value || '').trim(),
     proxy: (document.getElementById('yt-proxy')?.value || '').trim(),
   };
   try {
     const t = await api('/api/youtube/traffic', { method: 'POST', body });
+    _ytTraffic = t;
     document.getElementById('yt-api-key').value = t.api_key || '';
-    document.getElementById('yt-interval').value = t.interval_minutes;
+    const iv = document.getElementById('yt-interval');
+    if (iv) iv.value = t.interval_minutes;
     ytShowTraffic(t);
     if (t.api_check && !t.api_check.ok) toast(`Saved, but the API key did not work: ${t.api_check.detail}`, 'error', 10000);
     else toast('Saved', 'success');
@@ -3264,10 +3201,22 @@ async function ytSaveTraffic() {
 }
 
 async function loadTentacleAddress() {
-  // Settings → Integrations: populate from the same source of truth.
+  // Settings → Services: populate from the same source of truth.
   try {
     const st = await api('/api/youtube/status');
     ytShowAddress('settings-tentacle-address', st);
+    const input = document.getElementById('settings-tentacle-address');
+    if (input) input.dataset.saved = (st.base_url || '').trim();
+    // IPTV files made with an address of their own keep it: say so
+    const note = document.getElementById('settings-tentacle-address-vod');
+    if (note) {
+      const vod = (((await api('/api/settings/raw')).vod_base_url) || '').trim().replace(/\/+$/, '');
+      const own = (st.base_url || '').trim().replace(/\/+$/, '');
+      note.textContent = vod && own && vod !== own
+        ? `IPTV video files use ${vod} (how Jellyfin reached Tentacle when they were made). Save an address here to move them to it.`
+        : '';
+      note.style.display = note.textContent ? '' : 'none';
+    }
   } catch { /* the YouTube page shows the same thing */ }
 }
 
@@ -3471,51 +3420,6 @@ function ytStartPolling() {
 
 // ── SMARTLISTS ───────────────────────────────────────────────────────────
 
-async function loadSmartLists() {
-  const el = document.getElementById('smartlists-table');
-  const statusEl = document.getElementById('smartlists-path-status');
-  try {
-    const data = await api('/api/smartlists');
-    const lists = data.smartlists || [];
-
-    statusEl.innerHTML = data.path_accessible
-      ? `<span style="color:var(--green)">${escapeAttr(data.path)}</span>`
-      : `<span style="color:var(--red)">${escapeAttr(data.path)} (not accessible)</span>`;
-
-    if (!lists.length) {
-      el.innerHTML = '<div class="empty-state" style="padding:24px"><p>No SmartLists to manage yet. Run a sync first.</p></div>';
-      return;
-    }
-
-    let html = `<table style="width:100%;font-size:12px;border-collapse:collapse">
-      <thead><tr style="text-align:left;color:var(--text3);border-bottom:1px solid var(--border)">
-        <th style="padding:8px 12px;font-weight:500">Name</th>
-        <th style="padding:8px 12px;font-weight:500">Tag</th>
-        <th style="padding:8px 12px;font-weight:500">Media</th>
-        <th style="padding:8px 12px;font-weight:500;text-align:center">Status</th>
-      </tr></thead><tbody>`;
-
-    for (const sl of lists) {
-      const mediaLabel = sl.media_type.join(', ');
-      const statusBadge = sl.exists_on_disk
-        ? '<span class="badge badge-green">On disk</span>'
-        : '<span class="badge" style="background:var(--amber-dim);color:var(--amber)">Missing</span>';
-
-      html += `<tr style="border-bottom:1px solid var(--border)">
-        <td style="padding:8px 12px;color:var(--text)">${escapeAttr(sl.name)}</td>
-        <td style="padding:8px 12px"><span class="badge badge-accent">${escapeAttr(sl.tag)}</span></td>
-        <td style="padding:8px 12px;color:var(--text2)">${escapeAttr(mediaLabel)}</td>
-        <td style="padding:8px 12px;text-align:center">${statusBadge}</td>
-      </tr>`;
-    }
-
-    html += '</tbody></table>';
-    el.innerHTML = html;
-  } catch (e) {
-    el.innerHTML = '<div class="empty-state" style="padding:24px"><p>Failed to load SmartLists</p></div>';
-  }
-}
-
 async function syncSmartLists() {
   toast('Syncing playlists to Jellyfin...', 'info');
   try {
@@ -3600,10 +3504,6 @@ async function loadHomeScreen() {
     }
 
     // Card focus previews: all / local_only / off (absent = local_only, androidtv#47)
-    const previewsSelect = document.getElementById('card-previews-select');
-    if (previewsSelect) {
-      previewsSelect.value = ['all', 'local_only', 'off'].includes(config.card_previews) ? config.card_previews : 'local_only';
-    }
 
     if (!homeRows.length) {
       listEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text3);font-size:13px">No rows configured — the default Jellyfin home screen will be used.</div>';
@@ -3711,10 +3611,33 @@ function makeSortable(listEl, itemSelector, onReorder) {
   listEl.addEventListener('contextmenu', e => { if (drag) e.preventDefault(); });
 }
 
+// A card that folds away (class "collapsible"): the header opens and closes
+// it, and the browser remembers which are open.
+function toggleCard(header) {
+  const card = header.closest('.card.collapsible');
+  if (!card) return;
+  const open = card.classList.toggle('collapsed') === false;
+  header.setAttribute('aria-expanded', open ? 'true' : 'false');
+  try { localStorage.setItem(`card-open:${card.id}`, open ? '1' : '0'); } catch (e) { /* private mode */ }
+}
+
+function restoreCardStates() {
+  document.querySelectorAll('.card.collapsible[id]').forEach(card => {
+    let open = null;
+    try { open = localStorage.getItem(`card-open:${card.id}`); } catch (e) { /* private mode */ }
+    if (open === null) return;
+    card.classList.toggle('collapsed', open !== '1');
+    card.querySelector('.card-header')?.setAttribute('aria-expanded', open === '1' ? 'true' : 'false');
+  });
+}
+
 function renderToolbarButtons(buttons) {
   toolbarButtons = buttons;
   const listEl = document.getElementById('toolbar-buttons-list');
   if (!listEl) return;
+  restoreCardStates();
+  const sum = document.getElementById('toolbar-buttons-sum');
+  if (sum) sum.textContent = `— ${toolbarButtons.filter(b => b.enabled).length} of ${toolbarButtons.length} shown`;
 
   listEl.innerHTML = toolbarButtons.map((btn, i) => `
     <div class="home-row-item" data-toolbar-idx="${i}" style="padding:8px 12px;border-radius:6px;margin-bottom:0">
@@ -4532,26 +4455,15 @@ async function loadDuplicates() {
 }
 
 function renderDupStats(data) {
+  // One line in the card's title instead of three big tiles
   const el = document.getElementById('dup-stats');
-  el.innerHTML = `
-    <div class="stat-card">
-      <div class="stat-accent" style="background:var(--amber)"></div>
-      <div class="stat-label">Pending</div>
-      <div class="stat-value">${data.pending || 0}</div>
-      <div class="stat-sub">need resolution</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-accent" style="background:var(--green)"></div>
-      <div class="stat-label">Resolved</div>
-      <div class="stat-value">${data.resolved || 0}</div>
-      <div class="stat-sub">cleaned up</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-accent" style="background:var(--blue)"></div>
-      <div class="stat-label">Total</div>
-      <div class="stat-value">${data.total || 0}</div>
-      <div class="stat-sub">detected</div>
-    </div>`;
+  if (!el) return;
+  el.textContent = data.total ? `(${data.pending || 0} to decide, ${data.resolved || 0} done)` : '';
+}
+
+function showAllDuplicates() {
+  pages.dup.showAll = true;
+  renderDupList();
 }
 
 function setDupFilter(filter, btn) {
@@ -4577,6 +4489,9 @@ function renderDupList() {
     return;
   }
 
+  // Health shows a few at a time; the rest one click away
+  const total = items.length;
+  if (!pages.dup.showAll) items = items.slice(0, 5);
   el.innerHTML = items.map(dup => {
     const sources = dup.sources || [];
     // A series' downloaded copy comes from Sonarr, not Radarr.
@@ -4594,6 +4509,9 @@ function renderDupList() {
           <div style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace;word-break:break-all">${escapeAttr(s.path || '(path not recorded)')}</div>
         </div>`;
     }).join('');
+  if (items.length < total) {
+    el.insertAdjacentHTML('beforeend', `<div style="text-align:center;padding:10px"><button class="btn btn-secondary btn-sm" onclick="showAllDuplicates()">Show all ${total}</button></div>`);
+  }
 
     const title = dup.title || `TMDB #${dup.tmdb_id}`;
     const poster = dup.poster_path ? `https://image.tmdb.org/t/p/w92${dup.poster_path}` : '';
@@ -4703,16 +4621,10 @@ async function _updateDupBadges() {
   try {
     const data = await api('/api/duplicates');
     const pending = (data.duplicates || []).filter(d => d.resolution === 'pending').length;
-    for (const id of ['dup-badge', 'lib-dup-badge']) {
-      const el = document.getElementById(id);
-      if (el) {
-        if (pending > 0) { el.style.display = 'inline'; el.textContent = pending; }
-        else el.style.display = 'none';
-      }
-    }
-    // Auto-refresh duplicates list if the tab is currently visible
-    const dupTab = document.getElementById('lib-tab-duplicates');
-    if (dupTab && dupTab.style.display !== 'none') {
+    // A duplicate wants a decision, it isn't a fault: grey in the Health count.
+    if (typeof setHealthAlert === 'function') setHealthAlert('duplicates', pending, false);
+    // Refresh the list while Health is open
+    if (state.currentPage === 'health' && document.getElementById('dup-list')) {
       pages.dup.items = data.duplicates;
       renderDupStats(data);
       renderDupList();
@@ -5878,11 +5790,21 @@ async function loadLiveTV() {
   const statsEl = document.getElementById('live-stats');
   const tabsEl = document.querySelector('#page-live-tv .live-tabs');
   const panels = document.querySelectorAll('#page-live-tv .live-tab-panel');
+  const pick = document.getElementById('live-provider-pick');
+  const sel = document.getElementById('live-provider-select');
 
   try {
-    const provData = await api('/api/live/provider');
-    if (provData.provider) {
-      liveState.providerId = provData.provider.id;
+    // Every provider with "Use for Live TV" on; with more than one, a picker
+    // says whose channels are shown.
+    const providers = await api('/api/providers');
+    const live = providers.filter(p => p.live_tv_enabled);
+    if (live.length) {
+      if (!live.some(p => p.id === liveState.providerId)) liveState.providerId = live[0].id;
+      if (pick && sel) {
+        pick.style.display = live.length > 1 ? 'flex' : 'none';
+        sel.innerHTML = live.map(p => `<option value="${p.id}">${escapeAttr(p.name)}</option>`).join('');
+        sel.value = String(liveState.providerId);
+      }
       if (noProvEl) noProvEl.style.display = 'none';
       if (statsEl) statsEl.style.display = 'grid';
       if (tabsEl) tabsEl.style.display = 'flex';
@@ -5893,8 +5815,10 @@ async function loadLiveTV() {
       renderLiveStats(data);
       await loadLiveGroups();
       await loadLiveChannels();
+      if (document.getElementById('live-panel-setup')?.classList.contains('active')) fillSetupUrls();
     } else {
       liveState.providerId = null;
+      if (pick) pick.style.display = 'none';
       if (noProvEl) noProvEl.style.display = '';
       if (statsEl) statsEl.style.display = 'none';
       if (tabsEl) tabsEl.style.display = 'none';
@@ -5923,87 +5847,64 @@ function showLiveTab(name) {
   page.querySelector(`[data-livetab="${name}"]`)?.classList.add('active');
   document.getElementById(`live-panel-${name}`)?.classList.add('active');
 
-  if (name === 'groups') loadLiveGroups();
   if (name === 'channels') loadLiveChannels();
   if (name === 'setup') fillSetupUrls();
 }
 
+// The tuner and guide addresses are Tentacle's own address (Settings →
+// Services) plus a path. Never http://localhost: in Docker that is Jellyfin
+// itself (#291). Not saved yet: the address Tentacle works out for itself,
+// then an older Live TV address, then this browser's, each said as such.
 async function fillSetupUrls() {
-  try {
-    const settings = await api('/api/settings/raw');
-    const savedHost = settings['live_setup_host'];
-    const savedPort = settings['live_setup_port'];
-    if (savedHost) {
-      document.getElementById('live-setup-host').value = savedHost;
-      document.getElementById('live-setup-port').value = savedPort || '8888';
-      showSetupLocked();
-    } else if (!document.getElementById('live-setup-host').value) {
-      // Nothing saved: prefill (never save) the address Jellyfin reaches
-      // Tentacle on, as the YouTube page detects it, so the steps below
-      // never hand out http://localhost -- in Docker that is Jellyfin
-      // itself (#291). Saving stays the admin's click.
-      let detected = '';
-      try {
-        const st = await api('/api/youtube/status');
-        // A saved YouTube address that doesn't answer is still the YouTube
-        // page's suggestion; here offer only what answers, else the browser's.
-        detected = (st && st.reachable && st.reachable.ok === false)
-          ? ((st.detected && st.detected.url) || '')
-          : ((st && st.suggested_base_url) || '');
-      } catch (e) {}
-      let host = '', port = '';
-      try {
-        if (detected) { const u = new URL(detected); host = u.hostname; port = u.port; }
-      } catch (e) {}
-      if (!host) host = location.hostname;
-      document.getElementById('live-setup-host').value = host;
-      if (port) document.getElementById('live-setup-port').value = port;
-      document.getElementById('live-setup-detected').textContent =
-        detected ? 'Detected: check it, then Save' : 'From this browser: check it, then Save';
+  let base = '', note = '';
+  let settings = {};
+  try { settings = await api('/api/settings/raw'); } catch (e) { settings = {}; }
+  // The saved address is in the settings: no need for the status call, which
+  // checks the address over the network and can take a while.
+  // An address saved for Live TV before wins: it is what Jellyfin's tuner was
+  // set up with (often the LAN one, while Tentacle's address can be public).
+  // Saving Tentacle's address in Settings → Services replaces it.
+  if (settings['live_setup_host']) {
+    const port = settings['live_setup_port'] || '8888';
+    base = `${port === '443' ? 'https' : 'http'}://${settings['live_setup_host']}${port === '80' || port === '443' ? '' : ':' + port}`;
+  }
+  else if (settings['youtube_base_url']) base = settings['youtube_base_url'];
+  else try {
+    const st = await api('/api/youtube/status');
+    if (st && st.base_url) base = st.base_url;
+    else if (st && st.detected && st.detected.url) {
+      base = st.detected.url;
+      note = 'Worked out by Tentacle, not saved yet: save it in Settings → Services.';
     }
   } catch (e) {}
-  updateSetupUrls();
-}
-
-async function saveSetupAddress() {
-  const host = document.getElementById('live-setup-host').value.trim();
-  const port = document.getElementById('live-setup-port').value.trim() || '8888';
-  if (!host) { toast('Enter the server IP address', 'error'); return; }
-  try {
-    await api('/api/settings', { method: 'POST', body: { settings: { live_setup_host: host, live_setup_port: port } } });
-    document.getElementById('live-setup-detected').textContent = '';
-    showSetupLocked();
-    toast('Server address saved');
-  } catch (e) { toast(e.message, 'error'); }
-}
-
-function editSetupAddress() {
-  document.getElementById('live-setup-edit').style.display = 'flex';
-  document.getElementById('live-setup-locked').style.display = 'none';
-}
-
-function showSetupLocked() {
-  const base = getSetupBase();
-  document.getElementById('live-setup-address-display').textContent = base;
-  document.getElementById('live-setup-edit').style.display = 'none';
-  document.getElementById('live-setup-locked').style.display = 'flex';
+  if (!base && location.hostname && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) {
+    base = `${location.protocol}//${location.host}`;
+    note = 'From this browser: set Tentacle\'s address in Settings → Services.';
+  }
+  liveState.setupBase = (base || '').replace(/\/+$/, '');
+  const shown = document.getElementById('live-setup-address-display');
+  if (shown) {
+    shown.textContent = liveState.setupBase || 'Not set';
+    shown.style.color = liveState.setupBase ? 'var(--green)' : 'var(--red)';
+  }
+  const hint = document.getElementById('live-setup-detected');
+  if (hint) hint.textContent = liveState.setupBase ? note : 'Set Tentacle\'s address in Settings → Services first.';
   updateSetupUrls();
 }
 
 function getSetupBase() {
-  const host = document.getElementById('live-setup-host').value || location.hostname || 'localhost';
-  const port = document.getElementById('live-setup-port').value || '8888';
-  return `http://${host}:${port}`;
+  return liveState.setupBase || '';
 }
 
 function updateSetupUrls() {
   const base = getSetupBase();
-  document.getElementById('live-setup-tuner-preview').textContent = base;
-  document.getElementById('live-setup-xmltv-preview').textContent = `${base}/hdhr/xmltv.xml`;
+  document.getElementById('live-setup-tuner-preview').textContent = base || '—';
+  document.getElementById('live-setup-xmltv-preview').textContent = base ? `${base}/hdhr/xmltv.xml` : '—';
 }
 
 async function copyLiveSetup(type, btn) {
   const base = getSetupBase();
+  if (!base) { toast('Set Tentacle\'s address in Settings → Services first', 'error'); return; }
   const url = type === 'tuner' ? base : `${base}/hdhr/xmltv.xml`;
   try {
     await navigator.clipboard.writeText(url);
@@ -6020,7 +5921,7 @@ function renderLiveStats(data) {
   const el = document.getElementById('live-stats');
   el.innerHTML = `
     <div class="stat-card" style="border-top:3px solid var(--accent)">
-      <div style="font-size:11px;color:var(--text3);text-transform:uppercase;margin-bottom:4px">Groups</div>
+      <div style="font-size:11px;color:var(--text3);text-transform:uppercase;margin-bottom:4px">Groups on</div>
       <div style="font-size:24px;font-weight:600">${data.enabled_groups || 0} / ${data.total_groups || 0}</div>
     </div>
     <div class="stat-card" style="border-top:3px solid var(--blue)">
@@ -6028,11 +5929,11 @@ function renderLiveStats(data) {
       <div style="font-size:24px;font-weight:600">${data.total_channels || 0}</div>
     </div>
     <div class="stat-card" style="border-top:3px solid var(--green)">
-      <div style="font-size:11px;color:var(--text3);text-transform:uppercase;margin-bottom:4px">Enabled</div>
+      <div style="font-size:11px;color:var(--text3);text-transform:uppercase;margin-bottom:4px">Channels on</div>
       <div style="font-size:24px;font-weight:600">${data.enabled_channels || 0}</div>
     </div>
     <div class="stat-card" style="border-top:3px solid var(--amber)">
-      <div style="font-size:11px;color:var(--text3);text-transform:uppercase;margin-bottom:4px">EPG Programs</div>
+      <div style="font-size:11px;color:var(--text3);text-transform:uppercase;margin-bottom:4px">In the TV guide</div>
       <div style="font-size:24px;font-weight:600">${data.epg_programs || 0}</div>
     </div>`;
 }
@@ -6046,108 +5947,21 @@ async function refreshLiveStats() {
 
 // ── Groups ────────────────────────────────────────────────────────────────
 
+// The groups are chosen on the provider's card (sources.js); here they fill
+// the Channels filter.
 async function loadLiveGroups() {
   if (!liveState.providerId) return;
   try {
     const data = await api(`/api/live/groups?provider_id=${liveState.providerId}`);
     liveState.groups = data.groups || [];
-    renderLiveGroups(liveState.groups);
     populateGroupFilter(liveState.groups);
-  } catch (e) {
-    renderLiveGroups([]);
-  }
-}
-
-function renderLiveGroups(groups) {
-  const emptyEl = document.getElementById('live-groups-empty');
-  const loadedEl = document.getElementById('live-groups-loaded');
-  const el = document.getElementById('live-groups');
-
-  if (!groups.length) {
-    if (emptyEl) emptyEl.style.display = '';
-    if (loadedEl) loadedEl.style.display = 'none';
-    return;
-  }
-
-  if (emptyEl) emptyEl.style.display = 'none';
-  if (loadedEl) loadedEl.style.display = '';
-
-  el.innerHTML = groups.map((g, i) => `
-    <div class="live-group-row" data-group-id="${g.id}" data-group-idx="${i}" data-group-name="${escapeAttr((g.name || '').toLowerCase())}">
-      <span class="group-name">${escapeAttr(g.name || '')}</span>
-      <span class="group-count">${g.channel_count || 0} ch</span>
-      <button type="button" class="live-toggle ${g.enabled ? 'on' : ''}" aria-label="Show ${escapeAttr(g.name || '')} in Live TV" aria-pressed="${g.enabled ? 'true' : 'false'}" onclick="toggleLiveGroup(${g.id}, this, event)"></button>
-    </div>`).join('');
-  liveState.lastToggledIdx = null;
-  updateGroupsSummary(groups);
-}
-
-function updateGroupsSummary(groups) {
-  const el = document.getElementById('live-groups-summary');
-  if (!el) return;
-  const enabled = groups.filter(g => g.enabled).length;
-  el.textContent = `— ${enabled} of ${groups.length} enabled`;
-}
-
-function filterLiveGroups() {
-  const q = (document.getElementById('live-group-search')?.value || '').toLowerCase();
-  document.querySelectorAll('#live-groups .live-group-row').forEach(row => {
-    const name = row.dataset.groupName || '';
-    row.style.display = name.includes(q) ? '' : 'none';
-  });
+  } catch (e) { /* the filter just lists nothing */ }
 }
 
 // A Live TV on/off switch: its look and what a screen reader announces.
 function _setLiveToggle(btn, on) {
   btn.classList.toggle('on', !!on);
   btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-}
-
-function toggleLiveGroup(groupId, btn, evt) {
-  const row = btn.closest('.live-group-row');
-  const idx = parseInt(row.dataset.groupIdx);
-  const isOn = btn.classList.contains('on');
-  const enabled = !isOn;
-
-  // Shift-click: range toggle
-  if (evt && evt.shiftKey && liveState.lastToggledIdx != null) {
-    const from = Math.min(liveState.lastToggledIdx, idx);
-    const to = Math.max(liveState.lastToggledIdx, idx);
-    liveState.groups.slice(from, to + 1).forEach(g => g.enabled = enabled);
-    renderLiveGroups(liveState.groups);
-    filterLiveGroups();
-    liveState.lastToggledIdx = idx;
-    return;
-  }
-
-  liveState.lastToggledIdx = idx;
-  const g = liveState.groups.find(g => g.id === groupId);
-  if (g) g.enabled = enabled;
-  _setLiveToggle(btn, enabled);
-  updateGroupsSummary(liveState.groups);
-}
-
-function toggleAllGroups(enabled) {
-  const q = (document.getElementById('live-group-search')?.value || '').toLowerCase();
-  const visible = liveState.groups.filter(g => (g.name || '').toLowerCase().includes(q));
-  visible.forEach(g => g.enabled = enabled);
-  renderLiveGroups(liveState.groups);
-  filterLiveGroups();
-}
-
-async function saveLiveGroups() {
-  if (!liveState.providerId) return;
-  const enabledIds = liveState.groups.filter(g => g.enabled).map(g => g.id);
-  const disabledIds = liveState.groups.filter(g => !g.enabled).map(g => g.id);
-  toast('Saving groups...', 'info');
-  try {
-    if (enabledIds.length) await api('/api/live/groups/bulk', { method: 'PUT', body: { group_ids: enabledIds, enabled: true } });
-    if (disabledIds.length) await api('/api/live/groups/bulk', { method: 'PUT', body: { group_ids: disabledIds, enabled: false } });
-    toast('Groups saved — syncing channels...', 'info');
-    liveSyncChannels();
-  } catch (e) {
-    toast(`Failed: ${e.message}`, 'error');
-  }
 }
 
 function populateGroupFilter(groups) {
@@ -6181,12 +5995,12 @@ async function loadLiveChannels() {
     const epgEl = document.getElementById('live-epg-status');
     if (epgEl && !epgEl.innerHTML.includes('Downloading')) {
       epgEl.textContent = status.epg_programs
-        ? `${status.epg_programs} guide programs loaded`
-        : 'No guide data — click Sync to download';
+        ? `${status.epg_programs.toLocaleString()} programmes in the TV guide`
+        : 'No TV guide yet: Update TV guide downloads it';
     }
   } catch (e) {
     document.getElementById('live-channels').innerHTML =
-      `<div style="padding:20px;color:var(--text3);font-size:13px">No channels. Enable groups and click "Sync Channels".</div>`;
+      `<div style="padding:20px;color:var(--text3);font-size:13px">No channels. Switch on channel groups on the provider&rsquo;s card (IPTV providers).</div>`;
   }
 }
 
@@ -6234,7 +6048,7 @@ function renderLiveChannels(channels, total) {
   document.getElementById('live-ch-count').textContent = total ? `(${total})` : '';
 
   if (!channels || !channels.length) {
-    el.innerHTML = `<div style="padding:20px;color:var(--text3);font-size:13px">No channels. Enable groups and click "Sync Channels".</div>`;
+    el.innerHTML = `<div style="padding:20px;color:var(--text3);font-size:13px">No channels. Switch on channel groups on the provider&rsquo;s card (IPTV providers).</div>`;
     return;
   }
 
@@ -6253,7 +6067,7 @@ function renderLiveChannels(channels, total) {
       ${ch.logo_url ? `<img alt="" class="live-ch-logo" src="${escapeAttr(ch.logo_url)}" loading="lazy" onerror="this.style.display='none'">` : `<div class="live-ch-logo"></div>`}
       <span class="live-ch-name">${escapeAttr(ch.name)}${ch.custom_name ? ` <span style="color:var(--text3);font-size:11px">(${escapeAttr(ch.provider_name)})</span>` : ''}</span>
       <span class="live-ch-group">${escapeAttr(ch.group_title || '')}</span>
-      <button type="button" class="live-ch-epg-badge ${ch.has_epg_data ? 'has-epg' : 'no-epg'}" title="${escapeAttr(_liveGuideTitle(ch))}" onclick="setLiveChannelGuideId(${i})">${ch.has_epg_data ? (ch.epg_match === 'name' ? 'EPG (by name)' : ch.epg_match === 'override' ? 'EPG (set)' : 'Has EPG') : 'No EPG'}</button>
+      <button type="button" class="live-ch-epg-badge ${ch.has_epg_data ? 'has-epg' : 'no-epg'}" title="${escapeAttr(_liveGuideTitle(ch))}" onclick="setLiveChannelGuideId(${i})">${ch.has_epg_data ? (ch.epg_match === 'name' ? 'Guide (by name)' : ch.epg_match === 'override' ? 'Guide (set)' : 'In guide') : 'Not in guide'}</button>
       <button class="btn btn-secondary btn-sm live-ch-rename" title="Rename this channel in Jellyfin's guide" onclick="renameLiveChannel(${i})" style="flex-shrink:0">Rename</button>
       <button type="button" class="live-toggle ${ch.enabled ? 'on' : ''}" aria-label="Show ${escapeAttr(ch.name || '')} in Live TV" aria-pressed="${ch.enabled ? 'true' : 'false'}" onclick="toggleLiveChannel(${i}, this, event)" style="flex-shrink:0"></button>
     </div>`).join('');
@@ -6403,17 +6217,6 @@ function _updateDirtyBadge() {
 
 // ── Sync actions ──────────────────────────────────────────────────────────
 
-async function liveSyncGroups() {
-  if (!liveState.providerId) { toast('No provider configured', 'error'); return; }
-  try {
-    const res = await api(`/api/live/sync/${liveState.providerId}`, { method: 'POST' });
-    toast(res.message || 'Sync started', 'info');
-    startSyncPoll();
-  } catch (e) {
-    toast(`Sync failed: ${e.message}`, 'error');
-  }
-}
-
 async function liveSyncChannels() {
   if (!liveState.providerId) { toast('No provider configured', 'error'); return; }
   try {
@@ -6430,10 +6233,10 @@ async function liveSyncEpg() {
   if (!liveState.providerId) { toast('No provider configured', 'error'); return; }
   try {
     const res = await api(`/api/live/sync-epg/${liveState.providerId}`, { method: 'POST' });
-    toast(res.message || 'EPG sync started', 'info');
+    toast(plainWords(res.message || 'TV guide update started'), 'info');
     startEpgPoll();
   } catch (e) {
-    toast(`EPG sync failed: ${e.message}`, 'error');
+    toast(`TV guide update failed: ${plainWords(e.message)}`, 'error');
   }
 }
 
@@ -6450,18 +6253,18 @@ function startEpgPoll() {
     try {
       const s = await api(`/api/live/sync-status?provider_id=${liveState.providerId}`);
       if (s.phase !== 'epg') return; // different sync running
-      statusEl.innerHTML = `<span style="color:var(--amber)">${escapeAttr(s.message || 'Syncing...')}</span>` +
+      statusEl.innerHTML = `<span style="color:var(--amber)">${escapeAttr(plainWords(s.message || 'Updating…'))}</span>` +
         (s.progress != null ? ` <div class="live-progress" style="width:120px;display:inline-block;vertical-align:middle;margin-left:6px"><div class="live-progress-bar" style="width:${s.progress}%"></div></div>` : '');
 
       if (s.status === 'complete') {
         clearInterval(liveState.epgPollTimer);
-        statusEl.innerHTML = `<span style="color:var(--green)">${escapeAttr(s.message)}</span>`;
-        toast('EPG sync complete', 'success');
+        statusEl.innerHTML = `<span style="color:var(--green)">${escapeAttr(plainWords(s.message))}</span>`;
+        toast('TV guide updated', 'success');
         refreshLiveStats();
         // Auto-refresh Jellyfin guide if server address is configured
         try {
           const settings = await api('/api/settings/raw');
-          if (settings['live_setup_host']) {
+          if (settings['live_setup_host'] || settings['youtube_base_url']) {
             api('/api/live/refresh-guide', { method: 'POST' }).then(() => {
               toast('Jellyfin guide refresh triggered', 'info');
             }).catch(() => {});
@@ -6469,8 +6272,8 @@ function startEpgPoll() {
         } catch (e) {}
       } else if (s.status === 'error') {
         clearInterval(liveState.epgPollTimer);
-        statusEl.innerHTML = `<span style="color:var(--red)">${escapeAttr(s.message)}</span>`;
-        toast('EPG sync failed', 'error');
+        statusEl.innerHTML = `<span style="color:var(--red)">${escapeAttr(plainWords(s.message))}</span>`;
+        toast('TV guide update failed', 'error');
       }
     } catch (e) {
       clearInterval(liveState.epgPollTimer);
@@ -6485,20 +6288,20 @@ function startSyncPoll() {
   liveState.syncPollTimer = setInterval(async () => {
     try {
       const s = await api(`/api/live/sync-status?provider_id=${liveState.providerId}`);
-      statusEl.innerHTML = `${escapeAttr(s.message || '')} ${s.progress != null ? `<div class="live-progress" style="width:120px;display:inline-block;vertical-align:middle;margin-left:6px"><div class="live-progress-bar" style="width:${s.progress}%"></div></div>` : ''}`;
+      statusEl.innerHTML = `${escapeAttr(plainWords(s.message || ''))} ${s.progress != null ? `<div class="live-progress" style="width:120px;display:inline-block;vertical-align:middle;margin-left:6px"><div class="live-progress-bar" style="width:${s.progress}%"></div></div>` : ''}`;
 
       // Channel sync chains into EPG sync automatically — handle EPG completion here too
       if (s.phase === 'epg' && s.status === 'complete') {
         clearInterval(liveState.syncPollTimer);
         liveState.syncPollTimer = null;
-        toast(s.message, 'success');
+        toast(plainWords(s.message), 'success');
         setTimeout(() => { statusEl.textContent = ''; }, 3000);
         refreshLiveStats();
         loadLiveTV();
         // Auto-refresh Jellyfin guide if server address is configured
         try {
           const settings = await api('/api/settings/raw');
-          if (settings['live_setup_host']) {
+          if (settings['live_setup_host'] || settings['youtube_base_url']) {
             api('/api/live/refresh-guide', { method: 'POST' }).then(() => {
               toast('Jellyfin guide refresh triggered', 'info');
             }).catch(() => {});
@@ -6507,7 +6310,7 @@ function startSyncPoll() {
       } else if (s.phase === 'epg' && s.status === 'error') {
         clearInterval(liveState.syncPollTimer);
         liveState.syncPollTimer = null;
-        toast('EPG sync failed: ' + s.message, 'error');
+        toast('TV guide update failed: ' + plainWords(s.message), 'error');
         setTimeout(() => { statusEl.textContent = ''; }, 5000);
         loadLiveTV();
       } else if (s.phase === 'complete') {
@@ -6528,238 +6331,6 @@ function startSyncPoll() {
       statusEl.textContent = '';
     }
   }, 1500);
-}
-
-// ══════════════════════════════════════════════════════════════════════════
-// ── VOD PAGE ─────────────────────────────────────────────────────────────
-
-const vodState = {
-  providerId: null,
-  categories: [],
-  catFilter: 'all',
-};
-
-async function loadVodPage() {
-  const select = document.getElementById('vod-provider-select');
-  const noProvEl = document.getElementById('vod-no-provider');
-  const provBar = document.getElementById('vod-provider-bar');
-  const tabsBar = document.getElementById('vod-tabs-bar');
-
-  try {
-    const providers = await api('/api/providers');
-    const vodProviders = providers.filter(p => p.has_vod || p.has_series || p.active);
-
-    const catTab = document.getElementById('vod-tab-categories');
-    const syncTab = document.getElementById('vod-tab-sync');
-
-    if (!vodProviders.length) {
-      if (noProvEl) noProvEl.style.display = '';
-      if (provBar) provBar.style.display = 'none';
-      if (tabsBar) tabsBar.style.display = 'none';
-      if (catTab) catTab.style.display = 'none';
-      if (syncTab) syncTab.style.display = 'none';
-      return;
-    }
-
-    if (noProvEl) noProvEl.style.display = 'none';
-    if (provBar) provBar.style.display = 'flex';
-    if (tabsBar) tabsBar.style.display = 'flex';
-    if (catTab) catTab.style.display = '';
-
-    select.innerHTML = vodProviders.map(p =>
-      `<option value="${p.id}">${escapeAttr(p.name)} ${p.active ? '(Active)' : ''}</option>`
-    ).join('');
-
-    // Select first active, or first available
-    const active = vodProviders.find(p => p.active) || vodProviders[0];
-    select.value = active.id;
-    vodState.providerId = active.id;
-
-    const statusEl = document.getElementById('vod-provider-status');
-    if (statusEl) {
-      const badges = [];
-      if (active.has_vod) badges.push('Movies');
-      if (active.has_series) badges.push('Series');
-      statusEl.textContent = badges.length ? badges.join(' + ') : '';
-    }
-
-    await loadVodCategories();
-  } catch (e) {
-    if (noProvEl) noProvEl.style.display = '';
-  }
-}
-
-function onVodProviderChange() {
-  const select = document.getElementById('vod-provider-select');
-  vodState.providerId = parseInt(select.value);
-  loadVodCategories();
-}
-
-function showVodTab(tab) {
-  const page = document.getElementById('page-vod');
-  page.querySelectorAll('[data-vodtab]').forEach(t => t.classList.remove('active'));
-  page.querySelector(`[data-vodtab="${tab}"]`)?.classList.add('active');
-  document.getElementById('vod-tab-categories').style.display = tab === 'categories' ? '' : 'none';
-  document.getElementById('vod-tab-sync').style.display = tab === 'sync' ? '' : 'none';
-}
-
-async function loadVodCategories() {
-  if (!vodState.providerId) return;
-  const listEl = document.getElementById('vod-cat-list');
-  listEl.innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
-
-  try {
-    let cats = await api(`/api/providers/${vodState.providerId}/categories`);
-    // If no categories yet (newly added provider), auto-fetch from provider
-    if (!cats || !cats.length) {
-      listEl.innerHTML = '<div class="loading-state"><div class="spinner"></div><p style="margin-top:8px;color:var(--text-muted)">Fetching categories from provider...</p></div>';
-      await api(`/api/providers/${vodState.providerId}/fetch-categories`, { method: 'POST' });
-      cats = await api(`/api/providers/${vodState.providerId}/categories`);
-    }
-    vodState.categories = cats;
-    renderVodCats();
-  } catch (e) {
-    listEl.innerHTML = '<div class="empty-state"><p>No categories yet. Click "Refresh from Provider" to fetch.</p></div>';
-  }
-}
-
-async function vodFetchCategories() {
-  if (!vodState.providerId) return;
-  toast('Fetching categories from provider...', 'info');
-  const listEl = document.getElementById('vod-cat-list');
-  listEl.innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
-
-  try {
-    await api(`/api/providers/${vodState.providerId}/fetch-categories`, { method: 'POST' });
-    const cats = await api(`/api/providers/${vodState.providerId}/categories`);
-    vodState.categories = cats;
-    renderVodCats();
-    toast(`Loaded ${cats.length} categories`);
-  } catch (e) {
-    toast(e.message, 'error');
-    listEl.innerHTML = '<div class="empty-state"><p>Failed to fetch categories</p></div>';
-  }
-}
-
-function renderVodCats() {
-  const search = (document.getElementById('vod-cat-search')?.value || '').toLowerCase();
-  const filter = vodState.catFilter;
-
-  let cats = vodState.categories.filter(c => {
-    if (search && !c.name.toLowerCase().includes(search)) return false;
-    if (filter === 'movie') return c.type === 'movie';
-    if (filter === 'series') return c.type === 'series';
-    if (filter === 'active') return c.whitelisted;
-    if (filter === 'english') return c.is_likely_english && !c.is_foreign;
-    return true;
-  });
-
-  const countEl = document.getElementById('vod-cat-count');
-  if (countEl) countEl.textContent = `— ${cats.length} of ${vodState.categories.length} shown, ${vodState.categories.filter(c=>c.whitelisted).length} active`;
-
-  const listEl = document.getElementById('vod-cat-list');
-  if (!cats.length) {
-    listEl.innerHTML = '<div class="empty-state"><p>No categories match filter</p></div>';
-    return;
-  }
-
-  listEl.innerHTML = cats.map(c => {
-    let syncInfo = '';
-    if (c.last_sync_matched != null || c.last_sync_skipped != null) {
-      const matched = c.last_sync_matched || 0;
-      const skipped = c.last_sync_skipped || 0;
-      if (skipped && !matched) {
-        syncInfo = `<span style="font-size:10px;color:var(--red);font-family:'DM Mono',monospace" title="${skipped} items had no TMDB match">0 matched</span>`;
-      } else if (matched) {
-        syncInfo = `<span style="font-size:10px;color:var(--green);font-family:'DM Mono',monospace" title="${matched} matched, ${skipped} skipped">${matched} matched</span>`;
-      }
-    }
-    return `
-    <div class="cat-row ${c.whitelisted ? 'whitelisted' : ''}" data-id="${c.id}">
-      <input type="checkbox" class="cat-checkbox" id="vod-cat-${c.id}"
-        ${c.whitelisted ? 'checked' : ''}
-        onchange="vodToggleCat(${c.id}, this.checked)">
-      <label for="vod-cat-${c.id}" class="cat-name" title="${escapeAttr(c.name)}">${escapeAttr(c.name)}</label>
-      ${syncInfo}
-      <span class="badge ${c.type === 'movie' ? 'badge-accent' : 'badge-pink'}">${c.type}</span>
-      ${c.title_count ? `<span style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace">${c.title_count}</span>` : ''}
-    </div>`;
-  }).join('');
-}
-
-function vodToggleCat(id, checked) {
-  const cat = vodState.categories.find(c => c.id === id);
-  if (cat) cat.whitelisted = checked;
-  const row = document.querySelector(`.cat-row[data-id="${id}"]`);
-  if (row) row.classList.toggle('whitelisted', checked);
-}
-
-function filterVodCats() { renderVodCats(); }
-
-function setVodCatFilter(filter, btn) {
-  vodState.catFilter = filter;
-  const page = document.getElementById('page-vod');
-  page.querySelectorAll('[data-vodcatfilter]').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  renderVodCats();
-}
-
-function vodSelectAllVisible(checked) {
-  document.querySelectorAll('#vod-cat-list .cat-checkbox').forEach(cb => {
-    cb.checked = checked;
-    const id = parseInt(cb.id.replace('vod-cat-', ''));
-    vodToggleCat(id, checked);
-  });
-}
-
-async function vodSaveCategories() {
-  if (!vodState.providerId) return;
-  const toEnable = vodState.categories.filter(c => c.whitelisted).map(c => String(c.id));
-  const toDisable = vodState.categories.filter(c => !c.whitelisted).map(c => String(c.id));
-
-  try {
-    if (toEnable.length) {
-      await api(`/api/providers/${vodState.providerId}/categories/update`, {
-        method: 'POST', body: { category_ids: toEnable, whitelisted: true }
-      });
-    }
-    if (toDisable.length) {
-      await api(`/api/providers/${vodState.providerId}/categories/update`, {
-        method: 'POST', body: { category_ids: toDisable, whitelisted: false }
-      });
-    }
-    toast(`Saved — ${toEnable.length} categories active`);
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-async function vodRunSync(type) {
-  if (!vodState.providerId) { toast('No provider selected', 'error'); return; }
-  try {
-    await api('/api/sync/trigger', {
-      method: 'POST',
-      body: { provider_id: vodState.providerId, sync_type: type }
-    });
-    toast(`VOD ${type} sync started`, 'info');
-    const info = document.getElementById('vod-sync-info');
-    if (info) info.innerHTML = '<p style="color:var(--accent)">Sync running... check Dashboard for progress.</p>';
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-async function vodPreviewSync() {
-  if (!vodState.providerId) return;
-  toast('Fetching preview...', 'info');
-  try {
-    const r = await api(`/api/providers/${vodState.providerId}/preview`);
-    const info = document.getElementById('vod-sync-info');
-    if (info) info.innerHTML = `<p>~<strong>${r.estimated_movies?.toLocaleString() || 0}</strong> movies from <strong>${r.movie_categories || 0}</strong> categories</p>`;
-    toast(`Preview: ~${r.estimated_movies?.toLocaleString() || 0} movies from ${r.movie_categories || 0} categories`, 'info', 6000);
-  } catch (e) {
-    toast(e.message, 'error');
-  }
 }
 
 // ── GLOBAL EXPORTS ────────────────────────────────────────────────────────
@@ -6810,32 +6381,34 @@ async function saveMergeContinueWatching(checked) {
   }
 }
 
-async function saveCardPreviews(mode) {
-  const labels = { all: 'Previews on for all cards', local_only: 'Previews only for local files', off: 'Card previews off' };
-  try {
-    await api('/api/smartlists/card-previews', { method: 'POST', body: { mode } });
-    toast(labels[mode] || 'Saved', 'success');
-  } catch (e) {
-    toast('Failed to save setting', 'error');
-    loadHomeScreen();   // show what is actually saved
-  }
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Health page — housekeeping, downloads & audit trail
 // ═══════════════════════════════════════════════════════════════════════════
 
 function loadHealthPage() {
-  loadHealthDownloadSettings();
+  // What needs a look first: the problem notices and the counts behind the
+  // sidebar badge, then downloads, missing, streams, duplicates, folders, the log.
+  if (typeof loadArrProblems === 'function') loadArrProblems();
+  if (typeof loadProviderProblems === 'function') loadProviderProblems();
+  if (typeof loadHealthAlerts === 'function') loadHealthAlerts();
+  loadLibSyncSummary();
+  loadDuplicates();
+  if (typeof loadPathStatus === 'function') loadPathStatus();
   loadHealthDownloads();
   loadHealthMissing();
   loadHealthStreams();
-  loadHealthActivity();
-  loadHealthDeletions();
+  loadHealthLog();
   startHealthPolling();
 }
 
 // ── Stream health ───────────────────────────────────────────────────────────
+
+function toggleHealthStreamsAll() {
+  const el = document.getElementById('health-streams');
+  if (!el) return;
+  el.dataset.all = el.dataset.all === '1' ? '' : '1';
+  loadHealthStreams();
+}
 
 async function loadHealthStreams() {
   const el = document.getElementById('health-streams');
@@ -6856,7 +6429,11 @@ async function loadHealthStreams() {
       el.innerHTML = '<div class="empty-state"><p>No dead streams detected</p></div>';
       return;
     }
-    const rows = entries.map(e => {
+    // A long list folds: the first few, then "Show all"
+    const SHOWN = 5;
+    const showAll = el.dataset.all === '1';
+    const listed = showAll ? entries : entries.slice(0, SHOWN);
+    const rows = listed.map(e => {
       const name = escapeHtml(e.title) + (e.episode ? ` <span style="color:var(--text3)">${escapeHtml(e.episode)}</span>` : '');
       const first = _healthDate(e.first_failed_at);
       const last = _healthDate(e.last_checked_at);
@@ -6874,7 +6451,8 @@ async function loadHealthStreams() {
     el.innerHTML = `<div style="overflow-x:auto"><table>
       <thead><tr><th>Title</th><th>Type</th><th>First failed</th><th>Last checked</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
-    </table></div>`;
+    </table></div>` + (entries.length > SHOWN
+      ? `<div style="text-align:center;margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="toggleHealthStreamsAll()">${showAll ? 'Show fewer' : `Show all ${entries.length}`}</button></div>` : '');
   } catch (e) {
     el.innerHTML = '<div class="empty-state"><p>Failed to load stream health</p></div>';
   }
@@ -7089,31 +6667,6 @@ function stopHealthPolling() {
   if (_healthPollTimer) { clearInterval(_healthPollTimer); _healthPollTimer = null; }
 }
 
-async function loadHealthDownloadSettings() {
-  try {
-    const s = await api('/api/health/downloads/settings');
-    const fix = document.getElementById('health-auto-fix');
-    const imp = document.getElementById('health-auto-import');
-    if (fix) fix.checked = !!s.auto_fix;
-    if (imp) imp.checked = !!s.auto_import;
-  } catch (_) {}
-}
-
-async function saveHealthDownloadSettings() {
-  const fix = document.getElementById('health-auto-fix');
-  const imp = document.getElementById('health-auto-import');
-  try {
-    await api('/api/health/downloads/settings', {
-      method: 'POST',
-      body: { auto_fix: !!fix?.checked, auto_import: !!imp?.checked },
-    });
-    toast('Download automation settings saved');
-  } catch (e) {
-    toast('Failed to save settings', 'error');
-    loadHealthDownloadSettings();
-  }
-}
-
 const _DL_STATUS_META = {
   stuck:          { label: 'Stuck', cls: 'badge-red' },
   import_blocked: { label: 'Import blocked', cls: 'badge-amber' },
@@ -7227,8 +6780,8 @@ const _DELETION_KIND_META = {
   'jellyfin-delete':   { label: 'Jellyfin delete', cls: 'badge-red' },
   'provider-cascade':  { label: 'Provider delete', cls: 'badge-red' },
   'duplicate-resolve': { label: 'Duplicate', cls: 'badge-amber' },
-  'orphan-sweep':      { label: 'Orphan sweep', cls: 'badge-accent' },
-  'vod-sweep':         { label: 'VOD sweep', cls: 'badge-accent' },
+  'orphan-sweep':      { label: 'Download gone', cls: 'badge-accent' },
+  'vod-sweep':         { label: 'IPTV file gone', cls: 'badge-accent' },
   'stale-cleanup':     { label: 'Stale cleanup', cls: 'badge-amber' },
   'download-fix':      { label: 'Download fix', cls: 'badge-amber' },
   'stream-health':     { label: 'Stream health', cls: 'badge-amber' },
@@ -7237,50 +6790,17 @@ const _DELETION_KIND_META = {
   'bad-copy':          { label: 'Bad copy', cls: 'badge-amber' },
   'wrong-match':       { label: 'Wrong match', cls: 'badge-amber' },
   'rematch':           { label: 'Rematch', cls: 'badge-amber' },
-  'strm-optout':       { label: '.strm opt-out', cls: 'badge-amber' },
+  'strm-optout':       { label: 'IPTV copy turned off', cls: 'badge-amber' },
   'music-extra-track': { label: 'Extra track', cls: 'badge-amber' },
   'radarr-scan':       { label: 'Gone from Radarr', cls: 'badge-accent' },
   'sonarr-scan':       { label: 'Gone from Sonarr', cls: 'badge-accent' },
   'sync-prune':        { label: 'Gone from provider', cls: 'badge-accent' },
   'smartlist-orphan':  { label: 'Playlist cleanup', cls: 'badge-accent' },
   // Removals a safety limit refused: nothing was deleted
-  'sync-prune-blocked':   { label: 'Prune refused', cls: 'badge-gray' },
-  'orphan-sweep-blocked': { label: 'Orphan sweep refused', cls: 'badge-gray' },
-  'vod-sweep-blocked':    { label: 'VOD sweep refused', cls: 'badge-gray' },
+  'sync-prune-blocked':   { label: 'Removal refused', cls: 'badge-gray' },
+  'orphan-sweep-blocked': { label: 'Removal refused', cls: 'badge-gray' },
+  'vod-sweep-blocked':    { label: 'Removal refused', cls: 'badge-gray' },
 };
-
-async function loadHealthDeletions() {
-  const el = document.getElementById('health-deletions');
-  if (!el) return;
-  try {
-    const entries = await api('/api/health/deletions?limit=200');
-    if (!entries.length) {
-      el.innerHTML = '<div class="empty-state"><p>No deletions recorded yet</p></div>';
-      return;
-    }
-    const rows = entries.map(e => {
-      const meta = _DELETION_KIND_META[e.kind] || { label: escapeHtml(e.kind || ''), cls: 'badge-accent' };
-      const tip = (e.kind || '').endsWith('-blocked')
-        ? ' title="Nothing was deleted: a safety limit stopped this removal"' : '';
-      const d = _healthDate(e.created_at);
-      const when = d ? `<span title="${d.toLocaleString()}">${timeAgo(d)}</span>` : '—';
-      const who = e.reason === 'manual' && e.user_name ? e.user_name : e.reason;
-      return `<tr>
-        <td style="white-space:nowrap">${when}</td>
-        <td><span class="badge ${meta.cls}" style="font-size:10px"${tip}>${meta.label}</span></td>
-        <td>${escapeHtml(e.name || '')}</td>
-        <td style="white-space:nowrap;color:var(--text3)">${escapeHtml(who || '')}</td>
-        <td style="color:var(--text3);font-size:12px">${escapeHtml(e.detail || '')}</td>
-      </tr>`;
-    }).join('');
-    el.innerHTML = `<div style="overflow-x:auto"><table>
-      <thead><tr><th>When</th><th>Action</th><th>Item</th><th>By</th><th>Detail</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table></div>`;
-  } catch (e) {
-    el.innerHTML = '<div class="empty-state"><p>Failed to load deletion log</p></div>';
-  }
-}
 
 // ── Recent activity (the Activity feed: /api/sync/activity) ────────────────
 
@@ -7297,11 +6817,11 @@ const _ACTIVITY_EVENT_META = {
   'livetv_config':            { label: 'Live TV', cls: 'badge-blue' },
   'epg_sync':                 { label: 'Guide', cls: 'badge-blue' },
   'new_live_groups':          { label: 'Live TV', cls: 'badge-blue' },
-  'vod_sync':                 { label: 'VOD sync', cls: 'badge-accent' },
-  'sync':                     { label: 'VOD sync', cls: 'badge-accent' },
-  'new_categories':           { label: 'VOD', cls: 'badge-accent' },
-  'vod_sweep':                { label: 'VOD sweep', cls: 'badge-accent' },
-  'orphan_sweep':             { label: 'Orphan sweep', cls: 'badge-accent' },
+  'vod_sync':                 { label: 'Library sync', cls: 'badge-accent' },
+  'sync':                     { label: 'Library sync', cls: 'badge-accent' },
+  'new_categories':           { label: 'Provider', cls: 'badge-accent' },
+  'vod_sweep':                { label: 'IPTV files', cls: 'badge-accent' },
+  'orphan_sweep':             { label: 'Downloads', cls: 'badge-accent' },
   'radarr_scan':              { label: 'Radarr', cls: 'badge-gray' },
   'radarr_remove':            { label: 'Radarr', cls: 'badge-gray' },
   'sonarr_scan':              { label: 'Sonarr', cls: 'badge-gray' },
@@ -7310,6 +6830,8 @@ const _ACTIVITY_EVENT_META = {
   'list_fetch':               { label: 'List', cls: 'badge-gray' },
   'lists_refresh':            { label: 'List', cls: 'badge-gray' },
   'new_playlists':            { label: 'Playlist', cls: 'badge-gray' },
+  'provider_address':         { label: 'Provider address', cls: 'badge-blue' },
+  'provider_health':          { label: 'Provider', cls: 'badge-amber' },
 };
 
 function _activityMeta(e) {
@@ -7324,36 +6846,163 @@ function _activityIsProblem(e) {
   return !!_activityMeta(e).problem || /_failed$/.test(e.event || '') || /\bfailed\b/i.test(e.message || '');
 }
 
-async function loadHealthActivity() {
-  const el = document.getElementById('health-activity');
+// ── Health → What happened ──────────────────────────────────────────────────
+// Activity and removals in one card: the last 7 days by default, a page at a
+// time, repeats folded into one line, who did it in plain words, and the raw
+// entries (ids and all) behind "Details".
+const healthLog = { kind: 'activity', entries: [], offset: 0, done: true, pageSize: 100, seq: 0, shown: 25 };
+
+// "Show more": the next lines already loaded, else the next page from the server
+function showMoreHealthLog() {
+  const groups = _logGroups(healthLog.entries).length;
+  if (healthLog.shown < groups) { healthLog.shown += 25; renderHealthLog(); }
+  else loadHealthLog(true);
+}
+
+function setHealthLogKind(kind, btn) {
+  healthLog.kind = kind === 'deletions' ? 'deletions' : 'activity';
+  document.querySelectorAll('[data-healthlog]').forEach(b => b.classList.toggle('active', b === btn || b.dataset.healthlog === healthLog.kind));
+  const probs = document.getElementById('health-log-problems');
+  if (probs) probs.closest('label').style.display = healthLog.kind === 'activity' ? '' : 'none';
+  loadHealthLog();
+}
+
+async function loadHealthLog(more = false) {
+  const el = document.getElementById('health-log');
   if (!el) return;
+  const days = parseInt(document.getElementById('health-log-days')?.value || '7', 10) || 0;
+  if (!more) { healthLog.entries = []; healthLog.offset = 0; healthLog.shown = 25; }
+  else healthLog.shown += 25;
+  const seq = ++healthLog.seq;   // only the latest request's answer is shown
+  const n = healthLog.pageSize;
+  const url = healthLog.kind === 'activity'
+    ? `/api/sync/activity?limit=${n}&offset=${healthLog.offset}&days=${days}`
+    : `/api/health/deletions?limit=${n}&offset=${healthLog.offset}&days=${days}`;
   try {
-    const entries = await api('/api/sync/activity?limit=100');
-    const countEl = document.getElementById('health-activity-count');
-    const problems = entries.filter(_activityIsProblem).length;
-    if (countEl) countEl.textContent = problems ? `(${problems} to look at)` : '';
-    if (!entries.length) {
-      el.innerHTML = '<div class="empty-state"><p>No activity recorded yet</p></div>';
-      return;
+    const rows = await api(url);
+    if (seq !== healthLog.seq) return;
+    healthLog.entries = healthLog.entries.concat(rows || []);
+    healthLog.offset += (rows || []).length;
+    healthLog.done = (rows || []).length < n;
+    renderHealthLog();
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state"><p>Could not load the log: ${escapeHtml(e.message)}</p></div>`;
+  }
+}
+
+// Ids mean nothing to a reader: they stay in Details.
+function _logClean(text) {
+  return plainWords(String(text || ''))
+    .replace(/\s*\(tmdb:\d+\)/g, '')
+    .replace(/\bJellyfin playlist [0-9a-f]{12,}\w*/gi, 'its Jellyfin playlist')
+    .replace(/\b[0-9a-f]{20,}\b/gi, '')
+    .replace(/\bfor user \d+\b/g, 'for a user')
+    .replace(/\bStream \d+ /g, 'A stream ')
+    .replace(/\bno longer desired\b/g, 'no longer wanted')
+    // A library's connection error ("HTTPConnectionPool(host=…): Max retries
+    // exceeded … ConnectTimeoutError …") in plain words; Details has it whole
+    .replace(/(?:HTTPS?ConnectionPool|Max retries exceeded)[^—]*?(?=\s+—|$)/g, m =>
+      /timed? ?out|timeout/i.test(m) ? 'the provider did not answer'
+        : /refused/i.test(m) ? 'the provider refused the connection'
+        : /resolve|name or service|getaddrinfo/i.test(m) ? 'the provider\u2019s name was not found'
+        : 'the provider could not be reached')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+// Who did it, in plain words
+function _logActor(e) {
+  switch (e.reason) {
+    case 'manual': return e.user_name || 'An admin';
+    case 'webhook': return e.kind === 'jellyfin-delete' ? 'Deleted in Jellyfin' : 'Radarr or Sonarr';
+    case 'auto': return 'Tentacle';
+    case 'removed-upstream': return 'Gone from the provider';
+    case 'removed-from-radarr': return 'Gone from Radarr';
+    case 'removed-from-sonarr': return 'Gone from Sonarr';
+    case 'safety-limit': return 'Stopped by a safety limit';
+    default: {
+      const t = String(e.reason || '').replace(/[-_]+/g, ' ').trim();
+      return t ? t.charAt(0).toUpperCase() + t.slice(1) : '';
     }
-    const rows = entries.map(e => {
+  }
+}
+
+function _logKey(e) {
+  // Same words after the ids are taken out; numbers count (1 vs 63 removed)
+  const norm = t => _logClean(t);
+  return healthLog.kind === 'activity'
+    ? `${e.event}|${norm(e.message)}`
+    : `${e.kind}|${e.name}|${e.reason}|${e.user_name || ''}|${norm(e.detail)}`;
+}
+
+// Consecutive entries that say the same thing become one line (×N).
+function _logGroups(entries) {
+  const groups = [];
+  for (const e of entries) {
+    const key = _logKey(e);
+    const last = groups[groups.length - 1];
+    if (last && last.key === key) last.items.push(e);
+    else groups.push({ key, items: [e] });
+  }
+  return groups;
+}
+
+function renderHealthLog() {
+  const el = document.getElementById('health-log');
+  if (!el) return;
+  const activity = healthLog.kind === 'activity';
+  const problemsOnly = activity && document.getElementById('health-log-problems')?.checked;
+  let entries = healthLog.entries;
+  if (problemsOnly) entries = entries.filter(_activityIsProblem);
+  const allGroups = _logGroups(entries);
+  const groups = allGroups.slice(0, healthLog.shown || allGroups.length);
+  const countEl = document.getElementById('health-log-count');
+  if (countEl) {
+    const problems = activity ? healthLog.entries.filter(_activityIsProblem).length : 0;
+    countEl.textContent = healthLog.entries.length
+      ? `(${healthLog.entries.length}${healthLog.done ? '' : '+'} entr${healthLog.entries.length === 1 ? 'y' : 'ies'}${problems ? `, ${problems} to look at` : ''})` : '';
+  }
+  const more = document.getElementById('health-log-more');
+  if (more) more.style.display = (healthLog.done && groups.length >= allGroups.length) ? 'none' : '';
+  if (!groups.length) {
+    const days = document.getElementById('health-log-days');
+    const when = days && days.value !== '0' ? days.options[days.selectedIndex].text.toLowerCase() : 'so far';
+    el.innerHTML = `<div class="empty-state"><p>${problemsOnly ? 'No problems' : activity ? 'Nothing happened' : 'Nothing was removed'} ${escapeHtml(when)}.</p></div>`;
+    return;
+  }
+  el.innerHTML = '<div class="health-log-list">' + groups.map(g => {
+    const e = g.items[0];
+    const d = _healthDate(e.created_at);
+    const oldest = _healthDate(g.items[g.items.length - 1].created_at);
+    const when = d ? `<span title="${escapeHtml(d.toLocaleString())}">${escapeHtml(timeAgo(d))}</span>` : '—';
+    const times = g.items.length > 1 ? ` <span class="health-log-times" title="${escapeHtml(oldest ? 'since ' + oldest.toLocaleString() : '')}">&times;${g.items.length}</span>` : '';
+    let badge, text, who = '';
+    if (activity) {
       const meta = _activityMeta(e);
       const cls = _activityIsProblem(e) && !meta.problem ? 'badge-red' : meta.cls;
-      const d = _healthDate(e.created_at);
-      const when = d ? `<span title="${d.toLocaleString()}">${timeAgo(d)}</span>` : '—';
-      return `<tr>
-        <td style="white-space:nowrap">${when}</td>
-        <td><span class="badge ${cls}" style="font-size:10px">${escapeHtml(meta.label)}</span></td>
-        <td style="font-size:12px">${escapeHtml(e.message || '')}</td>
-      </tr>`;
-    }).join('');
-    el.innerHTML = `<div style="overflow-x:auto;max-height:420px;overflow-y:auto"><table>
-      <thead><tr><th>When</th><th>What</th><th>Detail</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table></div>`;
-  } catch (e) {
-    el.innerHTML = '<div class="empty-state"><p>Failed to load activity</p></div>';
-  }
+      badge = `<span class="badge ${cls}">${escapeHtml(plainWords(meta.label))}</span>`;
+      text = escapeHtml(_logClean(e.message));
+    } else {
+      const meta = _DELETION_KIND_META[e.kind] || { label: e.kind || '', cls: 'badge-accent' };
+      const tip = (e.kind || '').endsWith('-blocked') ? ' title="Nothing was deleted: a safety limit stopped this removal"' : '';
+      badge = `<span class="badge ${meta.cls}"${tip}>${escapeHtml(meta.label)}</span>`;
+      text = `<strong>${escapeHtml(e.name || '')}</strong>${e.detail ? ' &mdash; ' + escapeHtml(_logClean(e.detail)) : ''}`;
+      const actor = _logActor(e);
+      // "Gone from the provider" next to a "Gone from provider" badge says it twice
+      const said = /^gone from/i.test(meta.label) && /^gone from/i.test(actor);
+      who = actor && !said ? `<span class="health-log-who">${escapeHtml(actor)}</span>` : '';
+    }
+    const raw = g.items.map(x => escapeHtml(
+      activity ? `${x.created_at} #${x.id} ${x.event}: ${x.message || ''}`
+               : `${x.created_at} #${x.id} ${x.kind} ${x.media_type || ''} "${x.name || ''}" reason=${x.reason || ''}${x.user_name ? ' by ' + x.user_name : ''}: ${x.detail || ''}`)).join('\n');
+    return `<div class="health-log-row">
+      <div class="health-log-when">${when}${times}</div>
+      <div class="health-log-what">${badge}</div>
+      <div class="health-log-text">${text} ${who}
+        <details class="health-log-details"><summary>Details</summary><pre>${raw}</pre></details>
+      </div>
+    </div>`;
+  }).join('') + '</div>';
 }
 
 (function exposeGlobals() {
@@ -7373,13 +7022,13 @@ async function loadHealthActivity() {
     loadJellyfinPage, loadAutoPlaylists, toggleAutoPlaylist, dismissAutoPlaylistBanner,
     showAddTagRule, editTagRule, deleteTagRule, saveTagRule, onContentSourceChange, toggleAdvancedFilters,
     addRuleCondition, updateCondOps, onCollectionNameInput, syncSmartLists, refreshTags, syncPlaylistsToJellyfin, resyncAllPlaylists, setPlaylistSort,
-    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, saveRowShapeByKey, toggleNotificationsFromCheckbox, saveMergeContinueWatching, saveCardPreviews, dismissNewContentNotice, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
+    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, saveRowShapeByKey, toggleNotificationsFromCheckbox, saveMergeContinueWatching, dismissNewContentNotice, toggleCard, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
     showAddHomeRow, hideAddHomeRow, confirmAddHomeRow, removeHomeRow, removeHomeRowByKey,
     reorderHomeRows, rowKey,
     // Library
     openSyncDetailModal, closeSyncDetailModal,
-    loadLibListPills, setLibList, setLibListStatus, setLibSort, scrollListPills,
-    showMediaDetail, showCoverageDetail, filterByTag, searchLibrary, setLibType, setLibSrc,
+    loadLibListPills, setLibSort,
+    showMediaDetail, showCoverageDetail, filterByTag, searchLibrary, setLibType, setLibSource,
     loadMoreLibrary, showAddToRadarrModal, showAddToArrModal, confirmAddToRadarr, confirmAddToArr,
     onMonitorPresetChange, toggleSeasonAccordion, toggleSeasonAll, updateSeasonCheckbox, epPickerSelectAll, epPickerSelectNone,
     showManageEpisodesModal, confirmManageEpisodes,
@@ -7390,31 +7039,33 @@ async function loadHealthActivity() {
     loadFollowing,
     toggleStrmManaged,
     // Duplicates
-    setDupFilter, resolveDup, resolveAllKeepRadarr,
+    setDupFilter, resolveDup, resolveAllKeepRadarr, showAllDuplicates, showMoreHealthLog,
     // Log viewer
     clearLogPanel, toggleLogScroll,
     // Radarr / Sonarr
     scanRadarr, scanSonarr, writeNfos,
     // Migration
     showMigrate, previewMigration, runMigration,
-    // VOD
-    loadVodPage, onVodProviderChange, showVodTab, loadVodCategories, vodFetchCategories,
-    filterVodCats, setVodCatFilter, vodSelectAllVisible, vodToggleCat, vodSaveCategories,
-    vodRunSync, vodPreviewSync,
+    // Sources (sources.js: provider cards, their categories and channel groups)
+    showSourcesTab, loadProviders, setProviderUse, toggleProviderPanel,
+    setProvCatFilter, renderProvCats, provCatToggle, provCatsSelectShown, provCatsRefresh, provCatsSave,
+    renderProvGroups, provGroupToggle, provGroupsSelectShown, provGroupsRefresh, provGroupsSave,
+    loadArrSources, saveTentacleAddress, onLiveProviderChange,
+    addProviderAddresses, removeProviderAddress, useProviderAddress, testProviderAddresses, setAddressAutoSwitch,
+    saveProviderLiveNumber,
     // Activity
     loadActivity, startActivityPolling, stopActivityPolling,
     // Health
-    loadHealthPage, loadHealthActivity, loadHealthDeletions, loadHealthDownloads, stopHealthPolling,
-    saveHealthDownloadSettings, healthFixDownload, healthRemoveDownload, healthImportDownload,
+    loadHealthPage, setHealthLogKind, loadHealthLog, renderHealthLog, loadHealthDownloads, stopHealthPolling,
+    healthFixDownload, healthRemoveDownload, healthImportDownload,
     showHealthMissingTab, loadHealthMissing, healthDiagnose, healthGrabRelease, healthSearchMissing,
-    loadHealthStreams, healthRecheckStreams, healthRunStreamSweep, healthClearStream, healthRemoveStream,
+    loadHealthStreams, toggleHealthStreamsAll, healthRecheckStreams, healthRunStreamSweep, healthClearStream, healthRemoveStream,
     // Discover
     loadDiscoverPage, loadDiscover, setDiscoverType, switchDiscoverSection, selectStreamingProvider, selectGenre, setGenreMode, selectList, showDiscoverDetail,
     onDiscoverSearchInput, clearDiscoverSearch,
     // Live TV
     loadLiveTV, showLiveTab,
-    liveSyncGroups, liveSyncChannels, liveSyncEpg, fillSetupUrls, updateSetupUrls, copyLiveSetup, saveSetupAddress, editSetupAddress,
-    toggleLiveGroup, toggleAllGroups, saveLiveGroups, filterLiveGroups,
+    liveSyncChannels, liveSyncEpg, fillSetupUrls, updateSetupUrls, copyLiveSetup,
     loadLiveChannels, toggleLiveChannel, renameLiveChannel, setLiveChannelGuideId, toggleAllChannels, saveLiveChannels, searchLiveChannels, filterLiveChannels, filterLiveChannelsByEpg, liveChPage,
   ];
   for (const fn of fns) {

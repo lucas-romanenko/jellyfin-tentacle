@@ -51,10 +51,10 @@ class NavAndSetupA11y(unittest.TestCase):
                 with self.subTest(selector=selector, bg=bg):
                     self.assertGreaterEqual(_contrast(fg, self._on_dim(bg)), 4.5)
 
-    def test_the_setup_address_fields_have_a_name(self):
-        for id_ in ("live-setup-host", "live-setup-port"):
-            with self.subTest(id=id_):
-                self.assertRegex(self.html, rf'id="{id_}" aria-label="[^"]+"')
+    def test_the_address_field_has_a_name(self):
+        # The redesign asks for Tentacle's address once, in Settings → Services (Live TV setup shows it)
+        self.assertRegex(self.html, r'id="settings-tentacle-address" aria-label="[^"]+"')
+        self.assertNotIn('id="live-setup-host"', self.html)
 
 
 if __name__ == "__main__":

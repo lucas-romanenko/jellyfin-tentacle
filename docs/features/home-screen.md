@@ -7,7 +7,7 @@ Tentacle gives you a Netflix-style home screen in Jellyfin with a hero spotlight
 
 ## Setting Up Your Home Screen
 
-Go to **Jellyfin → Home Screen** in the Tentacle dashboard.
+Go to **My Home Screen** in the Tentacle dashboard.
 
 ## Hero Spotlight
 

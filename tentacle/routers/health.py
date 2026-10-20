@@ -5,7 +5,7 @@ provider health, stream health. Admin-only.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -409,10 +409,17 @@ def remove_stream_entry(body: StreamEntryRequest, db: Session = Depends(get_db),
 # ─── Deletion audit log ───────────────────────────────────────────────────────
 
 @router.get("/deletions")
-def get_deletions(limit: int = 200, db: Session = Depends(get_db)):
-    """Recent deletion-audit entries, newest first."""
+def get_deletions(limit: int = 200, offset: int = 0, days: int = 0, db: Session = Depends(get_db)):
+    """Recent deletion-audit entries, newest first.
+
+    `days` > 0 keeps the last that many days (Health shows 7 by default);
+    `offset` pages through them."""
     limit = max(1, min(limit, 1000))
-    entries = db.query(DeletionLog).order_by(DeletionLog.created_at.desc()).limit(limit).all()
+    q = db.query(DeletionLog)
+    if days > 0:
+        q = q.filter(DeletionLog.created_at >= datetime.utcnow() - timedelta(days=min(days, 3650)))
+    entries = (q.order_by(DeletionLog.created_at.desc(), DeletionLog.id.desc())
+               .offset(max(0, offset)).limit(limit).all())
     return [{
         "id": e.id,
         "kind": e.kind,

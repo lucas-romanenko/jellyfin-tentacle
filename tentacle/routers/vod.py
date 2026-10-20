@@ -322,10 +322,19 @@ async def _playback_for(db, token: str, owner: str, client: str = "") -> _Playba
     if pb is not None and not pb.stopped.is_set():
         pb.touch()
         return pb
-    limit = livetv._max_concurrent_streams(db)
+    limit = livetv.overall_stream_limit(db)
+    # owner is vod:<kind>:<provider id>:<stream id> (_resolve)
+    try:
+        provider_id = int(owner.split(":")[2])
+    except (IndexError, ValueError):
+        provider_id = None
+    provider = db.get(livetv.Provider, provider_id) if provider_id is not None else None
+    provider_limit = livetv.provider_stream_limit(db, provider) if provider is not None else 0
     livetv._stream_slots.set_protect(livetv._protect_recordings(db))
     try:
-        lease = await livetv._stream_slots.acquire_lease(limit, livetv._SLOT_WAIT_SECONDS, "vod", owner)
+        lease = await livetv._stream_slots.acquire_lease(limit, livetv._SLOT_WAIT_SECONDS, "vod", owner,
+                                                         provider_id=provider.id if provider else None,
+                                                         provider_limit=provider_limit)
     except livetv.RecordingProtected:
         raise HTTPException(503, livetv.PROTECTED_REFUSAL_DETAIL)
     if lease is None:

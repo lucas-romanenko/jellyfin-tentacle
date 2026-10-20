@@ -220,8 +220,6 @@ stops if the provider says it is over its connection limit.
 ## API ENDPOINTS
 
 ```
-GET/POST /api/live/provider              — Get/save live TV provider config
-POST     /api/live/provider/test         — Test connection
 POST     /api/live/sync/{provider_id}    — Phase 1: fetch groups with channel counts
 POST     /api/live/sync-channels/{id}    — Phase 2: fetch channels for enabled groups
 POST     /api/live/sync-epg/{id}         — Fetch EPG data (XMLTV, cached 8h)

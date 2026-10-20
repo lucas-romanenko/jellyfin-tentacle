@@ -89,14 +89,15 @@ class DocsPointToHealth(unittest.TestCase):
     def test_the_card_is_on_the_health_page(self):
         health = re.search(r'<div class="page" id="page-health".*?(?=<div class="page" id="page-)', INDEX_HTML, re.S)
         self.assertIsNotNone(health)
-        self.assertIn('<div class="card-title">Deletion Log</div>', health.group(0))
+        self.assertIn('What happened', health.group(0))
+        self.assertIn(">Removals</button>", health.group(0))
 
     def test_no_doc_sends_people_to_settings(self):
         wrong = [str(p.relative_to(REPO)) for p in (REPO / "docs").rglob("*.md")
                  if re.search(r"Settings\s*(?:→|->|&rarr;)\s*Deletion Log", p.read_text(encoding="utf-8"), re.I)]
         self.assertEqual([], wrong)
         vod = (REPO / "docs" / "features" / "vod-library.md").read_text(encoding="utf-8")
-        self.assertRegex(vod, r"Health\s*→\s*Deletion Log")
+        self.assertRegex(vod, r"Health\s*→\s*What happened\s*→\s*Removals")
 
 
 class JellyfinDeleteDetail(unittest.TestCase):

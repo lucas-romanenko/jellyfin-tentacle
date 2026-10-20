@@ -712,6 +712,7 @@ class _StreamSlots:
         # that is waiting is never beaten to a freed slot by a viewer that
         # happened to start waiting first.
         self._waiting: "dict[int, tuple]" = {}
+        self._waiting_provider: "dict[int, int | None]" = {}
         self._next_waiter = 1
         # Recording protection (see _protect_recordings). The setting is
         # read by whoever opens a pull and by the recording refresher, and
@@ -835,11 +836,31 @@ class _StreamSlots:
         self._enforcing.add(task)
         task.add_done_callback(self._enforcing.discard)
 
-    def _grant(self, kind: str, owner: "str | None", stream_key: "str | None" = None) -> _Lease:
+    def _grant(self, kind: str, owner: "str | None", stream_key: "str | None" = None,
+               provider_id: "int | None" = None) -> _Lease:
         lease = _Lease(self._next_id, kind, owner, stream_key)
+        lease.provider_id = provider_id
         self._next_id += 1
         self.leases[lease.id] = lease
         return lease
+
+    # Several providers (#704): each account carries its own number of
+    # streams (provider_limit), within the overall ceiling (limit). A pull
+    # that names no provider counts against the overall ceiling only.
+    def provider_active(self, provider_id: "int | None") -> int:
+        return sum(1 for l in self.leases.values() if l.provider_id == provider_id and not l.preempted)
+
+    def _own_full(self, provider_id, provider_limit: int) -> bool:
+        return provider_id is not None and provider_limit > 0 and self.provider_active(provider_id) >= provider_limit
+
+    def _fits(self, limit: int, provider_id, provider_limit: int) -> bool:
+        return (limit <= 0 or len(self.leases) < limit) and not self._own_full(provider_id, provider_limit)
+
+    def _competes(self, waiter_id: int, provider_id) -> bool:
+        """A waiter is after the same slot: the same provider's, or either
+        of the two names none (then only the overall ceiling holds them)."""
+        theirs = self._waiting_provider.get(waiter_id)
+        return theirs is None or provider_id is None or theirs == provider_id
 
     def sync_recordings(self, stream_keys, issued_at: "float | None" = None) -> int:
         """Bring running pulls into line with which channels are recorded NOW.
@@ -883,23 +904,25 @@ class _StreamSlots:
             self._freed.set()
             self._freed = asyncio.Event()
 
-    def _victim_for(self, kind: str) -> "_Lease | None":
+    def _victim_for(self, kind: str, provider_id=None, own_full: bool = False) -> "_Lease | None":
         """The least important running pull this kind may take a slot from:
-        strictly lower priority only; among equals, the most recent."""
+        strictly lower priority only; among equals, the most recent. When
+        the provider's own account is what is full, only one of its pulls."""
         prio = _LEASE_PRIORITY.get(kind, _LEASE_PRIORITY["live"])
-        candidates = [l for l in self.leases.values() if l.priority > prio and not l.preempted]
+        candidates = [l for l in self.leases.values() if l.priority > prio and not l.preempted
+                      and (not own_full or l.provider_id == provider_id)]
         if not candidates:
             return None
         return max(candidates, key=lambda l: (l.priority, l.started))
 
     async def _take_from(self, victim: _Lease, kind: str, owner: "str | None",
-                         stream_key: "str | None") -> _Lease:
+                         stream_key: "str | None", provider_id: "int | None" = None) -> _Lease:
         """Move the victim's slot to the newcomer in one step -- the slot is
         never free in between, so nobody woken meanwhile can take it and put
         the count over the limit -- then stop the victim."""
         victim.preempted = True
         self.leases.pop(victim.id, None)
-        lease = self._grant(kind, owner, stream_key)
+        lease = self._grant(kind, owner, stream_key, provider_id)
         self.preempted_since_start += 1
         logger.warning(f"[LiveTV] At capacity: {kind} '{owner}' takes the slot of {victim.kind} "
                        f"'{victim.owner}', which is stopped")
@@ -919,12 +942,15 @@ class _StreamSlots:
         return lease
 
     def _first_in_line(self, waiter_id: int) -> bool:
-        best = min(self._waiting.items(), key=lambda kv: kv[1])[0] if self._waiting else None
+        mine = self._waiting_provider.get(waiter_id)
+        rivals = {k: v for k, v in self._waiting.items() if k == waiter_id or self._competes(k, mine)}
+        best = min(rivals.items(), key=lambda kv: kv[1])[0] if rivals else None
         return best == waiter_id
 
     async def acquire_lease(self, limit: int, wait: float, kind: str = "live",
                             owner: "str | None" = None, stream_key: "str | None" = None,
-                            certain: bool = True) -> "_Lease | None":
+                            certain: bool = True, provider_id: "int | None" = None,
+                            provider_limit: int = 0) -> "_Lease | None":
         """A slot for one upstream pull, or None when refused at capacity.
 
         With recording protection on (self.protect): a recording first stops
@@ -932,24 +958,30 @@ class _StreamSlots:
         RecordingProtected while a recording runs. `certain` is False when
         the caller could not learn from Jellyfin just now what is being
         recorded -- then a live pull is not refused (it may be the next
-        recording) and a recording stops films only."""
+        recording) and a recording stops films only.
+
+        `provider_id` / `provider_limit`: the account this pull is on and how
+        many streams it carries at once (0: no limit of its own)."""
         prio = _LEASE_PRIORITY.get(kind, _LEASE_PRIORITY["live"])
+        pid, plimit = provider_id, provider_limit
         if self.protect:
             if kind == "recording":
                 lease = await self._clear_and_grant(kind, owner, stream_key, films_only=not certain)
                 if lease is not None:
+                    lease.provider_id = pid
                     return lease
             elif self.recording_active() and (certain or kind == "vod"):
                 self._refuse_protected(kind, owner)
-        if limit <= 0:
-            return self._grant(kind, owner, stream_key)
+        if limit <= 0 and (pid is None or plimit <= 0):
+            return self._grant(kind, owner, stream_key, pid)
         # A free slot goes to the newcomer only if nobody as important is
         # already waiting for one.
-        if len(self.leases) < limit and not any(p <= prio for p, _ in self._waiting.values()):
-            return self._grant(kind, owner, stream_key)
-        victim = self._victim_for(kind)
+        if self._fits(limit, pid, plimit) and not any(
+                p <= prio for k, (p, _) in self._waiting.items() if self._competes(k, pid)):
+            return self._grant(kind, owner, stream_key, pid)
+        victim = self._victim_for(kind, pid, self._own_full(pid, plimit))
         if victim is not None:
-            return await self._take_from(victim, kind, owner, stream_key)
+            return await self._take_from(victim, kind, owner, stream_key, pid)
         if self._freed is None:
             self._freed = asyncio.Event()
         loop = asyncio.get_running_loop()
@@ -957,19 +989,20 @@ class _StreamSlots:
         me = self._next_waiter
         self._next_waiter += 1
         self._waiting[me] = (prio, me)
+        self._waiting_provider[me] = pid
         try:
             while True:
                 freed = self._freed          # before checking: a set after this is not missed
                 if self.protect and kind != "recording" and self.recording_active() \
                         and (certain or kind == "vod"):
                     self._refuse_protected(kind, owner)     # a recording started while we waited
-                if len(self.leases) < limit and self._first_in_line(me):
-                    return self._grant(kind, owner, stream_key)
+                if self._fits(limit, pid, plimit) and self._first_in_line(me):
+                    return self._grant(kind, owner, stream_key, pid)
                 # Something may have become takeable while we waited (a
                 # recording demoted back to a viewer when its timer ended).
-                victim = self._victim_for(kind)
+                victim = self._victim_for(kind, pid, self._own_full(pid, plimit))
                 if victim is not None and self._first_in_line(me):
-                    return await self._take_from(victim, kind, owner, stream_key)
+                    return await self._take_from(victim, kind, owner, stream_key, pid)
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     return None
@@ -979,6 +1012,7 @@ class _StreamSlots:
                     return None
         finally:
             self._waiting.pop(me, None)
+            self._waiting_provider.pop(me, None)
             # The queue changed: whoever is first in line now re-checks.
             if self._waiting:
                 self._wake()
@@ -1017,6 +1051,26 @@ def _max_concurrent_streams(db) -> int:
         return max(0, int(raw)) if raw.strip() else _DEFAULT_MAX_CONCURRENT_STREAMS
     except (ValueError, AttributeError):
         return _DEFAULT_MAX_CONCURRENT_STREAMS
+
+
+def provider_stream_limit(db, provider) -> int:
+    """Streams this provider's account carries at once (#704): its own
+    number from its card, else the Live TV default. 0 means no limit."""
+    own = getattr(provider, "live_max_streams", None) if provider is not None else None
+    if own is not None and own > 0:
+        return own
+    return _max_concurrent_streams(db)
+
+
+def overall_stream_limit(db) -> int:
+    """The ceiling over every provider together: the sum of each one's own
+    limit (one provider: its limit, as before). 0 when any is unlimited."""
+    providers = [p for p in db.query(Provider).all()
+                 if p.live_tv_enabled or p.active or getattr(p, "live_max_streams", None)]
+    if not providers:
+        return _max_concurrent_streams(db)
+    limits = [provider_stream_limit(db, p) for p in providers]
+    return 0 if any(n <= 0 for n in limits) else sum(limits)
 
 
 # How long a running stream keeps retrying a failing upstream before it ends.
@@ -1077,7 +1131,7 @@ _EPG_COVERAGE_KEY = "livetv_epg_coverage_{}"
 _EPG_SYNCED_KEY = "livetv_epg_synced_{}"
 _M3U_SWITCHED_OFF_KEY = "livetv_m3u_switched_off_{}"
 PROVIDER_SETTING_KEYS = (_OUTPUT_FORMATS_KEY, _EPG_COVERAGE_KEY, _EPG_SYNCED_KEY,
-                         _M3U_SWITCHED_OFF_KEY)
+                         _M3U_SWITCHED_OFF_KEY, "provider_address_probation_{}")
 
 
 def _remembered_output_formats(db, provider_id: int) -> list:
@@ -1317,7 +1371,7 @@ async def _recording_channel_ids(db, force: bool = False, background: bool = Fal
             # the caller sees an answer that is not current.
             sids = cache["sids"]
             reserved = {c for c, r in _reserved_channels.items() if r["until"] > loop.time()}
-            ids = {row.id for row in db.query(LiveChannel).filter(LiveChannel.stream_id.in_(list(sids))).all()} if sids else set()
+            ids = {row.id for row in channels_for_guide_numbers(db, sids)}
             return reserved | ids
         now = loop.time()
     for cid in [c for c, r in _reserved_channels.items() if r["until"] <= now]:
@@ -1354,7 +1408,7 @@ async def _recording_channel_ids(db, force: bool = False, background: bool = Fal
             # apply the answer now (idempotent) so THIS open sees it.
             _recording_lookup_done(pending)
     sids = cache["sids"]
-    ids = {row.id for row in db.query(LiveChannel).filter(LiveChannel.stream_id.in_(list(sids))).all()} if sids else set()
+    ids = {row.id for row in channels_for_guide_numbers(db, sids)}
     return reserved | ids
 
 
@@ -2038,189 +2092,18 @@ class BulkGroupUpdate(BaseModel):
     enabled: bool
 
 
-class LiveProviderConfig(BaseModel):
-    name: Optional[str] = None
-    provider_type: Optional[str] = None  # xtream, m3u_url, m3u_file
-    server_url: Optional[str] = None
-    username: Optional[str] = None
-    password: Optional[str] = None
-    m3u_url: Optional[str] = None
-    epg_url: Optional[str] = None
-    user_agent: Optional[str] = None
-    live_tv_enabled: Optional[bool] = None
-
-
 # ─── Provider config ────────────────────────────────────────────────────────
-
-
-@router.get("/api/live/provider", dependencies=_admin)
-def get_live_provider(db: Session = Depends(get_db)):
-    """Get the live TV provider config."""
-    provider = db.query(Provider).filter(Provider.live_tv_enabled == True).first()
-    if not provider:
-        # Fall back to any provider with detected live capability
-        provider = db.query(Provider).filter(Provider.has_live == True).first()
-    if not provider:
-        return {"provider": None}
-
-    return {
-        "provider": {
-            "id": provider.id,
-            "name": provider.name,
-            "provider_type": provider.provider_type or "xtream",
-            "server_url": provider.server_url,
-            "username": provider.username,
-            "password": "••••••••" if provider.password else "",
-            "m3u_url": provider.m3u_url or "",
-            "epg_url": provider.epg_url or "",
-            "user_agent": provider.user_agent or "TiviMate/4.7.0 (Linux; Android 12)",
-            "live_tv_enabled": provider.live_tv_enabled,
-            "last_live_sync": provider.last_live_sync.isoformat() if provider.last_live_sync else None,
-        }
-    }
 
 
 def live_tv_providers(db: Session) -> list:
     """Every provider that serves Live TV.
 
-    Selected on `live_tv_enabled` alone. `active` is the VOD sync switch, and
-    save_live_provider() creates its provider with active=False because a Live
-    TV provider must never get a VOD sync, so a filter on `active` matched no
-    provider set up the normal way: the nightly guide refresh never ran (#174).
+    Selected on `live_tv_enabled` alone (the card's "Use for Live TV"):
+    `active` is the VOD sync switch, and a provider used for Live TV only has
+    it off; a filter on `active` once kept the nightly guide refresh from
+    running (#174).
     """
     return db.query(Provider).filter(Provider.live_tv_enabled == True).all()  # noqa: E712
-
-
-@router.post("/api/live/provider", dependencies=_admin)
-def save_live_provider(body: LiveProviderConfig, db: Session = Depends(get_db)):
-    """Create or update the live TV provider."""
-    # Clean up any duplicate providers with masked passwords (from earlier bug)
-    dupes = db.query(Provider).filter(
-        Provider.live_tv_enabled == True,
-        Provider.password == "••••••••",
-    ).all()
-    for d in dupes:
-        db.delete(d)
-    if dupes:
-        db.flush()
-
-    # Find existing live TV provider only — never reuse VOD providers
-    provider = db.query(Provider).filter(Provider.live_tv_enabled == True).first()
-    before = None   # the saved provider's (server, user, pass), for the .strm rewrite (#142)
-
-    if not provider:
-        # Create a dedicated live TV provider
-        pwd = body.password if body.password and body.password != "••••••••" else ""
-        provider = Provider(
-            name=body.name or "Live TV",
-            provider_type=body.provider_type or "xtream",
-            server_url=body.server_url or "",
-            username=body.username or "",
-            password=pwd,
-            m3u_url=body.m3u_url,
-            epg_url=body.epg_url,
-            user_agent=body.user_agent or "TiviMate/4.7.0 (Linux; Android 12)",
-            live_tv_enabled=True,
-            active=False,
-        )
-        db.add(provider)
-    else:
-        before = _xtream_login(provider)
-        m3u_before = provider.m3u_url
-        if body.name is not None:
-            provider.name = body.name
-        if body.provider_type is not None:
-            provider.provider_type = body.provider_type
-        if body.server_url is not None:
-            provider.server_url = body.server_url
-        if body.username is not None:
-            provider.username = body.username
-        if body.password is not None and body.password != "••••••••":
-            provider.password = body.password
-        if body.m3u_url is not None:
-            provider.m3u_url = body.m3u_url
-        if body.epg_url is not None:
-            provider.epg_url = body.epg_url
-        if body.user_agent is not None:
-            provider.user_agent = body.user_agent
-        if body.live_tv_enabled is not None:
-            provider.live_tv_enabled = body.live_tv_enabled
-        rewrite_xtream_channel_urls(provider, before, db)
-        # Recorded in this commit: a restart before the rewrite ran loses nothing (#149)
-        from services import provider_relink
-        if provider_relink.address_changed(provider, before, m3u_before):
-            provider_relink.record_pending(db, provider, before)
-
-    db.commit()
-    db.refresh(provider)
-    if before is not None and _xtream_login(provider) != before:
-        from services import provider_relink
-        provider_relink.start_relink(provider.id, before)
-
-    log_activity(db, "livetv_config", f"Live TV provider updated: {provider.name}")
-    return {"success": True, "provider_id": provider.id}
-
-
-@router.post("/api/live/provider/test", dependencies=_admin)
-def test_live_provider(db: Session = Depends(get_db)):
-    """Test connection to the live TV provider."""
-    from services.provider_activity import refuse_while_recording
-    refuse_while_recording(db, "Testing the provider")
-    provider = db.query(Provider).filter(Provider.live_tv_enabled == True).first()
-    if not provider:
-        provider = db.query(Provider).first()
-    if not provider:
-        return {"success": False, "message": "No live TV provider configured"}
-
-    provider_type = provider.provider_type or "xtream"
-
-    if provider_type == "xtream":
-        try:
-            from services.xtream_client import XtreamClient
-            client = XtreamClient(
-                server=provider.server_url,
-                username=provider.username,
-                password=provider.password,
-                user_agent=provider.user_agent or "TiviMate/4.7.0 (Linux; Android 12)",
-            )
-            info = client.authenticate()
-            client.close()
-            _remember_output_formats(db, provider.id, info)
-            db.commit()
-            return {
-                "success": True,
-                "message": "Connected",
-                "info": {
-                    "status": info.get("user_info", {}).get("status", "unknown"),
-                    "exp_date": info.get("user_info", {}).get("exp_date"),
-                    "max_connections": info.get("user_info", {}).get("max_connections"),
-                    "active_connections": info.get("user_info", {}).get("active_cons"),
-                    "allowed_output_formats": info.get("user_info", {}).get("allowed_output_formats"),
-                    "live_stream_format": _live_stream_format(db),
-                    "live_extension": _live_extension(db, provider.id),
-                },
-            }
-        except Exception as e:
-            from services.log_redaction import redact
-            return {"success": False, "message": redact(str(e))}
-
-    elif provider_type == "m3u_url":
-        import requests
-        try:
-            resp = requests.head(
-                provider.m3u_url or provider.server_url,
-                headers={"User-Agent": provider.user_agent or "TiviMate/4.7.0"},
-                timeout=10,
-            )
-            return {"success": resp.status_code == 200, "message": f"HTTP {resp.status_code}"}
-        except Exception as e:
-            from services.log_redaction import redact
-            return {"success": False, "message": redact(str(e))}
-
-    return {"success": False, "message": f"Unknown provider type: {provider_type}"}
-
-
-# ─── Channel sync ───────────────────────────────────────────────────────────
 
 
 @router.post("/api/live/sync/{provider_id}", dependencies=_admin)
@@ -2285,8 +2168,14 @@ def live_capacity(db: Session = Depends(get_db)):
     stream has been refused since start -- the only trace a lost recording
     otherwise leaves is a log line."""
     return {
-        "limit": _max_concurrent_streams(db),
+        "limit": overall_stream_limit(db),
         "active": _stream_slots.active,
+        # Each account's own (#704): what the provider cards show
+        "providers": [{"id": p.id, "name": p.name, "limit": provider_stream_limit(db, p),
+                       "own_limit": p.live_max_streams, "account_max": p.max_connections,
+                       "active": _stream_slots.provider_active(p.id)}
+                      for p in db.query(Provider).order_by(Provider.id).all()
+                      if p.live_tv_enabled or p.active],
         "refused_since_start": _stream_slots.refused,
         "last_refused": _stream_slots.last_refused,
         "reconnect_budget_seconds": _reconnect_budget(db),
@@ -2309,7 +2198,7 @@ def _stream_snapshot(db) -> list:
             "channel": ch.name if ch else None,
             "client": None,
             # the GuideNumber Jellyfin knows this channel by (hdhr_<stream_id>)
-            "stream_id": (ch.stream_id or str(ch.id)) if ch else None,
+            "stream_id": guide_number(ch, _offsets(db)) if ch else None,
             "kind": lease.kind if lease else None,
             "state": st["state"],
             "for_seconds": round(max(0.0, now - st["since"]), 1),
@@ -2353,7 +2242,7 @@ def live_streams(db: Session = Depends(get_db)):
     secret so a server-side scheduler can call it without a user session."""
     return {
         "streams": _stream_snapshot(db),
-        "limit": _max_concurrent_streams(db),
+        "limit": overall_stream_limit(db),
         "active": _stream_slots.active,
         "preempted_since_start": _stream_slots.preempted_since_start,
         "reconnect_budget_seconds": _reconnect_budget(db),
@@ -2417,14 +2306,14 @@ async def live_reserve(body: ReserveRequest, db: Session = Depends(get_db)):
         sid = str(body.stream_id).strip()
         if sid.startswith("hdhr_"):
             sid = sid[len("hdhr_"):]
-        ch = q.filter(LiveChannel.stream_id == sid).first()
+        ch = next(iter(channels_for_guide_numbers(db, [sid])), None)
     else:
         raise HTTPException(422, "channel_id or stream_id is required")
     if not ch:
         raise HTTPException(404, "Channel not found")
     seconds = max(1, min(int(body.seconds), 24 * 3600))
     _reserved_channels[ch.id] = {"until": asyncio.get_running_loop().time() + seconds,
-                                 "stream_key": ch.stream_id or str(ch.id)}
+                                 "stream_key": guide_number(ch, _offsets(db))}
     return {"channel_id": ch.id, "channel": ch.name, "stream_id": ch.stream_id, "reserved_for_seconds": seconds}
 
 
@@ -3983,20 +3872,122 @@ def refresh_jellyfin_guide(db: Session = Depends(get_db)):
         raise HTTPException(502, f"Failed to connect to Jellyfin: {e}")
 
 
+# ─── Channel numbers with several Live TV providers ────────────────────────
+#
+# Jellyfin's HDHomeRun tuner names a channel hdhr_<GuideNumber> and keys its
+# timers, favourites and guide on it. The GuideNumber is the channel's
+# stream_id, which is unique only within one provider: two Live TV providers
+# could hand Jellyfin the same number, and Jellyfin would merge the two
+# channels. Each provider's numbers get an offset of their own instead:
+# the first Live TV provider keeps its own numbers (offset 0, so an install
+# that had one provider sees no change), every other one is given a round
+# offset above all the numbers in use, once, and keeps it
+# (Provider.channel_number_offset, shown and editable on the provider card).
+
+def _numeric_ids(db) -> list:
+    return [int(sid) for (sid,) in db.query(LiveChannel.stream_id).all() if str(sid or "").isdigit()]
+
+
+def ensure_channel_offsets(db) -> dict:
+    """provider id -> offset for every provider with Live TV on, giving
+    one to a provider that has none yet. Commits only when it gave one."""
+    providers = (db.query(Provider).filter(Provider.live_tv_enabled == True)  # noqa: E712
+                 .order_by(Provider.id).all())
+    taken = {p.channel_number_offset for p in providers if p.channel_number_offset is not None}
+    changed = False
+    for p in providers:
+        if p.channel_number_offset is not None:
+            continue
+        if 0 not in taken:
+            p.channel_number_offset = 0
+        else:
+            ids = _numeric_ids(db)
+            step = 10 ** max(6, len(str(max(ids))) if ids else 0)
+            n = 1
+            while n * step in taken:
+                n += 1
+            p.channel_number_offset = n * step
+        taken.add(p.channel_number_offset)
+        changed = True
+    if changed:
+        db.commit()
+    return {p.id: p.channel_number_offset or 0 for p in providers}
+
+
+def _offsets(db) -> dict:
+    """provider id -> offset, without writing: providers not given one yet
+    count as 0 (ensure_channel_offsets gives them theirs)."""
+    return {pid: off or 0 for pid, off in db.query(Provider.id, Provider.channel_number_offset).all()}
+
+
+def guide_number(ch, offsets: dict) -> str:
+    """The number Jellyfin knows this channel by (lineup GuideNumber, XMLTV
+    and M3U channel id, hdhr_<n> in its timers)."""
+    sid = str(ch.stream_id or ch.id)
+    offset = offsets.get(ch.provider_id) or 0
+    if not offset:
+        return sid
+    return str(offset + int(sid)) if sid.isdigit() else f"{offset}{sid}"
+
+
+def channels_for_guide_numbers(db, numbers) -> list:
+    """The channels Jellyfin means by these GuideNumbers."""
+    numbers = {str(n) for n in numbers or ()}
+    if not numbers:
+        return []
+    offsets = _offsets(db)
+    # The stream ids these numbers can stand for, one per offset in use
+    sids = set(numbers)
+    for off in {o for o in offsets.values() if o}:
+        for n in numbers:
+            if n.isdigit() and int(n) > off:
+                sids.add(str(int(n) - off))
+            elif n.startswith(str(off)):
+                sids.add(n[len(str(off)):])
+    rows = db.query(LiveChannel).filter(LiveChannel.stream_id.in_(list(sids))).all()
+    ids_only = [n for n in numbers if n.isdigit()]
+    if ids_only:   # a channel without a stream_id goes by its row id
+        rows += db.query(LiveChannel).filter(LiveChannel.stream_id.is_(None),
+                                             LiveChannel.id.in_([int(n) for n in ids_only])).all()
+    return [ch for ch in rows if guide_number(ch, offsets) in numbers]
+
+
+def _unique_numbers(db, channels: list) -> list:
+    """(channel, number) for the lineup, the XMLTV and the M3U: a number
+    already taken (two providers' ranges overlapping after an edit) is left
+    out, and said once, rather than handed to Jellyfin twice."""
+    offsets = {**_offsets(db), **ensure_channel_offsets(db)}
+    seen, out = set(), []
+    for ch in channels:
+        n = guide_number(ch, offsets)
+        if n in seen:
+            if (ch.id, n) not in _number_clash_logged:
+                _number_clash_logged.add((ch.id, n))
+                logger.warning(f"[LiveTV] Channel '{ch.name}' would have number {n}, which another provider's "
+                               f"channel has: left out. Change one provider's channel numbers on its card.")
+            continue
+        seen.add(n)
+        out.append((ch, n))
+    return out
+
+
+_number_clash_logged: set = set()
+
+
 # ─── HDHomeRun Emulation ───────────────────────────────────────────────────
 
 
 def _hdhr_tuner_count(db) -> int:
-    """How many tuners the device reports: at least the stream ceiling, so
-    Jellyfin (which takes this count when it discovers the device, and lists
-    that many tuners) never refuses a stream Tentacle would carry. The real
-    cap is livetv_max_concurrent_streams; hdhr_tuner_count only raises it,
-    or sets it when there is no ceiling (0)."""
+    """How many tuners the device reports: at least the stream ceiling over
+    every provider, so Jellyfin (which takes this count when it discovers
+    the device, and lists that many tuners) never refuses a stream Tentacle
+    would carry. The real caps are each provider's "Streams at once";
+    hdhr_tuner_count only raises it, or sets it when there is no ceiling."""
     try:
         configured = max(1, int(get_setting(db, "hdhr_tuner_count", "3")))
     except (ValueError, TypeError):
         configured = 3
-    return max(configured, _max_concurrent_streams(db))
+    return max(configured, overall_stream_limit(db))
 
 
 @router.get("/discover.json")
@@ -4066,9 +4057,9 @@ def hdhr_lineup(request: Request, db: Session = Depends(get_db)):
     base_url = base_url.rstrip("/")
 
     lineup = []
-    for ch in channels:
-        # Use stream_id as stable channel number — never shifts when channels are added/removed
-        number = ch.stream_id or str(ch.id)
+    for ch, number in _unique_numbers(db, channels):
+        # stream_id (plus the provider's offset) is the stable channel number:
+        # it never shifts when channels are added or removed
         entry = {
             "GuideNumber": str(number),
             "GuideName": ch.guide_name,
@@ -4278,14 +4269,17 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
     # scheduled recording silently becomes a zero-byte file -- Jellyfin shows the
     # timer as having run -- so it is logged as an error, by channel name, and
     # counted where the dashboard can see it (GET /api/live/capacity).
-    limit = _max_concurrent_streams(db)
     ch = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
+    ch_provider = db.get(Provider, ch.provider_id) if ch is not None and ch.provider_id else None
+    limit = overall_stream_limit(db)
+    provider_limit = provider_stream_limit(db, ch_provider) if ch_provider is not None else 0
     # A recording outranks a viewer at capacity (see _StreamSlots). Whether
     # this pull is one comes from Jellyfin's own timers, or a reservation.
     # When a slot would have to be taken from someone, ask afresh so the
     # victim is chosen on current information (a recording that opened a
     # moment ago may still be classified as a viewer: sync_recordings).
-    at_capacity = limit > 0 and _stream_slots.active >= limit
+    at_capacity = (limit > 0 and _stream_slots.active >= limit) or (
+        provider_limit > 0 and _stream_slots.provider_active(ch.provider_id if ch else None) >= provider_limit)
     # Recording protection decides on current information too: whether this
     # open is a recording (refused if not, while one runs), and which running
     # pulls are (the others are stopped for it).
@@ -4301,19 +4295,25 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
                        f"recorded — channel {channel_id} is opened as a {kind} and no viewer is stopped for it")
     try:
         lease = await _stream_slots.acquire_lease(limit, _SLOT_WAIT_SECONDS, kind, f"channel:{channel_id}",
-                                                  stream_key=(ch.stream_id or str(ch.id)) if ch else None,
-                                                  certain=certain)
+                                                  stream_key=guide_number(ch, _offsets(db)) if ch else None,
+                                                  certain=certain,
+                                                  provider_id=ch.provider_id if ch else None,
+                                                  provider_limit=provider_limit)
     except RecordingProtected:
         raise _TunerRefusal(PROTECTED_REFUSAL_DETAIL)
     if lease is None:
         name = ch.name if ch else f"channel {channel_id}"
         _stream_slots.refused += 1
+        own = provider_limit > 0 and _stream_slots.provider_active(ch.provider_id if ch else None) >= provider_limit
+        shown = provider_limit if own else limit
         _stream_slots.last_refused = {"channel_id": channel_id, "channel": name, "kind": kind,
-                                      "at": datetime.utcnow().isoformat() + "Z", "limit": limit}
-        logger.error(f"[LiveTV] At capacity ({limit} streams) — REFUSED {kind} '{name}' (channel {channel_id}). "
-                     f"If this was a recording it is lost. Raise livetv_max_concurrent_streams "
-                     f"(0 = no limit) if this server and provider can carry more.")
-        raise _TunerRefusal(f"Too many concurrent live streams (limit {limit})")
+                                      "at": datetime.utcnow().isoformat() + "Z", "limit": shown,
+                                      "provider": ch_provider.name if own and ch_provider else None}
+        where = f"{ch_provider.name}'s {provider_limit}" if own and ch_provider else f"{limit}"
+        logger.error(f"[LiveTV] At capacity ({where} streams) — REFUSED {kind} '{name}' (channel {channel_id}). "
+                     f"If this was a recording it is lost. Raise the provider's \"Streams at once\" on its "
+                     f"card (Sources) if its account can carry more.")
+        raise _TunerRefusal(f"Too many concurrent live streams (limit {shown})")
     sem = _stream_slots
     # Ownership of the release is handed to the streaming generator on the
     # success paths; on every early-exit / error path below we release here.
@@ -5617,8 +5617,7 @@ def live_playlist_m3u(request: Request, db: Session = Depends(get_db)):
 
     base_url = str(request.base_url).rstrip("/")
     lines = ["#EXTM3U"]
-    for ch in channels:
-        number = ch.stream_id or str(ch.id)
+    for ch, number in _unique_numbers(db, channels):
         epg_id = ch.guide_epg_id or f"tentacle-{ch.id}"
         logo = f' tvg-logo="{_m3u_text(ch.logo_url)}"' if ch.logo_url else ""
         group = f' group-title="{_m3u_text(ch.group_title)}"' if ch.group_title else ""
@@ -5711,8 +5710,7 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
     # One EPG ID can map to multiple channels (e.g. CP24 HD + CP24 HD BACKUP)
     epg_id_to_guide_numbers: dict[str, list[str]] = {}
     guide_number_group: dict[str, str] = {}
-    for ch in channels:
-        guide_number = str(ch.stream_id or ch.id)
+    for ch, guide_number in _unique_numbers(db, channels):
         xmltv_channels.append({
             "id": guide_number,
             "name": ch.guide_name,

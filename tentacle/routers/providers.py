@@ -87,7 +87,22 @@ class ProviderUpdate(BaseModel):
     user_agent: Optional[str] = None
     priority: Optional[int] = None
     active: Optional[bool] = None
+    # "Use for Live TV" on the provider card. Off takes its channels out of
+    # the tuner (the lineup lists enabled channels only).
+    live_tv_enabled: Optional[bool] = None
     require_tmdb_match: Optional[bool] = None
+    # Live TV, per provider: streams at once (0 = the default again) and what
+    # is added to its channel numbers
+    live_max_streams: Optional[int] = None
+    channel_number_offset: Optional[int] = None
+
+
+class AddressesAdd(BaseModel):
+    text: str
+
+
+class AddressSettings(BaseModel):
+    auto_switch: str
 
 
 class CategoryUpdate(BaseModel):
@@ -259,6 +274,10 @@ def list_providers(db: Session = Depends(get_db)):
             "has_series": p.has_series,
             "live_tv_enabled": p.live_tv_enabled,
             "require_tmdb_match": p.require_tmdb_match if p.require_tmdb_match is not None else True,
+            "address_count": len(p.addresses) or (1 if p.server_url else 0),
+            "address_auto_switch": p.address_auto_switch or "switch",
+            "live_max_streams": p.live_max_streams,
+            "channel_number_offset": p.channel_number_offset,
         }
         for p in providers
     ]
@@ -289,9 +308,25 @@ def create_provider(body: ProviderCreate, db: Session = Depends(get_db)):
     if body.user_agent:
         provider.user_agent = body.user_agent
     db.add(provider)
+    from services import provider_addresses
+    provider_addresses.ensure_current(db, provider)
     db.commit()
     db.refresh(provider)
     return {"id": provider.id, "success": True}
+
+
+def _stop_live_tv(db: Session, provider_id: int) -> None:
+    """Live TV switched off for a provider: its channels leave the tuner.
+
+    The lineup, the M3U and the guide list enabled channels whatever their
+    provider's switch says, so the switch alone would leave every channel in
+    Jellyfin. Its groups and channels are switched off instead; turning Live
+    TV on again starts from an empty choice of groups."""
+    from models.database import LiveChannel, LiveChannelGroup
+    db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id).update(
+        {LiveChannel.enabled: False}, synchronize_session=False)
+    db.query(LiveChannelGroup).filter(LiveChannelGroup.provider_id == provider_id).update(
+        {LiveChannelGroup.enabled: False}, synchronize_session=False)
 
 
 @router.put("/{provider_id}")
@@ -324,6 +359,10 @@ def update_provider(provider_id: int, body: ProviderUpdate, db: Session = Depend
         p.priority = body.priority
     if body.active is not None:
         p.active = body.active
+    if body.live_tv_enabled is not None:
+        if p.live_tv_enabled and not body.live_tv_enabled:
+            _stop_live_tv(db, p.id)
+        p.live_tv_enabled = body.live_tv_enabled
     if body.require_tmdb_match is not None:
         p.require_tmdb_match = body.require_tmdb_match
     # A new server or login reaches the Live TV channels now, not at the
@@ -331,10 +370,19 @@ def update_provider(provider_id: int, body: ProviderUpdate, db: Session = Depend
     rewrite_xtream_channel_urls(p, before, db)
     # ...and the films and episodes already in the library (#142), recorded in
     # this commit so a restart before the rewrite ran loses nothing (#149)
-    from services import provider_relink
+    from services import provider_relink, provider_addresses
     relink = _xtream_login(p) != before
     if provider_relink.address_changed(p, before, m3u_before):
         provider_relink.record_pending(db, p, before)
+    if provider_addresses.normalize(p.server_url) != provider_addresses.normalize(before[0]):
+        # A new address typed in is a switch like "Use this one" (#704)
+        provider_addresses.ensure_current(db, p)
+        if before[0] and (p.provider_type or "xtream") == "xtream":
+            provider_addresses._start_probation(db, p)
+    if body.live_max_streams is not None:
+        p.live_max_streams = body.live_max_streams if body.live_max_streams > 0 else None
+    if body.channel_number_offset is not None:
+        p.channel_number_offset = max(0, body.channel_number_offset)
     db.commit()
     if relink:
         provider_relink.start_relink(p.id, before)
@@ -480,6 +528,7 @@ def test_provider(provider_id: int, db: Session = Depends(get_db)):
         p.max_connections = int(info.get("max_connections", 1))
 
         # Probe capabilities
+        had_live = bool(p.has_live)
         base = _api_base(p)
         session = requests.Session()
         session.headers.update(HEADERS)
@@ -490,8 +539,10 @@ def test_provider(provider_id: int, db: Session = Depends(get_db)):
             except Exception:
                 setattr(p, attr, False)
 
-        # Auto-enable live TV if provider has live categories
-        if p.has_live:
+        # Live TV comes on by itself the first time live channels are found.
+        # A later test leaves the provider card's "Use for Live TV" switch as
+        # the admin set it (a re-test used to switch it back on).
+        if p.has_live and not had_live:
             p.live_tv_enabled = True
 
         db.commit()
@@ -715,3 +766,103 @@ def preview_sync(provider_id: int, db: Session = Depends(get_db)):
         "sample_categories": sample_categories,
         "note": "Estimates based on category sampling. Actual count after TMDB matching may differ."
     }
+
+
+# ─── Several addresses (services/provider_addresses.py) ──────────────────────
+
+def _provider_or_404(db: Session, provider_id: int) -> Provider:
+    p = db.query(Provider).filter(Provider.id == provider_id).first()
+    if not p:
+        raise HTTPException(404, "Provider not found")
+    return p
+
+
+def _addresses_view(db: Session, p: Provider) -> dict:
+    from services import provider_addresses as pa
+    rows = pa.ranked(db, p)
+    db.commit()
+    return {
+        "xtream": (p.provider_type or "xtream") == "xtream",
+        "auto_switch": p.address_auto_switch if p.address_auto_switch in pa.AUTO_SWITCH_MODES else "switch",
+        "addresses": rows,
+        "test": pa.progress(p.id),
+    }
+
+
+@router.get("/{provider_id}/addresses")
+def list_addresses(provider_id: int, db: Session = Depends(get_db)):
+    return _addresses_view(db, _provider_or_404(db, provider_id))
+
+
+@router.post("/{provider_id}/addresses")
+def add_addresses(provider_id: int, body: AddressesAdd, db: Session = Depends(get_db)):
+    """Paste the provider's message: every address in it is added as a backup."""
+    from services import provider_addresses as pa
+    p = _provider_or_404(db, provider_id)
+    if (p.provider_type or "xtream") != "xtream":
+        raise HTTPException(400, "An M3U playlist has one address: edit the provider to change it")
+    result = pa.add_from_text(db, p, body.text or "")
+    if not result["added"] and not result["known"]:
+        raise HTTPException(400, "No address found in that text")
+    return {**result, **_addresses_view(db, p)}
+
+
+@router.delete("/{provider_id}/addresses/{address_id}")
+def remove_address(provider_id: int, address_id: int, db: Session = Depends(get_db)):
+    from services import provider_addresses as pa
+    p = _provider_or_404(db, provider_id)
+    try:
+        pa.remove(db, p, address_id)
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    return _addresses_view(db, p)
+
+
+@router.post("/{provider_id}/addresses/test")
+def test_addresses(provider_id: int, db: Session = Depends(get_db)):
+    """Test every address, one at a time, in the background; GET the list for
+    how far it is. 409 while a test or the hourly check runs."""
+    from services import provider_addresses as pa
+    from services import provider_health
+    p = _provider_or_404(db, provider_id)
+    if (p.provider_type or "xtream") != "xtream":
+        raise HTTPException(400, "Only an Xtream provider has addresses to test")
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "Testing the provider's addresses")
+    if provider_health.check_running():
+        raise HTTPException(409, "The hourly provider check is running (one connection at a time): "
+                                 "try again in a few minutes")
+    if not pa.start_test_all(p.id):
+        raise HTTPException(409, "A test is already running: wait for it to finish")
+    return _addresses_view(db, p)
+
+
+@router.post("/{provider_id}/addresses/{address_id}/use")
+def use_address(provider_id: int, address_id: int, db: Session = Depends(get_db)):
+    """"Use this one": the provider moves to this address. Nothing is
+    imported again or deleted (provider_addresses.switch_to)."""
+    from services import provider_addresses as pa
+    from services import provider_health
+    p = _provider_or_404(db, provider_id)
+    a = next((a for a in p.addresses if a.id == address_id), None)
+    if a is None:
+        raise HTTPException(404, "No such address")
+    result = pa.switch_to(db, p, a.url, "chosen by hand", by_hand=True)
+    if result.get("switched"):
+        provider_health.address_switched(db, p.id)
+    return {**result, **_addresses_view(db, p)}
+
+
+@router.put("/{provider_id}/addresses/settings")
+def address_settings(provider_id: int, body: AddressSettings, db: Session = Depends(get_db)):
+    from services import provider_addresses as pa
+    p = _provider_or_404(db, provider_id)
+    if body.auto_switch not in pa.AUTO_SWITCH_MODES:
+        raise HTTPException(400, f"auto_switch is one of {', '.join(pa.AUTO_SWITCH_MODES)}")
+    p.address_auto_switch = body.auto_switch
+    if body.auto_switch == "switch_back" and not p.preferred_address:
+        p.preferred_address = pa.normalize(p.server_url)
+    db.commit()
+    return _addresses_view(db, p)

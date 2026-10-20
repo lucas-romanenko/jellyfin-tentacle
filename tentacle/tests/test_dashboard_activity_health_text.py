@@ -61,11 +61,16 @@ class ActivityAndHealthText(unittest.TestCase):
 
     def test_health_deletions_user_name(self):
         src = (ESC + functions("pages.js", ["timeAgo"]) + "\nconst _DELETION_KIND_META = {};\n"
-               "function _healthDate(v) { return null; }\n" + functions("pages.js", ["loadHealthDeletions"]))
+               "function _healthDate(v) { return null; }\n"
+               "const healthLog = { kind: 'deletions', entries: [], offset: 0, done: true, pageSize: 100, seq: 0 };\n"
+               + functions("sources.js", ["plainWords"])
+               + functions("pages.js", ["loadHealthLog", "_logClean", "_logActor", "_logKey", "_logGroups",
+                                        "renderHealthLog", "_activityIsProblem", "_activityMeta"])
+               + "\nconst _ACTIVITY_EVENT_META = {};\n")
         rows = [{"kind": "x", "name": v + " item", "reason": "manual", "user_name": v + " user", "detail": v + " why"}
                 for v in VALUES]
-        html = render(src, "API['/api/health/deletions'] = %s;" % json.dumps(rows), "await loadHealthDeletions()")
-        self.shown([v + s for v in VALUES for s in (" item", " user", " why")], html["health-deletions"])
+        html = render(src, "API['/api/health/deletions'] = %s;" % json.dumps(rows), "await loadHealthLog()")
+        self.shown([v + s for v in VALUES for s in (" item", " user")], html["health-log"])
 
 
 if __name__ == "__main__":

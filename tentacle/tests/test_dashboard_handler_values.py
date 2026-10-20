@@ -83,17 +83,18 @@ class HandlerValues(unittest.TestCase):
                        % code)
             self.assertEqual(name[0], Page(got).text, repr(name))
 
-    def test_the_library_source_pills(self):
-        """The pill's label and the tag its click passes are both the tag as stored."""
+    def test_the_library_source_dropdown(self):
+        """Each provider source is an option labelled with the tag and whose value carries it as stored."""
         from dashboard_js import render
-        src = HELPERS + "const pages = {lib: {sourceTag: null}};\n" + functions("pages.js", ["renderSourcePills"])
-        tags = [v for v in VALUES if "\r" not in v and "\u2028" not in v]
-        html = render(src, "", "renderSourcePills(%s)" % json.dumps({t: i + 1 for i, t in enumerate(tags)}))
-        page = Page(html["lib-source-pills"][-1])
+        src = HELPERS + "const pages = {lib: {sourceTag: null, src: 'all'}};\n" + functions("pages.js", ["renderSourceOptions"])
+        tags = [v for v in VALUES if "\r" not in v and "\u2028" not in v and "\n" not in v]
+        html = render(src, "", "renderSourceOptions(%s)" % json.dumps({t: i + 1 for i, t in enumerate(tags)}))
+        page = Page(html["lib-source"][-1])
+        values = page.attrs("value")
+        self.assertEqual(["all", "radarr", "vod"], values[:3])
+        self.assertEqual(sorted("tag:" + t for t in tags), sorted(values[3:]))
         for t in tags:
             self.assertIn(" ".join(t.split()), " ".join(page.text.split()))
-        passed = [handler_call(js, ["filterByTag"])[0][1] for js in page.attrs("onclick")[1:]]
-        self.assertEqual(sorted(_norm(t) for t in tags), sorted(passed))
 
 
 class EveryHandlerStringIsEscaped(unittest.TestCase):
@@ -103,7 +104,7 @@ class EveryHandlerStringIsEscaped(unittest.TestCase):
         attr = re.compile(r'\bon[a-z]+="([^"]*)"')
         item = re.compile(r"'\$\{((?:[^{}]|\{[^{}]*\})*)\}'")
         bad = []
-        for f in ("pages.js", "app.js", "music.js"):
+        for f in ("pages.js", "app.js", "sources.js", "music.js"):
             src = (JS / f).read_text(encoding="utf-8")
             for m in attr.finditer(src):
                 for e in item.findall(m.group(1)):

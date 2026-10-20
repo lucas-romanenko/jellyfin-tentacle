@@ -36,13 +36,13 @@ class WizardDocMatchesTheWizard(unittest.TestCase):
 
 
 class LiveTvPageHasNoProviderForm(unittest.TestCase):
-    def test_the_page_sends_users_to_settings_providers(self):
+    def test_the_page_sends_users_to_the_provider_cards(self):
         notice = re.search(r'<div id="live-no-provider".*?</div>', HTML, re.S)
         self.assertIsNotNone(notice)
-        self.assertIn("showSettingsSection('providers')", notice.group(0))
+        self.assertIn("showSourcesTab('providers')", notice.group(0))
         doc = (REPO / "docs" / "features" / "live-tv.md").read_text(encoding="utf-8")
-        self.assertTrue("Settings → Providers" in doc,
-                        "live-tv.md must send users to Settings → Providers")
+        self.assertTrue("Sources → IPTV providers" in doc,
+                        "live-tv.md must send users to Sources → IPTV providers")
 
     def test_every_live_element_the_script_reads_exists(self):
         ids = set(re.findall(r"getElementById\('(live-[\w-]+)'\)", PAGES_JS))

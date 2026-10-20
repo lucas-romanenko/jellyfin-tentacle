@@ -30,8 +30,8 @@ In Sonarr, go to **Settings → Connect → Add → Webhook**:
 
 "Download More Episodes" lets you fill in missing episodes of a VOD series via
 Sonarr. For Jellyfin to show the VOD episodes and the downloads as **one**
-series, pick one of two layouts (Tentacle → Settings → Integrations →
-*Hybrid series layout*):
+series, pick one of two layouts (Tentacle → Settings → Advanced →
+*Where extra episodes of an IPTV series go*):
 
 #### Option A: Shared Jellyfin library (recommended)
 
@@ -48,7 +48,7 @@ Setup:
 
 1. In Jellyfin, create **one** Shows library containing **both** media folders
    (your VOD shows folder and Sonarr's shows folder)
-2. In Tentacle → Settings → Integrations, set *Hybrid series layout* to
+2. In Tentacle → Settings → Advanced, set *Where extra episodes of an IPTV series go* to
    **Shared Jellyfin library**
 
 No extra Sonarr configuration needed — downloads go to Sonarr's normal root.
@@ -83,7 +83,7 @@ access to the VOD shows directory:
 Nothing breaks silently. On the VOD-root layout with no VOD root folder
 configured, **Download More Episodes** fails with a clear fix-it message
 (instead of downloading to the regular root and creating a duplicate series),
-and **Settings → Connections** shows an amber warning on Sonarr.
+and **Settings → Services** shows an amber warning on Sonarr.
 
 ## What Happens When Episodes Download
 
@@ -174,7 +174,7 @@ For series already in Sonarr, you can change which episodes are monitored:
 ## Quality Profile and Root Folder
 
 Pick a **default quality profile** (and, optionally, a root folder) under
-Sonarr in **Settings → Connections**. Every request uses them: Discover,
+Sonarr in **Settings → Services**. Every request uses them: Discover,
 Library, lists, the Jellyfin plugin and the Android TV app.
 
 - Until a default profile is picked, requests are refused with a message

@@ -3,7 +3,8 @@
 // ── State ─────────────────────────────────────────────────────────────────
 const state = {
   currentPage: 'library',
-  currentSettingsSection: 'connections',
+  currentSettingsSection: 'services',
+  sourcesTab: 'providers',
   providers: [],
   categories: [],
   catFilter: 'all',
@@ -18,6 +19,7 @@ const state = {
 // ── Init ──────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
   setupNavigation();
+  loadVersionLabel();
   const authed = await checkAuth();
   if (!authed) return;  // Login overlay shown, wait for login
   await postLoginInit();
@@ -40,8 +42,9 @@ async function checkAuth() {
 async function postLoginInit() {
   if (state.currentUser && state.currentUser.is_admin) {
     await checkSetup();
-    loadProviders();
+    loadProviders({ quiet: true });
     checkRunningSyncs();
+    loadHealthAlerts();
     loadArrProblems();
     state._arrProblemsTimer = setInterval(loadArrProblems, 120000);
     loadProviderProblems();
@@ -49,8 +52,8 @@ async function postLoginInit() {
   }
   // Music module: show its tabs and search only when it is on.
   if (typeof loadMusicConfig === 'function') loadMusicConfig();
-  // Everyone lands on Library
-  showPage('library');
+  // The page in the address, else Library
+  showRouteFromHash();
 }
 
 // ── Radarr/Sonarr problems banner (admins) ────────────────────────────────
@@ -63,6 +66,7 @@ async function loadArrProblems() {
   let problems = [];
   try { problems = (await api('/api/health/arr-problems')).problems || []; } catch (e) { return; }
   const sig = problems.map(p => p.app + p.message).join('|');
+  if (typeof setHealthAlert === 'function') setHealthAlert('arr', problems.length, problems.some(p => p.level === 'error'));
   if (!problems.length || sig === _arrProblemsHidden) { el.style.display = 'none'; return; }
   const esc = s => String(s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
   el.className = 'arr-problems' + (problems.some(p => p.level === 'error') ? ' error' : '');
@@ -88,6 +92,7 @@ async function loadProviderProblems(data) {
   let providers = [];
   try { providers = (data || await api('/api/health/providers')).providers || []; } catch (e) { return; }
   const failing = providers.filter(p => p.state === 'failing');
+  if (typeof setHealthAlert === 'function') setHealthAlert('providers', failing.length, true);
   const sig = failing.map(p => [p.id, p.step, p.kind, p.code, p.since].join(':')).join('|');
   if (!failing.length || sig === _providerProblemsHidden) { el.style.display = 'none'; return; }
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
@@ -119,6 +124,42 @@ async function checkProvidersNow() {
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Check now'; }
   }
+}
+
+// ── Health alert count (admins) ───────────────────────────────────────────
+// One count in the sidebar for everything the Health page lists. Red only for
+// real problems (Radarr/Sonarr errors, a failing provider, Jellyfin not
+// answering, a folder that isn't mounted); things that only want a decision
+// (duplicates, new categories, possibly wrong movies) count in grey.
+const _healthAlerts = {};
+function setHealthAlert(key, count, problem) {
+  _healthAlerts[key] = { count: count || 0, problem: !!problem && (count || 0) > 0 };
+  renderHealthBadge();
+}
+function renderHealthBadge() {
+  const badge = document.getElementById('health-badge');
+  const items = Object.values(_healthAlerts);
+  const problem = items.some(a => a.problem);
+  // With real problems the count is theirs alone (red); otherwise it counts
+  // the things that want a decision (grey).
+  const total = items.filter(a => !problem || a.problem).reduce((n, a) => n + a.count, 0);
+  if (badge) {
+    badge.style.display = total ? '' : 'none';
+    badge.textContent = total > 99 ? '99+' : String(total);
+    badge.classList.toggle('nav-badge-quiet', !problem);
+    badge.title = problem ? 'Problems on the Health page' : 'Things on the Health page that want a decision';
+  }
+  const clear = document.getElementById('health-all-clear');
+  const real = items.filter(a => a.problem).length;
+  if (clear) clear.style.display = (Object.keys(_healthAlerts).length >= 3 && !real) ? '' : 'none';
+}
+// The counts behind it, fetched once at sign-in (and again on the Health page).
+function loadHealthAlerts() {
+  if (typeof loadLibStats === 'function') loadLibStats();
+  if (typeof _updateDupBadges === 'function') _updateDupBadges();
+  if (typeof checkNewContentNotice === 'function') checkNewContentNotice();
+  if (typeof loadMatchSuspects === 'function') loadMatchSuspects();
+  if (typeof checkStaleFiles === 'function') checkStaleFiles();
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────
@@ -307,6 +348,7 @@ function stopAllPolling() {
   if (state._arrProblemsTimer) { clearInterval(state._arrProblemsTimer); state._arrProblemsTimer = null; }
   if (state._providerProblemsTimer) { clearInterval(state._providerProblemsTimer); state._providerProblemsTimer = null; }
   if (state._syncPollInterval) { clearInterval(state._syncPollInterval); state._syncPollInterval = null; }
+  if (state._runNowTimer) { clearInterval(state._runNowTimer); state._runNowTimer = null; }
   for (const fn of ['stopActivityPolling', 'stopDownloadPolling', 'stopHealthPolling',
                     'stopYouTubePolling', 'stopLivePolling',
                     'disconnectLibraryStream', 'stopLogStream']) {
@@ -343,7 +385,50 @@ async function checkSetup() {
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────
-function showPage(name) {
+// Every page and tab has an address (#health, #sources/live, #settings/users),
+// so a link, a reload or the browser's Back button lands on the same place.
+// Server pages are the admins'; anyone else asking for one is sent to Library
+// (the API refuses them anyway; an empty page explained nothing).
+const ADMIN_PAGES = new Set(['sources', 'health', 'settings']);
+// Pages that moved: old links and buttons still land where the thing now is.
+const PAGE_ALIASES = {
+  vod: ['sources', 'providers'], 'live-tv': ['sources', 'live'], youtube: ['sources', 'youtube'],
+  home: ['jellyfin', null],
+};
+const PAGE_TITLES = {
+  library: ['Library', 'Everything you can watch'],
+  discover: ['Discover', 'Find something new and add it'],
+  jellyfin: ['My Home Screen', 'Your Jellyfin home rows and playlists'],
+  sources: ['Sources', 'Where the library comes from'],
+  health: ['Health', 'Problems, downloads and what happened'],
+  settings: ['Settings', 'Services, schedule and users'],
+};
+const PAGE_HASH = { jellyfin: 'home' };
+
+function _routeFromHash() {
+  const raw = decodeURIComponent((location.hash || '').replace(/^#\/?/, ''));
+  const [page, tab] = raw.split('/');
+  return { page: page || '', tab: tab || null };
+}
+
+let _routing = false;
+function setRoute(page, tab) {
+  if (_routing) return;
+  const hash = '#' + (PAGE_HASH[page] || page) + (tab ? '/' + tab : '');
+  if (location.hash === hash) return;
+  try { history.replaceState(null, '', hash); } catch (e) { /* file:// or sandboxed */ }
+}
+
+function showRouteFromHash() {
+  const { page, tab } = _routeFromHash();
+  showPage(page || 'library', tab);
+}
+
+function showPage(name, tab) {
+  if (PAGE_ALIASES[name]) { const [n, t] = PAGE_ALIASES[name]; name = n; tab = tab || t; }
+  if (!document.getElementById(`page-${name}`)) { name = 'library'; tab = null; }
+  if (ADMIN_PAGES.has(name) && !(state.currentUser && state.currentUser.is_admin)) { name = 'library'; tab = null; }
+
   // Disconnect library SSE when leaving library page
   if (state.currentPage === 'library' && name !== 'library') {
     if (typeof disconnectLibraryStream === 'function') disconnectLibraryStream();
@@ -352,6 +437,9 @@ function showPage(name) {
   // Stop health downloads polling when leaving health page
   if (state.currentPage === 'health' && name !== 'health') {
     if (typeof stopHealthPolling === 'function') stopHealthPolling();
+  }
+  if (state.currentPage === 'sources' && name !== 'sources') {
+    if (typeof stopYouTubePolling === 'function') stopYouTubePolling();
   }
 
   state.currentPage = name;
@@ -362,48 +450,71 @@ function showPage(name) {
   document.getElementById(`page-${name}`)?.classList.add('active');
   document.querySelector(`.nav-item[data-page="${name}"]`)?.classList.add('active');
 
-  const titles = {
-    library: ['Library', 'Browse your media collection'],
-    vod: ['VOD', 'Categories, sync & content'],
-    'live-tv': ['Live TV', 'Channels, groups & EPG'],
-    discover: ['Discover', 'Browse, search & add new content'],
-    jellyfin: ['Jellyfin', 'Home screen & playlists'],
-    youtube: ['YouTube', 'Channels indexed into your Jellyfin library'],
-    health: ['Health', 'Housekeeping, downloads & audit trail'],
-    settings: ['Settings', 'Connections, providers & config'],
-  };
-
-  const [title, sub] = titles[name] || [name, ''];
+  const [title, sub] = PAGE_TITLES[name] || [name, ''];
   document.getElementById('topbar-title').textContent = title;
   document.getElementById('topbar-sub').textContent = sub;
 
-  // Load page data
-  if (name === 'settings') { loadSettings(); loadProviders(); }
-  if (name === 'vod') loadVodPage();
-  if (name === 'library') loadLibrary();
-  if (name === 'discover') loadDiscoverPage();
-  if (name === 'jellyfin') loadJellyfinPage();
-  if (name === 'youtube') loadYouTubePage();
-  if (name === 'live-tv') loadLiveTV();
-  if (name === 'health') loadHealthPage();
+  _routing = true;
+  try {
+    // Load page data (a tab given in the address opens that tab)
+    if (name === 'settings') { loadSettings(); showSettingsSection(tab || state.currentSettingsSection || 'services'); }
+    if (name === 'library') { loadLibrary(); if (tab) showLibTab(tab); }
+    if (name === 'discover') { loadDiscoverPage(); if (tab) showDiscoverTab(tab); }
+    if (name === 'jellyfin') { loadJellyfinPage(); if (tab) showJellyfinTab(tab); }
+    if (name === 'sources') showSourcesTab(tab || state.sourcesTab || 'providers');
+    if (name === 'health') loadHealthPage();
+  } finally {
+    _routing = false;
+  }
+  setRoute(name, name === 'settings' ? state.currentSettingsSection
+    : name === 'sources' ? state.sourcesTab : tab);
+}
+
+window.addEventListener('popstate', () => { if (state.currentUser) showRouteFromHash(); });
+window.addEventListener('hashchange', () => {
+  if (!state.currentUser) return;
+  const { page, tab } = _routeFromHash();
+  const want = (PAGE_ALIASES[page] || [page])[0] || 'library';
+  if (want !== state.currentPage || tab) showRouteFromHash();
+});
+
+// The sidebar shows the build that is running, not a number typed into the page.
+async function loadVersionLabel() {
+  const el = document.getElementById('logo-version');
+  if (!el) return;
+  try {
+    const v = await (await fetch('/api/version')).json();
+    const commit = (v.commit && v.commit !== 'unknown') ? v.commit.slice(0, 7) : '';
+    let built = '';
+    if (v.built && v.built !== 'unknown') {
+      const d = new Date(v.built);
+      if (!isNaN(d)) built = d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+    }
+    el.textContent = commit ? `build ${commit}` : 'development build';
+    el.title = [commit && `Commit ${v.commit}`, built && `built ${built}`].filter(Boolean).join(', ');
+  } catch (e) { el.textContent = ''; }
 }
 
 // ── Tab switching helpers ──────────────────────────────────────────────────
 
 function showLibTab(tab) {
+  // Music is a type inside Browse (beside Movies and Shows); old #library/music links still land there
+  const wantMusic = tab === 'music';
+  if (!document.querySelector(`[data-libtab="${tab}"]`)) tab = 'browse';
   document.querySelectorAll('[data-libtab]').forEach(t => t.classList.remove('active'));
   document.querySelector(`[data-libtab="${tab}"]`)?.classList.add('active');
   document.getElementById('lib-tab-browse').style.display = tab === 'browse' ? '' : 'none';
   document.getElementById('lib-tab-following').style.display = tab === 'following' ? '' : 'none';
-  document.getElementById('lib-tab-duplicates').style.display = tab === 'duplicates' ? '' : 'none';
-  const musicTab = document.getElementById('lib-tab-music');
-  if (musicTab) musicTab.style.display = tab === 'music' ? '' : 'none';
-  if (tab === 'music' && typeof loadMusicLibrary === 'function') loadMusicLibrary();
-  if (tab === 'duplicates') loadDuplicates();
   if (tab === 'following') loadFollowing();
+  if (wantMusic) {
+    const btn = document.querySelector('[data-libtype="music"]');
+    if (btn) { setLibType('music', btn); return; }
+  }
+  setRoute('library', tab === 'browse' ? null : tab);
 }
 
 function showJellyfinTab(tab) {
+  if (tab !== 'playlists') tab = 'home';
   document.querySelectorAll('[data-jftab]').forEach(t => t.classList.remove('active'));
   document.querySelector(`[data-jftab="${tab}"]`)?.classList.add('active');
   document.getElementById('jf-tab-home').style.display = tab === 'home' ? '' : 'none';
@@ -414,9 +525,11 @@ function showJellyfinTab(tab) {
   // Load tab content on switch
   if (tab === 'playlists') { loadAutoPlaylists(); loadTagRules(); }
   if (tab === 'home') loadHomeScreen();
+  setRoute('jellyfin', tab === 'home' ? null : tab);
 }
 
 function showDiscoverTab(tab) {
+  if (!['browse', 'lists', 'activity'].includes(tab)) tab = 'browse';
   document.querySelectorAll('[data-discovertab]').forEach(t => t.classList.remove('active'));
   document.querySelector(`[data-discovertab="${tab}"]`)?.classList.add('active');
   document.getElementById('discover-tab-browse').style.display = tab === 'browse' ? '' : 'none';
@@ -426,15 +539,28 @@ function showDiscoverTab(tab) {
   if (tab === 'lists') loadLists();
   if (tab === 'activity') { startActivityPolling(); renderActivity(); }
   else stopActivityPolling();
+  setRoute('discover', tab === 'browse' ? null : tab);
 }
 
+// Settings sections that moved, by their old names (old links still work).
+const SETTINGS_ALIASES = {
+  connections: 'services', integrations: 'services', paths: 'advanced',
+  'playlists-info': 'services', providers: null, music: null,
+};
 function showSettingsSection(name) {
+  if (name in SETTINGS_ALIASES) {
+    // Providers and Music are Sources now
+    if (SETTINGS_ALIASES[name] === null) { showPage('sources', name === 'music' ? 'music' : 'providers'); return; }
+    name = SETTINGS_ALIASES[name];
+  }
+  if (!document.getElementById(`section-${name}`)) name = 'services';
   state.currentSettingsSection = name;
   document.querySelectorAll('.settings-section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('.settings-nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById(`section-${name}`)?.classList.add('active');
   document.querySelector(`.settings-nav-item[data-section="${name}"]`)?.classList.add('active');
   if (name === 'users') loadUsers();
+  if (state.currentPage === 'settings') setRoute('settings', name);
 }
 
 // Escape text before it is interpolated into an innerHTML string. Jellyfin
@@ -673,7 +799,7 @@ async function testSetupArr(type) {
     select.innerHTML = '<option value="">— Pick a default —</option>' +
       (opts.quality_profiles || []).map(p => `<option value="${escHtml(String(p.id))}">${escHtml(p.name)}</option>`).join('');
     wrap.style.display = '';
-  } catch (_) { /* pick it later in Settings → Connections */ }
+  } catch (_) { /* pick it later in Settings → Services */ }
 }
 
 async function setupStep3Next() {
@@ -755,12 +881,11 @@ async function completeSetup() {
   if (trakt) settings.trakt_client_id = trakt;
   if (logodev) settings.logodev_api_key = logodev;
 
-  // Save webhook host if it was set
-  const webhookHost = document.getElementById('setup-webhook-host').value.trim();
-  if (webhookHost) {
-    const host = webhookHost.replace(/^https?:\/\//, '');
-    settings.webhook_host = host;
-    settings.sonarr_webhook_host = host;
+  // Tentacle's one address (Settings → Services shows it): webhooks, the
+  // Live TV tuner, YouTube and IPTV files all hand it out
+  const address = document.getElementById('setup-webhook-host').value.trim();
+  if (address) {
+    settings.youtube_base_url = (/^https?:\/\//i.test(address) ? address : `http://${address}`).replace(/\/+$/, '');
   }
 
   settings.setup_complete = 'true';
@@ -895,72 +1020,7 @@ async function loadScheduleInfo() {
 }
 
 // ── Providers ─────────────────────────────────────────────────────────────
-async function loadProviders() {
-  const grid = document.getElementById('provider-grid');
-  try {
-    const providers = await api('/api/providers');
-    state.providers = providers;
-
-    if (!providers.length) {
-      grid.innerHTML = `
-        <div style="grid-column:1/-1">
-          <div class="empty-state">
-            <div class="empty-icon">◉</div>
-            <p style="margin-bottom:16px">No providers added yet</p>
-            <button class="btn btn-primary" onclick="showAddProvider()">Add Your First Provider</button>
-          </div>
-        </div>`;
-      return;
-    }
-
-    grid.innerHTML = providers.map(p => renderProviderCard(p)).join('');
-  } catch (e) {
-    grid.innerHTML = `<div class="empty-state"><p>Failed to load providers</p></div>`;
-  }
-}
-
-function renderProviderCard(p) {
-  const statusColor = p.status === 'ok' ? 'green' : p.status === 'error' ? 'red' : 'gray';
-  const statusLabel = p.status === 'ok' ? 'Connected' : p.status === 'error' ? 'Error' : 'Untested';
-  const expiry = p.expiry ? new Date(p.expiry).toLocaleDateString() : '—';
-
-  // Capability badges
-  let capBadges = '';
-  if (p.has_vod) capBadges += '<span class="badge badge-accent" style="font-size:9px;padding:1px 5px">Movies</span>';
-  if (p.has_series) capBadges += '<span class="badge badge-pink" style="font-size:9px;padding:1px 5px">Series</span>';
-  if (p.has_live) capBadges += '<span class="badge badge-blue" style="font-size:9px;padding:1px 5px">IPTV</span>';
-  if (!p.has_vod && !p.has_series && !p.has_live && p.status === 'ok') capBadges += '<span class="badge badge-gray" style="font-size:9px;padding:1px 5px">No content detected</span>';
-
-  return `
-    <div class="provider-card ${p.status === 'ok' ? 'active-provider' : ''}">
-      <div class="provider-card-header">
-        <div>
-          <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;flex-wrap:wrap">
-            ${capBadges}
-          </div>
-          <div class="provider-card-name" style="margin-top:6px">${escHtml(p.name)}</div>
-          <div class="provider-card-url">${escHtml((p.provider_type && p.provider_type !== 'xtream') ? ((p.m3u_url || '').split('?')[0] || 'M3U playlist') : p.server_url)}</div>
-        </div>
-        <div style="display:flex;align-items:center;gap:6px">
-          <div class="dot dot-${statusColor}"></div>
-          <span style="font-size:11px;color:var(--text3)">${statusLabel}</span>
-        </div>
-      </div>
-
-      <div class="provider-meta">
-        <div class="provider-meta-item">Expires: ${expiry}</div>
-        <div class="provider-meta-item">Max: ${p.max_connections || '?'} streams</div>
-        ${p.last_tested ? `<div class="provider-meta-item">Tested: ${new Date(p.last_tested).toLocaleDateString()}</div>` : ''}
-        ${p.last_synced ? `<div class="provider-meta-item">Synced: ${dashTimeAgo(p.last_synced)}</div>` : ''}
-      </div>
-
-      <div class="provider-actions">
-        <button class="btn btn-secondary btn-sm" onclick="refreshProvider(${p.id})">Test</button>
-        <button class="btn btn-secondary btn-sm" onclick="editProvider(${p.id})">Edit</button>
-        <button class="btn btn-danger btn-sm" onclick="confirmDeleteProvider(${p.id}, '${escapeJS(p.name)}')">Delete</button>
-      </div>
-    </div>`;
-}
+// The cards (loadProviders, renderProviderCard) are in sources.js.
 
 function showAddProvider() {
   state.editingProviderId = null;
@@ -1246,20 +1306,20 @@ const SETTINGS_TEXT_FIELDS = [
   'sonarr_url', 'sonarr_api_key',
   'jellyfin_url', 'jellyfin_api_key', 'jellyfin_public_url',
   'recently_added_days', 'tmdb_match_threshold',
-  'webhook_host', 'sonarr_webhook_host', 'trakt_client_id', 'logodev_api_key',
+  'trakt_client_id', 'logodev_api_key',
   'pushover_app_token', 'pushover_user_key',
   'hybrid_series_layout',
   // Music
   'lidarr_url', 'lidarr_api_key', 'navidrome_url', 'navidrome_public_url', 'navidrome_username', 'navidrome_password',
-  'musicbrainz_contact', 'musicbrainz_cache_days', 'music_library_path',
+  'musicbrainz_contact', 'music_library_path',
   'music_preferred_countries', 'music_preferred_formats', 'music_edition_words', 'music_reconcile_time',
   'music_chart_country',
 ];
 // Checkboxes, saved as "true" / "false".
+// (Switches that are defaults now, such as Deezer pictures or the music
+// re-pin automation, have no field: they keep whatever is stored.)
 const SETTINGS_CHECKBOX_FIELDS = [
-  'music_enabled', 'navidrome_enabled', 'navidrome_upload_artist_images', 'navidrome_rescan_after_import',
-  'jellyfin_music_enabled', 'jellyfin_music_set_artist_images', 'deezer_enabled',
-  'music_auto_repin', 'music_auto_repin_trim', 'music_auto_repin_download',
+  'music_enabled', 'navidrome_enabled', 'jellyfin_music_enabled',
 ];
 // Pickers filled from the service itself (see loadServicePickers).
 const SERVICE_PICKERS = {
@@ -1275,6 +1335,9 @@ const SETTINGS_PICKER_FIELDS = [
 async function loadSettings() {
   try {
     const settings = await api('/api/settings/raw');
+    // Tentacle's address shows at once; its check (loadTentacleAddress) follows
+    const ta = document.getElementById('settings-tentacle-address');
+    if (ta && !ta.value && settings.youtube_base_url) ta.value = settings.youtube_base_url;
     if (typeof loadTentacleAddress === 'function') loadTentacleAddress();
     SETTINGS_TEXT_FIELDS.forEach(key => {
       const el = document.getElementById(key);
@@ -1307,7 +1370,6 @@ async function loadSettings() {
     if (jfLabel && state.currentUser) {
       jfLabel.textContent = `Logged in as: ${state.currentUser.display_name}`;
     }
-    loadPathStatus();
     loadConnectionStatus();
   } catch (e) {}
 }
@@ -1578,6 +1640,7 @@ async function loadPathStatus() {
   try {
     const paths = await api('/api/settings/paths');
     let html = '';
+    let missingRequired = 0;
     for (const [key, info] of Object.entries(paths)) {
       const ok = info.mounted && info.writable;
       const icon = ok
@@ -1591,6 +1654,7 @@ async function loadPathStatus() {
       } else {
         status = '<span style="color:var(--text3);font-size:12px">Not mounted — add a volume mount to your docker-compose.yml and restart</span>';
       }
+      if (!ok && info.required) missingRequired++;
       html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;${key !== 'tv' ? 'border-bottom:1px solid var(--border);' : ''}">
         <span style="width:20px;text-align:center">${icon}</span>
         <div style="flex:1">
@@ -1601,6 +1665,8 @@ async function loadPathStatus() {
       </div>`;
     }
     container.innerHTML = html;
+    // A required folder that isn't mounted is a real problem (Health count)
+    if (typeof setHealthAlert === 'function') setHealthAlert('paths', missingRequired, true);
   } catch (e) {
     container.innerHTML = '<div style="color:var(--red);font-size:12px">Failed to check paths</div>';
   }
@@ -1627,6 +1693,13 @@ async function saveSettings() {
   // "0 */6 * * *" or weekdays-only cron became "daily at H:M" on any Save).
   const _st = document.getElementById('sync_schedule_time');
   if (_st && _st.value !== (_st.dataset.shown ?? _st.defaultValue)) settings.sync_schedule = timeToCron(_st.value);
+  // Tentacle's address (Services) is saved with the rest, through its own
+  // check (it must answer as Tentacle; the files that carry it follow)
+  const addr = document.getElementById('settings-tentacle-address');
+  if (addr && state.currentSettingsSection === 'services' && addr.value.trim()
+      && addr.value.trim().replace(/\/+$/, '') !== (addr.dataset.saved || '').replace(/\/+$/, '')) {
+    if (!(await saveTentacleAddress('settings-tentacle-address'))) return;
+  }
   try {
     await api('/api/settings', { method: 'POST', body: { settings } });
     if (_st) _st.dataset.shown = _st.value;
@@ -1675,15 +1748,10 @@ async function testConnection(type) {
 }
 
 function getWebhookUrl() {
-  let host = document.getElementById('webhook_host').value.trim();
-  if (!host) return null;
-  host = host.replace(/^https?:\/\//, '');
-  return `http://${host}/api/radarr/webhook`;
+  return (document.getElementById('radarr-webhook-url')?.value || '').trim() || null;
 }
 
-async function copyWebhookUrl() {
-  const url = getWebhookUrl();
-  if (!url) { toast('Enter a webhook host first', 'error'); return; }
+async function _copyText(url) {
   try {
     await navigator.clipboard.writeText(url);
     toast('Copied!');
@@ -1692,9 +1760,14 @@ async function copyWebhookUrl() {
   }
 }
 
-async function testWebhookUrl() {
+async function copyWebhookUrl() {
   const url = getWebhookUrl();
-  if (!url) { toast('Enter a webhook host first', 'error'); return; }
+  if (!url) { toast('Set Tentacle\'s address in Settings → Services first', 'error'); return; }
+  await _copyText(url);
+}
+
+async function _testWebhook(url) {
+  if (!url) { toast('Set Tentacle\'s address in Settings → Services first', 'error'); return; }
   try {
     const r = await api('/api/settings/test-webhook', { method: 'POST', body: JSON.stringify({ url }) });
     toast(r.message);
@@ -1702,6 +1775,8 @@ async function testWebhookUrl() {
     toast('Webhook test failed: ' + e.message, 'error');
   }
 }
+
+async function testWebhookUrl() { await _testWebhook(getWebhookUrl()); }
 
 async function testPushover() {
   const body = {
@@ -1718,33 +1793,16 @@ async function testPushover() {
 
 // ── Sonarr Webhook ────────────────────────────────────────────────────────
 function getSonarrWebhookUrl() {
-  let host = document.getElementById('sonarr_webhook_host').value.trim();
-  if (!host) return null;
-  host = host.replace(/^https?:\/\//, '');
-  return `http://${host}/api/sonarr/webhook`;
+  return (document.getElementById('sonarr-webhook-url')?.value || '').trim() || null;
 }
 
 async function copySonarrWebhookUrl() {
   const url = getSonarrWebhookUrl();
-  if (!url) { toast('Enter a webhook host first', 'error'); return; }
-  try {
-    await navigator.clipboard.writeText(url);
-    toast('Copied!');
-  } catch (_) {
-    toast('Copy failed — use HTTPS or copy manually', 'error');
-  }
+  if (!url) { toast('Set Tentacle\'s address in Settings → Services first', 'error'); return; }
+  await _copyText(url);
 }
 
-async function testSonarrWebhookUrl() {
-  const url = getSonarrWebhookUrl();
-  if (!url) { toast('Enter a webhook host first', 'error'); return; }
-  try {
-    const r = await api('/api/settings/test-webhook', { method: 'POST', body: JSON.stringify({ url }) });
-    toast(r.message);
-  } catch (e) {
-    toast('Webhook test failed: ' + e.message, 'error');
-  }
-}
+async function testSonarrWebhookUrl() { await _testWebhook(getSonarrWebhookUrl()); }
 
 // ── Radarr Root Folders ───────────────────────────────────────────────────
 // ── Modals ─────────────────────────────────────────────────────────────────
@@ -1851,6 +1909,7 @@ document.addEventListener('keydown', e => {
 async function checkRunningSyncs() {
   try {
     const dash = await api('/api/sync/dashboard');
+    try { const r = await api('/api/sync/run-now'); if (r.running) pollRunNow(); } catch (e) { /* older server */ }
     if (dash.running.vod_sync && !state._syncProviderId) {
       const providers = await api('/api/providers');
       const active = providers.filter(p => p.active);
@@ -1863,48 +1922,47 @@ async function checkRunningSyncs() {
   } catch (e) { /* ignore */ }
 }
 
-async function syncNow() {
-  const active = (state.providers || []).filter(p => p.active);
-  if (!active.length) {
-    toast('No active providers. Activate a provider first.', 'error');
-    return;
-  }
-  const provider = active[0];
-  state._syncProviderId = provider.id;
-  setSyncRunning(true);
+// Settings → Schedule: "Sync now" runs the nightly sync now, for every
+// provider used for Movies & Series, then Radarr, Sonarr, lists, the TV guide
+// and Jellyfin (POST /api/sync/run-now).
+async function syncEverythingNow() {
+  const status = document.getElementById('sync-now-status');
   try {
-    await api('/api/sync/trigger', {
-      method: 'POST',
-      body: { provider_id: provider.id, sync_type: 'full' }
-    });
-    toast('Full sync started — VOD, Radarr, Sonarr, Jellyfin', 'info');
-    pollSyncProgress();
+    const r = await api('/api/sync/run-now', { method: 'POST' });
+    toast(r.started ? 'Sync started: providers, Radarr, Sonarr, lists, TV guide, then Jellyfin' : (r.message || 'A sync is already running'), r.started ? 'info' : 'warning', 6000);
+    if (status) status.textContent = '';
+    pollRunNow();
   } catch (e) {
-    toast(e.message, 'error');
-    setSyncRunning(false);
+    toast(e.message, 'error', 8000);
   }
 }
 
-async function runSync(type) {
-  const active = (state.providers || []).filter(p => p.active);
-  if (!active.length) {
-    toast('No active providers. Activate a provider first.', 'error');
-    return;
-  }
-  const provider = active[0];
-  state._syncProviderId = provider.id;
-  setSyncRunning(true);
-  try {
-    await api('/api/sync/trigger', {
-      method: 'POST',
-      body: { provider_id: provider.id, sync_type: type }
-    });
-    toast(`VOD ${type} sync started`, 'info');
-    pollSyncProgress();
-  } catch (e) {
-    toast(e.message, 'error');
-    setSyncRunning(false);
-  }
+// While the whole sync runs: which provider is syncing (its own progress),
+// then "updating Jellyfin" until the run is over.
+function pollRunNow() {
+  if (state._runNowTimer) clearInterval(state._runNowTimer);
+  const tick = async () => {
+    let r;
+    try { r = await api('/api/sync/run-now'); } catch (e) { return; }
+    const btn = document.getElementById('sync-now-btn');
+    const status = document.getElementById('sync-now-status');
+    if (!r.running) {
+      clearInterval(state._runNowTimer); state._runNowTimer = null;
+      if (btn) { btn.disabled = false; btn.textContent = 'Sync now'; }
+      if (status) status.textContent = r.finished_at ? `Last run finished ${dashTimeAgo(r.finished_at)}` : '';
+      if (!state._syncProviderId) setSyncRunning(false);
+      return;
+    }
+    if (btn) { btn.disabled = true; btn.textContent = 'Syncing…'; }
+    if (r.provider_id && r.provider_id !== state._syncProviderId) {
+      state._syncProviderId = r.provider_id;
+      setSyncRunning(true);
+      pollSyncProgress();
+    }
+    if (status) status.textContent = r.step || 'Syncing…';
+  };
+  tick();
+  state._runNowTimer = setInterval(tick, 3000);
 }
 
 async function cancelSync() {
@@ -1929,11 +1987,11 @@ function setSyncRunning(running) {
   const cancelBtn = document.getElementById('sync-cancel-btn');
   const progressEl = document.getElementById('vod-sync-progress');
   if (running) {
-    if (syncBtn) { syncBtn.disabled = true; syncBtn.textContent = 'Syncing...'; }
+    if (syncBtn) { syncBtn.disabled = true; syncBtn.textContent = 'Syncing…'; }
     if (cancelBtn) { cancelBtn.style.display = ''; cancelBtn.disabled = false; cancelBtn.textContent = 'Cancel'; }
     if (progressEl) progressEl.style.display = '';
   } else {
-    if (syncBtn) { syncBtn.disabled = false; syncBtn.textContent = 'Sync All'; }
+    if (syncBtn && !state._runNowTimer) { syncBtn.disabled = false; syncBtn.textContent = 'Sync now'; }
     if (cancelBtn) { cancelBtn.style.display = 'none'; }
     if (progressEl) progressEl.style.display = 'none';
     state._syncProviderId = null;
@@ -2010,7 +2068,7 @@ async function dashRefreshTags(btn) {
   btn.textContent = 'Pushing...';
   try {
     const r = await api('/api/sync/refresh-tags', { method: 'POST' });
-    toast(`Tags pushed — ${r.jellyfin_tagged || 0} items updated in Jellyfin`, 'success');
+    toast(`Jellyfin updated: ${r.jellyfin_tagged || 0} items`, 'success');
   } catch (e) {
     toast(e.message, 'error');
   } finally {

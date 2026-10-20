@@ -1,13 +1,16 @@
-"""Live TV → Jellyfin Setup never hands out a localhost URL (#291).
+"""Live TV → Jellyfin setup never hands out a localhost URL (#291), and asks
+for no address of its own.
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 
 Until an admin typed and saved a Server Address, the setup card showed and
 copied http://localhost:8888 as the tuner and guide URL. In a Docker install
 Jellyfin runs in another container, so that tuner points at Jellyfin itself.
-The field is now prefilled (not saved) with the address the YouTube page
-detects for Jellyfin, or the address the browser uses. Runs the real
-fillSetupUrls() and getSetupBase() under node.
+Tentacle's address is now set once, in Settings → Services; the setup card
+shows the tuner and guide addresses made from it: the saved one, else the one
+Tentacle works out for itself (said to be unsaved), else an older Live TV
+address, else this browser's address unless that is localhost. Nothing is
+saved from here. Runs the real fillSetupUrls() under node.
 """
 import json
 import shutil
@@ -28,9 +31,9 @@ def _fn(name):
 SCRIPT = """
 const els = {};
 function el(id) { return els[id] || (els[id] = { id, value: '', textContent: '', style: {} }); }
-el('live-setup-port').value = '8888';
-const document = { getElementById: el };
+const document = { getElementById: el, activeElement: null };
 const location = %(location)s;
+const liveState = {};
 const calls = [];
 const saved = [];
 async function api(path, opts) {
@@ -40,16 +43,14 @@ async function api(path, opts) {
   if (path === '/api/youtube/status') { if (%(yt)s === null) throw new Error('down'); return %(yt)s; }
   throw new Error('unexpected ' + path);
 }
-let locked = false;
-function showSetupLocked() { locked = true; updateSetupUrls(); }
 %(fns)s
 fillSetupUrls().then(() => {
   process.stdout.write(JSON.stringify({
-    host: el('live-setup-host').value, port: el('live-setup-port').value,
+    shown: el('live-setup-address-display').textContent,
     tuner: el('live-setup-tuner-preview').textContent,
     xmltv: el('live-setup-xmltv-preview').textContent,
     hint: el('live-setup-detected').textContent,
-    locked, calls, saved }));
+    calls, saved }));
 });
 """
 
@@ -58,53 +59,53 @@ fillSetupUrls().then(() => {
 class SetupAddress(unittest.TestCase):
     def _run(self, settings, yt, location=None):
         fns = "\n".join(_fn(n) for n in ("fillSetupUrls", "getSetupBase", "updateSetupUrls"))
-        loc = location or {"hostname": "localhost", "port": "8888", "href": "http://localhost:8888/"}
+        loc = location or {"hostname": "localhost", "host": "localhost:8888", "protocol": "http:"}
         script = SCRIPT % {"settings": json.dumps(settings), "yt": json.dumps(yt),
                            "location": json.dumps(loc), "fns": fns}
         run = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
         if run.returncode:
             raise AssertionError(run.stderr)
-        return json.loads(run.stdout)
+        out = json.loads(run.stdout)
+        self.assertEqual([], out["saved"], "the setup card saves nothing")
+        return out
 
-    def test_fresh_install_prefills_the_address_jellyfin_reaches(self):
-        out = self._run({}, {"suggested_base_url": "http://192.0.2.10:8888"})
+    def test_the_saved_tentacle_address_is_used(self):
+        out = self._run({}, {"base_url": "http://192.0.2.10:8888/", "detected": {"url": "http://192.0.2.99:8888"}})
         self.assertEqual("http://192.0.2.10:8888", out["tuner"])
         self.assertEqual("http://192.0.2.10:8888/hdhr/xmltv.xml", out["xmltv"])
-        self.assertNotIn("localhost", out["tuner"])
-        self.assertTrue(out["hint"], "the prefill is marked as detected")
-        self.assertEqual([], out["saved"], "a prefill is never saved")
-        self.assertFalse(out["locked"])
+        self.assertEqual("", out["hint"])
 
-    def test_without_a_detection_the_browser_address_is_used_not_localhost(self):
-        out = self._run({}, None, {"hostname": "tentacle.lan", "port": "", "href": "http://tentacle.lan/"})
-        self.assertEqual("http://tentacle.lan:8888", out["tuner"])
-
-    def test_a_saved_host_still_wins_and_nothing_is_detected(self):
-        out = self._run({"live_setup_host": "10.0.0.5", "live_setup_port": "9999"},
-                        {"suggested_base_url": "http://192.0.2.10:8888"})
-        self.assertEqual("http://10.0.0.5:9999", out["tuner"])
+    def test_the_saved_address_in_the_settings_needs_no_status_call(self):
+        out = self._run({"youtube_base_url": "http://192.0.2.10:8888"}, None)
+        self.assertEqual("http://192.0.2.10:8888", out["tuner"])
         self.assertNotIn("/api/youtube/status", out["calls"])
-        self.assertTrue(out["locked"])
 
-    def test_a_saved_youtube_address_that_does_not_answer_is_not_prefilled(self):
-        # The YouTube page keeps showing its saved address even when it doesn't
-        # answer; the setup card must offer the one that does.
-        out = self._run({}, {"base_url": "http://192.0.2.99:8888", "suggested_base_url": "http://192.0.2.99:8888",
-                             "reachable": {"ok": False}, "detected": {"url": "http://192.0.2.10:8888"}})
+    def test_a_worked_out_address_is_shown_as_not_saved(self):
+        out = self._run({}, {"base_url": "", "detected": {"url": "http://192.0.2.10:8888"}})
         self.assertEqual("http://192.0.2.10:8888", out["tuner"])
-        self.assertEqual("Detected: check it, then Save", out["hint"])
+        self.assertIn("not saved yet", out["hint"])
 
-    def test_a_dead_youtube_address_and_nothing_detected_falls_back_to_the_browser(self):
-        out = self._run({}, {"base_url": "http://192.0.2.99:8888", "suggested_base_url": "http://192.0.2.99:8888",
-                             "reachable": {"ok": False}, "detected": {"url": None}},
-                        {"hostname": "tentacle.lan", "port": "", "href": "http://tentacle.lan/"})
+    def test_an_older_live_tv_address_still_works(self):
+        out = self._run({"live_setup_host": "10.0.0.5", "live_setup_port": "9999"}, {"base_url": "", "detected": None})
+        self.assertEqual("http://10.0.0.5:9999", out["tuner"])
+
+    def test_the_live_tv_address_set_up_before_wins(self):
+        out = self._run({"live_setup_host": "10.0.0.5", "live_setup_port": "8888",
+                         "youtube_base_url": "https://tentacle.example.com"}, None)
+        self.assertEqual("http://10.0.0.5:8888", out["tuner"])
+        out = self._run({"live_setup_host": "tentacle.example.com", "live_setup_port": "443"}, None)
+        self.assertEqual("https://tentacle.example.com", out["tuner"])
+
+    def test_without_anything_the_browser_address_is_used_not_localhost(self):
+        out = self._run({}, None, {"hostname": "tentacle.lan", "host": "tentacle.lan:8888", "protocol": "http:"})
         self.assertEqual("http://tentacle.lan:8888", out["tuner"])
-        self.assertEqual("From this browser: check it, then Save", out["hint"])
+        self.assertIn("From this browser", out["hint"])
 
-    def test_a_saved_youtube_address_that_answers_is_still_used(self):
-        out = self._run({}, {"base_url": "http://192.0.2.10:8888", "suggested_base_url": "http://192.0.2.10:8888",
-                             "reachable": {"ok": True}, "detected": None})
-        self.assertEqual("http://192.0.2.10:8888", out["tuner"])
+    def test_never_localhost(self):
+        out = self._run({}, {"base_url": "", "detected": {"url": None}})
+        self.assertNotIn("localhost", out["tuner"] + out["xmltv"])
+        self.assertEqual("Not set", out["shown"])
+        self.assertIn("Settings → Services", out["hint"])
 
 
 if __name__ == "__main__":

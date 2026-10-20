@@ -3,7 +3,7 @@ channels' stream URLs at once, without a channel sync (#469).
 
 An Xtream channel's URL is {server}/live/{user}/{pass}/{id}.{ext}, written at
 channel-sync time. Before the fix the Providers page (PUT /api/providers/{id})
-and POST /api/live/provider changed only the provider row, so every tune and
+and the old Live TV provider form changed only the provider row, so every tune and
 recording kept sending the old login (401 -> 502) or went to the old host (a
 LAN re-streamer on a new host: 502 "non-public host") until a channel sync.
 """
@@ -96,14 +96,14 @@ class ProviderEditReachesChannels(unittest.TestCase):
         providers.update_provider(pid, providers.ProviderUpdate(username="u2"), self.db)
         self.assertEqual(("streamed", "http://old-panel.example:8080/live/u2/p1/101.ts"), self._tune(cid))
 
-    def test_live_provider_api_new_password(self):
+    def test_new_password(self):
         pid, cid = self._synced("http://old-panel.example:8080")
-        livetv.save_live_provider(livetv.LiveProviderConfig(password="p2"), self.db)
+        providers.update_provider(pid, providers.ProviderUpdate(password="p2"), self.db)
         self.assertEqual(("streamed", "http://old-panel.example:8080/live/u/p2/101.ts"), self._tune(cid))
 
     def test_lan_restreamer_on_a_new_host(self):
         pid, cid = self._synced("http://192.168.1.10:8890")
-        livetv.save_live_provider(livetv.LiveProviderConfig(server_url="http://192.168.1.20:8890"), self.db)
+        providers.update_provider(pid, providers.ProviderUpdate(server_url="http://192.168.1.20:8890"), self.db)
         self.assertEqual(("streamed", "http://192.168.1.20:8890/live/u/p1/101.ts"), self._tune(cid))
 
     def test_trailing_slash_and_extension_kept(self):
@@ -116,12 +116,6 @@ class ProviderEditReachesChannels(unittest.TestCase):
         providers.update_provider(pid, providers.ProviderUpdate(
             server_url="http://new-panel.example:8080/"), self.db)
         self.assertEqual(("streamed", "http://new-panel.example:8080/live/u/p1/101.ts"), self._tune(cid))
-
-    def test_masked_password_changes_nothing(self):
-        pid, cid = self._synced("http://old-panel.example:8080")
-        before = self._urls()
-        livetv.save_live_provider(livetv.LiveProviderConfig(password="••••••••"), self.db)
-        self.assertEqual(before, self._urls())
 
     def test_other_edits_leave_urls_alone(self):
         pid, cid = self._synced("http://old-panel.example:8080")

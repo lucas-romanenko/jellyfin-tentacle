@@ -41,7 +41,7 @@ docker compose up -d
     - Skip `/media/vod/...` if you don't have a streaming provider.
 
 !!! tip "Verify your mounts"
-    After starting, go to **Settings → Library Paths** in the Tentacle dashboard. Each path shows green if mounted correctly or red if missing.
+    After starting, go to **Health → Media folders** in the Tentacle dashboard. Each path shows green if mounted correctly or red if missing.
 
 ## What Gets Created
 

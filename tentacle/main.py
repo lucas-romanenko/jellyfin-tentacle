@@ -44,7 +44,21 @@ def _rollback(db):
         logger.warning(f"Nightly sync: could not roll back the session: {e}")
 
 
-def run_scheduled_sync():
+def run_scheduled_sync(claimed: bool = False):
+    """The nightly sync: on its schedule, or now from Settings → Schedule's
+    "Sync now" (POST /api/sync/run-now, which claims the run itself). One at a
+    time: a run that finds another still going is skipped."""
+    from routers.sync import begin_nightly_run, end_nightly_run
+    if not claimed and not begin_nightly_run("schedule"):
+        logger.info("Scheduled sync skipped: the last one (or a Sync now) is still running")
+        return
+    try:
+        _run_scheduled_sync()
+    finally:
+        end_nightly_run()
+
+
+def _run_scheduled_sync():
     """Run sync for all active providers on schedule"""
     from services.sync import sync_provider
     from services.tagger import refresh_recently_added_tags
@@ -811,7 +825,7 @@ def _build_cors_origins() -> list[str]:
         db = SessionLocal()
         try:
             from models.database import get_setting
-            for key in ("jellyfin_url", "external_url", "hdhr_base_url"):
+            for key in ("jellyfin_url", "youtube_base_url", "external_url", "hdhr_base_url"):
                 val = (get_setting(db, key, "") or "").strip().rstrip("/")
                 if not val:
                     continue
@@ -1024,7 +1038,7 @@ async def api_not_found(full_path: str, request: Request):
 # change — and forgetting sent users a mix of new HTML and months-old
 # JavaScript, where the page simply lacks whatever was added. Derived from the
 # files now, so it cannot fall out of step with them.
-_ASSET_FILES = ("static/js/app.js", "static/js/pages.js", "static/js/music.js")
+_ASSET_FILES = ("static/js/app.js", "static/js/pages.js", "static/js/sources.js", "static/js/music.js")
 _index_cache: dict = {"key": None, "html": None}
 
 

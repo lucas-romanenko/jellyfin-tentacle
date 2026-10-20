@@ -29,7 +29,7 @@ In Radarr, go to **Settings → Connect → Add → Webhook**:
     The webhook URL must use the internal network IP (e.g., `http://192.168.1.100:8888`), not an external/Cloudflare tunnel URL. Radarr needs to reach Tentacle directly.
 
 !!! tip "Test the webhook"
-    You can test webhooks from Tentacle at **Settings → Connections**. The test is proxied through the backend to avoid browser mixed-content issues.
+    Tentacle shows the webhook address ready to copy, with a **Test** button, under **Sources → Radarr & Sonarr** (made from Tentacle's address in Settings → Services). The test is proxied through the backend to avoid browser mixed-content issues.
 
 ## What Happens When a Movie Downloads
 
@@ -63,7 +63,7 @@ The scan fetches all movies from Radarr, matches TMDB metadata, writes NFO files
 ## Quality Profile and Root Folder
 
 Pick a **default quality profile** (and, optionally, a root folder) under
-Radarr in **Settings → Connections**. Every request uses them, wherever it
+Radarr in **Settings → Services**. Every request uses them, wherever it
 comes from: Tentacle's Discover and Library pages, list auto-add and "add
 missing", the Jellyfin plugin on the web, and the Android TV app.
 

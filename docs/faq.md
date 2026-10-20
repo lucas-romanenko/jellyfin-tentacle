@@ -64,7 +64,7 @@ At 3 AM, Tentacle:
 
 ### Can I trigger a sync manually?
 
-Yes. On the VOD page, click **Sync All**. For Radarr/Sonarr, you can trigger scans from Settings. Webhook events also trigger immediate syncs.
+Yes. In **Settings → Schedule & notifications**, click **Sync now**: it runs the whole nightly sync (providers, Radarr, Sonarr, lists, TV guide, Jellyfin) right away. To bring in only Radarr/Sonarr, use **Check Radarr** / **Check Sonarr** under Sources → Radarr & Sonarr. Webhook events also trigger immediate syncs.
 
 ### Why was some content skipped during sync?
 
@@ -140,7 +140,7 @@ Yes. Tentacle includes a built-in HDHomeRun emulator that serves the same purpos
 
 ### Can I use the same provider for VOD and Live TV?
 
-Yes, and you add it only once: Settings → Providers → + Add Provider. When the account has live channels, Live TV is switched on for that provider automatically and its channel groups appear on the Live TV page. Live TV needs an Xtream Codes provider; M3U providers are used for VOD only.
+Yes, and you add it only once: Sources → IPTV providers → + Add Provider. When the account has live channels, Live TV is switched on for that provider automatically (the **Use for Live TV** switch on its card) and you choose its channel groups on the same card. Live TV needs an Xtream Codes provider; M3U providers are used for VOD only.
 
 ### Why are some channels missing EPG?
 

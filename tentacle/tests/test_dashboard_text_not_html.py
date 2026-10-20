@@ -94,7 +94,7 @@ class TextIsShownAsText(unittest.TestCase):
           out.plain = _buildSyncDetailHtml({ completed_at: null, epg_synced: true, epg_details: '' });
         """)
         self.assertText(out["html"])
-        self.assertIn("EPG data refreshed", out["plain"])   # the fallback still shows
+        self.assertIn("TV guide refreshed", out["plain"])   # the fallback still shows
 
     def test_rule_condition_source_and_list_pickers(self):
         out = _run("""

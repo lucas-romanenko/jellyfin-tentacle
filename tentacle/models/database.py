@@ -90,9 +90,47 @@ class Provider(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # Several addresses (services/provider_addresses.py): what to do when the
+    # address in use fails and a backup works. "switch" (the default),
+    # "switch_back" (and back to preferred_address once it works again) or
+    # "off" (only say so).
+    address_auto_switch = Column(String, default="switch")
+    # The address the admin chose by hand ("Use this one"), for switch_back.
+    preferred_address = Column(String, nullable=True)
+    # Live TV: streams this provider's account carries at once (None: the
+    # account's own max_connections, else the Live TV default).
+    live_max_streams = Column(Integer, nullable=True)
+    # Live TV: added to this provider's own channel numbers, so two providers
+    # never hand Jellyfin the same one (routers/livetv.py guide_number). The
+    # first Live TV provider keeps its own (0); others get one once, kept.
+    channel_number_offset = Column(Integer, nullable=True)
+
     categories = relationship("ProviderCategory", back_populates="provider", cascade="all, delete-orphan")
     sync_runs = relationship("SyncRun", back_populates="provider", cascade="all, delete-orphan")
     live_channels = relationship("LiveChannel", back_populates="provider", cascade="all, delete-orphan")
+    addresses = relationship("ProviderAddress", back_populates="provider", cascade="all, delete-orphan",
+                             order_by="ProviderAddress.id")
+
+
+# ─── Provider addresses ───────────────────────────────────────────────────────
+
+class ProviderAddress(Base):
+    """One address a provider can be reached at. The one in use is the
+    provider's server_url; the others are backups. Tests and the hourly
+    health check keep what each answered (services/provider_addresses.py)."""
+    __tablename__ = "provider_addresses"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider_id = Column(Integer, ForeignKey("providers.id"), nullable=False, index=True)
+    url = Column(String, nullable=False)          # scheme://host[:port], no path, no login
+    added_at = Column(DateTime, default=datetime.utcnow)
+    last_result = Column(JSON, nullable=True)     # the latest test (see provider_addresses.test_address)
+    history = Column(JSON, default=list)          # [{"at", "ok", "word"}], newest last, a few days' worth
+
+    provider = relationship("Provider", back_populates="addresses")
+
+    __table_args__ = (
+        UniqueConstraint("provider_id", "url", name="uq_provider_address"),
+    )
 
 
 # ─── Provider Categories ──────────────────────────────────────────────────────
@@ -1342,6 +1380,36 @@ def seed_defaults(db):
         except IntegrityError:
             db.rollback()  # another worker inserted it first — fine
     _forget_stored_builtin_tmdb_token(db)
+    _one_tentacle_address(db)
+
+
+# Tentacle's own address used to be asked in six places. One is kept, saved
+# as `youtube_base_url` (Settings → Services, "Tentacle's address"); the
+# others were filled in by older dashboards and the setup wizard.
+_OLD_ADDRESS_KEYS = ("vod_base_url", "hdhr_base_url", "external_url", "webhook_host", "sonarr_webhook_host")
+
+
+def tentacle_address(db) -> str:
+    """Tentacle's address as Jellyfin and the Arr apps reach it, or ""."""
+    return (get_setting(db, "youtube_base_url", "") or "").strip().rstrip("/")
+
+
+def _one_tentacle_address(db):
+    """Once: an install that has no Tentacle address yet takes the first one
+    an older setting holds (with http:// for a bare host:port). The old keys
+    are left as they are: vod_base_url is what the .strm files carry, and
+    changing it repoints every file, which is the admin's call (Services)."""
+    if tentacle_address(db):
+        return
+    for key in _OLD_ADDRESS_KEYS:
+        val = (get_setting(db, key, "") or "").strip().rstrip("/")
+        if not val:
+            continue
+        if not val.lower().startswith(("http://", "https://")):
+            val = f"http://{val}"
+        set_setting(db, "youtube_base_url", val)
+        logger.info(f"[migrate] Tentacle's address is now kept in one place: {val} (was {key})")
+        return
 
 
 def _forget_stored_builtin_tmdb_token(db):
