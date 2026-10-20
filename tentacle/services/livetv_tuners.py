@@ -196,7 +196,18 @@ def apply_policies(db, jf: Jellyfin, users: list, tags_in_use: set) -> int:
         want = blocked_tags(policy.get("BlockedTags") or [], own_tag_of(db, u["Id"]), tags_in_use)
         if list(policy.get("BlockedTags") or []) == want:
             continue
-        policy = {**policy, "BlockedTags": want}
+        # The policy as Jellyfin has it now, not as this sync read it (that can
+        # be minutes old after a guide refresh): a kids profile or an admin
+        # switch set meanwhile must not be put back.
+        try:
+            fresh = (jf.get(f"/Users/{u['Id']}") or {}).get("Policy") or policy
+        except requests.RequestException:
+            fresh = policy
+        want = blocked_tags(fresh.get("BlockedTags") or [], own_tag_of(db, u["Id"]), tags_in_use)
+        if list(fresh.get("BlockedTags") or []) == want:
+            u["Policy"] = fresh
+            continue
+        policy = {**fresh, "BlockedTags": want}
         jf.post(f"/Users/{u['Id']}/Policy", policy)
         u["Policy"] = policy
         changed += 1

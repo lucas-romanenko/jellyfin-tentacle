@@ -668,6 +668,19 @@ def get_discover_detail(
         except HTTPException:
             pass
 
+    # request: this viewer's request waiting for an admin, or answered lately
+    # ({"status": "pending" | "declined" | ...}), and whether theirs wait
+    # at all ("ask") — the button then reads "Request" (services/approvals.py).
+    details["request"] = None
+    details["request_mode"] = "direct"
+    try:
+        from services import approvals
+        user = get_user_from_request(request, db)
+        details["request"] = approvals.status_for(db, user, media_type, tmdb_id)
+        details["request_mode"] = approvals.request_mode(db, user)["mode"]
+    except Exception:
+        pass  # never breaks the detail itself
+
     return details
 
 

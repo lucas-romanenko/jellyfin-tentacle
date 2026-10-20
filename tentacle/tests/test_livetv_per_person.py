@@ -235,6 +235,8 @@ class FakeJellyfin:
             return {"TunerHosts": [dict(t) for t in self.tuners], "ListingProviders": list(self.listings)}
         if path == "/Users":
             return [json.loads(json.dumps(u)) for u in self.users.values()]
+        if path.startswith("/Users/") and path.count("/") == 2:
+            return json.loads(json.dumps(self.users[path.split("/")[2]]))
         if path == "/Items":
             if p.get("includeItemTypes") == "LiveTvChannel":
                 return {"Items": [dict(c) for c in self.channels.values()]}

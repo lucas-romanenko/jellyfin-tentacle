@@ -664,6 +664,20 @@ def setup_scheduler(db):
     )
     logger.info("Download health check scheduled: every 5 min")
 
+    # Problems go to the admin (a message in Jellyfin, Pushover if set up),
+    # plain words to the family (services/admin_alerts.py).
+    from services.admin_alerts import run_check as run_admin_alerts
+    scheduler.add_job(
+        run_admin_alerts,
+        IntervalTrigger(minutes=10),
+        id="admin_alerts",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now() + timedelta(minutes=3),
+    )
+    logger.info("Problem alerts for admins scheduled: every 10 min")
+
     # Release checks: why titles in Activity → Searching haven't downloaded.
     # A couple per run, only for titles searching 45+ min, each at most every 12 h
     # (an interactive search queries every indexer).
@@ -883,6 +897,9 @@ app.include_router(activity_router.router)
 app.include_router(livetv_router.router)
 from routers import my_livetv as my_livetv_router
 app.include_router(my_livetv_router.router)
+from routers import family as family_router
+app.include_router(family_router.router)
+app.include_router(family_router.tv_router)
 # A refused tuner open answers 503 with no body: Jellyfin's tuner copies any
 # body as if it were the stream (#140).
 app.add_exception_handler(livetv_router._TunerRefusal, livetv_router.tuner_refusal_handler)

@@ -43,6 +43,12 @@ def _favourites(db, user_id: str, tuner_url: str, entries: list):
 def _state(db, user: TentacleUser) -> dict:
     uid = L.norm_user_id(user.jellyfin_user_id)
     channels = L.pool(db)
+    if user.kids_level:
+        # A kids profile sees the household's kids channels only, chosen by
+        # an admin (services/family.py); their list is those, in that order.
+        from services import family
+        kids = set(family.kids_channels(db))
+        channels = [c for c in channels if c["key"] in kids]
     row = L.lineup_row(db, uid)
     own = bool(row and row.own_list)
     mine = L.own_lineup(db, uid, channels)
@@ -54,8 +60,13 @@ def _state(db, user: TentacleUser) -> dict:
     favs = _favourites(db, uid, tuner_url, set_up)
     my_keys = {c["key"] for c in mine}
     numbers = {c["key"]: c["number"] for c in shown}
+    kids_profile = None
+    if user.kids_level:
+        from services.approvals import approver_name
+        kids_profile = {"chosen_by": approver_name(db)}
     return {
         "available": bool(channels),
+        "kids": kids_profile,
         "own_list": own,
         "total": len(channels),
         "count": len(shown),
@@ -85,6 +96,8 @@ def save_my_channels(body: MyChannelsBody, user: TentacleUser = Depends(get_user
                      db: Session = Depends(get_db)):
     if len(body.keys) > MAX_CHANNELS:
         raise HTTPException(400, "Too many channels")
+    if user.kids_level:
+        raise HTTPException(403, "Your channels are picked for you. Ask a grown-up to change them.")
     L.save_own_list(db, user.jellyfin_user_id, body.own_list, body.keys)
     T.schedule_sync(f"{user.display_name}'s channels", refresh=True)
     return _state(db, user)

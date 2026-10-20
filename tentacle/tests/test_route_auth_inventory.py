@@ -17,7 +17,7 @@ from fastapi.routing import APIRoute
 ROUTER_MODULES = [
     "auth", "settings", "providers", "sync", "library", "duplicates", "lists",
     "widget", "radarr", "sonarr", "tags", "collections", "smartlists",
-    "discover", "activity", "livetv", "my_livetv", "notifications", "health", "youtube", "vod", "music",
+    "discover", "activity", "livetv", "my_livetv", "family", "notifications", "health", "youtube", "vod", "music",
 ]
 
 # (METHOD, path) -> reason. Keep this list short and justified.

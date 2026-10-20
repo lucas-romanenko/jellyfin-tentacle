@@ -559,6 +559,16 @@ class TentacleUser(Base):
     # under, so a copy of a cookie stops working when its owner logs out.
     session_version = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Family (services/family.py). A kids profile is an age level ("young",
+    # "kids", "teens"); None = no limit. The Jellyfin policy fields it changes
+    # are saved first (JSON) and put back when it's switched off.
+    kids_level = Column(String, nullable=True)
+    kids_saved_policy = Column(Text, nullable=True)
+    # Requests from this person wait for an admin ("ask") or go straight to
+    # Radarr/Sonarr/Lidarr ("direct"). Admins' own always go straight through.
+    request_mode = Column(String, nullable=True, default="ask")
+    invited_by = Column(String, nullable=True)   # the admin's name, for an account made in Tentacle
+    invited_at = Column(DateTime, nullable=True)
 
 
 # ─── Notifications ───────────────────────────────────────────────────────────
@@ -575,6 +585,9 @@ class Notification(Base):
     jellyfin_item_id = Column(String, nullable=True)  # For click-to-play navigation
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     dismissed_at = Column(DateTime, nullable=True)
+    # "download" (ready to watch), "request" (asked for / approved / declined)
+    # or "problem" (admins only: services/admin_alerts.py).
+    kind = Column(String, nullable=True, default="download")
 
     user = relationship("TentacleUser", backref="notifications")
 
@@ -594,6 +607,46 @@ class DownloadRequest(Base):
     __table_args__ = (
         UniqueConstraint("tmdb_id", "media_type", name="uq_download_request"),
     )
+
+
+# ─── Requests waiting for an admin (services/approvals.py) ────────────────────
+
+class MediaRequest(Base):
+    """A family member's request that waits for an admin's yes or no. `payload`
+    is the original request body (JSON), replayed as that person on approval."""
+    __tablename__ = "media_requests"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("tentacle_users.id"), nullable=False, index=True)
+    kind = Column(String, nullable=False)           # movie | series | album
+    tmdb_id = Column(Integer, nullable=True, index=True)
+    tvdb_id = Column(Integer, nullable=True)
+    title = Column(String, nullable=False, default="")
+    year = Column(String, nullable=True)
+    poster_path = Column(String, nullable=True)
+    payload = Column(Text, nullable=False, default="{}")
+    status = Column(String, nullable=False, default="pending", index=True)  # pending | approved | declined | failed
+    note = Column(String, nullable=True)            # the admin's reason, or why the approved add failed
+    decided_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    decided_at = Column(DateTime, nullable=True)
+
+    user = relationship("TentacleUser", backref="media_requests")
+
+
+# ─── Problems the admin was told about (services/admin_alerts.py) ─────────────
+
+class AdminAlert(Base):
+    """One problem, told to the admins once when it starts and once when it's over."""
+    __tablename__ = "admin_alerts"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    key = Column(String, nullable=False, unique=True)   # e.g. "disk:/media/movies", "livetv:setup"
+    area = Column(String, nullable=False)               # livetv | library | requests | downloads | server
+    title = Column(String, nullable=False)
+    message = Column(String, nullable=False)
+    active = Column(Boolean, default=True, index=True)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    last_seen_at = Column(DateTime, default=datetime.utcnow)
+    resolved_at = Column(DateTime, nullable=True)
 
 
 class MusicArtist(Base):
@@ -979,15 +1032,18 @@ def log_deletion(db, kind: str, name: str, media_type: str = None,
 
 def create_notification(db, user_id: int, tmdb_id: int, media_type: str,
                         title: str, message: str, poster_path: str = None,
-                        jellyfin_item_id: str = None):
-    """Create a notification for a user if they have notifications enabled."""
+                        jellyfin_item_id: str = None, kind: str = "download",
+                        force: bool = False):
+    """Create a notification for a user if they have notifications enabled.
+    `force`: an admin's request or problem message, which their own
+    "download notifications" switch doesn't turn off."""
     user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
-    if not user or not user.notifications_enabled:
+    if not user or not (user.notifications_enabled or force):
         return None
     notif = Notification(
         user_id=user_id, tmdb_id=tmdb_id, media_type=media_type,
         title=title, message=message, poster_path=poster_path,
-        jellyfin_item_id=jellyfin_item_id,
+        jellyfin_item_id=jellyfin_item_id, kind=kind,
     )
     db.add(notif)
     db.commit()
