@@ -127,7 +127,7 @@ class TagsAndPlaylistsFollowTheList(_Db):
                   mock.patch.object(sl, "refresh_smartlist_playlists", record("refresh")),
                   mock.patch.object(sl, "write_home_config", record("home")),
                   mock.patch.object(sl, "bump_playlist_version", lambda: None),
-                  mock.patch.object(sl, "_notify_jellyfin_plugin", lambda db: {})):
+                  mock.patch.object(sl, "_notify_jellyfin_plugin", lambda db, user=None: {})):
             p.start()
             self.addCleanup(p.stop)
 
@@ -256,7 +256,7 @@ class DeleteRemovesThePlaylistAndRow(_Db):
         self.home_path = home_dir / f"{BOB}.json"
         for p in (mock.patch.object(sl, "_create_jellyfin_playlist", create),
                   mock.patch.object(sl, "_mark_linked_playlists", lambda *a, **k: 0),
-                  mock.patch.object(sl, "_notify_jellyfin_plugin", lambda db: {}),
+                  mock.patch.object(sl, "_notify_jellyfin_plugin", lambda db, user=None: {}),
                   mock.patch.object(sl, "refresh_smartlist_playlists", lambda *a, **k: {}),
                   mock.patch.object(sl, "_user_home_config_path", lambda db, user_id=None: self.home_path),
                   mock.patch.object(jellyfin_mod, "JellyfinService", _FakeJellyfin),

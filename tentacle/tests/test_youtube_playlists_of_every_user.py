@@ -93,7 +93,7 @@ class ChannelPlaylistsOfEveryUser(_Db):
             ("sync_smartlists", lambda db, user_id=None: {}),
             ("write_home_config", lambda db, user_id=None: {}),
             ("bump_playlist_version", lambda: None),
-            ("_notify_jellyfin_plugin", lambda db: {}),
+            ("_notify_jellyfin_plugin", lambda db, user=None: {}),
             ("prune_dead_entries", lambda db, **kw: 0),
         ):
             p = mock.patch.object(smartlists, name, value)

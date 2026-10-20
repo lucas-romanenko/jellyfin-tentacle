@@ -85,7 +85,7 @@ class HeroPick(unittest.TestCase):
         self.db.commit()
         for name, value in (("HOME_CONFIG_DIR", str(self.tmp / "home-configs")),
                             ("bump_playlist_version", lambda: None),
-                            ("_notify_jellyfin_plugin", lambda db: {"notified": False}),
+                            ("_notify_jellyfin_plugin", lambda db, user=None: {"notified": False}),
                             ("_get_smartlists_with_playlist_ids",
                              lambda db, user_id=None: [{"playlist_id": TENTACLE_PL, "name": "New Movies"}])):
             p = mock.patch.object(rsl, name, value)

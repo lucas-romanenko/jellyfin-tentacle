@@ -46,7 +46,7 @@ class Endpoint(unittest.TestCase):
         written = {}
         with mock.patch.object(rsl, "_read_home_json", lambda u: dict(existing or {})), \
                 mock.patch.object(rsl, "_write_home_json", lambda u, c: written.update(c)), \
-                mock.patch.object(rsl, "_notify_jellyfin_plugin", lambda d: None), \
+                mock.patch.object(rsl, "_notify_jellyfin_plugin", lambda d, user=None: None), \
                 mock.patch.object(rsl, "bump_playlist_version", lambda: None):
             out = rsl.set_card_previews(rsl.CardPreviewsRequest(mode=mode), db, user)
         return out, written

@@ -26,6 +26,7 @@ from services.smartlists import (
     write_home_config, _notify_jellyfin_plugin, refresh_smartlist_playlists,
     _get_smartlists_with_playlist_ids, update_playlist_sort, SORT_BY_DISPLAY,
     _user_smartlists_path, get_playlist_version, bump_playlist_version,
+    get_home_version,
     sync_single_custom_playlist, toggle_auto_playlist_fast,
     home_config_lock, write_home_json,
 )
@@ -423,6 +424,9 @@ def write_home(db: Session = Depends(get_db), user: TentacleUser = Depends(get_u
     config = write_home_config(db, user_id=user.id)
     if not config:
         return {"status": "error", "message": "No SmartLists with playlist IDs found"}
+    # Clients hear of it like any other home save (they didn't, before).
+    bump_playlist_version()
+    _notify_jellyfin_plugin(db, user)
     return {"status": "ok", "rows": len(config.get("rows", [])), "config": config}
 
 
@@ -431,13 +435,17 @@ def read_home(db: Session = Depends(get_db), user: TentacleUser = Depends(get_us
     """Return the current per-user home config contents.
 
     First fetch for a user with no config seeds it from their Jellyfin
-    home-section settings (mirrors what they had enabled in Jellyfin)."""
+    home-section settings (mirrors what they had enabled in Jellyfin).
+
+    `home_version` is read before the config: a save in between makes the
+    config newer than its version (one extra refresh later), never older."""
+    home_version = get_home_version(user.id)
     config = _read_home_json(user)
     if not config:
         config = _seed_home_config_from_jellyfin(db, user)
     if not config:
-        return {"exists": False, "config": {}}
-    return {"exists": True, "config": config}
+        return {"exists": False, "config": {}, "home_version": home_version}
+    return {"exists": True, "config": config, "home_version": home_version}
 
 
 @router.post("/refresh-playlists")
@@ -617,7 +625,7 @@ def preview_count(body: PreviewRequest, db: Session = Depends(get_db), user: Ten
 @router.post("/notify")
 def notify(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Notify the Jellyfin plugin to reload. Does NOT touch the JSON."""
-    result = _notify_jellyfin_plugin(db)
+    result = _notify_jellyfin_plugin(db, user)
     return {"success": True, **result}
 
 
@@ -662,7 +670,7 @@ def reorder(req: ReorderRequest, db: Session = Depends(get_db), user: TentacleUs
         config["rows"] = new_rows
         _write_home_json(user, config)
     bump_playlist_version()
-    _notify_jellyfin_plugin(db)
+    _notify_jellyfin_plugin(db, user)
     logger.info(f"Reordered home rows for {user.display_name}: {[r['display_name'] for r in new_rows]}")
     return {"success": True, "rows": len(new_rows)}
 
@@ -753,7 +761,7 @@ def add_row(req: AddRowRequest, db: Session = Depends(get_db), user: TentacleUse
         _write_home_json(user, config)
         rows_count = len(config["rows"])
     bump_playlist_version()
-    _notify_jellyfin_plugin(db)
+    _notify_jellyfin_plugin(db, user)
     return {"success": True, "rows": rows_count}
 
 
@@ -783,7 +791,7 @@ def remove_row(req: RemoveRowRequest, db: Session = Depends(get_db), user: Tenta
         _write_home_json(user, config)
         rows_count = len(config["rows"])
     bump_playlist_version()
-    _notify_jellyfin_plugin(db)
+    _notify_jellyfin_plugin(db, user)
     return {"success": True, "rows": rows_count}
 
 
@@ -831,7 +839,7 @@ def set_merge_continue_watching(req: MergeContinueRequest, db: Session = Depends
         config["merge_continue_watching"] = bool(req.enabled)
         _write_home_json(user, config)
     bump_playlist_version()
-    _notify_jellyfin_plugin(db)
+    _notify_jellyfin_plugin(db, user)
     return {"success": True, "merge_continue_watching": bool(req.enabled)}
 
 
@@ -864,7 +872,7 @@ def set_card_previews(req: CardPreviewsRequest, db: Session = Depends(get_db), u
         config["card_previews"] = mode
         _write_home_json(user, config)
     bump_playlist_version()
-    _notify_jellyfin_plugin(db)
+    _notify_jellyfin_plugin(db, user)
     return {"success": True, "card_previews": mode}
 
 
@@ -891,7 +899,7 @@ def set_row_max_items(req: RowMaxItemsRequest, db: Session = Depends(get_db), us
 
         _write_home_json(user, config)
     bump_playlist_version()
-    _notify_jellyfin_plugin(db)
+    _notify_jellyfin_plugin(db, user)
     return {"success": True, "max_items": val}
 
 
@@ -922,7 +930,7 @@ def set_row_shape(req: RowShapeRequest, db: Session = Depends(get_db), user: Ten
 
         _write_home_json(user, config)
     bump_playlist_version()
-    notify = _notify_jellyfin_plugin(db)
+    notify = _notify_jellyfin_plugin(db, user)
     return {"success": True, "shape": shape, **notify}
 
 
@@ -988,7 +996,7 @@ def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: Tentacle
 
         _write_home_json(user, config)
     bump_playlist_version()
-    _notify_jellyfin_plugin(db)
+    _notify_jellyfin_plugin(db, user)
     logger.info(f"Updated hero: {req.playlist_id or '(disabled)'}")
     return {"success": True}
 
@@ -1024,7 +1032,7 @@ def set_hero_sort(req: HeroSortRequest, db: Session = Depends(get_db), user: Ten
         config["hero"] = hero
         _write_home_json(user, config)
     bump_playlist_version()
-    _notify_jellyfin_plugin(db)
+    _notify_jellyfin_plugin(db, user)
     logger.info(f"Updated hero sort: {req.sort_by} {req.sort_order}")
     return {"success": True}
 
@@ -1075,7 +1083,7 @@ def set_toolbar(req: ToolbarRequest, db: Session = Depends(get_db), user: Tentac
         config["toolbar"] = toolbar
         _write_home_json(user, config)
     bump_playlist_version()
-    _notify_jellyfin_plugin(db)
+    _notify_jellyfin_plugin(db, user)
     logger.info(f"Updated toolbar config: {[b['id'] for b in toolbar if b['enabled']]}")
     return {"success": True}
 

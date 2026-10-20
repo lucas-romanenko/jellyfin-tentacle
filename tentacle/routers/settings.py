@@ -162,6 +162,7 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
         body.settings["tmdb_bearer_token"] = ""
     from routers.vod import vod_enabled
     vod_before = vod_enabled(db)
+    changed = False
     for key, value in body.settings.items():
         # A secret sent back exactly as the masked listing showed it is unchanged
         if key in sensitive_keys and is_shown_form(value, get_setting(db, key, "") or ""):
@@ -178,6 +179,8 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
                 # Nothing to clear: don't create an empty row for a key that
                 # was never set (a Save with nothing edited changed the table).
                 continue
+        if (get_setting(db, key, None) or "") != (value or ""):
+            changed = True
         set_setting(db, key, value)
 
     if "youtube_proxy" in body.settings:
@@ -211,6 +214,13 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
         from services import provider_relink
         provider_relink.start_vod_route_relink()
 
+    # The plugin caches what it reads from these (Discover, ratings, feature
+    # switches): a real change clears its caches and tells every client, whose
+    # home version then moves. A Save with nothing edited tells nobody.
+    if changed:
+        from services.smartlists import _notify_jellyfin_plugin
+        _notify_jellyfin_plugin(db)
+
     # If the sync schedule changed, reschedule the job live (no restart needed).
     if "sync_schedule" in body.settings:
         try:
@@ -232,25 +242,6 @@ def schedule_info():
         return get_schedule_info()
     except Exception:
         return {"cron": "0 3 * * *", "time": "03:00", "timezone": "", "timezone_abbr": "", "next_run_human": None}
-
-
-def _notify_plugin_discover_changed(db: Session):
-    """Notify the Jellyfin plugin to clear its discover config cache."""
-    import logging
-    jellyfin_url = get_setting(db, "jellyfin_url", "")
-    jellyfin_key = get_setting(db, "jellyfin_api_key", "")
-    if not jellyfin_url or not jellyfin_key:
-        return
-    try:
-        r = requests.post(
-            f"{jellyfin_url.rstrip('/')}/Tentacle/Refresh",
-            headers={"X-Emby-Token": jellyfin_key},
-            timeout=5,
-        )
-        if r.ok:
-            logging.getLogger(__name__).info("Notified Jellyfin plugin to clear discover cache")
-    except Exception:
-        pass
 
 
 @router.post("/initial-scan")

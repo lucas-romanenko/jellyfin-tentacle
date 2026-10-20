@@ -30,6 +30,7 @@
   --accent: #6c63ff;
   --accent-dim: rgba(108,99,255,0.15);
   --accent-hover: #7d75ff;
+  --accent-text: #958fff;  /* accent as text on --accent-dim: 5.8:1 on --bg1, 5.3:1 on --bg2 (#6c63ff was 3.7:1) */
   --green: #4ade80;
   --green-dim: rgba(74,222,128,0.12);
   --red: #f87171;
@@ -152,7 +153,7 @@ body {
 
 .nav-item.active {
   background: var(--accent-dim);
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 500;
 }
 
@@ -811,7 +812,7 @@ td.primary { color: var(--text); font-weight: 500; }
 }
 
 .settings-nav-item:hover { background: var(--bg2); color: var(--text); }
-.settings-nav-item.active { background: var(--accent-dim); color: var(--accent); font-weight: 500; }
+.settings-nav-item.active { background: var(--accent-dim); color: var(--accent-text); font-weight: 500; }
 
 .settings-section { display: none; }
 .settings-section.active { display: block; }
@@ -2789,7 +2790,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <div class="form-group">
                 <div class="form-label">Tentacle&rsquo;s address <span style="font-weight:400;color:var(--text3)">&mdash; as your Jellyfin server (and Radarr, Sonarr, Lidarr) reach this dashboard</span></div>
                 <div style="display:flex;gap:8px;flex-wrap:wrap">
-                  <input class="form-input" id="settings-tentacle-address" placeholder="http://192.168.1.10:8888" style="flex:1;min-width:min(260px,100%)">
+                  <input class="form-input" id="settings-tentacle-address" aria-label="Tentacle&rsquo;s address" placeholder="http://192.168.1.10:8888" style="flex:1;min-width:min(260px,100%)">
                   <button class="btn btn-secondary" onclick="ytDetectAddress('settings-tentacle-address')">Detect</button>
                 </div>
                 <div id="settings-tentacle-address-status" style="font-size:12px;margin-top:4px;color:var(--text3)"></div>
