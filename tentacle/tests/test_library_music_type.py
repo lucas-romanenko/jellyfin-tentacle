@@ -31,6 +31,13 @@ class LibraryMusicType(unittest.TestCase):
     def test_old_music_links_land_on_the_music_type(self):
         self.assertIn("const wantMusic = tab === 'music';", APP)
 
+    def test_music_is_a_grid_of_square_covers(self):
+        music = (ROOT / "static" / "js" / "music.js").read_text(encoding="utf-8")
+        self.assertIn('id="music-lib-grid"', music)
+        self.assertIn("_musicAlbumCard(a, { noRequest: true, quietOwned: true })", music)
+        self.assertNotIn("showMoreMusicArtists", music)
+        self.assertIn("#music-lib-grid {", HTML.replace("#discover-grid, #music-lib-grid {", "#music-lib-grid {"))
+
 
 if __name__ == "__main__":
     unittest.main()

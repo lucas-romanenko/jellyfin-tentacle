@@ -61,7 +61,7 @@ function _musicAlbumCard(a, opts = {}) {
   const sub = opts.meta != null ? opts.meta
     : opts.showArtist === false ? (a.year || '—') : `${escapeAttr(a.artist || '')}${a.year ? ' · ' + a.year : ''}`;
   return `<div class="lib-card music" onclick="openMusicAlbum('${escapeJS(a.mbid)}')">
-      <div class="lib-card-poster">${cover}<div class="lib-card-source">${_musicBadge(a)}</div>${addBtn}</div>
+      <div class="lib-card-poster">${cover}${opts.quietOwned && a.status === 'in_library' ? '' : `<div class="lib-card-source">${_musicBadge(a)}</div>`}${addBtn}</div>
       <div class="lib-card-info">
         <div class="lib-card-title" title="${escapeAttr(a.title)}">${escapeAttr(a.title)}</div>
         <div class="lib-card-meta">${sub}</div>
@@ -771,52 +771,43 @@ async function loadMusicLibrary() {
       return;
     }
     musicState.libData = data;
+    musicState.libAlbums = null;
     musicState.libShown = 0;
     el.innerHTML = '';
-    showMoreMusicArtists();
+    showMoreMusicAlbums();
   } catch (e) {
     el.innerHTML = `<div class="empty-state" style="padding:40px"><p>${escapeAttr(e.message)}</p></div>`;
   }
 }
 
-// A big library is drawn a page of artists at a time, not every album at once.
-const MUSIC_ARTISTS_PER_PAGE = 30;
+// Library → Music is a grid of square album covers, like the movie and show posters
+// (Lucas, 20 Oct), artist by artist; a big library is drawn a page of albums at a time.
+// Opening an album has its actions (Open in the player, Keep N tracks).
+const MUSIC_ALBUMS_PER_PAGE = 60;
 
-function showMoreMusicArtists() {
+function showMoreMusicAlbums() {
   const el = document.getElementById('music-library');
   const data = musicState.libData;
   if (!el || !data) return;
-  const isAdmin = state.currentUser && state.currentUser.is_admin;
-  const from = musicState.libShown || 0;
-  const page = data.artists.slice(from, from + MUSIC_ARTISTS_PER_PAGE);
-  musicState.libShown = from + page.length;
-  document.getElementById('music-lib-more')?.remove();
-  el.insertAdjacentHTML('beforeend', page.map(artist => `
-      <div class="music-lib-artist">
-        <div class="music-lib-artist-name"><a href="#" onclick="openMusicArtist('${escapeJS(artist.mbid)}');return false">${escapeAttr(artist.name)}</a></div>
-        ${artist.albums.map(a => _musicLibraryRow(a, data.players, isAdmin)).join('')}
-      </div>`).join(''));
-  const left = data.artists.length - musicState.libShown;
-  if (left > 0) {
-    el.insertAdjacentHTML('beforeend', `<div id="music-lib-more" style="text-align:center;margin:16px 0">
-      <button class="btn btn-secondary" onclick="showMoreMusicArtists()">Show more artists (${left} more)</button></div>`);
+  if (!musicState.libAlbums) {
+    musicState.libAlbums = data.artists.flatMap(artist =>
+      artist.albums.map(a => Object.assign({ artist: artist.name }, a)));
   }
-}
-
-function _musicLibraryRow(a, players, isAdmin) {
-  const open = a.status === 'in_library' ? (players || []).map(p =>
-    `<a class="btn btn-secondary btn-sm" href="/api/music/open/${encodeURIComponent(a.mbid)}?player=${encodeURIComponent(p.id)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Open in ${escapeAttr(p.name)}</a>`).join('') : '';
-  const review = a.status === 'needs_review' && isAdmin ? (a.options || []).map(o =>
-    `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();resolveMusicReview('${escapeJS(a.mbid)}', ${Number(o.tracks)}, this)">Keep ${Number(o.tracks)} tracks</button>`).join('') : '';
-  const files = a.tracks ? `${a.files}/${a.tracks} tracks` : '';
-  return `<div class="music-lib-row" onclick="openMusicAlbum('${escapeJS(a.mbid)}')">
-      ${_musicCover(a.cover, 48)}
-      <div class="music-row-main">
-        <div class="music-row-title">${escapeAttr(a.title)} ${_musicBadge(a)}</div>
-        <div class="music-row-sub">${escapeAttr([a.year, files].filter(Boolean).join(' · '))}${a.status === 'needs_review' && a.message ? ' — ' + escapeAttr(a.message) : ''}</div>
-      </div>
-      <div class="music-lib-actions">${open}${review}</div>
-    </div>`;
+  let grid = document.getElementById('music-lib-grid');
+  if (!grid) {
+    el.insertAdjacentHTML('beforeend', '<div id="music-lib-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px"></div>');
+    grid = document.getElementById('music-lib-grid');
+  }
+  const from = musicState.libShown || 0;
+  const page = musicState.libAlbums.slice(from, from + MUSIC_ALBUMS_PER_PAGE);
+  musicState.libShown = from + page.length;
+  grid.insertAdjacentHTML('beforeend', page.map(a => _musicAlbumCard(a, { noRequest: true, quietOwned: true })).join(''));
+  document.getElementById('music-lib-more')?.remove();
+  const left = musicState.libAlbums.length - musicState.libShown;
+  if (left > 0) {
+    el.insertAdjacentHTML('beforeend', `<div id="music-lib-more" style="text-align:center;margin-top:20px">
+      <button class="btn btn-secondary" onclick="showMoreMusicAlbums()">Load more</button></div>`);
+  }
 }
 
 async function loadMusicStatusLine() {
