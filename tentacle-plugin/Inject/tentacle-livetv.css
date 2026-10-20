@@ -15,6 +15,19 @@ body.tentacle-livetv-active .skinHeader [data-tentacle-tab-ancestor] {
     display: none !important;
 }
 
+/* ==================== Native guide ==================== */
+
+/* Provider channel numbers run to 6-7 digits (Jellyfin's tuner keys the
+   channel on them, so they can't be shortened) and Jellyfin's guide cuts
+   them at 30% of the channel cell ("414..."). Use the room left of the logo. */
+.guide-channelHeaderCell .guideChannelNumber {
+    max-width: calc(100% - 6.2em);
+    padding-left: 0.6em;
+    font-size: 1.05em;
+    font-variant-numeric: tabular-nums;
+    text-overflow: clip;
+}
+
 /* ==================== Container ==================== */
 
 #tentacleLiveTvContainer {

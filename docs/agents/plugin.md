@@ -13,14 +13,15 @@ download notifications, all in Jellyfin's web UI. .NET 9, Jellyfin 10.11
 ## Layout
 
 ```
-Plugin.cs, PluginServiceRegistrator.cs   entry point; services (HomeScreenManager, PlaylistManager, LibraryDeleteHandler) and the Harmony patch
+Plugin.cs, PluginServiceRegistrator.cs   entry point; services (HomeScreenManager, PlaylistManager, LibraryDeleteHandler), the MVC filter and the Harmony patch
 Configuration/                          PluginConfiguration (TentacleUrl), configPage.html
 Api/                                    controllers (see plugin-api.md); CallerIdentity (who may act as which user)
 Patching/                               HarmonyInit, IndexHtmlPatch (injects the CSS/JS into index.html), TransformedFileInfo
 Services/LiveTvIsolation.cs             Live TV per person: Harmony prefixes on GuideManager.GetChannel (a Tentacle tuner's channel is born with its tag) and GetProgram (+ postfix: programmes get the channel's tag), LiveTvNewUser (a new user blocks every person's own tuner, 5 s after the event)
 HomeScreen/                             HomeScreenManager (per-user home config from the server, awaited and shared per user)
 Playlists/, Tasks/                      PlaylistManager, SmartListConfig, PlaylistRefreshTask
-Services/                               LibraryDeleteHandler (Jellyfin ItemRemoved → server, 2 s debounce), MdbListCacheService
+Services/                               LibraryDeleteHandler (Jellyfin ItemRemoved → server, 2 s debounce), MdbListCacheService,
+                                        VodNoVideoCopyFilter (Tentacle VOD as HLS: re-encode the video, never copy it)
 Inject/                                 the injected tentacle-*.js/.css and the logo (embedded resources)
 Web/                                    per-user settings page
 Assets/                                 rating source icons (served by AssetsController, file names sanitized)
@@ -47,7 +48,14 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
 - **Navbar and tabs**: `tentacle-navbar.js` replaces Jellyfin's
   `skinHeader` but keeps page tabs (Live TV guide, Music); `.sectionTabs`
   shows only under `[data-tentacle-tab-ancestor]`, which the JS sets on
-  those pages, never on home.
+  those pages, never on home. With tabs shown the JS also sets
+  `body.tentacle-page-tabs`, and the CSS moves Jellyfin's tab bar and the
+  page below Tentacle's header (`--tentacle-tabs-top`), so they never overlap.
+- **Libraries list**: a fixed element on `<body>` (the pill's
+  backdrop-filter breaks `position: fixed` inside it), so it must be given a
+  top/left on every width, phones included, or it opens far below the
+  screen. Hover opens it only for `pointerType === 'mouse'`: a tap also sends
+  mouseenter, and the click after it would close the list again.
 - **Discover tab**: the JS re-checks `TentacleDiscover/Config` on every home
   visit (no permanent client cache), so turning Discover off removes it.
 - **Activity**: the JS polls `TentacleDiscover/Activity` every 3 s while the
@@ -60,6 +68,20 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   fetch behind a per-user `lock` starved Jellyfin's thread pool on a burst of
   home loads and stalled all of Jellyfin (#256). Never add
   `.GetAwaiter().GetResult()` or `.Result` on a request path.
+- **Tentacle VOD as HLS re-encodes the video** (`VodNoVideoCopyFilter`,
+  a global MVC action filter, `Configure<MvcOptions>` in the registrator):
+  on `POST /Items/{id}/PlaybackInfo` and the HLS video requests
+  (master.m3u8, main.m3u8, segments) of a .strm whose address is
+  Tentacle's signed `/api/vod/` link, it sets `allowVideoStreamCopy=false`.
+  With the video copied, a resumed play's segments are cut at the
+  source's keyframes (~2.7 s) while the playlist says 6 s each, so
+  Jellyfin Web runs past what was written and plays the next episode
+  (jellyfin/jellyfin#17966). Jellyfin then writes the flag into the
+  TranscodingUrl itself; direct play (the TV) is decided as before, and
+  library files, Live TV, .strm files pointing straight at a provider and
+  users without video transcoding permission (their remux is all they can
+  play) are untouched. Turning off the user policy "Allow video playback that
+  requires conversion without re-encoding" does not stop the copy.
 - **Home sections**: when Tentacle's home is on, the server turns
   Jellyfin's own home sections off per user (see server.md).
 - **Logo**: served at `/Tentacle/logo.png`; CSS in `tentacle-home.css`

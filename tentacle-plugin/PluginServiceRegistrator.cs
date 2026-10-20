@@ -7,6 +7,7 @@ using Jellyfin.Data.Events.Users;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Events;
 using MediaBrowser.Controller.Plugins;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -40,6 +41,11 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         // Live TV per person: tags on channels and programmes, new users' blocked tags
         serviceCollection.AddSingleton<IHostedService, LiveTvIsolation>();
         serviceCollection.AddScoped<IEventConsumer<UserCreatedEventArgs>, LiveTvNewUser>();
+
+        // Tentacle VOD served as HLS re-encodes its video instead of copying
+        // it (a resumed play otherwise skips to the next episode, #17966)
+        serviceCollection.AddSingleton<VodNoVideoCopyFilter>();
+        serviceCollection.Configure<MvcOptions>(options => options.Filters.AddService<VodNoVideoCopyFilter>());
 
         logger?.LogInformation("[Tentacle] Services registered successfully.");
     }

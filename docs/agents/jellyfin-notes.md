@@ -62,6 +62,14 @@ The code wins where they differ.
   downloader and image fetcher on for the movie library (downloads get
   identified and get artwork); "Automatically refresh metadata from the
   internet" on Never (Tentacle refreshes items itself).
+- **HLS with the video copied** (10.11, jellyfin/jellyfin#17966): a
+  transcode for the audio only (`-codec:v:0 copy`, after a resume also
+  `-ss … -noaccurate_seek`) cuts segments at the source's keyframes while
+  the playlist promises `SegmentLength` each; the player runs ahead of
+  the real media and ends the item early. `allowVideoStreamCopy=false`
+  (query on PlaybackInfo and on the HLS URLs) re-encodes and the segments
+  match the playlist; the plugin sets it for Tentacle VOD. The user policy
+  EnablePlaybackRemuxing does not stop the copy.
 - **API key**: Jellyfin → Dashboard → API Keys; Tentacle checks it at
   startup and logs a warning if it's invalid. Invalid key = no playlists.
 

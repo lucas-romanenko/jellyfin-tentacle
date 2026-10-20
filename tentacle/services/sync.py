@@ -1855,7 +1855,21 @@ def _vod_root_holds_none(db: Session, Model, root: Path) -> bool:
     paths = [p for (p,) in _swept_rows(db, Model).with_entities(Model.strm_path)]
     if not paths or (root / VOD_LIBRARY_MARKER).exists():
         return False
-    return not any(Path(p).exists() for p in paths)
+    return not any(_holds_own_file(Path(p)) for p in paths)
+
+
+def _holds_own_file(path: Path) -> bool:
+    """A recorded title's file is there: a film's .strm, or a show folder
+    with a .strm in it. A show folder alone proves nothing: Sonarr creates
+    that very folder when it imports an episode of a show Tentacle also
+    serves (the vod_root layout, or one folder for both), so an import onto
+    the bare mount point re-creates it. A read error counts as not there."""
+    try:
+        if not path.is_dir():
+            return path.exists()
+        return any(True for _ in path.rglob("*.strm"))
+    except OSError:
+        return False
 
 
 def _check_vod_root_before_sync(db: Session, Model, root: Path, what: str):
