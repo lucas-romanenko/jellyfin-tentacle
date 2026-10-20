@@ -11,15 +11,21 @@ from typing import Optional
 
 # A leading country / language tag: "CA:", "CA EN:", "US|", "|US|", "[UK]".
 # Two-letter codes (plus a few longer ones panels use), so a brand such as
-# "CNN: International" keeps its name.
+# "CNN: International" keeps its name. "VIP:" and "NOW:" are a panel's
+# tiers, not part of the name: one live feed tags 431 display names "VIP:"
+# and 87 "NOW:" ("NOW: TNT SPORT 1" next to "UK: TNT SPORTS 1" on one id).
+# They name no country (channel_country below reads two-letter codes only).
 _PREFIX_RE = re.compile(
-    r"^\s*[|\[(]?\s*(?:[A-Za-z]{2}(?:[ /-][A-Za-z]{2})?|USA|EXYU|LATAM|ARAB)\s*[|\]):]\s*")
+    r"^\s*[|\[(]?\s*(?:[A-Za-z]{2}(?:[ /-][A-Za-z]{2})?|USA|EXYU|LATAM|ARAB|VIP|NOW)\s*[|\]):]\s*")
 
 # Quality and format markers that say nothing about which channel it is.
 _MARKERS = {
     "hd", "fhd", "uhd", "sd", "hq", "lq", "4k", "8k", "hdr", "hevc", "h264", "h265",
     "raw", "1080p", "1080i", "720p", "576i", "50fps", "60fps",
 }
+
+# One word, two spellings, in the same feed: "TNT SPORT 1" / "TNT SPORTS 1".
+_WORD_FORMS = {"sports": "sport"}
 
 
 def channel_name_words(name: str) -> list:
@@ -32,7 +38,7 @@ def channel_name_words(name: str) -> list:
         text = stripped
     text = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
     text = text.lower().replace("&", " and ").replace("+", " plus ")
-    return [w for w in re.split(r"[^0-9a-z]+", text) if w and w not in _MARKERS]
+    return [_WORD_FORMS.get(w, w) for w in re.split(r"[^0-9a-z]+", text) if w and w not in _MARKERS]
 
 
 def channel_name_key(name: str) -> str:
@@ -48,7 +54,7 @@ def channel_name_key(name: str) -> str:
     # Accents off: "Šiauliai" and "Siauliai" are the same channel name.
     text = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
     text = text.lower().replace("&", " and ").replace("+", " plus ")
-    words = [w for w in re.split(r"[^0-9a-z]+", text) if w and w not in _MARKERS]
+    words = [_WORD_FORMS.get(w, w) for w in re.split(r"[^0-9a-z]+", text) if w and w not in _MARKERS]
     # Spaces are dropped too, so "TSN 5" and "TSN5" meet.
     return "".join(words)
 
@@ -87,6 +93,15 @@ def channel_country(name: str) -> Optional[str]:
         if code not in _LANGUAGE_ONLY:
             return _SAME_COUNTRY.get(code, code)
     return None
+
+
+def feed_id_country(feed_id: str) -> Optional[str]:
+    """The country an XMLTV id's two-letter suffix names: "TNTSport1.uk" -> "gb"."""
+    m = _ID_COUNTRY_RE.search(feed_id or "")
+    if not m:
+        return None
+    code = m.group(1).lower()
+    return _SAME_COUNTRY.get(code, code)
 
 
 def feed_countries(feed_id: str, names) -> set:

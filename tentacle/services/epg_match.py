@@ -18,12 +18,21 @@ Ordered passes, most reliable first:
      and DVR rules booked from it. Anything else is reported ("ambiguous",
      "foreign") and never guessed: for a guide, a wrong programme is worse
      than none.
+
+A feed can also list one channel under two ids, only one of which carries
+programmes: on a live install "TNTSport1.uk" (the provider's tvg-id, no
+programmes) and "tntsports1.uk" (the schedule). So a channel matched by
+tvg-id or name also gets a FALLBACK: the one feed channel with the same name
+key in the channel's own country (its tag, else its guide id's ".uk"). It is
+used only when the channel's own guide id brings no programmes (the sync
+decides, after reading them), never for an override.
 """
 from collections import Counter, defaultdict
 
 import re
 
-from services.channel_names import channel_country, channel_name_key, channel_name_words, feed_countries
+from services.channel_names import (channel_country, channel_name_key, channel_name_words, feed_countries,
+                                    feed_id_country)
 
 # How many unmatched / ambiguous channels a coverage report lists by name.
 _LIST_LIMIT = 200
@@ -157,6 +166,23 @@ def resolve_guide_ids(channels: list, feed_channels: list) -> dict:
         else:
             out[cid] = {"method": None, "guide_id": None, "name_match": None,
                         "reason": "ambiguous", "candidates": [guide_id]}
+
+    # The same channel under another id of the feed (see the module docstring).
+    for ch in channels:
+        r = out.get(ch["id"])
+        if not r or not r["guide_id"] or r["method"] == "override" or not feed_ids:
+            continue
+        country = channel_country(ch.get("name") or "") or feed_id_country(r["guide_id"])
+        key = channel_name_key(ch.get("name") or "")
+        if not country or not key:
+            continue
+        same = [c for c in sorted(feed_by_key.get(key, ()))
+                if c != r["guide_id"] and c not in mixed and country in countries.get(c, ())]
+        if len(same) > 1:
+            plain = [c for c in same if not any(_has_timeshift(n) for n in feed_names.get(c, ()))]
+            same = plain if len(plain) == 1 else same
+        if len(same) == 1:
+            r["fallback"] = same[0]
     return out
 
 
