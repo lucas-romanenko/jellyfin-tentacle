@@ -6404,7 +6404,11 @@ async function loadHealthStreams() {
       el.innerHTML = '<div class="empty-state"><p>No dead streams detected</p></div>';
       return;
     }
-    const rows = entries.map(e => {
+    // A long list folds: the first few, then "Show all"
+    const SHOWN = 5;
+    const showAll = el.dataset.all === '1';
+    const listed = showAll ? entries : entries.slice(0, SHOWN);
+    const rows = listed.map(e => {
       const name = escapeHtml(e.title) + (e.episode ? ` <span style="color:var(--text3)">${escapeHtml(e.episode)}</span>` : '');
       const first = _healthDate(e.first_failed_at);
       const last = _healthDate(e.last_checked_at);
@@ -6422,7 +6426,8 @@ async function loadHealthStreams() {
     el.innerHTML = `<div style="overflow-x:auto"><table>
       <thead><tr><th>Title</th><th>Type</th><th>First failed</th><th>Last checked</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
-    </table></div>`;
+    </table></div>` + (entries.length > SHOWN
+      ? `<div style="text-align:center;margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="const el=document.getElementById('${el.id}');el.dataset.all=el.dataset.all==='1'?'':'1';loadHealthStreams()">${showAll ? 'Show fewer' : `Show all ${entries.length}`}</button></div>` : '');
   } catch (e) {
     el.innerHTML = '<div class="empty-state"><p>Failed to load stream health</p></div>';
   }
@@ -6869,6 +6874,13 @@ function _logClean(text) {
     .replace(/\bfor user \d+\b/g, 'for a user')
     .replace(/\bStream \d+ /g, 'A stream ')
     .replace(/\bno longer desired\b/g, 'no longer wanted')
+    // A library's connection error ("HTTPConnectionPool(host=…): Max retries
+    // exceeded … ConnectTimeoutError …") in plain words; Details has it whole
+    .replace(/(?:HTTPS?ConnectionPool|Max retries exceeded)[^—]*?(?=\s+—|$)/g, m =>
+      /timed? ?out|timeout/i.test(m) ? 'the provider did not answer'
+        : /refused/i.test(m) ? 'the provider refused the connection'
+        : /resolve|name or service|getaddrinfo/i.test(m) ? 'the provider\u2019s name was not found'
+        : 'the provider could not be reached')
     .replace(/\s{2,}/g, ' ')
     .trim();
 }
