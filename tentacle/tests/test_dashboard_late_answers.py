@@ -17,7 +17,7 @@ from dashboard_js import DOM_STUB, HAVE_NODE, functions, node
 
 SRC = functions("pages.js", [
     "_detailOpening", "showMediaDetail",
-    "_resetEpisodePicker", "_resetManageMode", "_profileOptionsHtml", "showAddToArrModal",
+    "_resetEpisodePicker", "_resetManageMode", "_profileOptionsHtml", "_arrAddLabel", "showAddToArrModal",
 ])
 
 HARNESS = DOM_STUB + r"""

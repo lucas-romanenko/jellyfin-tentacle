@@ -40,7 +40,8 @@ class LibraryAndDiscoverText(unittest.TestCase):
 
     def test_discover_grid_and_coverage_card(self):
         src = ESC + ("function _discoverDownloadInfo() { return null; } function _discoverUnreleasedInfo() { return null; }\n"
-                     + functions("pages.js", ["renderDiscoverGrid", "coverageCard"]))
+                     "const state = {};\n"
+                     + functions("pages.js", ["_arrAddLabel", "renderDiscoverGrid", "coverageCard"]))
         items = [{"tmdb_id": i + 1, "media_type": "movie", "title": v, "year": "2001", "rating": 7.5,
                   "poster_path": f"http://img.test/{i}.jpg?a=1&b=\"2\"", "list_name": v + " list"}
                  for i, v in enumerate(VALUES)]
