@@ -330,9 +330,10 @@ def relink_vod_route(db: Session, provider: Provider) -> dict:
     (sync.vod_base_url_for), so nothing is written and direct links stay."""
     from routers.vod import vod_enabled
     from services import vod_tokens
-    from services.sync import XtreamClient, _write_strm, chown_path, vod_links_for
+    from urllib.parse import urlparse
+    from services.sync import _MOVED_RE, XtreamClient, _write_strm, chown_path, vod_links_for
 
-    counts = {"movies": 0, "episodes": 0, "no_address": False}
+    counts = {"movies": 0, "episodes": 0, "no_address": False, "checked": 0}
     if (not provider.server_url or (provider.provider_type or "xtream") != "xtream"
             or not (provider.username or provider.password)):
         return counts
@@ -341,14 +342,19 @@ def relink_vod_route(db: Session, provider: Provider) -> dict:
     if vod_enabled(db) and client.vod_links is None:
         counts["no_address"] = True
         return counts
-    direct = _old_url_re(_login(provider))
+    # This provider's own direct URL: its host (any scheme or port, as the
+    # sync's _strm_needs_rewrite reads it) and its login, quoted or raw.
+    host = (urlparse(provider.server_url).hostname or "").lower()
+    user, password = provider.username or "", provider.password or ""
+    logins = {(quote_cred(user), quote_cred(password)), (user, password)}
 
     def relink(strm: Path, key: str) -> None:
         try:
             current = strm.read_text(encoding="utf-8").strip()
-            m = direct.match(current)
-            if m is not None:
-                kind, stream_id, ext = m.group(1).lower(), m.group(2), m.group(3)
+            counts["checked"] += 1
+            m = _MOVED_RE.match(current)
+            if m is not None and m.group(1).lower() == host and (m.group(3), m.group(4)) in logins:
+                kind, stream_id, ext = m.group(2).lower(), m.group(5), current.rsplit(".", 1)[1]
             else:
                 t = vod_tokens._TOKEN_URL.search(current)
                 if t is None or int(t.group(2)) != provider.id:
@@ -387,6 +393,8 @@ def _run_vod_route() -> None:
         try:
             total = {"movies": 0, "episodes": 0}
             no_address = False
+            started = time.monotonic()
+            checked = 0
             for provider in db.query(Provider).all():
                 if (provider.provider_type or "xtream") != "xtream":
                     continue
@@ -396,9 +404,14 @@ def _run_vod_route() -> None:
                 db.expire_all()   # the setting as it is now, not as it was when we started waiting
                 counts = relink_vod_route(db, provider)
                 no_address = no_address or counts["no_address"]
+                checked += counts["checked"]
                 total["movies"] += counts["movies"]
                 total["episodes"] += counts["episodes"]
             on = vod_enabled(db)
+            # Always said, changed or not: the only sign the start-up run happened.
+            logger.info(f"[Relink] VOD route ({'through Tentacle' if on else 'direct'}): {checked} .strm files "
+                        f"checked, {total['movies']} films and {total['episodes']} episodes rewritten "
+                        f"in {time.monotonic() - started:.0f}s")
             if no_address:
                 logger.warning("[Relink] The .strm files keep direct provider links (see the reason above)")
             if not (total["movies"] or total["episodes"]):
