@@ -1405,7 +1405,8 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
   .fam-controls { width: 100%; }
   .fam-ctl { flex: 1 1 140px; }
   .fam-select, .fam-fixed { width: 100%; }
-  .fam-ctl-admin { flex: 0 0 auto; }
+  .fam-ctl-admin { flex: 1 1 100%; flex-direction: row; justify-content: flex-start; gap: 10px; }
+  .fam-ctl-admin input { margin: 0; }
   .fam-actions { width: 100%; }
   .fam-actions .btn { flex: 1; }
   .card.req-item { flex-wrap: wrap; }
@@ -3743,7 +3744,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
       </div>
       <div class="form-group">
         <div class="form-label">When they ask for a movie or show</div>
-        <label class="fam-radio"><input type="radio" name="invite-requests" value="ask" checked> I approve it first</label>
+        <label class="fam-radio"><input type="radio" name="invite-requests" value="ask" checked> Ask me first</label>
         <label class="fam-radio" id="invite-direct-row"><input type="radio" name="invite-requests" value="direct"> It downloads straight away</label>
       </div>
       <div class="form-hint" id="invite-defaults-hint"></div>

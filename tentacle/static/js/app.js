@@ -549,7 +549,7 @@ function showDiscoverTab(tab) {
   document.getElementById('discover-tab-activity').style.display = tab === 'activity' ? '' : 'none';
   if (tab === 'browse') loadDiscover();
   if (tab === 'lists') loadLists();
-  if (tab === 'activity') { startActivityPolling(); renderActivity(); }
+  if (tab === 'activity') { startActivityPolling(); renderActivity(); if (typeof famLoadMyRequests === 'function') famLoadMyRequests(); }
   else stopActivityPolling();
   setRoute('discover', tab === 'browse' ? null : tab);
 }

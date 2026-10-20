@@ -2480,7 +2480,7 @@ async function loadDiscoverPage() {
   const tab = activeTab ? activeTab.getAttribute('data-discovertab') : 'browse';
   if (tab === 'browse') loadDiscover();
   if (tab === 'lists') loadLists();
-  if (tab === 'activity') { startActivityPolling(); renderActivity(); if (typeof famLoadMyRequests === 'function') famLoadMyRequests(); }
+  if (tab === 'activity') { startActivityPolling(); renderActivity(); }
   else { stopActivityPolling(); loadActivity(); } // Fetch badge count even when not on activity tab
 }
 

@@ -39,9 +39,9 @@ logger = logging.getLogger(__name__)
 # (Emby.Server.Implementations/Localization/Ratings): G/TV-Y 0, TV-Y7 7,
 # PG/TV-PG 10, PG-13 13, TV-14 14, R/TV-MA 17.
 KIDS_LEVELS = {
-    "young": {"score": 7, "name": "Young kids", "allows": "up to G and TV-Y7"},
+    "young": {"score": 7, "name": "Young kids", "allows": "up to TV-Y7"},
     "kids": {"score": 10, "name": "Kids", "allows": "up to PG"},
-    "teens": {"score": 14, "name": "Teens", "allows": "up to PG-13 and TV-14"},
+    "teens": {"score": 14, "name": "Teens", "allows": "up to PG-13"},
 }
 # Unrated movies, shows and guide programmes are hidden from kids: about a
 # third of a typical VOD library has no rating, and "unknown" isn't "safe".

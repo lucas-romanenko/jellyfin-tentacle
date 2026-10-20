@@ -84,8 +84,8 @@ Tentacle is built for one person running a home server for their family. Admins 
 
 - **Invite someone:** type a name and Tentacle makes the Jellyfin account with an easy password (two words and two digits), starts them on the household's defaults, and shows an invite card to pass on: their name, password, the server address and how to set up the TV.
 - **New people start with:** pick once whose home screen and whose Live TV channel list new people copy (or Tentacle's standard rows and all channels). They change their own afterwards.
-- **Age limit (kids profiles):** one choice per person: *Young kids* (G, TV-Y, TV-Y7), *Kids* (up to PG and TV-PG) or *Teens* (up to PG-13 and TV-14). It uses Jellyfin's own parental controls, so every Jellyfin app follows it. Movies and shows without an age rating are hidden from kids too. In Live TV kids see only the **kids channels** you pick on People (none picked: no Live TV for kids). Switching it off puts back exactly what the person had before.
-- **Their requests:** *You approve first* (the default for everyone who isn't an admin, and always for kids) or *Straight away*.
+- **Age limit (kids profiles):** one choice per person: *Young kids* (up to TV-Y7), *Kids* (up to PG) or *Teens* (up to PG-13 and TV-14). It uses Jellyfin's own parental controls, so every Jellyfin app follows it. Movies and shows without an age rating are hidden from kids too. In Live TV kids see only the **kids channels** you pick on People (none picked: no Live TV for kids). Switching it off puts back exactly what the person had before.
+- **Their requests:** *Ask me first* (the default for everyone who isn't an admin, and always for kids) or *Straight away*.
 - **Admin:** make someone an admin (both in Tentacle and in Jellyfin). The owner stays an admin.
 - **Sign in a TV:** on the TV, open Tentacle, choose *Use Quick Connect* and type the code it shows into Tentacle. Everyone can do this for their own TV (sidebar → *Sign in a TV*); admins can do it for anyone. If Quick Connect is off in Jellyfin, People offers to turn it on.
 - **New password:** gives someone a fresh password when they lost theirs.

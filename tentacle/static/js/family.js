@@ -135,9 +135,9 @@ function famRenderPeople() {
     const reqSel = p.is_admin
       ? '<span class="fam-fixed">Straight away</span>'
       : p.kids_level
-        ? '<span class="fam-fixed">You approve first</span>'
+        ? '<span class="fam-fixed">Ask me first</span>'
         : `<select class="form-input fam-select" aria-label="Requests from ${escHtml(p.name)}" onchange="famSetRequests(${p.id}, this.value)">
-            <option value="ask"${p.request_mode === 'ask' ? ' selected' : ''}>You approve first</option>
+            <option value="ask"${p.request_mode === 'ask' ? ' selected' : ''}>Ask me first</option>
             <option value="direct"${p.request_mode === 'direct' ? ' selected' : ''}>Straight away</option>
           </select>`;
     const adminLocked = p.is_owner || p.jellyfin_user_id === me || p.kids_level;
