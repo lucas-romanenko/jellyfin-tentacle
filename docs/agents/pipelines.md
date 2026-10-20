@@ -272,8 +272,10 @@ read that row.
   check, and the sweep deleted every title not written back. A root that
   holds none of the recorded titles' files counts as unmounted too
   (`_vod_root_holds_none()`, #698): in a merged setup a Radarr/Sonarr import
-  onto the bare mount point makes it non-empty. The sync and the sweep both
-  check it. A new install (no rows) syncs; a library emptied on purpose (a
+  onto the bare mount point makes it non-empty. A show counts only when its
+  folder holds a `.strm` (`_holds_own_file()`): Sonarr re-creates the show's
+  own folder when it imports into it (vod_root layout, or one folder for
+  both). The sync and the sweep both check it. A new install (no rows) syncs; a library emptied on purpose (a
   new disk) needs an empty `.tentacle-library` file in the root
   (`VOD_LIBRARY_MARKER`).
   `_repair_movie_strm()` and the show-folder rebuild check the root too.
