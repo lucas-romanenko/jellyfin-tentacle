@@ -1283,6 +1283,59 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
   margin-bottom: 14px;
 }
 
+/* ── My channels ── */
+.card.mych-head { display: flex; align-items: center; gap: 14px 20px; flex-wrap: wrap; margin-bottom: 16px; }
+.mych-head-text { flex: 1; min-width: 240px; }
+.mych-title { font-size: 16px; font-weight: 600; }
+.mych-sub { font-size: 13px; color: var(--text2); margin-top: 4px; }
+.mych-mode .filter-btn { padding: 8px 14px; font-size: 13px; }
+.mych-count { opacity: .75; font-family: 'DM Mono', monospace; font-size: 11px; margin-left: 4px; }
+.mych-status { width: 100%; font-size: 12px; color: var(--text3); margin-top: -4px; }
+.mych-status:empty { display: none; }
+.mych-status.ok { color: var(--green); }
+.mych-status.busy { color: var(--amber); }
+.mych-own { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.mych-own .mych-phone-tabs { display: none; grid-column: 1 / -1; margin-bottom: 0; }
+.card.mych-panel { padding: 0; overflow: hidden; }
+.mych-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.mych-hint { font-size: 12px; color: var(--text3); }
+.mych-search { width: 220px; max-width: 100%; padding: 6px 10px; font-size: 13px; }
+.mych-list { max-height: calc(100vh - 300px); min-height: 160px; overflow-y: auto; }
+.mych-row { display: flex; align-items: center; gap: 10px; padding: 7px 12px 7px 14px; border-bottom: 1px solid var(--border); font-size: 13px; background: var(--bg1); }
+.mych-row:last-child { border-bottom: none; }
+.mych-row.dragging { opacity: .4; }
+.mych-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.mych-num { width: 30px; text-align: right; font-family: 'DM Mono', monospace; font-size: 12px; color: var(--text3); flex-shrink: 0; }
+.mych-logo { width: 34px; height: 22px; object-fit: contain; flex-shrink: 0; }
+.mych-logo.none { background: var(--bg3); border-radius: 3px; }
+.mych-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mych-icon { background: none; border: none; color: var(--text3); cursor: pointer; font-size: 15px; padding: 4px 6px; border-radius: var(--radius-sm); line-height: 1; }
+.mych-icon:hover { color: var(--text); background: var(--bg3); }
+.mych-icon:disabled { opacity: .25; cursor: default; background: none; }
+.mych-star.on { color: var(--amber); }
+.mych-grip { cursor: grab; color: var(--text3); font-size: 13px; letter-spacing: -2px; user-select: none; padding: 0 2px; }
+.mych-added { font-size: 12px; color: var(--text3); padding: 0 6px; }
+.mych-none { padding: 28px 16px; text-align: center; font-size: 13px; color: var(--text3); }
+@media (max-width: 760px) {
+  .mych-own { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .mych-own .mych-phone-tabs { display: flex; }
+  .mych-own .mych-panel { border-top-left-radius: 0; border-top-right-radius: 0; }
+  .mych-own.tab-list #mych-add-panel, .mych-own.tab-add #mych-list-panel { display: none; }
+  .mych-own .mych-panel-head .mych-hint { display: none; }
+  .mych-list { max-height: none; }
+  .mych-search { width: 100%; }
+  .mych-mode { width: 100%; }
+  .mych-mode .filter-btn { flex: 1; }
+  .mych-grip { display: none; }
+  .mych-row { gap: 8px; padding-left: 10px; }
+  .mych-num { width: 22px; }
+}
+
+.mych-people { width: 100%; border-collapse: collapse; font-size: 13px; }
+.mych-people th { text-align: left; font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: .05em; padding: 0 12px 8px 0; }
+.mych-people td { padding: 9px 12px 9px 0; border-top: 1px solid var(--border); }
+.mych-people .muted { color: var(--text3); }
+.mych-setup-status { font-size: 13px; line-height: 1.6; }
 /* Live TV tabs */
 .live-tabs {
   display: flex; gap: 2px; margin-bottom: 16px;
@@ -1837,6 +1890,10 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <button class="nav-item" data-page="jellyfin">
           <span class="icon">◈</span> My Home Screen
         </button>
+        <!-- Shown once the household has Live TV channels (mychannels.js) -->
+        <button class="nav-item" data-page="mychannels" id="nav-mychannels" style="display:none">
+          <span class="icon">▤</span> My Channels
+        </button>
       </div>
       <!-- Server pages: what the admins run for everyone -->
       <div class="nav-section" data-admin-only>
@@ -2160,6 +2217,54 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
       </div>
 
       <!-- ── SOURCES (admins): where the library comes from ── -->
+      <!-- ── MY CHANNELS: everyone picks their own Live TV channels (mychannels.js) ── -->
+      <div class="page" id="page-mychannels">
+        <div class="card mych-head">
+          <div class="mych-head-text">
+            <div class="mych-title">Your Live TV channels</div>
+            <p class="mych-sub">What you see in Live TV on every TV, phone and browser. Only you see your list.</p>
+          </div>
+          <div class="filter-group mych-mode" role="radiogroup" aria-label="Which channels you see">
+            <button class="filter-btn" id="mych-mode-all" role="radio" onclick="mychSetMode(false)">All channels <span class="mych-count" id="mych-count-all"></span></button>
+            <button class="filter-btn" id="mych-mode-own" role="radio" onclick="mychSetMode(true)">My own list <span class="mych-count" id="mych-count-own"></span></button>
+          </div>
+          <div class="mych-status" id="mych-status" aria-live="polite"></div>
+        </div>
+
+        <div id="mych-empty" class="empty-state" style="display:none"><p>Live TV isn&rsquo;t set up on this server yet.</p></div>
+
+        <!-- All channels: the household's list, stars only -->
+        <div class="card mych-panel" id="mych-all" style="display:none">
+          <div class="mych-panel-head">
+            <span class="mych-hint">Everything your household has. Star the ones you watch most: they come first in the guide.</span>
+            <input class="form-input mych-search" id="mych-all-search" placeholder="Search channels" aria-label="Search channels" oninput="mychRenderAll()">
+          </div>
+          <div class="mych-list" id="mych-all-list"></div>
+        </div>
+
+        <!-- My own list: your channels in your order, and the ones to add -->
+        <div class="mych-own" id="mych-own" style="display:none">
+          <div class="mych-phone-tabs live-tabs">
+            <button class="live-tab active" data-mychtab="list" onclick="mychPhoneTab('list')">My list</button>
+            <button class="live-tab" data-mychtab="add" onclick="mychPhoneTab('add')">Add channels</button>
+          </div>
+          <div class="card mych-panel" id="mych-list-panel">
+            <div class="mych-panel-head">
+              <div class="card-title">My list <span class="mych-count" id="mych-list-count"></span></div>
+              <span class="mych-hint">Your numbers follow this order. Drag, or use the arrows.</span>
+            </div>
+            <div class="mych-list" id="mych-own-list"></div>
+          </div>
+          <div class="card mych-panel" id="mych-add-panel">
+            <div class="mych-panel-head">
+              <div class="card-title">Add channels</div>
+              <input class="form-input mych-search" id="mych-add-search" placeholder="Search channels" aria-label="Search channels to add" oninput="mychRenderAdd()">
+            </div>
+            <div class="mych-list" id="mych-add-list"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="page" id="page-sources">
         <div class="tabs-bar" id="sources-tabs" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
           <button class="live-tab active" data-sourcestab="providers" onclick="showSourcesTab('providers')">IPTV providers</button>
@@ -2197,8 +2302,9 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <!-- Tab bar -->
         <div class="live-tabs">
           <button class="live-tab active" data-livetab="channels" onclick="showLiveTab('channels')">Channels</button>
+          <button class="live-tab" data-livetab="people" onclick="showLiveTab('people')">People</button>
           <button class="live-tab" data-livetab="recordings" onclick="showLiveTab('recordings')">Recordings</button>
-          <button class="live-tab" data-livetab="setup" onclick="showLiveTab('setup')">Jellyfin setup</button>
+          <button class="live-tab" data-livetab="setup" onclick="showLiveTab('setup')">In Jellyfin</button>
         </div>
 
         <!-- No provider warning -->
@@ -2221,7 +2327,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           </div>
           <div class="card">
             <div class="card-header">
-              <div class="card-title">Channels <span id="live-ch-count" style="color:var(--text3);font-weight:400"></span></div>
+              <div class="card-title">Channels for everyone <span id="live-ch-count" style="color:var(--text3);font-weight:400"></span></div>
               <div style="display:flex;gap:8px;align-items:center">
                 <input class="form-input" id="live-ch-search" placeholder="Search channels..." style="width:200px;padding:5px 10px;font-size:12px" oninput="searchLiveChannels()">
                 <select class="form-input" id="live-ch-group-filter" aria-label="Filter channels by group" style="width:160px;padding:5px 10px;font-size:12px" onchange="filterLiveChannels()">
@@ -2248,11 +2354,22 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           </div>
         </div>
 
+        <!-- Tab: People -- who sees which channels (mychannels.js) -->
+        <div class="live-tab-panel" id="live-panel-people">
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Who watches what</div>
+              <span style="font-size:12px;color:var(--text3)">Everyone picks their own channels under <strong>My Channels</strong>, from the channels switched on here.</span>
+            </div>
+            <div id="live-people"></div>
+          </div>
+        </div>
+
         <!-- Tab: Recordings -->
         <div class="live-tab-panel" id="live-panel-recordings">
           <div class="card">
             <h3 style="margin-bottom:4px">Recordings</h3>
-            <p style="color:var(--text3);font-size:13px;margin-bottom:12px">You schedule and watch recordings in Jellyfin (Live TV &rarr; Guide &rarr; Record; they appear under Live TV &rarr; Recordings). Tentacle is the tuner they record from.</p>
+            <p style="color:var(--text3);font-size:13px;margin-bottom:12px">You schedule and watch recordings in Jellyfin (Live TV &rarr; Guide &rarr; Record; they appear under Live TV &rarr; Recordings). Tentacle is the tuner they record from. Recordings and recording schedules are the household&rsquo;s: everyone sees them, like a family recorder, whoever&rsquo;s channel they came from.</p>
             <ul style="font-size:13px;color:var(--text2);line-height:1.7;margin:0 0 0 18px">
               <li>A recording keeps its connection to the provider: if the provider drops it, Tentacle reconnects and the recording carries on.</li>
               <li>How many channels can record at once is <strong>Streams at once</strong> on each provider&rsquo;s card under <a href="#" onclick="showSourcesTab('providers');return false" style="color:var(--accent)">IPTV providers</a>.</li>
@@ -2261,65 +2378,14 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           </div>
         </div>
 
-        <!-- Tab: Jellyfin Setup -->
+        <!-- Tab: In Jellyfin -- set up by Tentacle itself (services/livetv_tuners.py) -->
         <div class="live-tab-panel" id="live-panel-setup">
           <div class="card">
-            <h3 style="margin-bottom:4px">Jellyfin Live TV setup</h3>
-            <p style="color:var(--text3);font-size:13px;margin-bottom:20px">Add these URLs in Jellyfin to connect your IPTV channels.</p>
-
-            <!-- Server base URL: Tentacle's address (Settings → Services), shown, not asked again -->
-            <div style="margin-bottom:20px">
-              <div class="form-label">Tentacle&rsquo;s address</div>
-              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                <span id="live-setup-address-display" style="font-family:monospace;font-size:13px;padding:8px 12px;background:var(--bg2);border-radius:6px;flex:1;min-width:0;overflow-wrap:anywhere"></span>
-                <button class="btn btn-secondary" style="padding:5px 12px;font-size:12px" onclick="showPage('settings','services')">Change</button>
-              </div>
-              <p id="live-setup-detected" style="color:var(--amber);font-size:11px;margin-top:4px"></p>
-              <p style="color:var(--text3);font-size:11px;margin-top:4px">As your Jellyfin server reaches Tentacle. Set once, in Settings &rarr; Services.</p>
-            </div>
-
-            <!-- Connection limits are per provider (its card, Sources → IPTV providers) -->
-            <p style="color:var(--text3);font-size:12px;margin:-8px 0 24px">How many channels each provider lets you watch or record at once is <strong>Streams at once</strong> on its card under <a href="#" onclick="showSourcesTab('providers');return false" style="color:var(--accent)">IPTV providers</a>. Jellyfin gets that many tuners in all.</p>
-
-            <!-- Step 1: Tuner -->
-            <div style="margin-bottom:24px">
-              <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-                <span style="background:var(--accent);color:#fff;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">1</span>
-                <span style="font-weight:600;font-size:14px">Add Tuner</span>
-              </div>
-              <p style="color:var(--text3);font-size:13px;margin-bottom:8px">
-                Jellyfin Dashboard → Live TV → <strong>Add Tuner</strong> → Type: <strong>HD Homerun</strong>
-              </p>
-              <div style="display:flex;align-items:center;gap:8px">
-                <span id="live-setup-tuner-preview" style="flex:1;min-width:0;overflow-wrap:anywhere;font-family:monospace;font-size:13px;padding:8px 12px;background:var(--bg2);border-radius:6px;color:var(--text1)"></span>
-                <button class="btn btn-secondary" style="padding:5px 12px;font-size:12px" onclick="copyLiveSetup('tuner', this)">Copy</button>
-              </div>
-            </div>
-
-            <!-- Step 2: Guide -->
-            <div style="margin-bottom:24px">
-              <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-                <span style="background:var(--accent);color:#fff;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">2</span>
-                <span style="font-weight:600;font-size:14px">Add the TV guide</span>
-              </div>
-              <p style="color:var(--text3);font-size:13px;margin-bottom:8px">
-                Live TV → TV Guide Data Providers → <strong>Add</strong> → Type: <strong>XMLTV</strong>
-              </p>
-              <div style="display:flex;align-items:center;gap:8px">
-                <span id="live-setup-xmltv-preview" style="flex:1;min-width:0;overflow-wrap:anywhere;font-family:monospace;font-size:13px;padding:8px 12px;background:var(--bg2);border-radius:6px;color:var(--text1)"></span>
-                <button class="btn btn-secondary" style="padding:5px 12px;font-size:12px" onclick="copyLiveSetup('xmltv', this)">Copy</button>
-              </div>
-            </div>
-
-            <!-- Step 3: Map channels -->
-            <div>
-              <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-                <span style="background:var(--accent);color:#fff;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">3</span>
-                <span style="font-weight:600;font-size:14px">Map Channels</span>
-              </div>
-              <p style="color:var(--text3);font-size:13px">
-                After adding both, go to Live TV → <strong>Map Channels</strong> to match tuner channels with guide data. Jellyfin will auto-match most channels by name.
-              </p>
+            <h3 style="margin-bottom:4px">Live TV in Jellyfin</h3>
+            <p style="color:var(--text3);font-size:13px;margin-bottom:16px">Tentacle sets this up in Jellyfin itself: one tuner for everyone on <strong>All channels</strong>, one for each person with a list of their own, and the TV guide for all of them. Each person only sees their own channels, in every Jellyfin app.</p>
+            <div id="live-setup-status" class="mych-setup-status"></div>
+            <div style="display:flex;gap:8px;margin-top:16px">
+              <button class="btn btn-secondary btn-sm" onclick="liveSetupNow(this)">Set up again now</button>
             </div>
           </div>
         </div>
@@ -3836,6 +3902,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 <script src="/static/js/sources.js?v=42"></script>
 <script src="/static/js/pages.js?v=42"></script>
 <script src="/static/js/music.js?v=42"></script>
+<script src="/static/js/mychannels.js?v=42"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {

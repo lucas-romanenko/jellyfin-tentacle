@@ -452,12 +452,46 @@ looks up list items by TMDB number filters on the type too
 
 ## Live TV
 
-Tentacle is the HDHomeRun tuner Jellyfin sees (it replaced Threadfin):
+Tentacle is the tuner Jellyfin sees (it replaced Threadfin): since per-person
+Live TV, M3U tuners it adds to Jellyfin itself (below); the HDHomeRun
+emulation stays for hand-made setups:
 `/discover.json`, `/lineup.json`, `/device.xml` (also under `/hdhr/`), the
 guide at `/api/live/xmltv.xml`, streams through `/api/live/stream/{id}`
 (follows provider redirects with the provider's user agent, HLS → MPEG-TS).
 User docs: `docs/features/live-tv.md`.
 
+- **Per person** (Roadmap 1b; `services/livetv_lineups.py`, `services/livetv_tuners.py`,
+  `routers/my_livetv.py`, dashboard `static/js/mychannels.js`): the pool is
+  `LiveChannel.enabled` (groups the admin switched on) plus YouTube Live
+  channels; a person (`live_user_lineups`, no row = all) sees all of it or
+  their own list (`live_user_channels`, keys `c<id>`/`y<id>`, in their
+  order = their numbers 1..N). Jellyfin gets one M3U tuner for "All
+  channels" (`/api/live/tuner/all.m3u`) and one per own list
+  (`/api/live/users/<id>/tuner.m3u`), tvg-id = the XMLTV id (the old
+  GuideNumber), tvg-chno = their number, no group-title. Jellyfin keys an
+  M3U channel on MD5(tuner URL)+MD5(stream URL), so each tuner's URL is kept
+  as first given (`livetv_tuner_base`, `livetv_all_tuner_url`,
+  `LiveUserLineup.tuner_url`) and streams are under that address, not the
+  request's; `livetv_lineups` computes every Jellyfin channel id itself.
+- The sync (`livetv_tuners.sync`, one at a time, debounced 15 s by
+  `schedule_sync`, started on My Channels saves, pool changes
+  (`_pool_changed`), Tentacle's guide refreshes, at start-up + hourly):
+  adds the wanted tuners (settings copied from the old HDHomeRun tuner),
+  adds Tentacle's XMLTV listing if Jellyfin has none, sets BlockedTags
+  (every tuner tag but your own; your own blocked tags kept; a tag stays
+  blocked while any channel carries it), refreshes the guide and waits for a
+  run that *completed after* the request (saving a tuner cancels and
+  requeues a running refresh), tags channels (`/Items` asked without a
+  user: an admin's own blocked tags would hide them), carries favourites
+  when someone switches (read them before their policy changes, set them
+  after: Jellyfin 404s a favourite on a channel you can't see; not until
+  the new channels exist), moves everyone off the old HDHomeRun or
+  playlist.m3u tuner (favourites per person, schedules to the shared tuner,
+  exact title match; then deletes it), removes unused tuners and waits for
+  the refresh that drops their channels. Backups of Jellyfin's state before
+  any tuner change: `/data/livetv-backups/`. A person's own tuner always
+  serves their stored list, also while switching back (new channels on it
+  would be untagged, so seen by all).
 - Stream format: Xtream channels open as continuous MPEG-TS (`.ts`) by
   default, HLS only when the account's `allowed_output_formats` lacks ts or
   the channel's ts open is refused outright (then remembered per channel

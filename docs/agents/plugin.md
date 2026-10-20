@@ -17,6 +17,7 @@ Plugin.cs, PluginServiceRegistrator.cs   entry point; services (HomeScreenManage
 Configuration/                          PluginConfiguration (TentacleUrl), configPage.html
 Api/                                    controllers (see plugin-api.md); CallerIdentity (who may act as which user)
 Patching/                               HarmonyInit, IndexHtmlPatch (injects the CSS/JS into index.html), TransformedFileInfo
+Services/LiveTvIsolation.cs             Live TV per person: Harmony prefixes on GuideManager.GetChannel (a Tentacle tuner's channel is born with its tag) and GetProgram (+ postfix: programmes get the channel's tag), LiveTvNewUser (a new user blocks every person's own tuner, 5 s after the event)
 HomeScreen/                             HomeScreenManager (per-user home config from the server, awaited and shared per user)
 Playlists/, Tasks/                      PlaylistManager, SmartListConfig, PlaylistRefreshTask
 Services/                               LibraryDeleteHandler (Jellyfin ItemRemoved → server, 2 s debounce), MdbListCacheService

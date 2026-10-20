@@ -17,7 +17,7 @@ from fastapi.routing import APIRoute
 ROUTER_MODULES = [
     "auth", "settings", "providers", "sync", "library", "duplicates", "lists",
     "widget", "radarr", "sonarr", "tags", "collections", "smartlists",
-    "discover", "activity", "livetv", "notifications", "health", "youtube", "vod", "music",
+    "discover", "activity", "livetv", "my_livetv", "notifications", "health", "youtube", "vod", "music",
 ]
 
 # (METHOD, path) -> reason. Keep this list short and justified.
@@ -36,6 +36,8 @@ ALLOW = {
                                                             "or confirmed by Jellyfin in the handler (#139)",
     ("GET", "/api/live/stream/{channel_id}"): "HDHomeRun tuner, Jellyfin cannot send credentials",
     ("GET", "/api/live/playlist.m3u"): "M3U tuner",
+    ("GET", "/api/live/tuner/all.m3u"): "M3U tuner Tentacle gives Jellyfin (everyone's channels)",
+    ("GET", "/api/live/users/{user_id}/tuner.m3u"): "M3U tuner Tentacle gives Jellyfin (one person's channels)",
     ("GET", "/api/live/xmltv.xml"): "XMLTV guide for Jellyfin",
     ("GET", "/api/youtube/v/{video_id}/master.m3u8"): ".strm playback",
     ("GET", "/api/youtube/v/{video_id}/r/{token}"): ".strm playback, opaque token",

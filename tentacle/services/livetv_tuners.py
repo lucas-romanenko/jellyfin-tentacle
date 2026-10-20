@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 TUNER_BASE_KEY = "livetv_tuner_base"         # the address every new tuner gets, kept once chosen
 ALL_TUNER_URL_KEY = "livetv_all_tuner_url"   # the shared tuner's address, kept as first given
 MIGRATED_KEY = "livetv_per_person_migrated"  # the old single tuner was moved off
+STATUS_KEY = "livetv_setup_status"           # the last sync's outcome (JSON)
 BACKUP_DIR = os.environ.get("TENTACLE_LIVETV_BACKUP_DIR", "/data/livetv-backups")
 
 PLUGIN_ID = "b7e3f1a92c4d48569a1b8def23456789"
@@ -675,4 +676,20 @@ def run_sync(reason: str = "scheduled", refresh: bool = False) -> dict:
             return {"error": str(e)}
         finally:
             status["running"] = False
+            try:
+                set_setting(db, STATUS_KEY, json.dumps({k: status[k] for k in ("last_at", "last_ok", "last_message")}))
+                db.commit()
+            except Exception:
+                db.rollback()
             db.close()
+
+
+def last_status(db) -> dict:
+    """The last sync's outcome, also after a restart."""
+    out = dict(status)
+    if not out.get("last_at"):
+        try:
+            out.update(json.loads(get_setting(db, STATUS_KEY, "") or "{}"))
+        except ValueError:
+            pass
+    return out

@@ -140,7 +140,7 @@ def live_people(db: Session = Depends(get_db)):
             "count": len(L.own_lineup(db, uid, channels)) if own else len(channels),
             "changed": row.updated_at.isoformat() + "Z" if row and row.updated_at else None,
         })
-    st = T.status
+    st = T.last_status(db)
     return {
         "total": len(channels),
         "people": people,

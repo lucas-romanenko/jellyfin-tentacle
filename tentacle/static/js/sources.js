@@ -140,9 +140,9 @@ function renderProviderCard(p) {
   }
   if (p.has_live || p.live_tv_enabled) {
     uses += _switchRow(p, 'live', !!p.live_tv_enabled, 'Use for Live TV',
-      'The channel groups you choose become channels in Jellyfin&rsquo;s Live TV, with a TV guide.');
+      'The channel groups you switch on are the channels your household can watch, with a TV guide. Everyone picks their own from them under My Channels.');
     if (p.live_tv_enabled) {
-      uses += _providerSection(p.id, 'groups', 'Channel groups');
+      uses += _providerSection(p.id, 'groups', 'Channel groups for everyone');
       uses += _liveLimitsRow(p);
     }
   }

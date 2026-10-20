@@ -5681,15 +5681,18 @@ def live_tuner_all(request: Request, db: Session = Depends(get_db)):
 @router.get("/api/live/users/{user_id}/tuner.m3u")
 def live_tuner_user(user_id: str, request: Request, db: Session = Depends(get_db)):
     """A person's own tuner. Like the lineup it has no login (Jellyfin reads
-    it as a tuner); it lists channel names and Tentacle stream addresses."""
+    it as a tuner); it lists channel names and Tentacle stream addresses.
+    Always their own list, also while they switch back to all channels: the
+    tuner is removed then, and a channel new to it would be untagged (seen
+    by everyone) until Tentacle or the plugin tags it."""
     from services import livetv_lineups
     if not re.fullmatch(r"[0-9a-fA-F-]{32,36}", user_id or ""):
         raise HTTPException(404, "No such tuner")
     row = livetv_lineups.lineup_row(db, user_id)
-    if row is None or not row.own_list:
-        from services.livetv_tuners import all_tuner_url
-        return _tuner_m3u(db, request, None, (row.tuner_url if row else None) or all_tuner_url(db))
-    return _tuner_m3u(db, request, user_id, row.tuner_url or "")
+    base = livetv_lineups.tuner_base(row.tuner_url) if row and row.tuner_url else str(request.base_url).rstrip("/")
+    entries = livetv_lineups.own_lineup(db, user_id) if row else []
+    return Response(content=livetv_lineups.m3u(entries, base), media_type="audio/x-mpegurl",
+                    headers={"Content-Disposition": "inline; filename=tentacle.m3u"})
 
 
 def _emit_sub_titles(db) -> bool:
