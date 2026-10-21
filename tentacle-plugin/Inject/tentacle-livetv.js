@@ -441,6 +441,9 @@
     var old = body.querySelector('.tg-scroller');
     var keepLeft = old ? old.scrollLeft : 0;
 
+    // Still loading (Favorites / All clicked before the list came): the
+    // load draws the grid when it arrives.
+    if (!G.channels) return;
     if (G.loadError) {
       body.innerHTML = '<div class="tg-empty">The channels didn\'t load. <button type="button" class="tg-btn" data-action="retry">Try again</button></div>';
       return;

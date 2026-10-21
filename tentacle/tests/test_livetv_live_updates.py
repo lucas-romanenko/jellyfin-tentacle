@@ -117,6 +117,10 @@ class GuideListensOnTheSocket(unittest.TestCase):
         self.assertIn("drawRows()", body)
         self.assertIn("scrollTop = top", body)
 
+    def test_a_toggle_before_the_list_loaded_draws_nothing_yet(self):
+        body = JS[JS.index("function renderGrid("):JS.index("function placeNow(")]
+        self.assertLess(body.index("if (!G.channels) return;"), body.index("G.channels.length"))
+
     def test_timers_stop_when_leaving_the_guide(self):
         body = JS[JS.index("function deactivate("):JS.index("// ── Container")]
         self.assertIn("clearInterval(G.live)", body)
