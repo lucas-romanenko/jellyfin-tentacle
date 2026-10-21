@@ -1381,6 +1381,16 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
   margin-bottom: 14px;
 }
 
+/* ── Home Screen: own home or the default for everyone ── */
+.card.home-scope { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; margin-bottom: 16px; }
+.home-scope-switch { align-self: flex-start; }
+.home-scope-switch .filter-btn { padding: 8px 14px; font-size: 13px; }
+.home-scope-row { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; }
+.home-scope-note { flex: 1; min-width: 220px; margin: 0; font-size: 13px; color: var(--text2); line-height: 1.5; }
+.home-scope-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.home-scope-actions:empty { display: none; }
+#jf-tab-home.home-scope-default .home-personal { display: none; }
+
 /* ── My channels ── */
 .card.mych-head { display: flex; align-items: center; gap: 8px 20px; flex-wrap: wrap; margin-bottom: 16px; }
 .mych-head-text { flex: 1; min-width: 240px; }
@@ -2423,6 +2433,18 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
         <!-- ── HOME SCREEN TAB ── -->
         <div id="jf-tab-home">
+          <!-- Whose home this is: your own, or the default everyone starts on -->
+          <div class="card home-scope">
+            <div class="filter-group home-scope-switch" role="radiogroup" aria-label="Which home you are changing" data-admin-only>
+              <button class="filter-btn active" id="home-scope-mine" role="radio" aria-checked="true" onclick="setHomeScope('mine')">My home</button>
+              <button class="filter-btn" id="home-scope-default" role="radio" aria-checked="false" onclick="setHomeScope('default')">Default for everyone</button>
+            </div>
+            <div class="home-scope-row">
+              <p class="home-scope-note" id="home-scope-note"></p>
+              <div class="home-scope-actions" id="home-scope-actions"></div>
+            </div>
+          </div>
+
           <!-- Hero picker -->
           <div class="card">
             <div class="card-header">
@@ -2503,7 +2525,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           </div>
 
           <!-- Toolbar buttons -->
-          <div class="card collapsible collapsed" id="card-toolbar-buttons" style="margin-top:16px">
+          <div class="card collapsible collapsed home-personal" id="card-toolbar-buttons" style="margin-top:16px">
             <div class="card-header" role="button" tabindex="0" aria-expanded="false" onclick="toggleCard(this)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleCard(this)}">
               <div class="card-title">Toolbar buttons <span class="card-sum" id="toolbar-buttons-sum"></span></div>
               <span class="card-chevron" aria-hidden="true">&#9662;</span>
@@ -2515,7 +2537,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           </div>
 
           <!-- Notifications -->
-          <div class="card" style="margin-top:16px">
+          <div class="card home-personal" style="margin-top:16px">
             <div class="card-header">
               <div class="card-title">Download notifications</div>
             </div>

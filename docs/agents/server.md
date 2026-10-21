@@ -324,6 +324,24 @@ user_id)` computes them every time from source tags, list subscriptions
 - `write_home_config()` checks the hero playlist still exists (else first
   available, or off) and remaps rows and hero by `display_name` when a sync
   recreated playlists with new ids (otherwise rows silently vanish).
+- **Default home** (`services/default_home.py`): one layout for everyone
+  without their own, stored in the `default_home` setting with playlist rows
+  keyed by ready-made playlist (`builtin:recently_added_movies`,
+  `source:<name>:movies`, `youtube:<id>`), since each person's playlist ids
+  differ. Unset = `suggested_default()` (Continue Watching, Next Up, recently
+  added movies/TV, the biggest sources; spotlight on recently added movies).
+  A person's file carries `follows_default: true` while it is the default;
+  `apply_default()` writes it with their own playlist ids (switching on the
+  ready-made playlists it needs). Any change on their own Home Screen drops
+  the flag (theirs now); `POST /home/reset-to-default` sets it again. Admins
+  edit the default with the same endpoints plus `?scope=default`; a save
+  rewrites every follower in the background (`apply_to_followers_soon`), so
+  it reaches clients through the home version like any edit. New people (no
+  file) get it on first read or `write_home_config`; the nightly sync
+  re-applies it (new sources). Once per install (`default_home_migrated`)
+  homes that are still the old starter (Jellyfin's sections as rows, never
+  changed) move to the default; anyone's own layout is never touched. Kids
+  get the same rows: the plugin only returns items they may open.
 - When a user has a Tentacle home, `disable_home_sections()`
   (`services/jellyfin.py`) turns Jellyfin's own home sections off for that
   user (DisplayPreferences), so rows don't appear twice.

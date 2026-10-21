@@ -531,6 +531,11 @@
       return;
     }
 
+    if (sectionId === 'onnow') {
+      loadOnNow(row);
+      return;
+    }
+
     var apiPath = getBuiltinApiPath(sectionId);
     if (!apiPath) {
       console.warn('[Tentacle] No API path for builtin section:', sectionId);
@@ -596,6 +601,85 @@
       default:
         return null;
     }
+  }
+
+  // ── On Now: what's on right now on your favourite channels ──────────
+  // Jellyfin's own favourites (the Plan B lineup), filtered by Jellyfin to the
+  // channels this person may see (kids: only kids channels). Hidden when there
+  // are no favourites or nothing is on; refilled when a programme ends.
+  function loadOnNow(row) {
+    var gen = MH.generation;
+    apiGet('LiveTv/Channels?UserId=' + MH.userId + '&IsFavorite=true&AddCurrentProgram=true&EnableUserData=true' +
+           '&Fields=PrimaryImageAspectRatio&ImageTypeLimit=1&EnableImageTypes=Primary&Limit=100')
+      .then(function (data) {
+        var itemsEl = row.querySelector('.mh-row-items');
+        if (!itemsEl) return;
+        itemsEl.classList.remove('mh-loading-row');
+        var now = Date.now();
+        var onNow = ((data && data.Items) || []).filter(function (ch) {
+          var p = ch.CurrentProgram;
+          return p && p.EndDate && Date.parse(p.EndDate) > now && (!p.StartDate || Date.parse(p.StartDate) <= now);
+        });
+        if (!onNow.length) {
+          row.classList.add('mh-row-hidden');
+        } else {
+          row.classList.remove('mh-row-hidden');
+          itemsEl.innerHTML = '';
+          onNow.slice(0, 30).forEach(function (ch) { itemsEl.appendChild(createOnNowCard(ch, now)); });
+        }
+        // Refill when the first programme ends (and at least every 10 minutes,
+        // for channels whose guide starts something new)
+        var nextEnd = onNow.reduce(function (m, ch) { return Math.min(m, Date.parse(ch.CurrentProgram.EndDate)); }, now + 600000);
+        clearTimeout(row._onNowTimer);
+        row._onNowTimer = setTimeout(function () {
+          if (gen === MH.generation && document.body.contains(row)) loadOnNow(row);
+        }, Math.max(30000, Math.min(nextEnd - now + 5000, 600000)));
+      })
+      .catch(function (err) {
+        console.warn('[Tentacle] On Now unavailable:', err);
+        row.classList.add('mh-row-hidden');
+      });
+  }
+
+  function createOnNowCard(channel, now) {
+    var p = channel.CurrentProgram;
+    var card = document.createElement('div');
+    card.className = 'mh-card mh-card-wide mh-card-onnow';
+    card.setAttribute('data-item-id', channel.Id);
+    card.onclick = function () { playLive(channel.Id); };
+
+    // The channel's logo, whole (contained), never stretched into a poster.
+    // No tag in the URL (Live TV images 500 with one), and no token: see createChannelCard.
+    var logo = MH.apiClient.getUrl('Items/' + channel.Id + '/Images/Primary', { maxWidth: 400, quality: 90 });
+    var start = p.StartDate ? Date.parse(p.StartDate) : now;
+    var end = Date.parse(p.EndDate);
+    var pct = end > start ? Math.max(2, Math.min(100, Math.round((now - start) * 100 / (end - start)))) : 0;
+    var left = Math.max(1, Math.round((end - now) / 60000));
+    var leftText = left >= 60 ? Math.floor(left / 60) + 'h ' + (left % 60) + 'm left' : left + 'm left';
+
+    card.innerHTML =
+      '<div class="mh-card-poster mh-card-poster-wide mh-onnow-logo">' +
+        '<img src="' + logo + '" alt="" loading="lazy" onerror="this.outerHTML=\'<div class=mh-card-no-poster>📺</div>\'">' +
+        '<div class="mh-card-progress"><div class="mh-card-progress-bar" style="width:' + pct + '%"></div></div>' +
+        '<div class="mh-card-play-overlay"><div class="mh-card-play-icon">▶</div></div>' +
+      '</div>' +
+      '<div class="mh-card-info">' +
+        '<div class="mh-card-title" title="' + escapeAttr(p.Name || '') + '">' + escapeHtml(p.Name || channel.Name) + '</div>' +
+        '<div class="mh-card-subtitle" title="' + escapeAttr(channel.Name) + '">' + escapeHtml(channel.Name) + '</div>' +
+        '<span class="mh-card-remaining">' + leftText + '</span>' +
+      '</div>';
+    return card;
+  }
+
+  // Tune in the way the Live TV and Favorites pages do (tentacle-livetv.js:
+  // Jellyfin Web 10.11 has no global playbackManager, so it plays through this
+  // browser's own session)
+  function playLive(channelId) {
+    if (window.TentacleLiveTV && typeof window.TentacleLiveTV.playChannel === 'function') {
+      window.TentacleLiveTV.playChannel(channelId);
+      return;
+    }
+    window.location.hash = '#/details?id=' + channelId;
   }
 
   function loadLibraryTiles(row, small) {

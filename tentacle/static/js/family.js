@@ -169,7 +169,7 @@ function famRenderPeople() {
   const home = document.getElementById('fam-default-home');
   const chan = document.getElementById('fam-default-channels');
   const named = d.people.filter(p => !p.kids_level);
-  home.innerHTML = '<option value="">Tentacle’s standard rows</option>' +
+  home.innerHTML = '<option value="">The default home (My Home Screen)</option>' +
     named.map(p => `<option value="${p.id}"${d.defaults.home_from === p.id ? ' selected' : ''}>The same as ${escHtml(p.name)}</option>`).join('');
   const lists = named.filter(p => p.favourite_count || d.defaults.channels_from === p.id);
   const nfav = n => `${n} favourite${n === 1 ? '' : 's'}`;
@@ -266,7 +266,7 @@ function _famInviteHint(kid) {
   const d = fam.data?.defaults || {};
   const name = id => (_famPerson(id) || {}).name;
   const home = d.home_from && name(d.home_from)
-    ? `They start with the same home screen as ${name(d.home_from)}.` : 'They start with Tentacle’s standard home screen.';
+    ? `They start with the same home screen as ${name(d.home_from)}.` : 'They start with the default home.';
   const fromP = d.channels_from && _famPerson(d.channels_from);
   const n = fam.data?.pool_channels || 0;
   const tv = kid ? 'Live TV: the kids channels.'

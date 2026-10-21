@@ -680,6 +680,16 @@ html {
   border-radius: 8px;
 }
 
+/* On Now: the channel logo whole, on a calm panel (never cropped into a poster) */
+.mh-onnow-logo {
+  background: linear-gradient(135deg, #1d2233, #12151f);
+}
+.mh-card .mh-onnow-logo img {
+  object-fit: contain;
+  padding: 14% 18%;
+  box-sizing: border-box;
+}
+
 /* Episode badge on Next Up */
 .mh-card-ep-badge {
   position: absolute;
