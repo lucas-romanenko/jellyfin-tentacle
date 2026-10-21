@@ -33,7 +33,7 @@ jobs:
       - name: Run unit tests
         # The same script as the workbench's pre-push check: it also fails when
         # a test leaves files in TMPDIR.
-        run: scripts/check --shard ${{ matrix.shard }}/4 -v
+        run: scripts/check --shard ${{ matrix.shard }}/4 -j 2 -v
         env:
           CHECK_PYTHON: python
           TENTACLE_DURATIONS: ${{ runner.temp }}/durations-${{ matrix.shard }}.json
