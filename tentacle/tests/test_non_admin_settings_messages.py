@@ -197,7 +197,7 @@ class DashboardTexts(unittest.TestCase):
         # Nobody is signed in on the sign-in screen, so nobody can open Settings.
         src = ESC + functions("app.js", ["showLoginOverlay"])
         setup = ("async function fetch() { return {ok: false, status: 502, json: async () => ({})}; }\n"
-                 "function loginShowManual() {}")
+                 "function loginShowManual() {}\nfunction loginStep() {}\nvar state = {};")
         text = Page(render(src, setup, "await showLoginOverlay()")["login-user-grid"][-1]).text
         self.assertIn("Cannot connect to Jellyfin", text)
         self.assertNotIn("Settings", text, f"the sign-in screen sends people to Settings: {text!r}")

@@ -237,7 +237,9 @@ body {
 .login-overlay {
   position: fixed;
   inset: 0;
-  background: var(--bg0);
+  background:
+    radial-gradient(1200px 600px at 50% -10%, rgba(108,99,255,0.16), transparent 70%),
+    var(--bg0);
   z-index: 2000;
   display: flex;
   flex-direction: column;
@@ -249,114 +251,209 @@ body {
   justify-content: center;
   justify-content: safe center;
   overflow-y: auto;
-  padding: 24px;
+  padding: 32px 24px calc(32px + env(safe-area-inset-bottom));
 }
 
 .login-logo {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 48px;
+  margin-bottom: 40px;
 }
 
-.login-logo .logo-icon { width: 40px; height: 40px; font-size: 20px; }
-.login-logo .logo-text { font-size: 20px; }
+.login-logo .logo-icon { width: 44px; height: 44px; font-size: 22px; }
+.login-logo .logo-text { font-size: 22px; }
+
+.login-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: 1100px;
+}
+
+.login-title {
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 8px;
+  text-align: center;
+}
 
 .login-subtitle {
   color: var(--text2);
   font-size: 14px;
-  margin-bottom: 36px;
-  margin-top: -36px;
+  margin: 0 0 32px;
+  text-align: center;
+  max-width: 420px;
+  line-height: 1.5;
 }
 
+/* Wraps to as many rows as there are people; the overlay scrolls. */
 .user-grid {
   display: flex;
   flex-wrap: wrap;
-  gap: 24px;
+  gap: 28px 20px;
   justify-content: center;
-  max-width: 600px;
+  width: 100%;
 }
 
 .user-card {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   cursor: pointer;
-  padding: 16px 20px;
-  border-radius: var(--radius);
-  border: 1px solid transparent;
-  transition: all 0.15s;
-  min-width: 100px;
-}
-
-.user-card:hover, .user-card:focus {
-  background: var(--bg2);
-  border-color: var(--border2);
-}
-
-.user-card.selected {
-  border-color: var(--accent);
-  background: var(--accent-dim);
+  width: 132px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
 }
 
 .user-avatar {
-  width: 72px;
-  height: 72px;
+  width: 112px;
+  height: 112px;
   border-radius: 50%;
-  background: var(--bg3);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 28px;
+  font-size: 42px;
   font-weight: 600;
-  color: var(--text2);
+  color: #fff;
   overflow: hidden;
+  outline: 3px solid transparent;
+  outline-offset: 4px;
+  transition: transform 0.15s, outline-color 0.15s;
 }
 
+.user-avatar { position: relative; }
 .user-avatar img {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
+.user-card:hover .user-avatar { transform: scale(1.05); }
+.user-card:focus { outline: none; }
+.user-card:focus-visible .user-avatar,
+.user-card.selected .user-avatar { outline-color: var(--accent); transform: scale(1.05); }
+
 .user-card-name {
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 500;
-  color: var(--text);
+  color: var(--text2);
   text-align: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-card:hover .user-card-name,
+.user-card:focus-visible .user-card-name { color: var(--text); }
+
+.login-note {
+  color: var(--text2);
+  font-size: 14px;
+  text-align: center;
+  max-width: 380px;
+  line-height: 1.5;
+}
+
+.login-alt {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 40px;
 }
 
 .login-password-form {
-  margin-top: 24px;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 12px;
   width: 100%;
-  max-width: 280px;
+  max-width: 320px;
 }
 
-.login-password-form input {
-  width: 100%;
-  text-align: center;
+.login-who {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
 }
+
+.login-who .user-avatar { width: 96px; height: 96px; font-size: 36px; }
+.login-who-name { font-size: 22px; font-weight: 600; }
+
+.login-password-form .form-input {
+  width: 100%;
+  padding: 12px 14px;
+  font-size: 15px;
+}
+
+.login-password-form .btn,
+.login-code .btn { width: 100%; justify-content: center; padding: 11px 16px; font-size: 14px; }
 
 .login-error {
   color: var(--red);
-  font-size: 12px;
+  font-size: 13px;
   min-height: 18px;
+  text-align: center;
+  line-height: 1.4;
 }
 
 .login-back {
-  color: var(--text3);
-  font-size: 12px;
+  color: var(--text2);
+  font-size: 13px;
   cursor: pointer;
-  margin-top: 8px;
+  background: none;
+  border: none;
+  font-family: inherit;
+  padding: 6px 8px;
   text-decoration: none;
 }
 
-.login-back:hover { color: var(--text2); }
+.login-back:hover, .login-back:focus-visible { color: var(--text); }
+
+.login-code {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 380px;
+}
+
+.login-code-value {
+  font-size: 44px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  font-variant-numeric: tabular-nums;
+  padding: 14px 24px;
+  border-radius: var(--radius);
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  min-width: 260px;
+  text-align: center;
+}
+
+.login-code-wait { color: var(--text3); font-size: 13px; }
+
+@media (min-width: 1700px) {
+  /* TV-sized screens, seen from the sofa */
+  .login-title { font-size: 40px; }
+  .user-card { width: 168px; }
+  .user-avatar { width: 144px; height: 144px; font-size: 54px; }
+  .user-card-name { font-size: 18px; }
+  .login-alt .btn { font-size: 16px; padding: 11px 20px; }
+}
 .setup-pip.active { background: var(--accent); }
 .setup-pip.done { background: var(--green); }
 
@@ -1997,8 +2094,13 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
   .cat-checkbox { width: 18px; height: 18px; }
 
   /* Login / setup overlays */
-  .user-grid { gap: 12px; }
-  .user-card { padding: 12px 14px; min-width: 88px; }
+  .login-logo { margin-bottom: 28px; }
+  .login-title { font-size: 24px; }
+  .user-grid { gap: 22px 14px; }
+  .user-card { width: 96px; gap: 8px; }
+  .user-avatar { width: 84px; height: 84px; font-size: 32px; }
+  .user-card-name { font-size: 14px; }
+  .login-code-value { font-size: 36px; min-width: 0; width: 100%; }
   .setup-card { padding: 24px 20px; }
   .setup-overlay { padding: 16px; align-items: flex-start; overflow-y: auto; }
 
@@ -4067,21 +4169,40 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 <!-- Toast container -->
 <div class="toast-container" id="toasts"></div>
 
-<!-- Login overlay -->
+<!-- Login overlay: pick yourself (at home), or type your name, or use a code -->
 <div class="login-overlay" id="login-overlay" style="display:none">
   <div class="login-logo">
     <div class="logo-icon">🐙</div>
     <div><div class="logo-text">Tentacle</div></div>
   </div>
-  <p class="login-subtitle">Who's watching?</p>
-  <div class="user-grid" id="login-user-grid"></div>
-  <a class="login-back" id="login-manual-link" tabindex="0" role="button" onclick="loginShowManual()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}">Sign in with a username</a>
+  <div class="login-step" id="login-step-people">
+    <h1 class="login-title">Who's watching?</h1>
+    <p class="login-subtitle" id="login-people-note">Pick yourself to sign in.</p>
+    <div class="user-grid" id="login-user-grid"></div>
+    <div class="login-alt">
+      <button class="btn btn-secondary" id="login-manual-link" onclick="loginShowManual()">Sign in with another account</button>
+      <button class="btn btn-secondary" id="login-code-link" onclick="loginShowCode()" style="display:none">Use a code</button>
+    </div>
+  </div>
   <div class="login-password-form" id="login-password-form" style="display:none">
-    <input type="text" class="form-input" id="login-username" placeholder="Jellyfin username" autocomplete="username" style="display:none">
-    <input type="password" class="form-input" id="login-password" placeholder="Enter password" autocomplete="current-password">
-    <button class="btn btn-primary" style="width:100%;justify-content:center" id="login-submit-btn" onclick="submitLogin()">Sign In</button>
-    <div class="login-error" id="login-error"></div>
-    <a class="login-back" tabindex="0" role="button" onclick="loginBackToUsers()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}">← Back</a>
+    <div class="login-who" id="login-who"></div>
+    <h1 class="login-title" id="login-form-title">Sign in</h1>
+    <p class="login-subtitle" id="login-form-note" style="display:none;margin-bottom:12px">Type the name and password you were given.</p>
+    <input type="text" class="form-input" id="login-username" placeholder="Your name" aria-label="Your name" autocomplete="username" autocapitalize="off" spellcheck="false" style="display:none">
+    <input type="password" class="form-input" id="login-password" placeholder="Password" aria-label="Password" autocomplete="current-password">
+    <button class="btn btn-primary" id="login-submit-btn" onclick="submitLogin()">Sign in</button>
+    <div class="login-error" id="login-error" role="alert"></div>
+    <button class="login-back" id="login-form-code-link" onclick="loginShowCode()" style="display:none">Use a code instead</button>
+    <button class="login-back" id="login-back-link" onclick="loginBackToUsers()">← Back</button>
+  </div>
+  <div class="login-code" id="login-code" style="display:none">
+    <h1 class="login-title">Sign in with a code</h1>
+    <p class="login-subtitle">On a phone or computer where you're already signed in, open Tentacle, choose <b>Sign in a TV</b> and type this code.</p>
+    <div class="login-code-value" id="login-code-value" aria-live="polite">······</div>
+    <div class="login-code-wait" id="login-code-wait">Waiting for the code to be typed in…</div>
+    <div class="login-error" id="login-code-error" role="alert"></div>
+    <button class="btn btn-secondary" id="login-code-new" onclick="loginShowCode()" style="display:none">Get a new code</button>
+    <button class="login-back" onclick="loginBackToUsers()">← Back</button>
   </div>
 </div>
 
@@ -4309,13 +4430,13 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="/static/js/app.js?v=42"></script>
-<script src="/static/js/sources.js?v=42"></script>
-<script src="/static/js/pages.js?v=42"></script>
-<script src="/static/js/music.js?v=42"></script>
-<script src="/static/js/mychannels.js?v=42"></script>
-<script src="/static/js/newgroups.js?v=42"></script>
-<script src="/static/js/family.js?v=42"></script>
+<script src="/static/js/app.js?v=43"></script>
+<script src="/static/js/sources.js?v=43"></script>
+<script src="/static/js/pages.js?v=43"></script>
+<script src="/static/js/music.js?v=43"></script>
+<script src="/static/js/mychannels.js?v=43"></script>
+<script src="/static/js/newgroups.js?v=43"></script>
+<script src="/static/js/family.js?v=43"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {

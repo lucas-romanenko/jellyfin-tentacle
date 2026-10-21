@@ -155,6 +155,8 @@ function famRenderPeople() {
         <label class="fam-ctl"><span class="fam-ctl-label">Their requests</span>${reqSel}</label>
         <label class="fam-ctl fam-ctl-admin" title="${escHtml(adminTitle)}"><span class="fam-ctl-label">Admin</span>
           <input type="checkbox"${p.is_admin ? ' checked' : ''}${adminLocked ? ' disabled' : ''} onchange="famToggleAdmin(${p.id}, this.checked)"></label>
+        <label class="fam-ctl fam-ctl-admin" title="Shown on the sign-in screen at home, to pick instead of typing a name"><span class="fam-ctl-label">On sign-in screen</span>
+          <input type="checkbox"${p.on_sign_in ? ' checked' : ''} onchange="famSetOnSignIn(${p.id}, this.checked)"></label>
         <div class="fam-actions">
           <button class="btn btn-secondary btn-sm" onclick="famShowTvCode(${p.id})">Sign in a TV</button>
           ${p.is_admin ? '' : `<button class="btn btn-secondary btn-sm" onclick="famNewPassword(${p.id})">New password</button>`}
@@ -204,6 +206,13 @@ function famSetRequests(id, mode) {
   const p = _famPerson(id);
   _famUpdate(id, { request_mode: mode },
     mode === 'ask' ? `You'll approve ${p ? p.name : 'their'}'s requests first` : `${p ? p.name : 'Their'}'s requests download straight away`);
+}
+
+function famSetOnSignIn(id, shown) {
+  const p = _famPerson(id);
+  const name = p ? p.name : 'They';
+  _famUpdate(id, { on_sign_in: shown },
+    shown ? `${name} is on the sign-in screen` : `${name} types their name to sign in now`);
 }
 
 async function famToggleAdmin(id, isAdmin) {

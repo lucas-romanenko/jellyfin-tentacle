@@ -47,6 +47,10 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<VodNoVideoCopyFilter>();
         serviceCollection.Configure<MvcOptions>(options => options.Filters.AddService<VodNoVideoCopyFilter>());
 
+        // Names on the login screen only at home (Jellyfin's /Users/Public)
+        serviceCollection.AddSingleton<PublicUsersFilter>();
+        serviceCollection.Configure<MvcOptions>(options => options.Filters.AddService<PublicUsersFilter>());
+
         logger?.LogInformation("[Tentacle] Services registered successfully.");
     }
 }

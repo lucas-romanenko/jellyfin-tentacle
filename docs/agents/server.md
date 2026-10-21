@@ -52,9 +52,22 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
 
 ## Auth and users (`routers/auth.py`)
 
-- Login is a Jellyfin user picker: `GET /api/auth/users` (no auth), then
-  `POST /api/auth/login` authenticates through Jellyfin
-  `/Users/AuthenticateByName`. Only Jellyfin's 401 reads "Invalid username
+- Login is a Jellyfin user picker: `GET /api/auth/users` (no auth:
+  `{people, at_home, quick_connect}`), then `POST /api/auth/login`
+  authenticates through Jellyfin `/Users/AuthenticateByName`. People are
+  Jellyfin's `/Users/Public` (accounts not "hidden from login screens":
+  Jellyfin hides new accounts, so invites un-hide theirs and People has an
+  "On sign-in screen" switch writing `IsHidden`). Names go only to a browser
+  at home (`services/sign_in.py:at_home`: the peer and every
+  CF-Connecting-IP / X-Real-IP / X-Forwarded-For / Forwarded address must be
+  private or Tailscale); away, the list is empty and the page asks for a
+  name. The plugin's `PublicUsersFilter` does the same to Jellyfin's
+  `/Users/Public`. Sign in with a code: `POST /api/auth/quick-connect`
+  (Jellyfin's `/QuickConnect/Initiate`; the browser gets the code and a
+  random handle, Jellyfin's secret stays in memory, 10 min, 200 at most),
+  polled at `GET /api/auth/quick-connect/{handle}` until someone approves
+  it (sidebar → Sign in a TV), then `/Users/AuthenticateWithQuickConnect`
+  and the same `_finish_sign_in` as a password. Only Jellyfin's 401 reads "Invalid username
   or password"; its 503 (starting up) is a 503 "starting up", any other
   status a 502 naming it. Session: HMAC-signed cookie
   `tentacle_session` (30 days, HttpOnly), secret in the `session_secret`

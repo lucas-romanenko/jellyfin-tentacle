@@ -275,6 +275,14 @@ def invite(db: Session, admin: TentacleUser, name: str, kids_level: Optional[str
     uid = L.norm_user_id(created.get("Id") or "")
     if len(uid) != 32:
         raise FamilyError("Jellyfin made the account but didn't say its id.", 502)
+    try:
+        # Jellyfin hides new accounts from its login screens; an invited
+        # person picks themselves on the sign-in screen instead.
+        policy = _policy(jf, _Uid(uid))
+        if policy.get("IsHidden"):
+            jf.post(f"/Users/{dashed(uid)}/Policy", {**policy, "IsHidden": False})
+    except (requests.RequestException, FamilyError) as e:
+        logger.warning(f"[Family] Could not show {name} on the sign-in screen: {e}")
     row = db.query(TentacleUser).filter(TentacleUser.jellyfin_user_id == uid).first()
     if row is None:
         row = TentacleUser(jellyfin_user_id=uid, display_name=created.get("Name") or name, is_admin=False)
@@ -353,6 +361,29 @@ def restored_policy(policy: dict, saved: dict) -> dict:
     if "EnableLiveTvManagement" in saved:
         p["EnableLiveTvManagement"] = saved["EnableLiveTvManagement"]
     return p
+
+
+class _Uid:
+    """Just enough of a user for _policy(), before the Tentacle row exists."""
+    def __init__(self, uid: str):
+        self.jellyfin_user_id = uid
+
+
+def set_on_sign_in(db: Session, user: TentacleUser, shown: bool) -> bool:
+    """Show or hide someone on the sign-in screens (Jellyfin's own and
+    Tentacle's): Jellyfin's IsHidden, the one place it is kept."""
+    jf = jellyfin(db)
+    policy = _policy(jf, user)
+    if not policy:
+        raise FamilyError("Jellyfin didn't say how that account is set up.", 502)
+    if bool(policy.get("IsHidden")) == (not shown):
+        return shown
+    try:
+        jf.post(f"/Users/{dashed(user.jellyfin_user_id)}/Policy", {**policy, "IsHidden": not shown})
+    except requests.RequestException as e:
+        raise _jf_error(e, "change the sign-in screen")
+    logger.info(f"[Family] {user.display_name} {'shown on' if shown else 'hidden from'} the sign-in screen")
+    return shown
 
 
 def _policy(jf, user: TentacleUser) -> dict:
@@ -576,5 +607,9 @@ def person(db: Session, user: TentacleUser, jf_user: Optional[dict] = None) -> d
         "invited_by": user.invited_by or "",
         "invited_at": user.invited_at.isoformat() + "Z" if user.invited_at else None,
         "disabled": bool(policy.get("IsDisabled")),
+        # Jellyfin's "hide this user from login screens", which is on for every
+        # account made in Jellyfin's dashboard: such people are missing from
+        # the sign-in screens until an admin shows them.
+        "on_sign_in": not policy.get("IsHidden", True) if jf_user else None,
         "has_image": bool(user.profile_image_tag),
     }
