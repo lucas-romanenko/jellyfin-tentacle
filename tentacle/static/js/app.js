@@ -160,7 +160,7 @@ function renderHealthBadge() {
 function loadHealthAlerts() {
   if (typeof loadLibStats === 'function') loadLibStats();
   if (typeof _updateDupBadges === 'function') _updateDupBadges();
-  if (typeof checkNewContentNotice === 'function') checkNewContentNotice();
+  if (typeof nfpLoadCounts === 'function') nfpLoadCounts();
   if (typeof loadMatchSuspects === 'function') loadMatchSuspects();
   if (typeof checkStaleFiles === 'function') checkStaleFiles();
 }

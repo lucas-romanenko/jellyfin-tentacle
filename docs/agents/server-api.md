@@ -148,6 +148,11 @@ provider names, URLs or logins).
 | PUT | `/api/live/catalog/channels/{channel_id}/enabled` | admin | livetv_catalog.py:catalog_tick (`{enabled}`) |
 | PUT | `/api/live/catalog/types` | admin | livetv_catalog.py:catalog_set_types (`{key, types}`; [] = automatic) |
 | GET, HEAD | `/api/live/net/{nid}` | none | livetv_catalog.py:network_stream (the network's chosen variant through stream_proxy) |
+| GET | `/api/live/new-groups` | admin | provider_new.py:new_groups (new groups, `?dismissed=true` also the dismissed; starts reading their channels in the background) |
+| POST | `/api/live/new-groups/add` | admin | provider_new.py:new_groups_add (picked channels into the pool; the groups reviewed) |
+| POST | `/api/live/new-groups/channels` | admin | provider_new.py:new_group_channels (step 2: the ticked groups' channels, folded) |
+| POST | `/api/live/new-groups/dismiss` | admin | provider_new.py:new_groups_dismiss |
+| POST | `/api/live/new-groups/restore` | admin | provider_new.py:new_groups_restore |
 | GET | `/api/live/channels` | admin | livetv.py:list_channels |
 | POST | `/api/live/channels/bulk` | admin | livetv.py:bulk_update_channels |
 | POST | `/api/live/channels/bulk-filter` | admin | livetv.py:bulk_update_channels_by_filter |
@@ -172,6 +177,11 @@ provider names, URLs or logins).
 | GET | `/api/live/users/{user_id}/tuner.m3u` | none | livetv.py:live_tuner_user |
 | POST | `/api/live/sync/{provider_id}` | admin | livetv.py:sync_live_groups |
 | GET | `/api/live/xmltv.xml` | none | livetv.py:hdhr_xmltv |
+| GET | `/api/new-from-provider/categories` | admin | provider_new.py:new_categories |
+| POST | `/api/new-from-provider/categories/add` | admin | provider_new.py:new_categories_add |
+| POST | `/api/new-from-provider/categories/dismiss` | admin | provider_new.py:new_categories_dismiss |
+| POST | `/api/new-from-provider/categories/restore` | admin | provider_new.py:new_categories_restore |
+| GET | `/api/new-from-provider/counts` | admin | provider_new.py:new_counts (the sidebar badge) |
 | GET | `/api/music/album/{rgid}` | user | music.py:music_album |
 | POST | `/api/music/apply` | admin | music.py:apply_fixes |
 | GET | `/api/music/artist/{mbid}` | user | music.py:music_artist |
@@ -301,8 +311,6 @@ provider names, URLs or logins).
 | GET | `/api/sync/dashboard` | admin | sync.py:get_dashboard |
 | GET | `/api/sync/feed` | admin | sync.py:get_new_additions_feed |
 | GET | `/api/sync/history` | admin | sync.py:get_sync_history |
-| GET | `/api/sync/new-content-notice` | admin | sync.py:get_new_content_notice |
-| POST | `/api/sync/new-content-notice/dismiss` | admin | sync.py:dismiss_new_content_notice |
 | GET | `/api/sync/progress/{provider_id}` | admin | sync.py:stream_sync_progress |
 | GET | `/api/sync/progress/{provider_id}/poll` | admin | sync.py:poll_sync_progress |
 | POST | `/api/sync/refresh-tags` | admin | sync.py:refresh_tags |

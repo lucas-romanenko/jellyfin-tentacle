@@ -176,6 +176,7 @@ def record(db, channel_id: int, works: bool, detail: str = "", now: Optional[dat
 
 POOL_CACHE_SECONDS = 600.0
 _pool_cache = {"at": -1e9, "ids": []}
+_new_cache = {"at": -1e9, "ids": []}
 
 
 def _pool_channel_ids(db) -> list:
@@ -260,9 +261,40 @@ def candidates(db, now: Optional[datetime] = None) -> list:
 
     first = sorted((rows[c] for c in pool_ids if c in rows), key=age_key)
     rest = sorted((c for cid, c in rows.items() if cid not in rank), key=age_key)
-    out = [c.id for c in first if c.provider_id in providers and _due(c, CYCLE_SECONDS, now)]
+    due = [c for c in first if c.provider_id in providers and _due(c, CYCLE_SECONDS, now)]
+    out = [c.id for c in due if c.check_at is None]
+    # Channels of the provider's new groups, never checked, the groups the
+    # admin is looking at first: the review shows which of them work, so
+    # they go before the pool's re-checks (each is checked once).
+    new_ids = [cid for cid in _new_group_ids(db) if cid not in rank]
+    new_rows = {}
+    for i in range(0, len(new_ids), 500):
+        new_rows.update((c.id, c) for c in db.query(LiveChannel).filter(LiveChannel.id.in_(new_ids[i:i + 500])))
+    out += [cid for cid in new_ids if cid in new_rows and new_rows[cid].provider_id in providers
+            and new_rows[cid].check_state is None and _due(new_rows[cid], CYCLE_SECONDS, now)]
+    out += [c.id for c in due if c.check_at is not None]
     out += [c.id for c in rest if c.provider_id in providers and _due(c, VARIANT_CYCLE_SECONDS, now)]
-    return out
+    return list(dict.fromkeys(out))
+
+
+def _new_group_ids(db) -> list:
+    """Channel ids of new groups without a verdict yet, the groups the admin
+    is looking at first (services/provider_new.py), cached like the pool."""
+    if time.monotonic() - _new_cache["at"] < POOL_CACHE_SECONDS:
+        return list(_new_cache["ids"])
+    try:
+        from services import provider_new
+        ids = provider_new.unchecked_new_channel_ids(db)
+    except Exception as e:
+        logger.debug(f"[LiveTV check] New groups' channels not read: {e}")
+        ids = []
+    _new_cache.update(at=time.monotonic(), ids=ids)
+    return list(ids)
+
+
+def forget_new_groups() -> None:
+    """The admin ticked groups to look at: their channels go first now."""
+    _new_cache["at"] = -1e9
 
 
 def gap_seconds(pool_size: int) -> float:

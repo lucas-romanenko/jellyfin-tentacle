@@ -28,7 +28,7 @@ router = APIRouter()
 MAX_CHANNELS = 5000
 
 # Pool entry fields a picker may show (the catalog and the checker add some).
-_PICK_FIELDS = ("types", "main_types", "has_guide", "event", "variants", "variant_name", "check")
+_PICK_FIELDS = ("types", "main_types", "has_guide", "event", "variants", "variant_name", "check", "new")
 
 
 def _favourites(db, user_id: str, entries: list):

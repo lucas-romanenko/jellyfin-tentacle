@@ -518,6 +518,22 @@ guide at `/api/live/xmltv.xml`, streams through `/api/live/stream/{id}`
 (follows provider redirects with the provider's user agent, HLS → MPEG-TS).
 User docs: `docs/features/live-tv.md`.
 
+- **New from your provider** (admin; `services/provider_new.py`,
+  `routers/provider_new.py`, dashboard `static/js/newgroups.js`, Sources →
+  Live TV → New from your provider, plus a card on the VOD providers tab):
+  every group or category a refresh or the nightly discovery creates gets
+  `review_state` "new" (not on a provider's first list, its setup), counted
+  on the sidebar's Sources badge. Step 1 ticks groups or dismisses them
+  ("dismissed" never comes back as new; Show dismissed lists them); step 2
+  shows the ticked groups' channels folded like the pool (Works / Guide,
+  "No event" slots hidden) and adds the picked ones (`LiveChannel.enabled`,
+  the group switched on); the groups become "reviewed". Their channels are
+  read from the provider switched off (discovery, or the page in the
+  background) and the stream checker tries the never-checked ones before
+  re-checking the pool. VOD categories: add (whitelist) or dismiss. The
+  old `new_content_notice` setting is read once (`ensure_migrated`) to mark
+  what it listed. Pool keys that joined in the last 14 days are New on My
+  channels (`live_pool_arrivals`).
 - **One lineup** (Roadmap 1b, Plan B of 21 Oct 2026; `services/livetv_lineups.py`,
   `services/livetv_tuners.py`, `routers/my_livetv.py`, dashboard
   `static/js/mychannels.js`): the pool is `LiveChannel.enabled` (groups the

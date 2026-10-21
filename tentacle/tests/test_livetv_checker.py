@@ -28,6 +28,7 @@ TS = bytes([0x47] + [0] * 187) * 4
 
 def _reset():
     C._pool_cache.update(at=-1e9, ids=[])
+    C._new_cache.update(at=-1e9, ids=[])
     C._backoff.clear()
     C._last_open = -1e9
     C._inflight = None
