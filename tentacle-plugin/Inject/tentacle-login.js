@@ -155,9 +155,11 @@
     renderForm(page);
   }
 
+  // Jellyfin keeps an earlier login page in the document when it shows a new
+  // one (signing out, a Quick Connect sign-in), both with id loginPage:
+  // decorate every one, not just the first getElementById finds.
   function scan() {
-    var page = document.getElementById('loginPage');
-    if (page) decorate(page);
+    document.querySelectorAll('#loginPage').forEach(decorate);
   }
 
   var queued = false;
