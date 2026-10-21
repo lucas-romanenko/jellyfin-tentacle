@@ -629,10 +629,19 @@ User docs: `docs/features/live-tv.md`.
   quality tags, call signs, a place list, East/West; conservative: sports
   channels keep their place, numbered channels stay apart, event slots
   never fold) become one `LiveNetwork`, pool key `n<id>`, streamed at
-  `/api/live/net/<id>` from the chosen variant (admin's, else: works, in
-  people's lists, region from `livetv_region` or the server's TZ, has a
-  guide, quality). Folding runs over every channel when a fingerprint of the
-  list (plus guide ids and broken checks) changes; the admin's split/merge
+  `/api/live/net/<id>` from the chosen variant (admin's, else: not broken,
+  not foreign (country from the name's or group's code, "CA EN:"/"CA FR:" or
+  `_FRENCH` for language; `livetv_language`, default en; CA and US are
+  neighbours; language decides only when another variant isn't foreign),
+  works, in people's lists, region from `livetv_region` or the server's TZ,
+  has a guide of the household's, quality). The network's guide
+  (`network_guides`, served under the variant's number in the XMLTV) is the
+  variant's own unless that one is foreign to the stream (country from the
+  id's ending, "TLC.rs") and a sibling, switched on or not, has a fitting
+  guide with programmes; an `epg_id_override` on the variant always wins,
+  and a network without a guide borrows none. Folding runs over every
+  channel when a fingerprint of the list (plus guide ids, broken checks,
+  `livetv_region`/`livetv_language` and `_CHOICE_RULES`) changes; the admin's split/merge
   pin channels (`live_channel_catalog.pinned`) and dissolved networks are
   never refolded. A key that stops being a pool key leaves
   `live_key_aliases` (old -> new; `aliases()` cached) and schedules a tuner

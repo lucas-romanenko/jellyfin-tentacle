@@ -5784,6 +5784,15 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
     epg_id_to_guide_numbers: dict[str, list[str]] = {}
     guide_number_group: dict[str, str] = {}
     numbered = _unique_numbers(db, channels)
+    # A folded network's variant shows the network's guide, which may be a
+    # sibling's: "CA EN: TLC" is tagged "TLC.rs" (Serbian), "CA: TLC CANADA"
+    # has "tlc.ca" (livetv_catalog.network_guides).
+    try:
+        from services.livetv_catalog import variant_guides
+        network_guide = variant_guides(db)
+    except Exception as e:  # the guide must never fail on the catalog
+        logger.warning(f"[LiveTV] XMLTV: network guides left out: {e}")
+        network_guide = {}
     for ch, guide_number in numbered:
         xmltv_channels.append({
             "id": guide_number,
@@ -5793,9 +5802,10 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
         # Channel group feeds the category inference below when a programme
         # title says nothing about its genre.
         guide_number_group[guide_number] = ch.group_title
-        if ch.guide_epg_id:
-            epg_ids.add(ch.guide_epg_id)
-            epg_id_to_guide_numbers.setdefault(ch.guide_epg_id, []).append(guide_number)
+        gid = network_guide.get(ch.id) or ch.guide_epg_id
+        if gid:
+            epg_ids.add(gid)
+            epg_id_to_guide_numbers.setdefault(gid, []).append(guide_number)
 
     # YouTube Live TV channels, with their own guide ids.
     for yt in youtube_livetv.live_channels(db):

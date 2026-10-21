@@ -472,3 +472,74 @@ def region_words(name: str) -> set:
         if toks[i] in _FEEDS or toks[i] in _COUNTRIES:
             out.add(toks[i])
     return out
+
+
+# ── Country and language of a feed ──────────────────────────────────────────
+
+# ISO 3166 country codes as providers put them in front of names and groups
+# ("GR| DOCUMENTARY", "BE: NICK JR.", "CA EN: TLC"). Left out: "TV" (Tuvalu,
+# but "TV:" is a generic tag) and codes that are tags or words more often
+# than countries.
+_ISO_COUNTRIES = set(
+    "AD AE AF AG AL AM AO AR AT AU AZ BA BB BD BE BF BG BH BI BJ BN BO BR BS BT BW BY BZ CA CD CF CG "
+    "CH CI CL CM CN CO CR CU CV CY CZ DE DJ DK DM DO DZ EC EE EG ER ES ET FI FJ FR GA GB GD GE GH GM GN "
+    "GQ GR GT GW GY HK HN HR HT HU ID IE IL IN IQ IR IS IT JM JO JP KE KG KH KM KN KP KR KW KZ LA LB LC "
+    "LI LK LR LS LT LU LV LY MA MC MD ME MG MK ML MM MN MO MR MT MU MV MW MX MY MZ NA NE NG NI NL NO NP "
+    "NZ OM PA PE PG PH PK PL PR PT PY QA RO RS RU RW SA SC SD SE SG SI SK SL SM SN SO SR SS ST SV SY SZ "
+    "TD TG TH TJ TL TM TN TR TT TW TZ UA UG US UY UZ VA VE VN YE ZA ZM ZW".split())
+_COUNTRY_ALIASES = {"UK": "GB", "USA": "US", "CAN": "CA", "EXYU": "RS"}
+_LANGUAGES = {"EN": "en", "ENG": "en", "FR": "fr", "FRA": "fr", "ES": "es", "ESP": "es", "DE": "de",
+              "IT": "it", "PT": "pt", "NL": "nl", "AR": "ar"}
+
+
+def _country_code(code: Optional[str]) -> Optional[str]:
+    code = (code or "").upper()
+    code = _COUNTRY_ALIASES.get(code, code)
+    return code if code in _ISO_COUNTRIES else None
+
+
+_LEAD_RE = re.compile(r"^\s*[|\[(]?\s*([A-Z]{2,4})(?:[ /-]([A-Z]{2,3}))?\s*[|\]):]")
+
+
+def feed_country(name: str, group: Optional[str] = None) -> Optional[str]:
+    """The country a channel's feed is from, by the code in front of its name
+    ("BE: NICK JR." -> "BE"), else in front of its group ("US| TV ᴿᴬᵂ" for
+    "TV: TLC ᴿᴬᵂ"); None when neither names one. "UK" is "GB"."""
+    for text in (name, group):
+        m = _LEAD_RE.match(_plain(text or "").upper())
+        if m:
+            c = _country_code(m.group(1))
+            if c:
+                return c
+    return None
+
+
+def feed_language(name: str, group: Optional[str] = None) -> Optional[str]:
+    """The language a channel names for itself ("CA EN: TLC", "CA FR: ...",
+    a group "CA| GENERAL EN"), as a two-letter code; None when it names none."""
+    m = _LEAD_RE.match(_plain(name or "").upper())
+    if m and m.group(2) in _LANGUAGES:
+        return _LANGUAGES[m.group(2)]
+    gtext = _plain(group or "").upper()
+    m = _LEAD_RE.match(gtext)
+    if m and m.group(2) in _LANGUAGES:
+        return _LANGUAGES[m.group(2)]
+    toks = _tokens(gtext)
+    if m and toks and toks[-1] in ("EN", "ENG", "FR", "FRA"):
+        return _LANGUAGES[toks[-1]]
+    return None
+
+
+_GUIDE_TLD_RE = re.compile(r"\.([A-Za-z]{2})(?:@[^.]*)?$")
+
+
+def guide_country(guide_id: Optional[str]) -> Optional[str]:
+    """The country an XMLTV channel id is for, by its ending ("TLC.rs" ->
+    "RS", "tlc.ca" -> "CA", "CNBC.uk" -> "GB"); None without one ("TS")."""
+    m = _GUIDE_TLD_RE.search((guide_id or "").strip())
+    return _country_code(m.group(1)) if m else None
+
+
+def feed_words(name: str) -> set:
+    """The time zone feed words in a name ("WEST", "PACIFIC")."""
+    return {w for w in region_words(name) if w in _FEEDS}
