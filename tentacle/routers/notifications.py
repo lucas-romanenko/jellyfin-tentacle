@@ -37,6 +37,9 @@ def get_notifications(db: Session = Depends(get_db), user: TentacleUser = Depend
                 "poster_path": n.poster_path,
                 "jellyfin_item_id": n.jellyfin_item_id,
                 "created_at": n.created_at.isoformat() if n.created_at else None,
+                # What the message is about, for the clients' heading: "download"
+                # (ready to watch), "request" or "problem" (admins only).
+                "kind": n.kind or "download",
             }
             for n in notifs
         ],

@@ -72,6 +72,14 @@
     });
   }
 
+  // The heading says what the message is about. Older servers send no kind:
+  // their messages are all "ready to watch".
+  function toastLabel(notif) {
+    if (notif.kind === 'request') return 'Request';
+    if (notif.kind === 'problem') return notif.title || 'Problem';
+    return 'Ready to Watch';
+  }
+
   function showToast(notif, onDone) {
     var toast = document.createElement('div');
     toast.className = 'tentacle-toast';
@@ -86,7 +94,7 @@
       '<div class="tentacle-toast-inner">' +
         (posterUrl ? '<img class="tentacle-toast-poster" src="' + posterUrl + '" alt="" />' : '') +
         '<div class="tentacle-toast-content">' +
-          '<div class="tentacle-toast-label">Ready to Watch</div>' +
+          '<div class="tentacle-toast-label">' + escapeHtml(toastLabel(notif)) + '</div>' +
           '<div class="tentacle-toast-title">' + escapeHtml(notif.message) + '</div>' +
         '</div>' +
         '<button class="tentacle-toast-close" aria-label="Dismiss">&times;</button>' +

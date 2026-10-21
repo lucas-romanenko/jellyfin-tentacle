@@ -485,6 +485,23 @@ class Requests(Case):
                          approvals.status_for(self.db, self.ann, "movie", 1))
         self.assertIsNone(approvals.status_for(self.db, self.ben, "movie", 1))
 
+    def test_notifications_say_what_kind_they_are(self):
+        # The TV app and the Jellyfin toast head a decline "Request", not "Ready to Watch".
+        from routers import notifications
+        from routers.auth import get_user_from_request
+        approvals.hold(self.db, self.ann, "movie", {"tmdb_ids": [1]}, tmdb_ids=[1])
+        approvals.decline(self.db, self.db.query(mdb.MediaRequest).one().id, self.admin)
+        mdb.create_notification(self.db, self.ann.id, 2, "movie", "Up", "Up is ready to watch")
+        self.db.add(mdb.Notification(user_id=self.ann.id, tmdb_id=3, title="Old", message="m", kind=None))
+        self.db.commit()
+        app = FastAPI()
+        app.include_router(notifications.router)
+        app.dependency_overrides[mdb.get_db] = lambda: self.db
+        app.dependency_overrides[get_user_from_request] = lambda: self.ann
+        got = TestClient(app).get("/api/notifications").json()["notifications"]
+        self.assertEqual({("Dune", "request"), ("Up", "download"), ("Old", "download")},
+                         {(n["title"], n["kind"]) for n in got})
+
     def test_take_back(self):
         approvals.hold(self.db, self.ann, "movie", {"tmdb_ids": [1]}, tmdb_ids=[1])
         row = self.db.query(mdb.MediaRequest).one()
