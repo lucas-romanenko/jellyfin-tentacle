@@ -104,18 +104,9 @@ def _network_of(nets: dict, nid: Optional[int]) -> Optional[LiveNetwork]:
     return None
 
 
-def _data(row) -> dict:
-    return dict(row.data or {})
-
-
-def _set_data(row, **kw) -> None:
-    d = _data(row)
-    for k, v in kw.items():
-        if v is None:
-            d.pop(k, None)
-        else:
-            d[k] = v
-    row.data = d
+def _types(row) -> Optional[list]:
+    """The admin's types on a network or catalog row (None = automatic)."""
+    return [t for t in (row.types or "").split(",") if t] or None
 
 
 def refresh(db: Session, rows=None, fingerprint: Optional[str] = None) -> dict:
@@ -128,7 +119,7 @@ def refresh(db: Session, rows=None, fingerprint: Optional[str] = None) -> dict:
     nets = {n.id: n for n in db.query(LiveNetwork).all()}
     by_key = {}
     for n in sorted(nets.values(), key=lambda n: n.id):
-        if n.fold_key and not _data(n).get("dissolved"):
+        if n.fold_key and not n.dissolved:
             by_key.setdefault(n.fold_key, n)
 
     # Channels the provider no longer lists leave the catalog.
@@ -149,7 +140,7 @@ def refresh(db: Session, rows=None, fingerprint: Optional[str] = None) -> dict:
     member_of = {}
     for r in rows:
         cat = cats.get(r.id)
-        if cat is not None and _data(cat).get("pinned"):
+        if cat is not None and cat.pinned:
             n = _network_of(nets, cat.network_id)
             member_of[r.id] = n.id if n is not None else None
             continue
@@ -159,11 +150,11 @@ def refresh(db: Session, rows=None, fingerprint: Optional[str] = None) -> dict:
             continue
         n = by_key.get(k)
         if n is None:
-            dissolved = any(x.fold_key == k and _data(x).get("dissolved") for x in nets.values())
+            dissolved = any(x.fold_key == k and x.dissolved for x in nets.values())
             if dissolved:
                 member_of[r.id] = None
                 continue
-            n = LiveNetwork(fold_key=k, name=k, data={})
+            n = LiveNetwork(fold_key=k, name=k)
             db.add(n)
             db.flush()
             nets[n.id] = n
@@ -179,7 +170,7 @@ def refresh(db: Session, rows=None, fingerprint: Optional[str] = None) -> dict:
     # Names: the most common spelling among the members, unless the admin named it.
     for nid, cids in members.items():
         n = nets[nid]
-        if _data(n).get("name_set"):
+        if n.name_set:
             continue
         spellings = Counter(livetv_names.display_name(analysis[c]["display"]) for c in cids if c in analysis)
         if spellings:
@@ -196,7 +187,7 @@ def refresh(db: Session, rows=None, fingerprint: Optional[str] = None) -> dict:
         if not r.enabled:
             current[r.id] = None
         elif nid is not None:
-            current[r.id] = None if _data(nets[nid]).get("excluded") else f"n{nid}"
+            current[r.id] = None if nets[nid].excluded else f"n{nid}"
         else:
             current[r.id] = f"c{r.id}"
     pool_keys = {k for k in current.values() if k}
@@ -206,11 +197,11 @@ def refresh(db: Session, rows=None, fingerprint: Optional[str] = None) -> dict:
     order = sorted(rows, key=lambda r: (0 if r.id in chosen else 1, r.id))
     new_aliases = 0
     keys_moved = 0
-    now_iso = datetime.utcnow().isoformat()
+    now = datetime.utcnow()
     for r in order:
         cat = cats.get(r.id)
         if cat is None:
-            cat = LiveChannelCatalog(channel_id=r.id, data={})
+            cat = LiveChannelCatalog(channel_id=r.id)
             db.add(cat)
             cats[r.id] = cat
         if cat.network_id != member_of.get(r.id):
@@ -218,17 +209,17 @@ def refresh(db: Session, rows=None, fingerprint: Optional[str] = None) -> dict:
         now_key = current[r.id]
         if now_key is None:
             continue   # off or taken out: keep the key it had, no alias
-        last = _data(cat).get("key") or f"c{r.id}"   # before the catalog every channel was c<id>
+        last = cat.pool_key or f"c{r.id}"   # before the catalog every channel was c<id>
         if last != now_key:
             if last not in pool_keys and last not in aliases:
-                db.add(LiveKeyAlias(old_key=last, new_key=now_key, data={"at": now_iso}))
+                db.add(LiveKeyAlias(old_key=last, new_key=now_key, created_at=now))
                 aliases[last] = None
                 new_aliases += 1
             elif last not in pool_keys and aliases.get(last) is not None and aliases[last].new_key != now_key:
                 # Pointed at a key that is gone itself? Point it here.
                 if aliases[last].new_key not in pool_keys:
                     aliases[last].new_key = now_key
-            _set_data(cat, key=now_key)
+            cat.pool_key = now_key
             keys_moved += 1
     # A key that is a pool key again is nobody's alias any more.
     for old, a in list(aliases.items()):
@@ -257,7 +248,7 @@ def refresh(db: Session, rows=None, fingerprint: Optional[str] = None) -> dict:
 
 
 def _effective_choice(n: LiveNetwork) -> Optional[int]:
-    return n.chosen_channel_id or _data(n).get("auto_channel_id")
+    return n.chosen_channel_id or n.auto_channel_id
 
 
 # ── Choosing a network's variant ────────────────────────────────────────────
@@ -349,8 +340,8 @@ def _choose_defaults(db: Session, nets: dict, members: dict, by_id: dict) -> Non
                 -cid,
             )
         best = max(on, key=score)
-        if _data(n).get("auto_channel_id") != best:
-            _set_data(n, auto_channel_id=best)
+        if n.auto_channel_id != best:
+            n.auto_channel_id = best
 
 
 def _check_states(db: Session) -> dict:
@@ -395,7 +386,7 @@ def _network_members(db: Session) -> dict:
     for nid, info in out.items():
         n = info["network"]
         on = info["members"]
-        for c in (n.chosen_channel_id, _data(n).get("auto_channel_id")):
+        for c in (n.chosen_channel_id, n.auto_channel_id):
             if c in on:
                 info["variant"] = c
                 break
@@ -408,7 +399,7 @@ def network_channel(db: Session, nid: int) -> Optional[int]:
     """The LiveChannel id /api/live/net/<nid> streams (None: not in the pool)."""
     ensure_fresh(db)
     n = db.query(LiveNetwork).filter(LiveNetwork.id == nid).first()
-    if n is None or n.merged_into is not None or _data(n).get("excluded"):
+    if n is None or n.merged_into is not None or n.excluded:
         return None
     return chosen_variants(db).get(nid)
 
@@ -443,7 +434,7 @@ def _add_alias(db: Session, old: str, new: str) -> None:
     _alias_cache["value"] = None
     a = db.query(LiveKeyAlias).filter(LiveKeyAlias.old_key == old).first()
     if a is None:
-        db.add(LiveKeyAlias(old_key=old, new_key=new, data={"at": datetime.utcnow().isoformat()}))
+        db.add(LiveKeyAlias(old_key=old, new_key=new, created_at=datetime.utcnow()))
     else:
         a.new_key = new
 
@@ -658,7 +649,7 @@ def fold_pool(db: Session, entries: list, channels_by_id: dict) -> list:
     nets = _network_members(db)
     net_of = {}
     for nid, info in nets.items():
-        if _data(info["network"]).get("excluded"):
+        if info["network"].excluded:
             for cid in info["all"]:
                 net_of[cid] = None   # taken out of the pool
             continue
@@ -666,8 +657,8 @@ def fold_pool(db: Session, entries: list, channels_by_id: dict) -> list:
             continue
         for cid in info["all"]:
             net_of[cid] = nid
-    overrides = {c.channel_id: _data(c).get("types") for c in db.query(LiveChannelCatalog).all()
-                 if _data(c).get("types")}
+    overrides = {c.channel_id: _types(c) for c in db.query(LiveChannelCatalog)
+                 .filter(LiveChannelCatalog.types.isnot(None)).all() if _types(c)}
     facts = guide_facts(db)
     with_guide, gtypes = facts["with_guide"], facts["types"]
     try:
@@ -709,7 +700,7 @@ def fold_pool(db: Session, entries: list, channels_by_id: dict) -> list:
                 continue
             n = info["network"]
             gid = vch.guide_epg_id
-            types = _data(n).get("types") or channel_types(
+            types = _types(n) or channel_types(
                 vch.name, vch.group_title, guide_types=gtypes.get(gid), fold_key=n.fold_key,
                 removed={"place"} if len(info["all"]) > 1 else None)
             entry = {
@@ -866,7 +857,6 @@ def networks_list(db: Session, include_empty: bool = False) -> list:
         n = info["network"]
         if not info["members"] and not include_empty:
             continue
-        d = _data(n)
         variants = []
         for cid in sorted(info["all"], key=lambda c: (not chans[c].enabled, chans[c].guide_name.lower())):
             ch = chans[cid]
@@ -879,8 +869,8 @@ def networks_list(db: Session, include_empty: bool = False) -> list:
         out.append({
             "id": nid, "key": f"n{nid}", "name": n.name, "fold_key": n.fold_key,
             "variant_id": info["variant"], "chosen_by_admin": n.chosen_channel_id is not None and
-            n.chosen_channel_id == info["variant"], "default_variant_id": d.get("auto_channel_id"),
-            "excluded": bool(d.get("excluded")), "types": d.get("types"), "manual": n.fold_key is None,
+            n.chosen_channel_id == info["variant"], "default_variant_id": n.auto_channel_id,
+            "excluded": bool(n.excluded), "types": _types(n), "manual": n.fold_key is None,
             "variants": variants, "count": len(info["members"]),
         })
     return out
@@ -906,9 +896,9 @@ def rename_network(db: Session, nid: int, name: Optional[str]) -> None:
     name = " ".join((name or "").split())[:80]
     if name:
         n.name = name
-        _set_data(n, name_set=True)
+        n.name_set = True
     else:
-        _set_data(n, name_set=None)
+        n.name_set = False
         _bump(db)
     db.commit()
 
@@ -918,7 +908,7 @@ def set_excluded(db: Session, nid: int, excluded: bool) -> None:
     n = db.query(LiveNetwork).filter(LiveNetwork.id == nid, LiveNetwork.merged_into.is_(None)).first()
     if n is None:
         raise CatalogError("No such network")
-    _set_data(n, excluded=True if excluded else None)
+    n.excluded = bool(excluded)
     _bump(db)
 
 
@@ -933,16 +923,16 @@ def set_types(db: Session, key: str, types: Optional[list]) -> list:
         n = db.query(LiveNetwork).filter(LiveNetwork.id == int(key[1:])).first()
         if n is None:
             raise CatalogError("No such network")
-        _set_data(n, types=clean or None)
+        n.types = ",".join(clean) or None
     elif key[:1] == "c" and key[1:].isdigit():
         cid = int(key[1:])
         if db.query(LiveChannel.id).filter(LiveChannel.id == cid).first() is None:
             raise CatalogError("No such channel")
         cat = db.query(LiveChannelCatalog).filter(LiveChannelCatalog.channel_id == cid).first()
         if cat is None:
-            cat = LiveChannelCatalog(channel_id=cid, data={})
+            cat = LiveChannelCatalog(channel_id=cid)
             db.add(cat)
-        _set_data(cat, types=clean or None)
+        cat.types = ",".join(clean) or None
     else:
         raise CatalogError("Unknown key")
     db.commit()
@@ -962,9 +952,9 @@ def split(db: Session, nid: int, channel_ids: Optional[list] = None, new_name: O
     in_net = {c.channel_id: c for c in cats}
     variant = chosen_variants(db).get(nid)
     if not channel_ids:
-        _set_data(n, dissolved=True)
+        n.dissolved = True
         for c in cats:
-            _set_data(c, pinned=True)
+            c.pinned = True
             c.network_id = None
         if variant is not None:
             _add_alias(db, f"n{nid}", f"c{variant}")
@@ -976,15 +966,15 @@ def split(db: Session, nid: int, channel_ids: Optional[list] = None, new_name: O
         raise CatalogError(f"Channel {missing[0]} is not in this network")
     target = None
     if new_name:
-        target = LiveNetwork(name=" ".join(new_name.split())[:80], fold_key=None, data={"name_set": True})
+        target = LiveNetwork(name=" ".join(new_name.split())[:80], fold_key=None, name_set=True)
         db.add(target)
         db.flush()
     for i in ids:
         c = in_net[i]
-        _set_data(c, pinned=True)
+        c.pinned = True
         c.network_id = target.id if target else None
     if len(ids) == len(in_net):
-        _set_data(n, dissolved=True)
+        n.dissolved = True
         if target is not None:
             _add_alias(db, f"n{nid}", f"n{target.id}")
     if n.chosen_channel_id in ids:
@@ -1017,32 +1007,32 @@ def merge(db: Session, keys: list, name: Optional[str] = None) -> dict:
     if nets:
         target = nets[0]
     else:
-        target = LiveNetwork(name=name or "", fold_key=None, data={})
+        target = LiveNetwork(name=name or "", fold_key=None)
         db.add(target)
         db.flush()
     if name:
         target.name = " ".join(name.split())[:80]
-        _set_data(target, name_set=True)
+        target.name_set = True
     for n in nets[1:]:
         n.merged_into = target.id
         for c in db.query(LiveChannelCatalog).filter(LiveChannelCatalog.network_id == n.id).all():
             c.network_id = target.id
-            _set_data(c, pinned=True)
+            c.pinned = True
         _add_alias(db, f"n{n.id}", f"n{target.id}")
     for cid in chans:
         c = db.query(LiveChannelCatalog).filter(LiveChannelCatalog.channel_id == cid).first()
         if c is None:
-            c = LiveChannelCatalog(channel_id=cid, data={})
+            c = LiveChannelCatalog(channel_id=cid)
             db.add(c)
         c.network_id = target.id
-        _set_data(c, pinned=True)
+        c.pinned = True
     if not target.name:
         first = db.query(LiveChannel).filter(LiveChannel.id == chans[0]).first()
         target.name = livetv_names.display_name(livetv_names.analyse(first.name)["display"]) or first.guide_name
     if target.fold_key is None or nets:
         # Its own channels stay with it even if their names say otherwise.
         for c in db.query(LiveChannelCatalog).filter(LiveChannelCatalog.network_id == target.id).all():
-            _set_data(c, pinned=True)
+            c.pinned = True
     _bump(db)
     return {"network": target.id, "key": f"n{target.id}"}
 

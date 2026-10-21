@@ -498,6 +498,16 @@ and shows separately, so a list may hold movie/N and tv/N. Anything that
 looks up list items by TMDB number filters on the type too
 (`ListItem.of_type()`; a row without a type is a film).
 
+Plain columns, no JSON bag: a new fact gets a named column (Boolean,
+Integer, String, DateTime; a short list of fixed words is a comma-separated
+String, as `music_albums.secondary_types` and `live_networks.types`). The
+generic migration pass adds new model columns on start-up; moving values out
+of an old layout is a one-off in `_migrate_columns()` (example:
+`_migrate_live_catalog_data`, which moved Plan B's `data` columns of
+`live_networks`, `live_channel_catalog` and `live_key_aliases` into
+`auto_channel_id`/`name_set`/`excluded`/`dissolved`/`types`,
+`pinned`/`types`/`pool_key` and `created_at`, then dropped `data`).
+
 ## Live TV
 
 Tentacle is the tuner Jellyfin sees (it replaced Threadfin): one M3U tuner
@@ -584,7 +594,7 @@ User docs: `docs/features/live-tv.md`.
   people's lists, region from `livetv_region` or the server's TZ, has a
   guide, quality). Folding runs over every channel when a fingerprint of the
   list (plus guide ids and broken checks) changes; the admin's split/merge
-  pin channels (`live_channel_catalog.data.pinned`) and dissolved networks are
+  pin channels (`live_channel_catalog.pinned`) and dissolved networks are
   never refolded. A key that stops being a pool key leaves
   `live_key_aliases` (old -> new; `aliases()` cached) and schedules a tuner
   sync. pool() entries carry types, has_guide (programmes in the next 24 h),
