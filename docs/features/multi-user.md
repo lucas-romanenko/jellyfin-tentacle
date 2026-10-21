@@ -24,7 +24,7 @@ Full access to everything:
 
 - **Dashboard** — Sync status, statistics, activity
 - **VOD** — Add/manage streaming providers, categories, sync
-- **Live TV** — Manage channels, groups, EPG
+- **Live TV** — The channels people pick from (groups, folded networks, types), EPG, who has how many channels
 - **Library** — Browse all content, follow series, manage episodes
 - **Jellyfin** — Playlists, home screen, Discover tab
 - **People and Requests** — Accounts, kids profiles, request approvals
@@ -36,8 +36,13 @@ Limited access:
 
 - **Library** — Browse content, follow series
 - **Jellyfin** — Their own playlists, home screen, Discover tab
+- **My Channels** — Their favourite Live TV channels
 
-Non-admins don't see the Dashboard, VOD, Live TV, or Settings pages.
+Non-admins don't see the Dashboard, VOD, Live TV admin, or Settings pages.
+
+### Live TV: everyone's own favourites
+
+The household has one Live TV lineup, the channels the admin switched on (Sources → Live TV). Under **My Channels** each person stars their favourites, a whole type at once (Sports, News, Local…) or one channel at a time; favourites are Jellyfin's own, per person, so every app shows them. Kids profiles see only the kids channels. Details: [Live TV → My Channels](live-tv.md#my-channels).
 
 ### Admin Sync
 
@@ -83,8 +88,8 @@ These are shared across all users:
 Tentacle is built for one person running a home server for their family. Admins manage everyone at **People** (in the sidebar):
 
 - **Invite someone:** type a name and Tentacle makes the Jellyfin account with an easy password (two words and two digits), starts them on the household's defaults, and shows an invite card to pass on: their name, password, the server address and how to set up the TV.
-- **New people start with:** pick once whose home screen and whose Live TV channel list new people copy (or Tentacle's standard rows and all channels). They change their own afterwards.
-- **Age limit (kids profiles):** one choice per person: *Young kids* (up to TV-Y7), *Kids* (up to PG) or *Teens* (up to PG-13 and TV-14). It uses Jellyfin's own parental controls, so every Jellyfin app follows it. Movies and shows without an age rating are hidden from kids too. In Live TV kids see only the **kids channels** you pick on People (none picked: no Live TV for kids). Switching it off puts back exactly what the person had before.
+- **New people start with:** pick once whose home screen and whose Live TV favourites new people copy (or Tentacle's standard rows and no favourites). They change their own afterwards under My Channels (a few quick picks give a short list of favourites in under a minute).
+- **Age limit (kids profiles):** one choice per person: *Young kids* (up to TV-Y7), *Kids* (up to PG) or *Teens* (up to PG-13 and TV-14). It uses Jellyfin's own parental controls, so every Jellyfin app follows it. Movies and shows without an age rating are hidden from kids too. In Live TV kids see only the **kids channels** you pick on People (none picked: no Live TV for kids); they can star them but not change them. Switching it off puts back exactly what the person had before.
 - **Their requests:** *Ask me first* (the default for everyone who isn't an admin, and always for kids) or *Straight away*.
 - **Admin:** make someone an admin (both in Tentacle and in Jellyfin). The owner stays an admin.
 - **Sign in a TV:** on the TV, open Tentacle, choose *Use Quick Connect* and type the code it shows into Tentacle. Everyone can do this for their own TV (sidebar → *Sign in a TV*); admins can do it for anyone. If Quick Connect is off in Jellyfin, People offers to turn it on.

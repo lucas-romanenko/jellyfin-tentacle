@@ -1,29 +1,34 @@
-"""Tentacle sets up Live TV in Jellyfin itself: one M3U tuner for everyone on
-"All channels", one per person with a list of their own, and Jellyfin shows
-each person only their own tuner's channels.
+"""Tentacle sets up Live TV in Jellyfin itself: one M3U tuner for the
+household's lineup (services/livetv_lineups.py) and Tentacle's guide. What
+is personal is each person's favourites (Jellyfin's own, per person), not
+the tuner.
 
-How each person sees only their own (proven on Jellyfin 10.11.8, see
+Kids profiles see only the kids channels (proven on Jellyfin 10.11.8, see
 docs/agents/jellyfin-notes.md "Live TV per person"):
-  - every channel of a tuner carries that tuner's tag (`tentacle-livetv-all`
-    or `tentacle-livetv-<user id>`), set here and by the plugin the moment
-    Jellyfin creates the channel;
-  - every person's policy blocks every other tuner's tag (BlockedTags);
+  - every lineup channel carries one tag: `tentacle-livetv-kids` on the
+    household's kids channels, `tentacle-livetv-all` on the rest, set here
+    after each guide refresh; the plugin gives a channel Jellyfin creates
+    `-all` at once (and keeps `-kids` on one that has it);
+  - a kid's policy blocks `tentacle-livetv-all` (BlockedTags);
   - the plugin copies the channel's tag onto its programmes, so programme
     lists ("On now", search) are filtered in Jellyfin's database too.
 
 One sync runs at a time, in a thread, a few seconds after the last change
 (changes in a row become one sync). A sync:
-  1. adds the tuners that should be there (address kept per tuner: Jellyfin
-     keys every channel on it);
-  2. sets everyone's blocked tags from what is set up so far;
-  3. has Jellyfin read the tuners and the guide (RefreshGuide) when anything
+  1. adds the lineup's tuner when Jellyfin hasn't got it (address kept:
+     Jellyfin keys every channel on it) and the guide source;
+  2. has Jellyfin read the tuner and the guide (RefreshGuide) when anything
      changed, and waits for it;
-  4. tags the channels, carries favourites (and recording schedules) across
-     when someone switched between "All channels" and their own list, and
-     moves everyone off Tentacle's old HDHomeRun (or hand-made M3U) tuner;
-  5. removes the tuners nobody uses any more, and sets the blocked tags again.
-Before it first changes anything in Jellyfin it saves what was there
-(tuners, everyone's favourite channels, schedules, policies) to
+  3. tags the channels and sets everyone's blocked tags;
+  4. moves everyone onto the lineup with their favourites and the
+     recording schedules: off the per-person tuners of before (v1.11-1.12's
+     "My own list", Oct 2026's own tuners), off Tentacle's old HDHomeRun (or
+     hand-made M3U) tuner, and off channels whose pool key changed
+     (L.final_aliases: "c123" folded into "n7" has a new stream address, so
+     a new Jellyfin id);
+  5. removes the tuners of before once everyone is across.
+Before it changes tuners or moves anything it saves what was there (tuners,
+everyone's favourite channels, schedules, policies, Tentacle's lists) to
 /data/livetv-backups/.
 """
 import json
@@ -44,8 +49,9 @@ from services import livetv_lineups as L
 logger = logging.getLogger(__name__)
 
 TUNER_BASE_KEY = "livetv_tuner_base"         # the address every new tuner gets, kept once chosen
-ALL_TUNER_URL_KEY = "livetv_all_tuner_url"   # the shared tuner's address, kept as first given
+ALL_TUNER_URL_KEY = "livetv_all_tuner_url"   # the lineup tuner's address, kept as first given
 MIGRATED_KEY = "livetv_per_person_migrated"  # the old single tuner was moved off
+TUNER_NAME = "Tentacle · Live TV"
 STATUS_KEY = "livetv_setup_status"           # the last sync's outcome (JSON)
 BACKUP_DIR = os.environ.get("TENTACLE_LIVETV_BACKUP_DIR", "/data/livetv-backups")
 
@@ -154,20 +160,14 @@ def tuner_base_address(db, jf: Jellyfin, cfg: dict) -> str:
 
 
 def all_tuner_url(db, base: str = "") -> str:
+    """The lineup tuner's address: kept once given (a v1.11-1.12 server's
+    "All channels" tuner is the lineup's), else made from `base`."""
     url = (get_setting(db, ALL_TUNER_URL_KEY, "") or "").strip()
     if not url and base:
-        url = base + L.ALL_TUNER_PATH
+        url = base.rstrip("/") + L.ALL_TUNER_PATH
         set_setting(db, ALL_TUNER_URL_KEY, url)
         db.commit()
     return url
-
-
-def tuner_url_for(db, user_id: str) -> str:
-    """The tuner a person's channels are on in Jellyfin ("" if not set up)."""
-    row = L.lineup_row(db, user_id)
-    if row and row.synced_own_list and row.tuner_url:
-        return row.tuner_url
-    return all_tuner_url(db)
 
 
 # ── Who sees what ───────────────────────────────────────────────────────────
@@ -176,24 +176,31 @@ def live_users(users: list) -> list:
     return [u for u in users if (u.get("Policy") or {}).get("EnableLiveTvAccess", True)]
 
 
-def blocked_tags(policy_tags: list, own_tag: str, tags_in_use: set) -> list:
-    """A person's BlockedTags: their own blocked tags kept, Tentacle's set to
-    every tuner tag but their own."""
+def kids_user_ids(db) -> set:
+    from models.database import TentacleUser
+    return {L.norm_user_id(t.jellyfin_user_id) for t in
+            db.query(TentacleUser).filter(TentacleUser.kids_level.isnot(None)).all()}
+
+
+def blocked_tags(policy_tags: list, kid: bool, tags_in_use: set) -> list:
+    """A person's BlockedTags: their own blocked tags kept; Tentacle's are the
+    per-person tuners of before still in Jellyfin, and for a kid every
+    channel that isn't a kids channel."""
     keep = [t for t in (policy_tags or []) if not str(t).lower().startswith(L.TAG_PREFIX)]
-    return keep + sorted(t for t in tags_in_use if t != own_tag)
-
-
-def own_tag_of(db, user_id: str) -> str:
-    row = L.lineup_row(db, user_id)
-    return L.user_tag(user_id) if (row and row.synced_own_list and row.tuner_url) else L.ALL_TAG
+    ours = {t for t in tags_in_use if t not in (L.ALL_TAG, L.KIDS_TAG)}
+    if kid:
+        ours.add(L.ALL_TAG)
+    return keep + sorted(ours)
 
 
 def apply_policies(db, jf: Jellyfin, users: list, tags_in_use: set) -> int:
     """Set everyone's blocked tags; returns how many policies changed."""
+    kids = kids_user_ids(db)
     changed = 0
     for u in users:
+        kid = L.norm_user_id(u["Id"]) in kids
         policy = u.get("Policy") or {}
-        want = blocked_tags(policy.get("BlockedTags") or [], own_tag_of(db, u["Id"]), tags_in_use)
+        want = blocked_tags(policy.get("BlockedTags") or [], kid, tags_in_use)
         if list(policy.get("BlockedTags") or []) == want:
             continue
         # The policy as Jellyfin has it now, not as this sync read it (that can
@@ -203,7 +210,7 @@ def apply_policies(db, jf: Jellyfin, users: list, tags_in_use: set) -> int:
             fresh = (jf.get(f"/Users/{u['Id']}") or {}).get("Policy") or policy
         except requests.RequestException:
             fresh = policy
-        want = blocked_tags(fresh.get("BlockedTags") or [], own_tag_of(db, u["Id"]), tags_in_use)
+        want = blocked_tags(fresh.get("BlockedTags") or [], kid, tags_in_use)
         if list(fresh.get("BlockedTags") or []) == want:
             u["Policy"] = fresh
             continue
@@ -255,6 +262,13 @@ def tags_on_channels(jf: Jellyfin) -> set:
             if str(t).lower().startswith(L.TAG_PREFIX)}
 
 
+def channel_ids(jf: Jellyfin) -> set:
+    """Every Live TV channel Jellyfin has now (asked without a user)."""
+    res = jf.get("/Items", includeItemTypes="LiveTvChannel", recursive="true",
+                 enableImages="false", enableUserData="false") or {}
+    return {str(i["Id"]).replace("-", "") for i in res.get("Items") or []}
+
+
 def favourite_ids(jf: Jellyfin, user_id: str) -> set:
     res = jf.get("/LiveTv/Channels", userId=user_id, isFavorite="true", limit=5000,
                  enableImages="false", enableUserData="false")
@@ -295,9 +309,20 @@ def _channel_id(timer: dict) -> str:
     return (timer.get("ChannelId") or "").replace("-", "")
 
 
-def move_schedules(jf: Jellyfin, from_ids: dict, to_ids: dict) -> int:
+def scheduled_one_offs(jf: Jellyfin) -> list:
+    """The one-off recordings Jellyfin has scheduled (not a series')."""
+    return [t for t in (jf.get("/LiveTv/Timers", isScheduled="true") or {}).get("Items") or []
+            if not t.get("SeriesTimerId")]
+
+
+def move_schedules(jf: Jellyfin, from_ids: dict, to_ids: dict, one_offs: Optional[list] = None) -> int:
     """Recording schedules on one tuner's channels, made again on the same
-    channels of another tuner (then the old one is cancelled)."""
+    channels of another tuner (then the old one is cancelled).
+
+    `one_offs`: the one-off recordings as they were before the guide
+    refresh. A refresh deletes a one-off whose programme left the guide
+    (Jellyfin's RefreshTimers), which is what happens to a lineup channel
+    whose stream address changed; it is made again from what was read."""
     by_key = {k: i for i, k in to_ids.items()}
     moved = 0
     for st in (jf.get("/LiveTv/SeriesTimers") or {}).get("Items") or []:
@@ -323,9 +348,7 @@ def move_schedules(jf: Jellyfin, from_ids: dict, to_ids: dict) -> int:
         jf.post("/LiveTv/SeriesTimers", new)
         jf.delete(f"/LiveTv/SeriesTimers/{st['Id']}")
         moved += 1
-    for t in (jf.get("/LiveTv/Timers", isScheduled="true") or {}).get("Items") or []:
-        if t.get("SeriesTimerId"):
-            continue   # made again with its series schedule
+    for t in scheduled_one_offs(jf) if one_offs is None else one_offs:
         key = from_ids.get(_channel_id(t))
         target = by_key.get(key) if key else None
         if not target:
@@ -341,7 +364,11 @@ def move_schedules(jf: Jellyfin, from_ids: dict, to_ids: dict) -> int:
             if k in t:
                 new[k] = t[k]
         jf.post("/LiveTv/Timers", new)
-        jf.delete(f"/LiveTv/Timers/{t['Id']}")
+        try:
+            jf.delete(f"/LiveTv/Timers/{t['Id']}")
+        except requests.HTTPError as e:
+            if e.response is None or e.response.status_code != 404:
+                raise   # 404: the refresh had dropped it already
         moved += 1
     return moved
 
@@ -428,9 +455,10 @@ def wait_for_guide(jf: Jellyfin) -> bool:
 
 # ── Backup ──────────────────────────────────────────────────────────────────
 
-def backup(jf: Jellyfin, cfg: dict, users: list, reason: str) -> Optional[str]:
-    """What Jellyfin had before a sync changes tuners or moves people: kept
-    as JSON in /data/livetv-backups (one file per change, never removed)."""
+def backup(jf: Jellyfin, cfg: dict, users: list, reason: str, db=None) -> Optional[str]:
+    """What Jellyfin had before a sync changes tuners or moves people (and
+    everyone's channel lists in Tentacle): kept as JSON in
+    /data/livetv-backups (one file per change, never removed)."""
     try:
         os.makedirs(BACKUP_DIR, exist_ok=True)
         data = {
@@ -442,7 +470,13 @@ def backup(jf: Jellyfin, cfg: dict, users: list, reason: str) -> Optional[str]:
             "users": [],
             "series_timers": (jf.get("/LiveTv/SeriesTimers") or {}).get("Items") or [],
             "timers": (jf.get("/LiveTv/Timers") or {}).get("Items") or [],
+            "lists": {},
         }
+        if db is not None:
+            for row in db.query(LiveUserLineup).all():
+                data["lists"][row.jellyfin_user_id] = {
+                    "own_list": bool(row.own_list), "synced": row.synced_own_list,
+                    "tuner_url": row.tuner_url, "keys": L.stored_keys(db, row.jellyfin_user_id)}
         for u in users:
             fav = jf.get("/LiveTv/Channels", userId=u["Id"], isFavorite="true", limit=5000,
                          enableImages="false") or {}
@@ -474,20 +508,42 @@ def _tuner_body(name: str, url: str, count: int, template: Optional[dict]) -> di
     return body
 
 
+def _scheduled_channel_ids(jf: Jellyfin) -> set:
+    ids = set()
+    for path, params in (("/LiveTv/SeriesTimers", {}), ("/LiveTv/Timers", {"isScheduled": "true"})):
+        for t in (jf.get(path, **params) or {}).get("Items") or []:
+            ids.add(_channel_id(t))
+    return ids
+
+
+def _kids_keys(db) -> set:
+    from services import family
+    return set(family.kids_channels(db))
+
+
+def tag_lineup(jf: Jellyfin, admin_id: str, url: str, entries: list, kids: set) -> int:
+    """Every lineup channel's tag (kids channels -kids, the rest -all)."""
+    by_tag = {}
+    for item_id, key in L.item_ids_for(url, entries).items():
+        by_tag.setdefault(L.KIDS_TAG if key in kids else L.ALL_TAG, []).append(item_id)
+    return sum(tag_channels(jf, admin_id, ids, tag) for tag, ids in by_tag.items())
+
+
 def sync(db, refresh: bool = False) -> dict:
-    """Bring Jellyfin's Live TV in line with everyone's choices (see the
-    module docstring). Returns what it did."""
+    """Bring Jellyfin's Live TV in line with the lineup (see the module
+    docstring). Returns what it did."""
     jf = jellyfin_for(db)
     done = {"added": 0, "removed": 0, "tagged": 0, "policies": 0, "favourites": 0,
             "schedules": 0, "refreshed": False, "backup": None}
     if jf is None:
         return {**done, "skipped": "Jellyfin is not connected"}
     channels = L.pool(db)
+    entries = L.lineup(db, channels)
     cfg = jf.get("/System/Configuration/livetv") or {}
     tuners = cfg.get("TunerHosts") or []
     olds = old_tuners(db, cfg)
     ours = [t for t in tuners if is_tentacle_tuner(t)]
-    if not channels and not ours:
+    if not entries and not ours:
         return {**done, "skipped": "no Live TV channels"}
 
     users = jf.get("/Users") or []
@@ -496,116 +552,113 @@ def sync(db, refresh: bool = False) -> dict:
     base = tuner_base_address(db, jf, cfg)
     if not base:
         return {**done, "skipped": "Tentacle's address is not known (Settings → Services)"}
-
-    # What should be there
-    all_url = all_tuner_url(db, base)
-    count = 0
-    try:
-        from routers.livetv import _hdhr_tuner_count
-        count = _hdhr_tuner_count(db)
-    except Exception:
-        count = 0
-    want = {}          # url -> (name, tag, user)
-    rows = {}
-    for u in people:
-        row = L.lineup_row(db, u["Id"])
-        rows[u["Id"]] = row
-        if row and row.own_list:
-            if not row.tuner_url:
-                row.tuner_url = base + L.user_tuner_path(u["Id"])
-                db.commit()
-            want[row.tuner_url] = (f"Tentacle · {u.get('Name')}", L.user_tag(u["Id"]), u)
-    if any(not (rows.get(u["Id"]) and rows[u["Id"]].own_list) for u in people) or olds:
-        want[all_url] = ("Tentacle · All channels", L.ALL_TAG, None)
-
+    url = all_tuner_url(db, base)
     have = {t.get("Url"): t for t in ours}
-    to_add = [url for url in want if url not in have]
-    to_remove = [t for url, t in have.items() if url not in want]
-    switching = [u for u in people if rows.get(u["Id"]) is not None
-                 and bool(rows[u["Id"]].own_list) != bool(rows[u["Id"]].synced_own_list)]
-    if to_add or to_remove or olds or switching:
-        done["backup"] = backup(jf, cfg, users, "before tuner changes")
+    tuner = have.get(url)
+    personal = [t for u, t in have.items() if u != url]   # per-person tuners of before
+    kids = _kids_keys(db)
 
-    # Favourites on the old tuner and the "All channels" one, read before
-    # anything moves (the old tuner's channels disappear once it is removed).
-    old_favs = {}
-    if olds:
-        for u in people:
-            old_favs[u["Id"]] = favourite_ids(jf, u["Id"])
+    # Where favourites and schedules come from: the per-person tuners and
+    # the old single tuner (every channel the pool has, under its key now
+    # or the one it had), and lineup channels whose key changed.
+    mine = L.item_ids_for(url, entries)
+    keys = set(mine.values())
+    alias = L.final_aliases(db, channels)
+    sources = {}     # item id -> current key, for channels that are going
+    for t in personal:
+        sources.update(L.item_ids_for(t.get("Url") or "", channels))
+        sources.update(L.alias_item_ids_for(t.get("Url") or "", alias))
+    for old in olds:
+        sources.update(old_tuner_item_ids(old, channels))
+        if old.get("Type") == "m3u":
+            sources.update(L.alias_item_ids_for(old.get("Url") or "", alias))
+    if alias and tuner is not None:
+        in_jf = channel_ids(jf)
+        sources.update({i: k for i, k in L.alias_item_ids_for(url, alias, keys).items() if i in in_jf})
+    sources = {i: k for i, k in sources.items() if k in keys and i not in mine}
 
-    template = olds[0] if olds else (ours[0] if ours else None)
-    for url in to_add:
-        name, tag, _ = want[url]
-        jf.post("/LiveTv/TunerHosts", _tuner_body(name, url, count, template))
+    moving = bool(personal or olds or sources or tuner is None)
+    if moving:
+        done["backup"] = backup(jf, cfg, users, "before Live TV tuner changes", db)
+    # Favourites, read before anything moves (Jellyfin refuses a favourite on
+    # a channel the person can't see, and the old channels go at the next
+    # refresh).
+    pre_favs = {u["Id"]: favourite_ids(jf, u["Id"]) for u in people} if (personal or olds or sources) else {}
+    # One-off recordings too: the guide refresh below deletes those whose
+    # channel left a tuner (a lineup channel with a new key does at once).
+    pre_one_offs = scheduled_one_offs(jf) if sources else None
+
+    if tuner is None:
+        count = 0
+        try:
+            from routers.livetv import _hdhr_tuner_count
+            count = _hdhr_tuner_count(db)
+        except Exception:
+            count = 0
+        template = olds[0] if olds else (personal[0] if personal else None)
+        jf.post("/LiveTv/TunerHosts", _tuner_body(TUNER_NAME, url, count, template))
         done["added"] += 1
-        logger.info(f"[LiveTV] Added Jellyfin tuner '{name}'")
+        logger.info(f"[LiveTV] Added Jellyfin tuner '{TUNER_NAME}'")
 
     done["guide_added"] = ensure_guide(jf, cfg, base)
 
-    tags_in_use = {L.tag_for_tuner_url(url) for url in list(have) + list(want)} | tags_on_channels(jf)
-    tags_in_use.discard(None)
-    done["policies"] += apply_policies(db, jf, people, tags_in_use)
+    refreshing = bool(done["added"] or refresh or done["guide_added"] or sources)
+    if admin_id and tuner is not None and refreshing:
+        # Before the refresh too: the plugin gives programmes the tag their
+        # channel has while it builds them, so a channel made (or no longer)
+        # a kids channel carries its new tag into this refresh's programmes.
+        done["tagged"] += tag_lineup(jf, admin_id, url, entries, kids)
+    # Kids see only the kids channels before anything else happens (a guide
+    # refresh can take minutes).
+    kids_ids = kids_user_ids(db)
+    done["policies"] += apply_policies(db, jf, [u for u in people if L.norm_user_id(u["Id"]) in kids_ids],
+                                       {L.tag_for_tuner_url(t.get("Url") or "") for t in personal} - {None})
 
-    if to_add or olds or switching or refresh or done["guide_added"]:
+    if refreshing:
         refresh_and_wait(db, jf)
         done["refreshed"] = True
     else:
         wait_for_guide(jf)   # a refresh someone else started: tag what it creates
 
-    # Tag every tuner's channels
-    entries_for = {}
-    for url, (name, tag, user) in want.items():
-        entries = L.lineup_for(db, user["Id"] if user else None, channels)
-        entries_for[url] = entries
-        if admin_id:
-            done["tagged"] += tag_channels(jf, admin_id, list(L.item_ids_for(url, entries)), tag)
+    if admin_id:
+        done["tagged"] += tag_lineup(jf, admin_id, url, entries, kids)
+    in_jf = bool(mine) and bool(admin_id) and bool(_items(jf, admin_id, list(mine)[:100]))
+    if mine and not in_jf:
+        # Jellyfin hasn't made the channels yet: the next sync carries on.
+        logger.warning("[LiveTV] The lineup's channels aren't in Jellyfin yet; trying again later")
+        personal, olds = [], []
 
-    # People who switched between "All channels" and their own list
-    for u in switching:
-        row = rows[u["Id"]]
-        mine = L.item_ids_for(row.tuner_url, L.own_lineup(db, u["Id"], channels)) if row.tuner_url else {}
-        everyone = L.item_ids_for(all_url, channels)
-        src, dst = (everyone, mine) if row.own_list else (mine, everyone)
-        if dst and admin_id and not _items(jf, admin_id, list(dst)):
-            # Jellyfin hasn't made the channels yet: the next sync carries on.
-            logger.warning(f"[LiveTV] {u.get('Name')}'s channels aren't in Jellyfin yet; trying again later")
-            continue
-        # Their favourites are read while they still see the old channels,
-        # then they see the new ones: Jellyfin refuses a favourite on a
-        # channel the person can't see (404).
-        favs = favourite_ids(jf, u["Id"])
-        row.synced_own_list = bool(row.own_list)
-        db.commit()
-        done["policies"] += apply_policies(db, jf, [u], tags_in_use)
-        if src and dst:
-            done["favourites"] += carry_favourites(jf, u["Id"], src, dst, favs)
+    # Everyone sees the lineup (kids its kids channels), and no longer the
+    # tuners of before: their favourites were read above.
+    tags_in_use = {L.tag_for_tuner_url(t.get("Url") or "") for t in personal} | tags_on_channels(jf)
+    tags_in_use.discard(None)
+    done["policies"] += apply_policies(db, jf, people, tags_in_use)
 
-    # Off the old single tuner: everyone's favourites and the schedules. Not
-    # before the new channels are in Jellyfin: the old one stays until then.
-    all_ids = L.item_ids_for(all_url, channels)
-    if olds and admin_id and not _items(jf, admin_id, list(all_ids)[:100]):
-        logger.warning("[LiveTV] The shared tuner's channels aren't in Jellyfin yet; "
-                       "the old tuner stays until the next sync")
-        olds = []
-    if olds:
-        for old in olds:
-            from_ids = old_tuner_item_ids(old, channels)
-            for u in people:
-                dst = tuner_url_for(db, u["Id"])
-                dst_ids = L.item_ids_for(dst, entries_for.get(dst) or [])
-                done["favourites"] += carry_favourites(jf, u["Id"], from_ids, dst_ids, old_favs.get(u["Id"]))
-            # Schedules have no owner in Jellyfin: they go to the shared tuner.
-            done["schedules"] += move_schedules(jf, from_ids, all_ids)
-            jf.delete("/LiveTv/TunerHosts", id=old["Id"])
-            done["removed"] += 1
-            logger.info(f"[LiveTV] Moved everyone off the old {old.get('Type')} tuner and removed it")
-        set_setting(db, MIGRATED_KEY, datetime.utcnow().isoformat())
-        db.commit()
+    if in_jf:
+        for u in people:
+            favs = pre_favs.get(u["Id"])
+            if favs:
+                done["favourites"] += carry_favourites(jf, u["Id"], sources, mine, favs)
+        if sources:
+            done["schedules"] += move_schedules(jf, sources, mine, pre_one_offs)
 
+    to_remove = list(olds)
+    if personal:
+        stuck = _scheduled_channel_ids(jf) & {i for t in personal
+                                              for i in L.item_ids_for(t.get("Url") or "", channels)}
+        if stuck:
+            logger.warning(f"[LiveTV] {len(stuck)} recording schedule(s) still on a per-person tuner; "
+                           f"it stays until they move")
+        else:
+            to_remove += personal
     for t in to_remove:
         jf.delete("/LiveTv/TunerHosts", id=t["Id"])
         done["removed"] += 1
-        logger.info(f"[LiveTV] Removed Jellyfin tuner '{t.get('FriendlyName') or t.get('Url')}'")
+        logger.info(f"[LiveTV] Moved everyone onto the lineup and removed Jellyfin tuner "
+                    f"'{t.get('FriendlyName') or t.get('Url')}'")
+    if olds:
+        set_setting(db, MIGRATED_KEY, datetime.utcnow().isoformat())
+        db.commit()
 
     # People Jellyfin no longer has
     known = {L.norm_user_id(u["Id"]) for u in users}
@@ -617,9 +670,8 @@ def sync(db, refresh: bool = False) -> dict:
         # Jellyfin drops a removed tuner's channels at its next guide refresh;
         # until then they stay blocked (their tag is still on them).
         refresh_and_wait(db, jf)
-    tags_in_use = {L.tag_for_tuner_url(url) for url in want} | tags_on_channels(jf)
-    tags_in_use.discard(None)
-    done["policies"] += apply_policies(db, jf, people, tags_in_use)
+        tags_in_use = tags_on_channels(jf)
+        done["policies"] += apply_policies(db, jf, people, tags_in_use)
     return done
 
 

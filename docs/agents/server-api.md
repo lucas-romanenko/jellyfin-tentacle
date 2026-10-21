@@ -136,6 +136,18 @@ provider names, URLs or logins).
 | POST | `/api/lists/{list_id}/fetch` | user | lists.py:fetch_list (same background follow-up) |
 | POST | `/api/lists/{list_id}/playlist-toggle` | user | lists.py:toggle_list_playlist |
 | GET | `/api/live/capacity` | admin | livetv.py:live_capacity |
+| GET | `/api/live/checker/status` | admin | livetv_checker.py:checker_status (background stream checker: state, paused reason, progress) |
+| GET | `/api/live/catalog/types` | admin | livetv_catalog.py:catalog_types (the channel types) |
+| GET | `/api/live/catalog/pool` | admin | livetv_catalog.py:catalog_pool (the folded pool, with "no event" channels) |
+| GET | `/api/live/catalog/networks` | admin | livetv_catalog.py:catalog_networks (folded networks with their variants; `?include_empty=1`) |
+| POST | `/api/live/catalog/refresh` | admin | livetv_catalog.py:catalog_refresh (fold again now) |
+| PUT | `/api/live/catalog/networks/{nid}/variant` | admin | livetv_catalog.py:catalog_set_variant (`{channel_id}`, null = default) |
+| PUT | `/api/live/catalog/networks/{nid}` | admin | livetv_catalog.py:catalog_update_network (`{name, excluded}`) |
+| POST | `/api/live/catalog/networks/{nid}/split` | admin | livetv_catalog.py:catalog_split (`{channel_ids, name}`; no ids = dissolve) |
+| POST | `/api/live/catalog/merge` | admin | livetv_catalog.py:catalog_merge (`{keys: ["n1","c5"], name}`) |
+| PUT | `/api/live/catalog/channels/{channel_id}/enabled` | admin | livetv_catalog.py:catalog_tick (`{enabled}`) |
+| PUT | `/api/live/catalog/types` | admin | livetv_catalog.py:catalog_set_types (`{key, types}`; [] = automatic) |
+| GET, HEAD | `/api/live/net/{nid}` | none | livetv_catalog.py:network_stream (the network's chosen variant through stream_proxy) |
 | GET | `/api/live/channels` | admin | livetv.py:list_channels |
 | POST | `/api/live/channels/bulk` | admin | livetv.py:bulk_update_channels |
 | POST | `/api/live/channels/bulk-filter` | admin | livetv.py:bulk_update_channels_by_filter |
@@ -193,8 +205,8 @@ provider names, URLs or logins).
 | POST | `/api/music/webhook/regenerate` | admin | music.py:regenerate_webhook_secret |
 | POST | `/api/music/webhook/test` | admin | music.py:test_webhook |
 | GET | `/api/my/channels` | user | my_livetv.py:my_channels |
-| PUT | `/api/my/channels` | user | my_livetv.py:save_my_channels |
 | PUT | `/api/my/channels/favourite` | user | my_livetv.py:set_my_favourite |
+| PUT | `/api/my/channels/favourites` | user | my_livetv.py:set_my_favourites |
 | GET | `/api/notifications` | user | notifications.py:get_notifications |
 | POST | `/api/notifications/dismiss-all` | user | notifications.py:dismiss_all |
 | POST | `/api/notifications/toggle` | user | notifications.py:toggle_notifications |

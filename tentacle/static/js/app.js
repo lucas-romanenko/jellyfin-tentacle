@@ -404,7 +404,7 @@ const PAGE_TITLES = {
   library: ['Library', 'Everything you can watch'],
   discover: ['Discover', 'Find something new and add it'],
   jellyfin: ['My Home Screen', 'Your Jellyfin home rows and playlists'],
-  mychannels: ['My Channels', 'Your own Live TV channels'],
+  mychannels: ['My Channels', 'Your favourite Live TV channels'],
   people: ['People', 'Your household: accounts, age limits and TVs'],
   requests: ['Requests', 'What your household asked for'],
   sources: ['Sources', 'Where the library comes from'],

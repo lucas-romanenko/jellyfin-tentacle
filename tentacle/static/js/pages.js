@@ -5843,6 +5843,7 @@ async function loadLiveTV() {
       renderLiveStats(data);
       await loadLiveGroups();
       await loadLiveChannels();
+      if (document.getElementById('live-panel-pool')?.classList.contains('active')) loadLivePool();
       if (document.getElementById('live-panel-setup')?.classList.contains('active')) loadLiveSetup();
     } else {
       liveState.providerId = null;
@@ -5876,6 +5877,7 @@ function showLiveTab(name) {
   document.getElementById(`live-panel-${name}`)?.classList.add('active');
 
   if (name === 'channels') loadLiveChannels();
+  if (name === 'pool') loadLivePool();
   if (name === 'setup') loadLiveSetup();
   if (name === 'people') loadLivePeople();
 }
