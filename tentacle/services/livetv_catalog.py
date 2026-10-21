@@ -3,8 +3,11 @@
 - Networks: channels that are one network in different places or qualities
   ("US: NBC (KNBC) LOS ANGELES", "NBC WNBC NEW YORK", "NBC HD ⁽ᴮᴷ⁾") fold into
   one LiveNetwork, pool key "n<id>", streamed at /api/live/net/<id> from the
-  variant the admin chose (default: a working one people already watch, else
-  one in the admin's region, else the best quality). Folding is by name
+  variant the admin chose (default: a working one in the household's country
+  and language, then one people already watch, then the admin's region,
+  then the best quality). Its guide is the variant's own unless that one is
+  for another country or language and a sibling's guide is the household's
+  (network_guides(): a provider tags "CA EN: TLC" with the Serbian "TLC.rs"). Folding is by name
   (services/livetv_names.py) over every channel the provider lists, so
   switching groups on and off never changes keys. The admin can split a
   wrong merge, merge a missed one, choose the variant, take a network out of
@@ -72,7 +75,16 @@ def _inputs_fingerprint(db: Session, rows) -> str:
     except Exception:
         pass
     h.update(",".join(str(c) for c, st in sorted(_check_states(db).items()) if st == "broken").encode())
+    # The household and the rules choose the defaults too: a new region,
+    # language or rule set chooses them again.
+    h.update(f"\x1f{_CHOICE_RULES}\x1f{get_setting(db, 'livetv_region', '') or ''}"
+             f"\x1f{get_setting(db, 'livetv_language', 'en') or ''}".encode("utf-8", "replace"))
     return h.hexdigest()
+
+
+# Bumped when _choose_defaults() weighs variants differently, so every
+# network chooses its default again once (2: country and language first).
+_CHOICE_RULES = "2"
 
 
 def ensure_fresh(db: Session) -> bool:
@@ -303,11 +315,90 @@ def _quality(name: str) -> int:
     return 0
 
 
+# Country and language against the household (_home_rank): Canada and the US
+# watch each other's channels; a country of the household's language is
+# better than one of another language.
+_NEIGHBOURS = {"CA": {"US"}, "US": {"CA"}}
+_LANGUAGE_COUNTRIES = {
+    "en": {"US", "CA", "GB", "IE", "AU", "NZ"},
+    "fr": {"FR", "BE", "CH", "LU", "MC", "CA"},
+    "es": {"ES", "MX", "AR", "CO", "CL", "PE", "VE", "EC", "UY", "PY", "BO", "CR", "PA", "DO", "GT", "HN",
+           "NI", "SV", "CU", "PR", "US"},
+    "de": {"DE", "AT", "CH", "LI", "LU"},
+    "it": {"IT", "CH", "SM"},
+    "pt": {"PT", "BR"},
+    "nl": {"NL", "BE"},
+}
+
+
+def _household(db: Session) -> tuple:
+    """(country code, language code) of the household: the admin's region
+    (livetv_region, else the server's time zone) and `livetv_language`."""
+    country, _ = _region(db)
+    lang = (get_setting(db, "livetv_language", "en") or "en").strip().lower()[:2] or "en"
+    return livetv_names._country_code(country), lang
+
+
+def _feed_language(name: str, group: Optional[str]) -> Optional[str]:
+    lang = livetv_names.feed_language(name, group)
+    if lang is None and _FRENCH.search(livetv_names._plain(name or "").upper()):
+        lang = "fr"
+    return lang
+
+
+def _home_rank(country: Optional[str], language: Optional[str], home: tuple) -> int:
+    """3: the household's country (or a neighbour's), 2: can't tell, 1:
+    another country of the household's language, 0: foreign (another
+    language named, or a country of another language)."""
+    hc, hl = home
+    if language and hl and language != hl:
+        return 0
+    if country is None:
+        return 2
+    if hc and (country == hc or country in _NEIGHBOURS.get(hc, ())):
+        return 3
+    return 1 if country in _LANGUAGE_COUNTRIES.get(hl, ()) else 0
+
+
+def _variant_rank(name: str, group: Optional[str], home: tuple) -> int:
+    """How much a variant's stream is the household's, by its name and group."""
+    return _home_rank(livetv_names.feed_country(name, group), _feed_language(name, group), home)
+
+
+def _language_matters(feeds: list, lang: str) -> bool:
+    """Whether a network's variants differ in language for the household:
+    feeds = [(country, language named or None)]. Some name another language
+    and some other variant is the household's: one naming its language, or
+    one naming none from another country than the foreign ones ("CA FR: X"
+    with "US: X"). "CA FR: FRISSON HD" and "CA: FRISSON" are one French
+    channel: the language decides nothing there."""
+    foreign = [(c, l) for c, l in feeds if l and l != lang]
+    if not foreign:
+        return False
+    countries = {c for c, _ in foreign}
+    return any(l == lang or (l is None and c not in countries) for c, l in feeds)
+
+
+def _guide_rank(gid: Optional[str], name: str, group: Optional[str], home: tuple) -> int:
+    """How much a guide is the household's: the country its id ends in
+    ("TLC.rs"), else the channel's own; a language the channel names counts."""
+    country = livetv_names.guide_country(gid) or livetv_names.feed_country(name, group)
+    return _home_rank(country, _feed_language(name, group), home)
+
+
+def _guide_id(override, by_name, tvg) -> Optional[str]:
+    """LiveChannel.guide_epg_id from its columns."""
+    return (override or "").strip() or by_name or (tvg or "").strip() or None
+
+
 def _choose_defaults(db: Session, nets: dict, members: dict, by_id: dict) -> None:
     """Each network's default variant (data.auto_channel_id): among switched-on
-    channels, one that works, then one people already have in their lists
-    (they keep watching what they watched), then the admin's region, then
-    one with a guide, then the admin's country, then quality; else the first."""
+    channels, one not found broken, then one in the household's country and
+    language (never a foreign-language feed while there is another), then
+    one that works, then one people already have in their lists (they keep
+    watching what they watched), then the admin's region, then one with a
+    guide of the household's, then the admin's country, then quality; else
+    the first."""
     if not members:
         return
     in_lists = Counter()
@@ -316,27 +407,45 @@ def _choose_defaults(db: Session, nets: dict, members: dict, by_id: dict) -> Non
             in_lists[int(key[1:])] += 1
     states = _check_states(db)
     country, places = _region(db)
+    home = _household(db)
     with_guide = guide_facts(db)["with_guide"]
-    guided = set()
+    guide_of = {}   # channel id -> its guide id, when that has programmes
     for cid, override, by_name, tvg in db.query(LiveChannel.id, LiveChannel.epg_id_override,
                                                 LiveChannel.epg_name_match, LiveChannel.epg_channel_id):
-        gid = (override or "").strip() or by_name or (tvg or "").strip()
+        gid = _guide_id(override, by_name, tvg)
         if gid and gid in with_guide:
-            guided.add(cid)
+            guide_of[cid] = gid
     for nid, cids in members.items():
         n = nets[nid]
         on = [c for c in cids if by_id[c].enabled] or cids
+        feeds = {c: (livetv_names.feed_country(by_id[c].name, by_id[c].group_title),
+                     _feed_language(by_id[c].name, by_id[c].group_title)) for c in on}
+        by_language = _language_matters(list(feeds.values()), home[1])
+
+        def guided(cid):
+            # A guide counts when it is the household's (not "TLC.rs").
+            gid = guide_of.get(cid)
+            if gid is None:
+                return 0
+            fc, fl = feeds[cid]
+            return 1 if _home_rank(livetv_names.guide_country(gid) or fc, fl if by_language else None, home) >= 2 else 0
 
         def score(cid):
             name = by_id[cid].name
             words = livetv_names.region_words(name)
             st = states.get(cid)
+            fc, fl = feeds[cid]
             return (
-                1 if st == "works" else 0 if st is None else -1,
+                0 if st == "broken" else 1,
+                # Foreign last, then another country of the language; the
+                # household's and unmarked ones alike (the places and the
+                # admin's country below tell them apart).
+                min(_home_rank(fc, fl if by_language else None, home), 2),
+                1 if st == "works" else 0,
                 in_lists[cid],
                 # The nearest place named first: Toronto, then Buffalo, then Detroit.
                 max((len(places) - i for i, p in enumerate(places) if p in words), default=0),
-                1 if cid in guided else 0,
+                guided(cid),
                 1 if country and country in words else 0,
                 _quality(name),
                 -(by_id[cid].sort_order or 0),
@@ -395,6 +504,91 @@ def _network_members(db: Session) -> dict:
                 break
         else:
             info["variant"] = min(on) if on else None
+    return out
+
+
+def network_guides(db: Session, nets: Optional[dict] = None) -> dict:
+    """network id -> the guide id it shows (None: none), for networks with a
+    variant. The variant's own guide, unless that one is for another country
+    or language than the stream (and so than the household, whose variant is
+    the default) and a sibling has a guide with programmes that fits: a
+    provider tags the Canadian "CA EN: TLC" with the Serbian "TLC.rs" while
+    "CA: TLC CANADA" has "tlc.ca". Among fitting ones: the same time zone
+    feed (East/West), then the variant's country. A guide id the admin set on
+    the variant (epg_id_override) is always its guide; a network without a
+    guide of its own borrows none. Programmes are stored for every channel
+    the provider lists, switched on or not."""
+    if nets is None:
+        nets = _network_members(db)
+    ids = sorted({c for info in nets.values() if info["variant"] is not None for c in info["all"]})
+    rows = {}
+    for i in range(0, len(ids), 500):
+        for r in (db.query(LiveChannel.id, LiveChannel.name, LiveChannel.group_title, LiveChannel.enabled,
+                           LiveChannel.epg_id_override, LiveChannel.epg_name_match, LiveChannel.epg_channel_id)
+                  .filter(LiveChannel.id.in_(ids[i:i + 500])).all()):
+            rows[r.id] = r
+    if not rows:
+        return {}
+    with_guide = guide_facts(db)["with_guide"]
+    home_country, home_lang = _household(db)
+    out = {}
+    for nid, info in nets.items():
+        v = rows.get(info["variant"])
+        if v is None:
+            continue
+        own = _guide_id(v.epg_id_override, v.epg_name_match, v.epg_channel_id)
+        vcountry = livetv_names.feed_country(v.name, v.group_title)
+        # What the stream is: its own country and language, else the household's.
+        target = (vcountry or home_country, _feed_language(v.name, v.group_title) or home_lang)
+        if (not own or (v.epg_id_override or "").strip() or len(info["all"]) < 2
+                or _guide_rank(own, v.name, v.group_title, target) >= 2):
+            out[nid] = own
+            continue
+        vfeed = livetv_names.feed_words(v.name)
+        best, best_score = own, None
+        for cid in info["all"]:
+            r = rows.get(cid)
+            if r is None:
+                continue
+            gid = _guide_id(r.epg_id_override, r.epg_name_match, r.epg_channel_id)
+            if not gid or gid == own or gid not in with_guide:
+                continue
+            rank = _guide_rank(gid, r.name, r.group_title, target)
+            if rank < 2:
+                continue
+            gcountry = livetv_names.guide_country(gid) or livetv_names.feed_country(r.name, r.group_title)
+            score = (
+                rank,
+                1 if livetv_names.feed_words(r.name) == vfeed else 0,
+                1 if vcountry and gcountry == vcountry else 0,
+                1 if r.enabled else 0,
+                -cid,
+            )
+            if best_score is None or score > best_score:
+                best, best_score = gid, score
+        out[nid] = best
+    return out
+
+
+def variant_guides(db: Session) -> dict:
+    """variant channel id -> the guide id its network shows, where that is
+    not the channel's own (the XMLTV serves it under the variant's number)."""
+    nets = {nid: info for nid, info in _network_members(db).items()
+            if not info["network"].excluded and info["variant"] is not None}
+    guides = network_guides(db, nets)
+    if not guides:
+        return {}
+    own = {}
+    variants = [info["variant"] for info in nets.values()]
+    for i in range(0, len(variants), 500):
+        for r in (db.query(LiveChannel.id, LiveChannel.epg_id_override, LiveChannel.epg_name_match,
+                           LiveChannel.epg_channel_id).filter(LiveChannel.id.in_(variants[i:i + 500])).all()):
+            own[r.id] = _guide_id(r.epg_id_override, r.epg_name_match, r.epg_channel_id)
+    out = {}
+    for nid, info in nets.items():
+        gid = guides.get(nid)
+        if gid and gid != own.get(info["variant"]):
+            out[info["variant"]] = gid
     return out
 
 
@@ -664,6 +858,7 @@ def fold_pool(db: Session, entries: list, channels_by_id: dict) -> list:
                  .filter(LiveChannelCatalog.types.isnot(None)).all() if _types(c)}
     facts = guide_facts(db)
     with_guide, gtypes = facts["with_guide"], facts["types"]
+    guides = network_guides(db, {nid: i for nid, i in nets.items() if nid in set(net_of.values())})
     try:
         from services import livetv_checker
         checks = livetv_checker.results(db, networks={nid: i["variant"] for nid, i in nets.items()
@@ -702,7 +897,7 @@ def fold_pool(db: Session, entries: list, channels_by_id: dict) -> list:
             if vch is None or ve is None:
                 continue
             n = info["network"]
-            gid = vch.guide_epg_id
+            gid = guides.get(nid, vch.guide_epg_id)
             types = _types(n) or channel_types(
                 vch.name, vch.group_title, guide_types=gtypes.get(gid), fold_key=n.fold_key,
                 removed={"place"} if len(info["all"]) > 1 else None)
