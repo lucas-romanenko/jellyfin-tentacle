@@ -363,6 +363,18 @@ def _run_scheduled_sync():
         try:
             from models.database import TentacleUser
             from services.smartlists import sync_smartlists, write_home_config, migrate_global_smartlists_to_user, refresh_smartlist_playlists
+            # Nobody's playlists are rebuilt for an account deleted in Jellyfin.
+            try:
+                from services import gone_people
+                from services.livetv_tuners import jellyfin_for
+                jf = jellyfin_for(db)
+                if jf is not None:
+                    forgot = gone_people.forget_gone(db, jf.get("/Users") or [])
+                    if forgot:
+                        logger.info(f"[Nightly] Forgot {len(forgot)} person(s) no longer in Jellyfin: {', '.join(forgot)}")
+            except Exception as e:
+                _rollback(db)
+                logger.warning(f"[Nightly] Checking for people removed from Jellyfin failed: {e}")
             users = db.query(TentacleUser).all()
             for user in users:
                 try:

@@ -91,6 +91,16 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
 - People (admins): every Jellyfin account gets a `TentacleUser` row when
   People is opened (`_ensure_rows`; a new row starts on the defaults as at a
   first sign-in). Settings → Users is People now (old links redirect).
+- Gone people (`services/gone_people.py`): a row whose account Jellyfin's
+  `/Users` no longer lists is forgotten when People is opened and at the
+  start of the nightly per-user step: its per-person rows (list
+  subscriptions and their items, tag rules, row order, toggles,
+  notifications, download and media requests, music imports,
+  `live_user_lineups`/`live_user_channels`), `smartlists/<id>/`,
+  `home-configs/<id>.json` and its backups, `family_defaults` naming them,
+  and the token/home-version caches. Never the owner or `jellyfin_user_id`,
+  never on an empty list. Their Jellyfin playlists are Jellyfin's: its
+  `DELETE /Users/{id}` removes them (`RemovePlaylistsAsync`).
 - Invite: `POST /Users/New {Name, Password}` with a readable password
   (`make_password`), the row is made at once (`invited_by`, `request_mode`),
   then `start_new_person` in the background: the defaults (`family_defaults`

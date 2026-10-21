@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from models.database import TentacleUser, get_db
 from routers.auth import get_user_from_request, require_admin
-from services import admin_alerts, approvals, family as F, livetv_lineups as L, tv_app
+from services import admin_alerts, approvals, family as F, gone_people, livetv_lineups as L, tv_app
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -67,6 +67,7 @@ def people(db: Session = Depends(get_db)):
     except requests.RequestException:
         raise HTTPException(502, "Jellyfin can't be reached right now.")
     _ensure_rows(db, jf_users)
+    gone_people.forget_gone(db, jf_users)
     by_id = {L.norm_user_id(u["Id"]): u for u in jf_users if u.get("Id")}
     try:
         devices = (jf.get("/Devices") or {}).get("Items") or []
