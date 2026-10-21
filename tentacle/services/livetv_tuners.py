@@ -731,6 +731,8 @@ def run_sync(reason: str = "scheduled", refresh: bool = False) -> dict:
                                  f"{done['removed']} removed, {done['favourites']} favourite(s) and "
                                  f"{done['schedules']} recording schedule(s) carried over", done)
             logger.info(f"[LiveTV] Jellyfin sync ({reason}): {done}")
+            if not done.get("skipped"):
+                tell_clients(db)
             return done
         except Exception as e:
             status.update(last_at=datetime.utcnow().isoformat() + "Z", last_ok=False,
@@ -745,6 +747,23 @@ def run_sync(reason: str = "scheduled", refresh: bool = False) -> dict:
             except Exception:
                 db.rollback()
             db.close()
+
+
+def tell_clients(db) -> bool:
+    """Tell every open client that Live TV changed (channels came or went,
+    someone's access or kids channels changed): the plugin sends a
+    LibraryChanged with a "tentacle-livetv:<version>" marker and open guides
+    read their channel list again. Favourites need nothing: Jellyfin tells
+    the person's clients itself (UserDataChanged). Never raises."""
+    jf = jellyfin_for(db)
+    if jf is None:
+        return False
+    try:
+        jf.post("/Tentacle/Refresh", scope="livetv", homeVersion=int(time.time() * 1000))
+        return True
+    except requests.RequestException as e:
+        logger.info(f"[LiveTV] Couldn't tell the clients Live TV changed: {e}")
+        return False
 
 
 def last_status(db) -> dict:

@@ -53,6 +53,10 @@ Gotchas:
   The LibraryChanged push carries one `CollectionFolders` entry
   `tentacle-home:<user id without dashes, or *>:<version>`; the TV app
   remembers it and catches up on view, foreground and reconnect.
+- **Live TV changed**: `POST /Tentacle/Refresh?scope=livetv&homeVersion=<v>`
+  (Tentacle, after every Live TV setup run) clears nothing and sends every
+  connected user an empty LibraryChanged with `tentacle-livetv:<v>` in
+  `CollectionFolders`; open guides read their channel list again.
 - `POST /Tentacle/Playlists/PruneDead` with `"Async": true` answers 202
   `{runId}` at once and prunes in the background (one prune at a time); the
   server polls `GET .../PruneDead/{runId}` (running / done with the summary /

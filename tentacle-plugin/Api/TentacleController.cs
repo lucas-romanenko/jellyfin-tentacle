@@ -76,16 +76,28 @@ public class TentacleController : ControllerBase
     /// only the home caches, for that user, and tells only that user's clients; ratings,
     /// TMDB and Discover stay cached and nobody else reloads.
     /// <paramref name="homeVersion"/> goes into the message (see <see cref="HomeVersionMarker"/>).
+    /// With <paramref name="scope"/> "livetv" (Tentacle set Live TV up: channels came or
+    /// went, someone's access changed) no cache is cleared and every connected user gets a
+    /// LibraryChanged carrying "tentacle-livetv:&lt;version&gt;", so open guides read their
+    /// channel list again. An older plugin ignores the scope and does the full refresh.
     /// </summary>
     /// <param name="userId">The user whose home was saved; absent means everything.</param>
     /// <param name="homeVersion">The home version the save made (Tentacle sends it; 0 = none).</param>
+    /// <param name="scope">"livetv" for a Live TV lineup change; absent otherwise.</param>
     [HttpPost("Refresh")]
     // Admin only: the Tentacle server calls this with the server API key, which
     // satisfies the policy. A bare [Authorize] let any signed-in account, a child
     // profile included, wipe every cache and reload every client in a loop (#79).
     [Authorize(Policy = "RequiresElevation")]
-    public async Task<ActionResult> Refresh([FromQuery] Guid? userId = null, [FromQuery] long homeVersion = 0)
+    public async Task<ActionResult> Refresh([FromQuery] Guid? userId = null, [FromQuery] long homeVersion = 0, [FromQuery] string? scope = null)
     {
+        if (string.Equals(scope, "livetv", StringComparison.OrdinalIgnoreCase))
+        {
+            var told = await BroadcastLibraryChanged(null, new[] { LiveTvVersionMarker(homeVersion) }).ConfigureAwait(false);
+            _logger.LogInformation("Tentacle Live TV changed — told {Count} connected user(s)", told);
+            return Ok(new { status = "ok", message = "Live TV change sent", broadcastedTo = told, homeOnly = false });
+        }
+
         var homeOnly = userId is { } one && one != Guid.Empty;
         _logger.LogInformation(
             "Tentacle refresh triggered — {Scope}",
@@ -119,43 +131,13 @@ public class TentacleController : ControllerBase
         // Step 3: Send LibraryChanged to the connected WebSocket clients (the user's own,
         // or everyone's). This triggers instant home screen refresh on Android TV and
         // Jellyfin web; the marker lets the TV app remember the version it was told of.
-        int broadcastCount = 0;
-        try
+        var marker = homeVersion > 0
+            ? new[] { HomeVersionMarker(homeOnly ? userId : null, homeVersion) }
+            : Array.Empty<string>();
+        int broadcastCount = await BroadcastLibraryChanged(homeOnly ? userId : null, marker).ConfigureAwait(false);
+        if (broadcastCount > 0)
         {
-            var userIds = homeOnly
-                ? new List<Guid> { userId!.Value }
-                : _sessionManager.Sessions
-                    .Where(s => s.UserId != Guid.Empty)
-                    .Select(s => s.UserId)
-                    .Distinct()
-                    .ToList();
-
-            if (userIds.Count > 0)
-            {
-                var marker = homeVersion > 0
-                    ? new[] { HomeVersionMarker(homeOnly ? userId : null, homeVersion) }
-                    : Array.Empty<string>();
-                await _sessionManager.SendMessageToUserSessions(
-                    userIds,
-                    SessionMessageType.LibraryChanged,
-                    () => new
-                    {
-                        ItemsAdded = Array.Empty<string>(),
-                        ItemsUpdated = Array.Empty<string>(),
-                        ItemsRemoved = Array.Empty<string>(),
-                        CollectionFolders = marker,
-                        FoldersAddedTo = Array.Empty<string>(),
-                        FoldersRemovedFrom = Array.Empty<string>(),
-                        IsEmpty = true
-                    },
-                    CancellationToken.None);
-                broadcastCount = userIds.Count;
-                _logger.LogInformation("Broadcast WebSocket refresh to {Count} connected user(s)", broadcastCount);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to broadcast WebSocket update");
+            _logger.LogInformation("Broadcast WebSocket refresh to {Count} connected user(s)", broadcastCount);
         }
 
         _logger.LogInformation("Tentacle refresh complete — {Playlists} playlists refreshed, caches cleared, {Broadcast} users notified", playlistCount, broadcastCount);
@@ -178,6 +160,56 @@ public class TentacleController : ControllerBase
     /// </summary>
     internal static string HomeVersionMarker(Guid? userId, long homeVersion) =>
         $"tentacle-home:{(userId is { } id ? id.ToString("N") : "*")}:{homeVersion}";
+
+    /// <summary>
+    /// The Live TV marker in a LibraryChanged message: "tentacle-livetv:&lt;version&gt;"
+    /// (Tentacle's number, or the time in ms when it sent none).
+    /// </summary>
+    internal static string LiveTvVersionMarker(long version) =>
+        $"tentacle-livetv:{(version > 0 ? version : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())}";
+
+    /// <summary>
+    /// Sends an empty LibraryChanged (with <paramref name="markers"/> in CollectionFolders)
+    /// to one user's sessions, or to every connected user's. Returns how many users.
+    /// </summary>
+    private async Task<int> BroadcastLibraryChanged(Guid? userId, string[] markers)
+    {
+        try
+        {
+            var userIds = userId is { } one
+                ? new List<Guid> { one }
+                : _sessionManager.Sessions
+                    .Where(s => s.UserId != Guid.Empty)
+                    .Select(s => s.UserId)
+                    .Distinct()
+                    .ToList();
+            if (userIds.Count == 0)
+            {
+                return 0;
+            }
+
+            await _sessionManager.SendMessageToUserSessions(
+                userIds,
+                SessionMessageType.LibraryChanged,
+                () => new
+                {
+                    ItemsAdded = Array.Empty<string>(),
+                    ItemsUpdated = Array.Empty<string>(),
+                    ItemsRemoved = Array.Empty<string>(),
+                    CollectionFolders = markers,
+                    FoldersAddedTo = Array.Empty<string>(),
+                    FoldersRemovedFrom = Array.Empty<string>(),
+                    IsEmpty = true
+                },
+                CancellationToken.None).ConfigureAwait(false);
+            return userIds.Count;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to broadcast WebSocket update");
+            return 0;
+        }
+    }
 
     /// <summary>
     /// Moves one entry of a user's playlist to a new position, in-process.
