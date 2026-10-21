@@ -185,7 +185,7 @@ def _build() -> dict:
         out[slug] = {
             "slug": slug, "city": label_city, "region": region, "country": country,
             "country_name": _COUNTRY_NAMES.get(country, country), "time_zone": tz,
-            "label": f"{label_city}, {region}", "words": words, "tiers": tiers,
+            "label": f"{label_city}, {code}", "words": words, "tiers": tiers,
         }
     return out
 

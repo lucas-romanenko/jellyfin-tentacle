@@ -66,7 +66,8 @@ class Places(unittest.TestCase):
         self.assertEqual(["VANCOUVER", "BRITISH COLUMBIA"], v[:2])
         self.assertLess(v.index("VICTORIA"), v.index("SEATTLE"))
         self.assertLess(v.index("SEATTLE"), v.index("PACIFIC"))
-        self.assertEqual("Vancouver, British Columbia", P.get("vancouver")["label"])
+        self.assertEqual("Vancouver, BC", P.get("vancouver")["label"])
+        self.assertEqual("British Columbia", P.get("vancouver")["region"])
         t = P.get("toronto")["words"]
         self.assertLess(t.index("ONTARIO"), t.index("BUFFALO"))
         self.assertLess(t.index("BUFFALO"), t.index("DETROIT"))   # Buffalo for US networks
@@ -308,6 +309,8 @@ class Sync(Case):
         # Programmes carry the place tags too (the plugin copies the channel's)
         ctv_van = self.ids()[f"n{self.net(1)}@vancouver"]
         self.assertIn("tentacle-notlocal-toronto", self.jf.channels[ctv_van]["Tags"])
+        self.assertIn("tentacle-notlocal-toronto", self.jf.programme_tags[ctv_van])
+        self.assertIn("tentacle-notlocal-vancouver", self.jf.programme_tags[self.ids()[f"n{self.net(1)}"]])
 
     def test_favourites_follow_a_change_of_place(self):
         self.move(self.ann, "vancouver")

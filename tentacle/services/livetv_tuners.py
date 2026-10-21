@@ -793,6 +793,12 @@ def sync(db, refresh: bool = False) -> dict:
         refresh_and_wait(db, jf)
         tags_in_use = tags_on_channels(jf)
         done["policies"] += apply_policies(db, jf, people, tags_in_use)
+    elif places_change and places_ready and done["refreshed"]:
+        # A place's channels are new to Jellyfin in this refresh and got their
+        # places' tags after it: one more refresh gives their programmes the
+        # tags (the plugin copies a channel's), so programme lists ("On now",
+        # search) count only one's own place. Who sees what is right already.
+        refresh_and_wait(db, jf)
     return done
 
 

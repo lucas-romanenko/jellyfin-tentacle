@@ -336,7 +336,8 @@ def set_location(db: Session, user: TentacleUser, location: Optional[str]) -> di
         raise FamilyError("Unknown place.")
     owner = (db.query(TentacleUser).filter(TentacleUser.is_admin == True)  # noqa: E712
              .order_by(TentacleUser.id).first())
-    if owner is not None and owner.id == user.id:
+    household = owner is not None and owner.id == user.id
+    if household:
         # The household's place: kept as the admin's own, never "none".
         slug = slug or livetv_locations.household(db)
     elif slug == livetv_locations.household(db):
@@ -347,7 +348,9 @@ def set_location(db: Session, user: TentacleUser, location: Optional[str]) -> di
     db.commit()
     where = livetv_locations.public(livetv_locations.of_person(db, user))
     logger.info(f"[Family] {user.display_name} watches Live TV from {where['label'] if where else 'the household'}")
-    livetv_tuners.schedule_sync(f"{user.display_name}'s place", delay=1)
+    # The household's place chooses every network's default variant (and so
+    # its guide): Jellyfin reads the guide again then.
+    livetv_tuners.schedule_sync(f"{user.display_name}'s place", refresh=household, delay=1)
     return person(db, user)
 
 
