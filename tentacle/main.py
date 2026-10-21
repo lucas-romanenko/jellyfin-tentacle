@@ -363,6 +363,18 @@ def _run_scheduled_sync():
         try:
             from models.database import TentacleUser
             from services.smartlists import sync_smartlists, write_home_config, migrate_global_smartlists_to_user, refresh_smartlist_playlists
+            # Nobody's playlists are rebuilt for an account deleted in Jellyfin.
+            try:
+                from services import gone_people
+                from services.livetv_tuners import jellyfin_for
+                jf = jellyfin_for(db)
+                if jf is not None:
+                    forgot = gone_people.forget_gone(db, jf.get("/Users") or [])
+                    if forgot:
+                        logger.info(f"[Nightly] Forgot {len(forgot)} person(s) no longer in Jellyfin: {', '.join(forgot)}")
+            except Exception as e:
+                _rollback(db)
+                logger.warning(f"[Nightly] Checking for people removed from Jellyfin failed: {e}")
             users = db.query(TentacleUser).all()
             for user in users:
                 try:
@@ -822,8 +834,13 @@ async def lifespan(app: FastAPI):
     setup_sse_logging()
 
     scheduler.start()
+    # Live TV: the background stream checker (one channel at a time, only
+    # while nobody watches or records; any stream open pre-empts it).
+    from services import livetv_checker
+    livetv_checker.start()
     logger.info("Tentacle ready")
     yield
+    livetv_checker.stop()
     scheduler.shutdown(wait=False)
     logger.info("Tentacle shutting down")
 
@@ -897,6 +914,13 @@ app.include_router(activity_router.router)
 app.include_router(livetv_router.router)
 from routers import my_livetv as my_livetv_router
 app.include_router(my_livetv_router.router)
+from routers import livetv_checker as livetv_checker_router
+app.include_router(livetv_checker_router.router)
+from routers import livetv_catalog as livetv_catalog_router
+app.include_router(livetv_catalog_router.router)
+app.include_router(livetv_catalog_router.stream_router)
+from routers import provider_new as provider_new_router
+app.include_router(provider_new_router.router)
 from routers import family as family_router
 app.include_router(family_router.router)
 app.include_router(family_router.tv_router)

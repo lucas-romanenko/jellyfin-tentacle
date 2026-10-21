@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from models.database import TentacleUser, get_db
 from routers.auth import get_user_from_request, require_admin
-from services import admin_alerts, approvals, family as F, livetv_lineups as L, tv_app
+from services import admin_alerts, approvals, family as F, gone_people, livetv_lineups as L, tv_app
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -67,6 +67,7 @@ def people(db: Session = Depends(get_db)):
     except requests.RequestException:
         raise HTTPException(502, "Jellyfin can't be reached right now.")
     _ensure_rows(db, jf_users)
+    gone_people.forget_gone(db, jf_users)
     by_id = {L.norm_user_id(u["Id"]): u for u in jf_users if u.get("Id")}
     try:
         devices = (jf.get("/Devices") or {}).get("Items") or []
@@ -76,6 +77,9 @@ def people(db: Session = Depends(get_db)):
     newest = tv_app.latest()
     owner = db.query(TentacleUser).order_by(TentacleUser.id).first()
     out = []
+    pool = L.pool(db)
+    lineup = L.lineup(db, pool)
+    from routers.my_livetv import _favourites
     for row in db.query(TentacleUser).order_by(TentacleUser.display_name).all():
         jf_user = by_id.get(row.jellyfin_user_id)
         if jf_user is None:
@@ -90,15 +94,18 @@ def people(db: Session = Depends(get_db)):
                                                          and tv_app.version_key(tv) >= tv_app.version_key(newest["version"]))}
         p["last_active"] = jf_user.get("LastActivityDate")
         p["image_tag"] = jf_user.get("PrimaryImageTag")
-        p["has_own_channels"] = L.has_own_list(db, row.jellyfin_user_id)
+        # Favourite channels (one lineup for everyone); None when Jellyfin can't say.
+        favs = None if row.kids_level else _favourites(db, row.jellyfin_user_id, lineup)
+        p["favourite_count"] = len(favs) if favs is not None else None
         out.append(p)
     kids_keys = F.kids_channels(db)
-    names = {c["key"]: c["name"] for c in L.pool(db)}
+    names = {c["key"]: c["name"] for c in pool}
     return {
         "people": out,
         "defaults": F.defaults(db),
         "kids_levels": [{"id": k, **v} for k, v in F.KIDS_LEVELS.items()],
         "kids_channels": len(kids_keys),
+        "pool_channels": len(lineup),
         "kids_channel_names": [names[k] for k in kids_keys[:6] if k in names],
         "quick_connect": F.quick_connect_enabled(db),
         "addresses": F.addresses(db),

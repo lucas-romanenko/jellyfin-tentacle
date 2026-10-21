@@ -152,6 +152,13 @@ class ProviderCategory(Base):
     # to hold titles. title_count keeps its last non-zero value throughout, so a
     # multi-night outage can't be mistaken for a genuinely emptied category.
     consecutive_empty_syncs = Column(Integer, default=0)
+    # New from the provider (services/provider_new.py): review_state "new" /
+    # "dismissed" / "reviewed" (NULL = there before reviews existed, or part
+    # of the provider's first setup), when it first appeared and when the
+    # admin dismissed or reviewed it.
+    review_state = Column(String, nullable=True)
+    first_seen_at = Column(DateTime, nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
 
     provider = relationship("Provider", back_populates="categories")
     snapshots = relationship("CategorySnapshot", back_populates="category", cascade="all, delete-orphan")
@@ -899,6 +906,14 @@ class LiveChannel(Base):
     enabled = Column(Boolean, default=False)  # User must enable channels
     sort_order = Column(Integer, default=0)
 
+    # The background stream checker (services/livetv_checker.py): "works" /
+    # "broken" (two failed checks in a row) / NULL = not checked yet; when it
+    # last got a verdict (UTC), failed checks in a row, and the last outcome.
+    check_state = Column(String, nullable=True)
+    check_at = Column(DateTime, nullable=True)
+    check_fails = Column(Integer, nullable=True)
+    check_detail = Column(String, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -940,6 +955,16 @@ class LiveChannelGroup(Base):
     category_id = Column(String, nullable=True)  # Provider's internal category ID
     enabled = Column(Boolean, default=False)  # Enable/disable entire group
     channel_count = Column(Integer, default=0)
+    # New from the provider (services/provider_new.py): review_state "new" /
+    # "dismissed" / "reviewed" (NULL = there before reviews existed, or part
+    # of the provider's first setup), first_seen_at, reviewed_at, looked_at
+    # (the admin ticked it to look at its channels: the checker tries them
+    # first) and channels_read_at (its channels last read from the provider).
+    review_state = Column(String, nullable=True)
+    first_seen_at = Column(DateTime, nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    looked_at = Column(DateTime, nullable=True)
+    channels_read_at = Column(DateTime, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("provider_id", "name", name="uq_live_group"),
@@ -977,6 +1002,61 @@ class LiveUserChannel(Base):
     __table_args__ = (
         UniqueConstraint("jellyfin_user_id", "channel_key", name="uq_live_user_channel"),
     )
+
+
+class LiveNetwork(Base):
+    """One network the provider lists many times (per city, quality or time
+    zone feed): one pool entry, key "n<id>", streaming the variant the admin
+    chose (services/livetv_catalog.py). Kept when it empties, so its key and
+    Jellyfin channel stay the same if its channels come back."""
+    __tablename__ = "live_networks"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, nullable=False)
+    # What the channels' names reduce to (services/livetv_names.fold_key);
+    # NULL for a network the admin made by merging.
+    fold_key = Column(String, nullable=True, index=True)
+    # The admin's choice of variant; NULL = the default (auto_channel_id).
+    chosen_channel_id = Column(Integer, ForeignKey("live_channels.id", ondelete="SET NULL"), nullable=True)
+    # The default variant, chosen at every refresh.
+    auto_channel_id = Column(Integer, ForeignKey("live_channels.id", ondelete="SET NULL"), nullable=True)
+    # Merged into another network: its channels and key went there.
+    merged_into = Column(Integer, ForeignKey("live_networks.id", ondelete="SET NULL"), nullable=True)
+    name_set = Column(Boolean, default=False)    # the admin named it: refreshes keep the name
+    excluded = Column(Boolean, default=False)    # the admin took it out of the pool
+    dissolved = Column(Boolean, default=False)   # split up: never folded again
+    types = Column(String, nullable=True)        # comma-separated, the admin's (NULL = automatic)
+
+
+class LiveChannelCatalog(Base):
+    """A channel's place in the catalog: the network it folds into (NULL =
+    on its own)."""
+    __tablename__ = "live_channel_catalog"
+    channel_id = Column(Integer, ForeignKey("live_channels.id", ondelete="CASCADE"), primary_key=True)
+    network_id = Column(Integer, ForeignKey("live_networks.id", ondelete="SET NULL"), nullable=True, index=True)
+    pinned = Column(Boolean, default=False)      # the admin split or merged it: folding leaves it where it is
+    types = Column(String, nullable=True)        # comma-separated, the admin's (NULL = automatic)
+    # The pool key it was last served under, so a change leaves an alias
+    # (NULL = never served under another key than c<channel_id>).
+    pool_key = Column(String, nullable=True)
+
+
+class LiveKeyAlias(Base):
+    """A pool key that stopped being one (folded, merged, split) and the key
+    it became: people's lists, favourites and recordings follow it."""
+    __tablename__ = "live_key_aliases"
+    old_key = Column(String, primary_key=True)
+    new_key = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class LivePoolArrival(Base):
+    """Every key the pool has had and when it joined (services/livetv_catalog.py
+    _mark_new): My channels marks the ones that joined lately New. added_at
+    is NULL for the keys there when the record started, and for a key that
+    took over a known one (folding)."""
+    __tablename__ = "live_pool_arrivals"
+    key = Column(String, primary_key=True)
+    added_at = Column(DateTime, nullable=True)
 
 
 class EPGProgram(Base):
@@ -1251,6 +1331,7 @@ def _migrate_columns():
             _backfill_default(cursor, conn, table_name, col)
 
     _migrate_list_items_key(conn)
+    _migrate_live_catalog_data(conn)
     _drop_retired_tables(cursor, conn)
     _reset_guessed_made_for_kids(cursor, conn)
     conn.close()
@@ -1382,6 +1463,76 @@ def _migrate_list_items_key(conn):
     except sqlite3.Error as e:
         conn.rollback()
         logger.error(f"[migrate] Could not rebuild list_items with a key per film/show: {e}")
+
+
+# What the first Live TV catalog build (Plan B) kept in a JSON `data` column,
+# and the plain column each value moved to: {table: {key: (column, kind)}}.
+_LIVE_CATALOG_DATA = {
+    "live_networks": {"name_set": ("name_set", "bool"), "auto_channel_id": ("auto_channel_id", "int"),
+                      "excluded": ("excluded", "bool"), "dissolved": ("dissolved", "bool"),
+                      "types": ("types", "list")},
+    "live_channel_catalog": {"pinned": ("pinned", "bool"), "types": ("types", "list"),
+                             "key": ("pool_key", "str")},
+    "live_key_aliases": {"at": ("created_at", "datetime")},
+}
+
+
+def _live_catalog_value(value, kind):
+    if value is None:
+        return None
+    if kind == "bool":
+        return 1 if value else 0
+    if kind == "int":
+        return int(value)
+    if kind == "list":
+        return ",".join(str(v) for v in value) or None
+    if kind == "datetime":
+        return datetime.fromisoformat(str(value)).strftime("%Y-%m-%d %H:%M:%S.%f")
+    return str(value)
+
+
+def _migrate_live_catalog_data(conn):
+    """Move the Live TV catalog's JSON `data` values into plain columns.
+
+    The first catalog build kept its flags, default variant, types, last
+    pool key and alias times in a JSON `data` column per row. The generic
+    pass has added the plain columns by now; each table's values are copied
+    and its `data` column dropped in one transaction, so a table that still
+    has `data` is one not migrated yet. A key this code doesn't know keeps
+    the column (nothing is lost) and is logged.
+    """
+    import json
+    cursor = conn.cursor()
+    for table, keys in _LIVE_CATALOG_DATA.items():
+        cols = _existing_columns(cursor, table)
+        if "data" not in cols:
+            continue  # migrated, a fresh install, or no table yet
+        pk = [c.name for c in Base.metadata.tables[table].primary_key.columns][0]
+        conn.commit()
+        try:
+            cursor.execute("BEGIN IMMEDIATE")
+            rows = cursor.execute(f"SELECT {pk}, data FROM {table} WHERE data IS NOT NULL").fetchall()
+            unknown, copied = set(), 0
+            for row_id, raw in rows:
+                d = json.loads(raw) if isinstance(raw, str) else (raw or {})
+                d = d if isinstance(d, dict) else {}
+                unknown |= set(d) - set(keys)
+                values = {col: _live_catalog_value(d.get(k), kind) for k, (col, kind) in keys.items() if k in d}
+                if values:
+                    sets = ", ".join(f"{c} = ?" for c in values)
+                    cursor.execute(f"UPDATE {table} SET {sets} WHERE {pk} = ?", (*values.values(), row_id))
+                    copied += 1
+            if unknown:
+                conn.commit()
+                logger.error(f"[migrate] {table}.data holds keys with no column ({', '.join(sorted(unknown))}): "
+                             f"values copied, data kept")
+                continue
+            cursor.execute(f"ALTER TABLE {table} DROP COLUMN data")
+            conn.commit()
+            logger.info(f"[migrate] {table}: moved data into plain columns ({copied} row(s))")
+        except (sqlite3.Error, ValueError, TypeError) as e:
+            conn.rollback()
+            logger.error(f"[migrate] Could not move {table}.data into plain columns: {e}")
 
 
 def _migrate_home_row_order(cursor, conn):

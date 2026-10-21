@@ -1,29 +1,49 @@
 # Live TV
 
-Tentacle is the tuner for Jellyfin's Live TV: add your IPTV provider and get live channels with a full TV guide inside Jellyfin, without tools like Threadfin. Everyone in the household gets their own channel list.
+Tentacle is the tuner for Jellyfin's Live TV: add your IPTV provider and get live channels with a full TV guide inside Jellyfin, without tools like Threadfin. The household has one lineup, chosen by the admin; everyone stars their own favourites.
 
 ## How It Works
 
-1. An admin adds the IPTV provider in Tentacle (**Sources → IPTV providers**) and switches on the **channel groups** the household should have. Those channels are what everyone can watch.
-2. Everyone else sees channels only, never the provider's groups. Under **My Channels** in Tentacle (signed in with their Jellyfin login), each person picks **All channels** or **My own list**: the channels they want, in their order, with their own favourites.
-3. Tentacle sets Live TV up in Jellyfin itself: one tuner for everyone on All channels, one per person with a list of their own, and the TV guide for all of them. Nobody adds a tuner by hand.
-4. In every Jellyfin app (the web, the TV app, phones) each person sees only their own channels: the guide, the channel list, search, "On now" and their numbers (1, 2, 3... in the order they chose).
+1. An admin adds the IPTV provider in Tentacle (**Sources → IPTV providers**) and switches on the **channel groups** the household should have. Those channels are the household's lineup. The same network listed for many cities or qualities ("NBC Buffalo", "NBC Boston", "NBC HD"…) shows once, as "NBC" (see [The channels people pick from](#the-channels-people-pick-from)).
+2. Everyone else sees channels only, never the provider's groups. Under **My Channels** in Tentacle (signed in with their Jellyfin login), each person stars their favourites, a whole type at once (Sports, News, Local…) or one channel at a time.
+3. Tentacle sets Live TV up in Jellyfin itself: one tuner with the lineup (numbered 1, 2, 3… in the admin's order) and one TV guide. Nobody adds a tuner by hand.
+4. Favourites are Jellyfin's own, per person, so every Jellyfin app (the web, the TV app, phones) shows each person theirs. Kids profiles see only the kids channels an admin picked.
 
 ```
-Jellyfin  ←→  one M3U tuner per list  ←→  Tentacle  ←→  IPTV Provider
-              + Tentacle's TV guide        (stream proxy)
+Jellyfin  ←→  one M3U tuner (the lineup) ←→  Tentacle  ←→  IPTV Provider
+              + Tentacle's TV guide          (stream proxy)
 ```
 
 Two people watching the same channel use one connection to the provider. Recordings and recording schedules are the household's, like a family recorder: everyone sees them.
+
+## Watching: the guide
+
+In Jellyfin's web app, **Live TV** opens straight to Tentacle's guide:
+
+- **Favorites / All** at the top: Favorites is the guide with only your favourite channels, All is every channel you can see. It remembers your choice (on every browser you sign in to). With no favourites yet it says how to star one and offers All.
+- **☆** next to a channel stars it (or unstars it); **Find a channel** searches by name or number.
+- **Dates** run from today to the last day the TV guide has programmes for, so there are no empty days to tap through (a guide with one day of data shows no dates at all).
+- A line marks **now**; what's on now is highlighted with how far in it is. Tap a channel or what's on now to watch; tap a later programme to see it and record it. **Recordings** and **Schedule** are next to the search.
+
+It stays quick with thousands of channels and works on a phone. (Jellyfin's TV layout keeps Jellyfin's own guide.)
 
 ## My Channels
 
 Everyone (admins too) has **My Channels** in Tentacle's sidebar once the household has Live TV channels.
 
-- **All channels** (where everyone starts): everything the household has, in the admin's order. Star the channels you watch most: they come first in Jellyfin's guide.
-- **My own list**: search and **+ Add** the channels you watch, drag them (or use the arrows) into the order you like (that is their numbers), star your favourites, and **✕** removes one. Switching to your own list the first time starts it with your favourites. Switching back to All channels keeps your list for later.
+Everyone has the same channels; what you choose there is your favourites. Favourites are Jellyfin's, so every app shows them, and the guide can show just them. The page has three parts:
 
-Changes save by themselves, and your TV and apps show them about a minute later. Favourites carry over when you switch between the two.
+- **Quick picks**: Sports, News, Movies, Kids, Entertainment, Local, and the other types the channels have (Documentary, Lifestyle, Music, Religious). Each stars that type's best-known channels, at most 25 (folded networks, with a guide, that work, in your country first), and says how many; every other channel of the type is under **All channels** (its type filter). Once on it says "★ Sports · 25 starred"; tap it again to unstar them (a channel another pick that is on covers too stays starred). Sports + News + Local is about 70 favourites.
+- **My favourites**: the channels you starred, in the lineup's order; **☆** unstars one.
+- **All channels**: the whole lineup, with a search and a type filter; **☆** stars a channel. Each channel says whether it has a guide (**Guide ✓** / **No guide**) and whether it works (**✓ Works (checked 2 h ago)**, **✗ Not working**, **Not checked yet**: see [Stream checker](#stream-checker)); channels that don't work are at the bottom. Event and PPV channels show the event and its time ("▶ Leafs vs Bruins · Today 7:00 PM"); event slots with nothing on aren't in the lineup.
+
+A new person can have a short list of favourites in under a minute: tap **Sports**, **News** and **Local**, unstar the few they don't want, done. They start with the favourites of the person the admin chose for new people (see [Multi-user](multi-user.md)), or none.
+
+Kids profiles see only the kids channels an admin picked, and can star them.
+
+On a phone, **My favourites** and **All channels** are two tabs under the quick picks.
+
+Stars save by themselves and show in Jellyfin at once.
 
 ## Adding a Provider
 
@@ -71,9 +91,28 @@ Toggle on the groups you want, then click **Save & Sync Channels**. Only channel
 
 You can enable or disable multiple groups at once, or filter groups by keyword to quickly find what you need.
 
-## Channels
+## The channels people pick from
 
-After syncing channels, the **Channels** tab lets you:
+**Sources → Live TV → Channels** shows the household's lineup: the channels of the groups switched on, with the same network in different places or qualities folded into one entry.
+
+- **Networks.** "US: NBC 4 (WDIV) DETROIT", "NBC (KNBC) LOS ANGELES" and "NBC HD" are one network, **NBC**, shown as "NBC · from US: NBC 4 (WDIV) DETROIT · 16 versions". People only ever see "NBC". The dropdown on its row chooses which version feeds it; each version is listed with its guide and works marks, working ones first. Tentacle chooses one by itself (one that works, then your region, then one with a guide); changing it later keeps everyone's favourites and recordings on the channel. Different channels of a network (NBC Sports, NBC News, NBC Golf) stay separate.
+- **Your region** (at the bottom, e.g. `CA: Toronto, Ontario, Buffalo`) is what Tentacle prefers when it chooses a version by itself. Empty: the server's time zone.
+- **Edit** on a row: correct the channel's types (the quick picks people see; **Automatic types** goes back to Tentacle's), and for a network see every version, **Split ticked ones off** (a wrong fold) or **Undo this fold**, and **Rename** it.
+- **Merge selected**: tick two or more rows that are really one network (a missed fold) and merge them.
+- The switch on a row takes a channel out of what people pick from (a single channel is switched off; switch it on again in **Provider list**). A network taken out is listed under **Show: Taken out**, with **Put back**.
+- **Guide ✓ / No guide** and **✓ Works / ✗ Not working / Not checked yet** are on every row; **Show** filters to networks, channels that don't work, channels without a guide, or event slots with nothing on (which people don't see).
+
+### Stream checker
+
+The line above the list is the stream checker: in the background Tentacle opens each channel for a few seconds to see whether it works, one channel at a time and only while nobody watches or records (it stops the moment anyone starts), spread over the day. It shows what it is doing and how many channels work, don't work, or haven't been checked yet.
+
+### Event and PPV channels
+
+Many event channels have no guide of their own but carry the event in their name ("NHL: Toronto Maple Leafs @ 7:00 PM", "PPV 3: UFC 300 - 10/22 8PM ET"). Tentacle reads the title and time from the name and puts it in the TV guide, so Jellyfin's guide shows what's on. Event slots with no event in the name show **No event** and are left out of the lineup until the provider names an event in them.
+
+## Provider list
+
+**Sources → Live TV → Provider list** is every channel of the groups switched on, as the provider lists them. It lets you:
 
 - **Enable/disable** individual channels (then click **Save Channels**)
 - **Rename** a channel as Jellyfin's guide shows it
@@ -81,7 +120,7 @@ After syncing channels, the **Channels** tab lets you:
 
 ### Stable channels
 
-Jellyfin knows each channel by the tuner's address and the channel's stream address in Tentacle, never by its number. So numbers can change freely (each person's list is numbered 1, 2, 3... in their order) while favourites and recordings stay with the channel.
+Jellyfin knows each channel by the tuner's address and the channel's stream address in Tentacle, never by its number. So numbers can change freely (the lineup is numbered 1, 2, 3... in the admin's order) while favourites and recordings stay with the channel.
 
 ## EPG (Electronic Program Guide)
 
@@ -90,7 +129,7 @@ Tentacle downloads XMLTV guide data from your provider and stores it in the data
 ### EPG Refresh
 
 - **Automatic** — EPG syncs automatically after channel sync (auto-chaining)
-- **Manual** — Click **Sync EPG** on the Channels tab to refresh guide data
+- **Manual** — Click **Update TV guide** under **Provider list** to refresh guide data
 - **Cache** — EPG data is cached on disk for 8 hours to avoid repeated downloads
 
 ### Shared EPG IDs
@@ -99,9 +138,12 @@ Multiple channels can share the same EPG data (e.g., an HD channel and its backu
 
 ## Connecting to Jellyfin
 
-There is nothing to set up in Jellyfin. Once Tentacle is connected to Jellyfin (the setup wizard, or **Settings → Services**) and a provider has Live TV channels, Tentacle adds the tuners and the TV guide to Jellyfin itself within a few minutes, and keeps them in line: whenever someone changes their channels, when the admin switches groups or channels on or off, and every hour (which also catches people added in Jellyfin). **Sources → Live TV → In Jellyfin** shows when it last did so, and **Set up again now** runs it at once. **People** on the same page shows who uses All channels and who has a list of their own.
+There is nothing to set up in Jellyfin. Once Tentacle is connected to Jellyfin (the setup wizard, or **Settings → Services**) and a provider has Live TV channels, Tentacle adds the tuner and the TV guide to Jellyfin itself within a few minutes, and keeps them in line: when the admin switches groups or channels on or off, when the kids channels change, and every hour (which also catches people added in Jellyfin). **Sources → Live TV → In Jellyfin** shows when it last did so, and **Set up again now** runs it at once. **People** on the same page shows how many favourites each person has.
 
-Each person's channels are tagged in Jellyfin and everyone else's are blocked for them (Jellyfin's per-user "blocked tags"). Tentacle manages only its own tags: blocked tags an admin set by hand are kept.
+Kids channels are tagged in Jellyfin and every other channel is blocked for kids profiles (Jellyfin's per-user "blocked tags"); a channel new to the lineup is blocked for kids until an admin makes it a kids channel. Tentacle manages only its own tags: blocked tags an admin set by hand are kept.
+
+!!! info "Why one lineup"
+    Earlier versions could give each person their own tuner. Jellyfin's guide refresh slows down sharply with several M3U tuners (7 people × 1,734 channels: over an hour per refresh, against about 2 minutes for one lineup of 5,669), so there is one lineup and everyone's favourites. A server that had per-person tuners or the shared "All channels" tuner is moved by itself: everyone's favourites and recording schedules go to the lineup, then the per-person tuners are removed.
 
 !!! info "Coming from an earlier version"
     An install that used Tentacle as an HDHomeRun tuner (or an M3U tuner on `/api/live/playlist.m3u`) is moved by itself: everyone's favourite channels and the recording schedules go to the new tuner, then the old tuner is removed from Jellyfin. Channel numbers become 1, 2, 3... Before any change, Tentacle saves what Jellyfin had (tuners, favourites, schedules, blocked tags) to `livetv-backups/` in its data folder.
@@ -131,11 +173,10 @@ Tentacle gives these to Jellyfin itself:
 
 | Endpoint | Purpose |
 |----------|---------|
-| `/api/live/tuner/all.m3u` | The shared tuner: every channel |
-| `/api/live/users/<jellyfin user id>/tuner.m3u` | One person's own list |
+| `/api/live/tuner/all.m3u` | The household's lineup (the tuner) |
 | `/api/live/xmltv.xml` | XMLTV guide data |
 
-The HDHomeRun endpoints (`/hdhr/discover.json`, `/hdhr/lineup.json`, `/hdhr/device.xml`) and `/api/live/playlist.m3u` are still served for anything set up by hand, but carry every channel and know nothing of people.
+The HDHomeRun endpoints (`/hdhr/discover.json`, `/hdhr/lineup.json`, `/hdhr/device.xml`) and `/api/live/playlist.m3u` are still served for anything set up by hand, but carry every channel without folding and know nothing of kids profiles.
 
 ## Troubleshooting
 

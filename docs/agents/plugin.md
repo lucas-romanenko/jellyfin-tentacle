@@ -52,6 +52,16 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   those pages, never on home. With tabs shown the JS also sets
   `body.tentacle-page-tabs`, and the CSS moves Jellyfin's tab bar and the
   page below Tentacle's header (`--tentacle-tabs-top`), so they never overlap.
+- **Live TV guide** (`tentacle-livetv.js`): replaces `#/livetv` with no tab,
+  tab 0 and tab 1 (Programs, Guide); Channels, Recordings, Schedule and
+  Series stay native. Favorites / All is saved in Jellyfin display
+  preferences (`tentacle-livetv`, client `tentacle`, `CustomPrefs.guideView`
+  = `favorites`/`all`, the TV app can share it). Date strip = today to the
+  day of the furthest programme end (`POST LiveTv/Programs`, StartDate
+  descending, Limit 1; Favorites: their channel ids). One `LiveTv/Channels`
+  request for the list; rows are virtualized; programmes per day for the
+  visible rows, 100 channels per `POST LiveTv/Programs`. Programme cells use
+  `overflow: clip`, not hidden (hidden stops the sticky title).
 - **Libraries list**: a fixed element on `<body>` (the pill's
   backdrop-filter breaks `position: fixed` inside it), so it must be given a
   top/left on every width, phones included, or it opens far below the

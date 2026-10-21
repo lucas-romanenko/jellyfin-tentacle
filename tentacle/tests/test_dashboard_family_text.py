@@ -44,7 +44,7 @@ class FamilyTextIsEscaped(unittest.TestCase):
                          "bits.join(' and ')", "card.tv_app_address", "card.password", "card.jellyfin_address",
                          "d.tv_app.newest", "r.title", "r.requested_by", "p ? p.name : 'their'", "p ? p.name : 'Their'",
                          "r ? r.title : 'this'", "r ? r.requested_by : 'them'", "keys.length === 1 ? '' : 's'",
-                         "n === 1 ? '' : 's'", "name(d.channels_from)", "names.join(', ')",
+                         "n === 1 ? '' : 's'", "fromP.name", "home", "tv", "nfav(p.favourite_count || 0)", "names.join(', ')",
                          "d.kids_channels === 1 ? 'one channel' : d.kids_channels + ' channels'", "name(d.home_from)", "d.kids_channels === 1 ? '' : 's'", "r.episodes === 1 ? '' : 's'"}
         self.assertEqual([], sorted(set(raw) - allowed_plain))
 
@@ -57,8 +57,8 @@ class FamilyTextIsEscaped(unittest.TestCase):
     def test_plugin_escapes_what_people_typed(self):
         self.assertIn("esc(item.request.note)", DISCOVER)
         self.assertIn("esc(item.request.decided_by || 'Your admin')", DISCOVER)
-        self.assertIn("esc(LIVETV.notice)", LIVETV)
-        self.assertIn("n.textContent = LIVETV.notice", LIVETV)
+        self.assertIn("esc(G.notice)", LIVETV)
+        self.assertIn("n.textContent = G.notice", LIVETV)
 
 
 if __name__ == "__main__":

@@ -6,14 +6,14 @@ Everything here is the admin's, except signing one's own TV in.
 
 - **Invite:** the admin types a name; Tentacle makes the Jellyfin account
   with a readable password, starts the person on the household's defaults
-  (home screen like a chosen person, Live TV channels like a chosen person's
-  list) and gives back an invite card to pass on.
+  (home screen like a chosen person, Live TV favourites like a chosen
+  person's) and gives back an invite card to pass on.
 - **Kids profile:** one switch per person with an age level. It sets
   Jellyfin's own parental controls (MaxParentalRating, unrated items
-  blocked), and Live TV becomes the household's kids channels only (their
-  own tuner, Roadmap 1b), or none at all while no kids channels are picked.
-  The policy fields it changes and the person's channel choice are saved
-  first and put back when it's switched off.
+  blocked), and Live TV becomes the household's kids channels only (the
+  other channels of the one lineup are blocked by tag, Roadmap 1b), or none
+  at all while no kids channels are picked. The policy fields it changes
+  are saved first and put back when it's switched off.
 - **TV sign-in code:** the TV app shows a Quick Connect code; typing it in
   Tentacle signs that TV in as the person (Jellyfin's
   /QuickConnect/Authorize with userId, which Tentacle's admin key may do).
@@ -43,9 +43,13 @@ KIDS_LEVELS = {
     "kids": {"score": 10, "name": "Kids", "allows": "up to PG"},
     "teens": {"score": 14, "name": "Teens", "allows": "up to PG-13"},
 }
-# Unrated movies, shows and guide programmes are hidden from kids: about a
-# third of a typical VOD library has no rating, and "unknown" isn't "safe".
-KIDS_BLOCK_UNRATED = ["Movie", "Series", "LiveTvProgram", "Trailer"]
+# Unrated movies and shows are hidden from kids: about a third of a typical
+# VOD library has no rating, and "unknown" isn't "safe". Guide programmes
+# aren't: Tentacle's guide carries no ratings, so blocking them left kids an
+# empty guide, and their channels are the kids channels an admin picked.
+KIDS_BLOCK_UNRATED = ["Movie", "Series", "Trailer"]
+# What kids profiles blocked before (Oct 2026), taken off with them.
+_KIDS_BLOCKED_BEFORE = set(KIDS_BLOCK_UNRATED) | {"LiveTvProgram"}
 POLICY_FIELDS = ("MaxParentalRating", "MaxParentalSubRating", "BlockUnratedItems", "EnableLiveTvAccess")
 
 KIDS_CHANNELS_KEY = "livetv_kids_channels"   # JSON list of channel keys (livetv_lineups.pool)
@@ -170,15 +174,32 @@ def copy_home(db: Session, template: TentacleUser, user: TentacleUser) -> int:
     return len(rows)
 
 
+def starter_favourites(db: Session) -> Optional[TentacleUser]:
+    """Whose favourite channels new people start with (Family → "New people
+    start with"), None when nobody is chosen: then they start with no
+    favourites and the whole lineup."""
+    d = defaults(db)
+    if not d["channels_from"]:
+        return None
+    return db.query(TentacleUser).filter(TentacleUser.id == d["channels_from"]).first()
+
+
 def copy_channels(db: Session, template: TentacleUser, user: TentacleUser) -> int:
-    """Start `user` on `template`'s own channel list (nothing to copy when the
-    template uses all channels)."""
-    tid = L.norm_user_id(template.jellyfin_user_id)
-    if not L.has_own_list(db, tid):
+    """Start `user` with `template`'s favourite channels: there is one
+    lineup, so the same Jellyfin channels."""
+    from services import livetv_tuners as T
+    jf = T.jellyfin_for(db)
+    if jf is None:
         return 0
-    keys = L.own_keys(db, tid)
-    L.save_own_list(db, user.jellyfin_user_id, True, keys)
-    return len(keys)
+    try:
+        theirs = T.favourite_ids(jf, L.norm_user_id(template.jellyfin_user_id))
+        have = T.favourite_ids(jf, L.norm_user_id(user.jellyfin_user_id))
+        for item_id in theirs - have:
+            T.set_favourite(jf, L.norm_user_id(user.jellyfin_user_id), item_id, True)
+        return len(theirs - have)
+    except requests.RequestException as e:
+        logger.warning(f"[Family] {user.display_name}'s starting favourites not set: {e}")
+        return 0
 
 
 def start_new_person(user_id: int) -> None:
@@ -196,8 +217,11 @@ def start_new_person(user_id: int) -> None:
             home_t = db.query(TentacleUser).filter(TentacleUser.id == d["home_from"]).first() if d["home_from"] else None
             chan_t = db.query(TentacleUser).filter(TentacleUser.id == d["channels_from"]).first() if d["channels_from"] else None
             if chan_t is not None and chan_t.id != user.id and not user.kids_level:
-                if copy_channels(db, chan_t, user):
-                    livetv_tuners.schedule_sync(f"{user.display_name} joined", refresh=True)
+                n = copy_channels(db, chan_t, user)
+                logger.info(f"[Family] {user.display_name} starts with {chan_t.display_name}'s "
+                            f"{n} favourite channel(s)")
+            # Their blocked tags now (a kids profile), not at the hourly check.
+            livetv_tuners.schedule_sync(f"{user.display_name} joined")
             if home_t is not None and home_t.id != user.id:
                 n = copy_home(db, home_t, user)
                 logger.info(f"[Family] {user.display_name} starts with {home_t.display_name}'s home screen ({n} rows)")
@@ -303,7 +327,13 @@ def kids_channels(db: Session) -> list:
     except ValueError:
         keys = []
     known = {c["key"] for c in L.pool(db)}
-    return [k for k in keys if isinstance(k, str) and k in known]
+    return L.resolve_keys(db, [k for k in keys if isinstance(k, str)], known)
+
+
+def kids_blocked_tags(tags) -> list:
+    """BlockedTags with every channel that isn't a kids channel blocked."""
+    tags = list(tags or [])
+    return tags if L.ALL_TAG in tags else tags + [L.ALL_TAG]
 
 
 def kids_policy(policy: dict, level: str, live_tv: bool) -> dict:
@@ -313,6 +343,10 @@ def kids_policy(policy: dict, level: str, live_tv: bool) -> dict:
     p["MaxParentalSubRating"] = None
     p["BlockUnratedItems"] = sorted(set(p.get("BlockUnratedItems") or []) | set(KIDS_BLOCK_UNRATED))
     p["EnableLiveTvAccess"] = bool(live_tv)
+    if live_tv:
+        # Only the kids channels from the first moment, not once the Live TV
+        # sync gets to it (services/livetv_tuners.py keeps it so).
+        p["BlockedTags"] = kids_blocked_tags(p.get("BlockedTags"))
     p["EnableLiveTvManagement"] = False
     p["IsAdministrator"] = False
     return p
@@ -373,8 +407,6 @@ def set_kids(db: Session, user: TentacleUser, level: Optional[str]) -> dict:
         if not user.kids_saved_policy:
             saved = {k: policy.get(k) for k in POLICY_FIELDS}
             saved["EnableLiveTvManagement"] = policy.get("EnableLiveTvManagement")
-            row = L.lineup_row(db, uid)
-            saved["lineup"] = {"own_list": bool(row and row.own_list), "keys": L.own_keys(db, uid)}
             saved["request_mode"] = user.request_mode
             try:
                 saved["toolbar"] = _kids_toolbar(db, user, True)
@@ -387,8 +419,6 @@ def set_kids(db: Session, user: TentacleUser, level: Optional[str]) -> dict:
             jf.post(f"/Users/{dashed(uid)}/Policy", new)
         except requests.RequestException as e:
             raise _jf_error(e, "take the age limit")
-        if keys:
-            L.save_own_list(db, uid, True, keys)
         user.kids_level = level
         user.request_mode = "ask"
         db.commit()
@@ -401,20 +431,12 @@ def set_kids(db: Session, user: TentacleUser, level: Optional[str]) -> dict:
             saved = {}
         new = restored_policy(policy, saved) if saved else {
             **policy, "MaxParentalRating": None, "MaxParentalSubRating": None,
-            "BlockUnratedItems": [b for b in policy.get("BlockUnratedItems") or [] if b not in KIDS_BLOCK_UNRATED],
+            "BlockUnratedItems": [b for b in policy.get("BlockUnratedItems") or [] if b not in _KIDS_BLOCKED_BEFORE],
             "EnableLiveTvAccess": True}
         try:
             jf.post(f"/Users/{dashed(uid)}/Policy", new)
         except requests.RequestException as e:
             raise _jf_error(e, "lift the age limit")
-        lineup = saved.get("lineup") or {"own_list": False, "keys": []}
-        L.save_own_list(db, uid, bool(lineup.get("own_list")), lineup.get("keys") or [])
-        if not lineup.get("own_list"):
-            # save_own_list keeps the list when switching to all channels; put the old one back.
-            from models.database import LiveUserChannel
-            db.query(LiveUserChannel).filter(LiveUserChannel.jellyfin_user_id == uid).delete()
-            for pos, k in enumerate(lineup.get("keys") or []):
-                db.add(LiveUserChannel(jellyfin_user_id=uid, channel_key=k, position=pos))
         if saved.get("request_mode"):
             user.request_mode = saved["request_mode"]
         try:
@@ -426,7 +448,7 @@ def set_kids(db: Session, user: TentacleUser, level: Optional[str]) -> dict:
         db.commit()
         logger.info(f"[Family] Kids profile off for {user.display_name}")
     forget_visible(uid)
-    livetv_tuners.schedule_sync(f"kids profile for {user.display_name}", refresh=True)
+    livetv_tuners.schedule_sync(f"kids profile for {user.display_name}")
     return person(db, user)
 
 
@@ -447,16 +469,18 @@ def set_kids_channels(db: Session, keys: list) -> dict:
             uid = L.norm_user_id(kid.jellyfin_user_id)
             try:
                 policy = _policy(jf, kid)
-                if bool(policy.get("EnableLiveTvAccess")) != bool(ordered):
-                    jf.post(f"/Users/{dashed(uid)}/Policy", {**policy, "EnableLiveTvAccess": bool(ordered)})
+                new = {**policy, "EnableLiveTvAccess": bool(ordered)}
+                if ordered:
+                    new["BlockedTags"] = kids_blocked_tags(policy.get("BlockedTags"))
+                if new != policy:
+                    jf.post(f"/Users/{dashed(uid)}/Policy", new)
             except FamilyError as e:
                 logger.warning(f"[Family] Kids channels for {kid.display_name} not set: {e.message}")
                 continue
             except requests.RequestException as e:
                 logger.warning(f"[Family] Kids channels for {kid.display_name} not set: {e}")
                 continue
-            if ordered:
-                L.save_own_list(db, uid, True, ordered)
+        # The channels' tags follow; the refresh carries them onto programmes.
         livetv_tuners.schedule_sync("kids channels changed", refresh=True)
     return {"keys": ordered, "kids": len(kids)}
 

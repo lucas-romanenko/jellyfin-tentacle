@@ -233,7 +233,8 @@ when its turn comes, under `_sync_lock`: one deleted or switched off since
 the job started is skipped, #517); 3. Radarr
 scan; 4. Sonarr scan (and Following state for every series); 5. recently
 added tags; 6. Jellyfin pipeline (scan, push tags, refresh playlists);
-7. clean the TMDB cache; 8. `sweep_orphaned_downloads()`; 9. per user:
+7. clean the TMDB cache; 8. `sweep_orphaned_downloads()`; 9. forget people
+no longer in Jellyfin (`gone_people.forget_gone`), then per user:
 `migrate_global_smartlists_to_user()` (one-time), `sync_smartlists()`,
 `write_home_config()`; 10. playlist artwork; 11. `POST /Tentacle/Refresh` to
 clear the plugin's caches.

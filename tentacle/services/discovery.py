@@ -7,28 +7,25 @@ record what appeared so users get notified. Without this, new categories and
 groups only surface when the user manually hits refresh — which they might
 never do.
 
-Notification surfaces fed from here:
+What it feeds:
 - Activity feed events (new_categories / new_live_groups) — visible in the
   sync summary/feed
-- A persistent "new content available" notice (setting: new_content_notice)
-  shown as a dismissible dashboard banner, accumulating across nights until
-  the user dismisses it
+- New from your provider (services/provider_new.py): every group and
+  category a refresh creates is "new" until the admin reviews it, counted on
+  the sidebar's Sources. The channels of new Live TV groups are read here
+  (switched off), so the review shows their counts and the stream checker
+  can try them before the admin looks.
 """
 
-import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 
 from models.database import (
     Provider, ProviderCategory, LiveChannelGroup,
-    get_setting, set_setting, log_activity,
+    log_activity,
 )
 
 logger = logging.getLogger(__name__)
-
-# Cap the names stored in the notice — the banner shows a few examples, the
-# full list lives on the VOD / Live TV pages anyway.
-MAX_NOTICE_NAMES = 15
 
 
 def discover_new_provider_content(db) -> dict:
@@ -77,7 +74,18 @@ def discover_new_provider_content(db) -> dict:
 
     # ── Notify ───────────────────────────────────────────────────────────
     if result["vod_new"] or result["live_new"]:
-        _record_notice(db, result["vod_new"], result["live_new"])
+        _record_activity(db, result["vod_new"], result["live_new"])
+
+    # ── New groups' channels, for the review ─────────────────────────────
+    try:
+        from services import provider_new
+        todo = [g for g in provider_new._live_groups(db, {provider_new.NEW}) if not provider_new._fresh(g)]
+        if todo:
+            read = provider_new.read_channels(db, todo)
+            logger.info(f"[Discovery] Channels read for {read} new Live TV group(s)")
+    except Exception as e:
+        _rollback(db)
+        logger.warning(f"[Discovery] New groups' channels not read: {e}")
 
     return result
 
@@ -104,15 +112,17 @@ def _refresh_vod_categories(db, provider) -> list:
         (c.category_id, c.type)
         for c in db.query(ProviderCategory).filter(ProviderCategory.provider_id == provider.id).all()
     }
+    first_setup = not existing
 
     new_names = []
+    created = []
     for cat_type, cats, counts in [("movie", vod_cats, vod_counts), ("series", series_cats, series_counts)]:
         for cat in cats:
             cid = str(cat["category_id"])
             cname = cat["category_name"]
             if (cid, cat_type) in existing:
                 continue
-            db.add(ProviderCategory(
+            row = ProviderCategory(
                 provider_id=provider.id,
                 category_id=cid,
                 category_name=cname,
@@ -121,11 +131,15 @@ def _refresh_vod_categories(db, provider) -> list:
                 source_tag=detect_source_tag(cname),
                 title_count=counts.get(cid, 0),
                 last_seen=datetime.utcnow(),
-            ))
+            )
+            db.add(row)
+            created.append(row)
             existing.add((cid, cat_type))
             new_names.append(cname)
 
     if new_names:
+        from services import provider_new
+        provider_new.note_created(db, created, first_setup)
         db.commit()
     return new_names
 
@@ -160,26 +174,9 @@ def _refresh_live_groups(db, provider) -> list:
     return sorted(after - before)
 
 
-def _record_notice(db, vod_new: list, live_new: list):
-    """Append to the persistent new-content notice + emit activity events."""
-    try:
-        notice = json.loads(get_setting(db, "new_content_notice", "") or "{}")
-    except Exception:
-        notice = {}
-
-    vod = list(dict.fromkeys((notice.get("vod") or []) + vod_new))[:MAX_NOTICE_NAMES]
-    live = list(dict.fromkeys((notice.get("live") or []) + live_new))[:MAX_NOTICE_NAMES]
-    vod_total = (notice.get("vod_total") or 0) + len(vod_new)
-    live_total = (notice.get("live_total") or 0) + len(live_new)
-
-    set_setting(db, "new_content_notice", json.dumps({
-        "vod": vod,
-        "live": live,
-        "vod_total": vod_total,
-        "live_total": live_total,
-        "detected_at": datetime.now(timezone.utc).isoformat(),
-    }))
-
+def _record_activity(db, vod_new: list, live_new: list):
+    """Activity events for what appeared (the review itself is
+    services/provider_new.py)."""
     if vod_new:
         names = ", ".join(vod_new[:3]) + (f" and {len(vod_new) - 3} more" if len(vod_new) > 3 else "")
         log_activity(db, "new_categories",

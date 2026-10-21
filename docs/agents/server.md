@@ -104,20 +104,33 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
 - People (admins): every Jellyfin account gets a `TentacleUser` row when
   People is opened (`_ensure_rows`; a new row starts on the defaults as at a
   first sign-in). Settings → Users is People now (old links redirect).
+- Gone people (`services/gone_people.py`): a row whose account Jellyfin's
+  `/Users` no longer lists is forgotten when People is opened and at the
+  start of the nightly per-user step: its per-person rows (list
+  subscriptions and their items, tag rules, row order, toggles,
+  notifications, download and media requests, music imports,
+  `live_user_lineups`/`live_user_channels`), `smartlists/<id>/`,
+  `home-configs/<id>.json` and its backups, `family_defaults` naming them,
+  and the token/home-version caches. Never the owner or `jellyfin_user_id`,
+  never on an empty list. Their Jellyfin playlists are Jellyfin's: its
+  `DELETE /Users/{id}` removes them (`RemovePlaylistsAsync`).
 - Invite: `POST /Users/New {Name, Password}` with a readable password
   (`make_password`), the row is made at once (`invited_by`, `request_mode`),
   then `start_new_person` in the background: the defaults (`family_defaults`
-  setting: whose home screen and whose own channel list to copy;
+  setting: whose home screen and whose channels to copy (the starter
+  favourites, `family.copy_channels` copies the chosen person's Jellyfin
+  favourites; none chosen = no favourites, said on the invite screen);
   `copy_home` copies the auto-playlist toggles, builds the playlists, then
   maps the template's rows by playlist name and leaves out the template's
   personal ones), else the usual new-user playlists.
 - Kids profile (`kids_level` young/kids/teens = Jellyfin scores 7/10/14):
-  MaxParentalRating, BlockUnratedItems += Movie, Series, LiveTvProgram,
-  Trailer; Live TV = the household's kids channels (`livetv_kids_channels`)
-  as the kid's own list (their own tuner, 1b), or EnableLiveTvAccess off
-  while none are picked. The fields it changes, the person's channel choice
-  and request mode are saved in `kids_saved_policy` first and restored when
-  it's switched off. A kid's My Channels is read-only. Policy posts are
+  MaxParentalRating, BlockUnratedItems += Movie, Series, Trailer (not
+  LiveTvProgram: Tentacle's guide has no ratings, it emptied a kid's guide);
+  Live TV = the household's kids channels (`livetv_kids_channels`)
+  by tag on the one lineup (1b), or EnableLiveTvAccess off while none are
+  picked. The fields it changes and request mode are saved in
+  `kids_saved_policy` first and restored when it's switched off. A kid's My
+  Channels shows only the kids channels (they can star them). Policy posts are
   always the full policy re-read just before (the Live TV sync's
   `apply_policies` re-reads too, so it never puts an old policy back).
 - TV codes: `POST /QuickConnect/Authorize?code=&userId=<dashed id>` with the
@@ -508,48 +521,125 @@ and shows separately, so a list may hold movie/N and tv/N. Anything that
 looks up list items by TMDB number filters on the type too
 (`ListItem.of_type()`; a row without a type is a film).
 
+Plain columns, no JSON bag: a new fact gets a named column (Boolean,
+Integer, String, DateTime; a short list of fixed words is a comma-separated
+String, as `music_albums.secondary_types` and `live_networks.types`). The
+generic migration pass adds new model columns on start-up; moving values out
+of an old layout is a one-off in `_migrate_columns()` (example:
+`_migrate_live_catalog_data`, which moved Plan B's `data` columns of
+`live_networks`, `live_channel_catalog` and `live_key_aliases` into
+`auto_channel_id`/`name_set`/`excluded`/`dissolved`/`types`,
+`pinned`/`types`/`pool_key` and `created_at`, then dropped `data`).
+
 ## Live TV
 
-Tentacle is the tuner Jellyfin sees (it replaced Threadfin): since per-person
-Live TV, M3U tuners it adds to Jellyfin itself (below); the HDHomeRun
+Tentacle is the tuner Jellyfin sees (it replaced Threadfin): one M3U tuner
+it adds to Jellyfin itself (below); the HDHomeRun
 emulation stays for hand-made setups:
 `/discover.json`, `/lineup.json`, `/device.xml` (also under `/hdhr/`), the
 guide at `/api/live/xmltv.xml`, streams through `/api/live/stream/{id}`
 (follows provider redirects with the provider's user agent, HLS → MPEG-TS).
 User docs: `docs/features/live-tv.md`.
 
-- **Per person** (Roadmap 1b; `services/livetv_lineups.py`, `services/livetv_tuners.py`,
-  `routers/my_livetv.py`, dashboard `static/js/mychannels.js`): the pool is
-  `LiveChannel.enabled` (groups the admin switched on) plus YouTube Live
-  channels; a person (`live_user_lineups`, no row = all) sees all of it or
-  their own list (`live_user_channels`, keys `c<id>`/`y<id>`, in their
-  order = their numbers 1..N). Jellyfin gets one M3U tuner for "All
-  channels" (`/api/live/tuner/all.m3u`) and one per own list
-  (`/api/live/users/<id>/tuner.m3u`), tvg-id = the XMLTV id (the old
-  GuideNumber), tvg-chno = their number, no group-title. Jellyfin keys an
-  M3U channel on MD5(tuner URL)+MD5(stream URL), so each tuner's URL is kept
-  as first given (`livetv_tuner_base`, `livetv_all_tuner_url`,
-  `LiveUserLineup.tuner_url`) and streams are under that address, not the
-  request's; `livetv_lineups` computes every Jellyfin channel id itself.
+- **New from your provider** (admin; `services/provider_new.py`,
+  `routers/provider_new.py`, dashboard `static/js/newgroups.js`, Sources →
+  Live TV → New from your provider, plus a card on the VOD providers tab):
+  every group or category a refresh or the nightly discovery creates gets
+  `review_state` "new" (not on a provider's first list, its setup), counted
+  on the sidebar's Sources badge. Step 1 ticks groups or dismisses them
+  ("dismissed" never comes back as new; Show dismissed lists them); step 2
+  shows the ticked groups' channels folded like the pool (Works / Guide,
+  "No event" slots hidden) and adds the picked ones (`LiveChannel.enabled`,
+  the group switched on); the groups become "reviewed". Their channels are
+  read from the provider switched off (discovery, or the page in the
+  background) and the stream checker tries the never-checked ones before
+  re-checking the pool. VOD categories: add (whitelist) or dismiss. The
+  old `new_content_notice` setting is read once (`ensure_migrated`) to mark
+  what it listed. Pool keys that joined in the last 14 days are New on My
+  channels (`live_pool_arrivals`).
+- **One lineup** (Roadmap 1b, Plan B of 21 Oct 2026; `services/livetv_lineups.py`,
+  `services/livetv_tuners.py`, `routers/my_livetv.py`, dashboard
+  `static/js/mychannels.js`): the pool is `LiveChannel.enabled` (groups the
+  admin switched on, single channels unticked) plus YouTube Live channels,
+  regional/quality duplicates folded into networks (`livetv_catalog`, keys
+  `c<id>`/`n<id>`/`y<id>`). `L.lineup()` = the pool minus event channels
+  with no event now, numbered 1..N: the one M3U tuner
+  `/api/live/tuner/all.m3u` (address kept as first given in
+  `livetv_all_tuner_url`; a v1.11-1.12 server's "All channels" tuner is it,
+  so its favourites never move). tvg-id = the XMLTV id, tvg-chno = the
+  lineup number, no group-title. What is personal is the view: Jellyfin
+  favourites per person. No per-person tuners: N M3U tuners make Jellyfin's
+  guide refresh quadratic (jellyfin-notes.md). Kids: kids channels
+  (`livetv_kids_channels`) tagged `tentacle-livetv-kids`, the rest
+  `tentacle-livetv-all`, kids' BlockedTags `-all`. `live_user_lineups` /
+  `live_user_channels` (the per-person lists of before) are only read to
+  move a server off per-person tuners (`/api/live/users/<id>/tuner.m3u`
+  serves a list of before until its tuner is removed) and kept in backups.
+  Jellyfin keys an M3U channel on MD5(tuner URL)+MD5(stream URL), so
+  streams are under the tuner's own address, not the request's;
+  `livetv_lineups` computes every Jellyfin channel id itself; stored keys
+  are read through `livetv_catalog.aliases()` (`c123` folded into `n7`).
 - The sync (`livetv_tuners.sync`, one at a time, debounced 15 s by
-  `schedule_sync`, started on My Channels saves, pool changes
-  (`_pool_changed`), Tentacle's guide refreshes, at start-up + hourly):
-  adds the wanted tuners (settings copied from the old HDHomeRun tuner),
-  adds Tentacle's XMLTV listing if Jellyfin has none, sets BlockedTags
-  (every tuner tag but your own; your own blocked tags kept; a tag stays
-  blocked while any channel carries it), refreshes the guide and waits for a
-  run that *completed after* the request (saving a tuner cancels and
-  requeues a running refresh), tags channels (`/Items` asked without a
-  user: an admin's own blocked tags would hide them), carries favourites
-  when someone switches (read them before their policy changes, set them
-  after: Jellyfin 404s a favourite on a channel you can't see; not until
-  the new channels exist), moves everyone off the old HDHomeRun or
-  playlist.m3u tuner (favourites per person, schedules to the shared tuner,
-  exact title match; then deletes it), removes unused tuners and waits for
-  the refresh that drops their channels. Backups of Jellyfin's state before
-  any tuner change: `/data/livetv-backups/`. A person's own tuner always
-  serves their stored list, also while switching back (new channels on it
-  would be untagged, so seen by all).
+  `schedule_sync`, started on pool changes (`_pool_changed`), kids changes,
+  new people, Tentacle's guide refreshes, at start-up + hourly): adds the
+  lineup tuner if Jellyfin hasn't got it ("Tentacle · Live TV", settings
+  copied from the old HDHomeRun tuner) and Tentacle's XMLTV listing, refreshes
+  the guide when anything changed and waits for a run that *completed
+  after* the request (saving a tuner cancels and requeues a running
+  refresh), tags the lineup's channels (`/Items` asked without a user), sets
+  BlockedTags (kids `-all`; everyone the per-person tuner tags still in
+  Jellyfin; your own blocked tags kept), then moves everyone onto the
+  lineup: favourites and schedules from per-person tuners of before, the
+  old HDHomeRun / playlist.m3u tuner, and channels whose key changed (old
+  stream address -> old Jellyfin id; favourites read before the refresh
+  drops them and before policies change, set after: Jellyfin 404s a
+  favourite on a channel you can't see; not until the lineup's channels
+  exist); then removes those tuners (a per-person one stays while a
+  schedule on it can't move: exact title match in the new guide) and waits
+  for the refresh that drops their channels. Backups of Jellyfin's state
+  and the stored lists before any tuner change or carry:
+  `/data/livetv-backups/`.
+- My Channels API: `GET /api/my/channels` = `channels` (the lineup as I see
+  it: number, favourite, catalog/checker fields; a kids profile only the
+  kids channels), `mine` (my favourites in lineup order), `count`, `total`,
+  `favourites_known`, `setting_up`. Stars: `PUT /api/my/channels/favourite`
+  `{key, favourite}`, quick picks `PUT /api/my/channels/favourites`
+  `{keys, favourite}` (Jellyfin favourites, set with the admin key for the
+  signed-in person only). Admins: `GET /api/live/people` = each person's
+  `favourites` and `channels` (kids: the kids channels).
+- Stream checker (`services/livetv_checker.py`, always on, started in
+  main.py's lifespan): opens one channel at a time over all providers and
+  judges its first bytes (MPEG-TS sync, or an HLS playlist's first segment;
+  the whole check within 5 s, nothing by then = a failure),
+  stored on `LiveChannel.check_*` ("broken" only after 2 failures in a row);
+  `results(db)` gives "c<id>"/"n<nid>" -> {state, at}. Order: the pool
+  (single channels, networks' chosen variants) unchecked then oldest, every
+  24 h; other enabled channels every 3 days; one check per
+  max(20 s, 24 h / pool size). Opens nothing while any lease, shared stream
+  or pending open exists, a recording runs, Jellyfin plays anything, the
+  health check or stream sweep runs, or within 2 min of the last stream
+  open. Every stream open (`acquire_lease`, `_open_shared_upstream`) awaits
+  `preempt()`, which cancels the check in flight and waits for its
+  connection to close. 401/403/407/429/458/509/551 or no connection: no
+  verdict, the provider is backed off 5 min doubling to 6 h; a provider the
+  health check calls failing is skipped. Status: `/api/live/checker/status`.
+- **Catalog** (`services/livetv_catalog.py`, `livetv_names.py`, `livetv_events.py`,
+  `routers/livetv_catalog.py`): channels that are one network in several
+  places, qualities or time zone feeds (`livetv_names.fold_key`: prefixes,
+  quality tags, call signs, a place list, East/West; conservative: sports
+  channels keep their place, numbered channels stay apart, event slots
+  never fold) become one `LiveNetwork`, pool key `n<id>`, streamed at
+  `/api/live/net/<id>` from the chosen variant (admin's, else: works, in
+  people's lists, region from `livetv_region` or the server's TZ, has a
+  guide, quality). Folding runs over every channel when a fingerprint of the
+  list (plus guide ids and broken checks) changes; the admin's split/merge
+  pin channels (`live_channel_catalog.pinned`) and dissolved networks are
+  never refolded. A key that stops being a pool key leaves
+  `live_key_aliases` (old -> new; `aliases()` cached) and schedules a tuner
+  sync. pool() entries carry types, has_guide (programmes in the next 24 h),
+  event (None / "no_event" / {title,start,stop,timed}), variants,
+  variant_name, channel_id, check. Event channels without a guide get one
+  programme from their name in `/api/live/xmltv.xml`.
 - Stream format: Xtream channels open as continuous MPEG-TS (`.ts`) by
   default, HLS only when the account's `allowed_output_formats` lacks ts or
   the channel's ts open is refused outright (then remembered per channel

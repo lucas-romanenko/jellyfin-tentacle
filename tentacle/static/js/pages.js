@@ -716,46 +716,6 @@ async function checkStaleFiles() {
   } catch (e) { /* ignore */ }
 }
 
-// ── New provider content notice (nightly discovery) ──
-async function checkNewContentNotice() {
-  if (!state.currentUser?.is_admin) return;
-  try {
-    const n = await api('/api/sync/new-content-notice');
-    const banner = document.getElementById('new-content-banner');
-    if (!banner) return;
-    if (typeof setHealthAlert === 'function') setHealthAlert('newContent', n.exists ? 1 : 0, false);
-    if (!n.exists) { banner.style.display = 'none'; return; }
-
-    const parts = [];
-    const vodNames = n.vod || [];
-    const liveNames = n.live || [];
-    const vodTotal = n.vod_total || vodNames.length;
-    const liveTotal = n.live_total || liveNames.length;
-    if (vodTotal) {
-      const shown = vodNames.slice(0, 4).join(', ');
-      const extra = vodTotal > 4 ? ` and ${vodTotal - 4} more` : '';
-      parts.push(`${vodTotal} new movie and series categor${vodTotal !== 1 ? 'ies' : 'y'} (${shown}${extra})`);
-    }
-    if (liveTotal) {
-      const shown = liveNames.slice(0, 4).join(', ');
-      const extra = liveTotal > 4 ? ` and ${liveTotal - 4} more` : '';
-      parts.push(`${liveTotal} new channel group${liveTotal !== 1 ? 's' : ''} (${shown}${extra})`);
-    }
-    document.getElementById('new-content-msg').textContent =
-      `Your providers added ${parts.join(' and ')}. They stay off until you choose them on the provider's card.`;
-    document.getElementById('new-content-vod-btn').style.display = vodTotal ? '' : 'none';
-    document.getElementById('new-content-live-btn').style.display = liveTotal ? '' : 'none';
-    banner.style.display = '';
-  } catch (e) { /* ignore */ }
-}
-
-async function dismissNewContentNotice() {
-  const banner = document.getElementById('new-content-banner');
-  if (banner) banner.style.display = 'none';
-  if (typeof setHealthAlert === 'function') setHealthAlert('newContent', 0, false);
-  try { await api('/api/sync/new-content-notice/dismiss', { method: 'POST' }); } catch {}
-}
-
 // The user's lists are a group in the Source dropdown ("list:<id>"): a list
 // shows the titles of it that are in the library.
 async function loadLibListPills() {
@@ -5843,6 +5803,8 @@ async function loadLiveTV() {
       renderLiveStats(data);
       await loadLiveGroups();
       await loadLiveChannels();
+      if (document.getElementById('live-panel-pool')?.classList.contains('active')) loadLivePool();
+      if (document.getElementById('live-panel-new')?.classList.contains('active')) loadNewGroups();
       if (document.getElementById('live-panel-setup')?.classList.contains('active')) loadLiveSetup();
     } else {
       liveState.providerId = null;
@@ -5876,8 +5838,10 @@ function showLiveTab(name) {
   document.getElementById(`live-panel-${name}`)?.classList.add('active');
 
   if (name === 'channels') loadLiveChannels();
+  if (name === 'pool') loadLivePool();
   if (name === 'setup') loadLiveSetup();
   if (name === 'people') loadLivePeople();
+  if (name === 'new') loadNewGroups();
 }
 
 function renderLiveStats(data) {
@@ -6985,7 +6949,7 @@ function renderHealthLog() {
     loadJellyfinPage, loadAutoPlaylists, toggleAutoPlaylist, dismissAutoPlaylistBanner,
     showAddTagRule, editTagRule, deleteTagRule, saveTagRule, onContentSourceChange, toggleAdvancedFilters,
     addRuleCondition, updateCondOps, onCollectionNameInput, syncSmartLists, refreshTags, syncPlaylistsToJellyfin, resyncAllPlaylists, setPlaylistSort,
-    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, saveRowShapeByKey, toggleNotificationsFromCheckbox, saveMergeContinueWatching, dismissNewContentNotice, toggleCard, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
+    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, saveRowShapeByKey, toggleNotificationsFromCheckbox, saveMergeContinueWatching, toggleCard, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
     showAddHomeRow, hideAddHomeRow, confirmAddHomeRow, removeHomeRow, removeHomeRowByKey,
     reorderHomeRows, rowKey,
     // Library

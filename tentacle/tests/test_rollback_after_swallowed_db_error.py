@@ -10,7 +10,6 @@ logged such an error and carried on with the same session:
 * nightly discovery, per provider: every later provider's discovery and the
   new-content notice then failed too.
 """
-import json
 import logging
 import unittest
 from unittest import mock
@@ -112,12 +111,12 @@ class DiscoveryPerProvider(unittest.TestCase):
                 mock.patch("routers.providers.fetch_provider_categories", fetch):
             return disc.discover_new_provider_content(self.db)
 
-    def test_a_database_error_for_one_provider_leaves_the_next_one_and_the_notice(self):
+    def test_a_database_error_for_one_provider_leaves_the_next_one_and_the_activity(self):
         result = self._discover()
         self.assertEqual(["B Movies"], result["vod_new"])
         self.assertEqual(["B Movies"], [c.category_name for c in self.db.query(mdb.ProviderCategory).all()])
-        notice = json.loads(mdb.get_setting(self.db, "new_content_notice", "") or "{}")
-        self.assertEqual(["B Movies"], notice.get("vod"))
+        events = [a.message for a in self.db.query(mdb.ActivityLog).filter(mdb.ActivityLog.event == "new_categories")]
+        self.assertEqual(["1 new VOD category from provider: B Movies"], events)
 
     def test_a_rollback_that_fails_does_not_escape_discovery(self):
         def bad_rollback():

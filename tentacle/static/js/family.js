@@ -171,9 +171,10 @@ function famRenderPeople() {
   const named = d.people.filter(p => !p.kids_level);
   home.innerHTML = '<option value="">Tentacle’s standard rows</option>' +
     named.map(p => `<option value="${p.id}"${d.defaults.home_from === p.id ? ' selected' : ''}>The same as ${escHtml(p.name)}</option>`).join('');
-  const lists = named.filter(p => p.has_own_channels);
-  chan.innerHTML = '<option value="">All channels</option>' +
-    lists.map(p => `<option value="${p.id}"${d.defaults.channels_from === p.id ? ' selected' : ''}>The same as ${escHtml(p.name)}’s list</option>`).join('');
+  const lists = named.filter(p => p.favourite_count || d.defaults.channels_from === p.id);
+  const nfav = n => `${n} favourite${n === 1 ? '' : 's'}`;
+  chan.innerHTML = '<option value="">No favourites yet (they star their own)</option>' +
+    lists.map(p => `<option value="${p.id}"${d.defaults.channels_from === p.id ? ' selected' : ''}>${escHtml(p.name)}’s favourites (${nfav(p.favourite_count || 0)})</option>`).join('');
   const names = d.kids_channel_names || [];
   document.getElementById('fam-kids-summary').textContent = d.kids_channels
     ? `Kids see ${d.kids_channels === 1 ? 'one channel' : d.kids_channels + ' channels'} in Live TV: ${names.join(', ')}${d.kids_channels > names.length ? ' and more' : ''}.`
@@ -258,6 +259,22 @@ async function famCopy(text) {
 
 // ── Invite ───────────────────────────────────────────────────────────────
 
+// What a new person starts with: home screen, and their own Live TV channels
+// (the starting channels chosen on this page, else every channel; kids the
+// kids channels).
+function _famInviteHint(kid) {
+  const d = fam.data?.defaults || {};
+  const name = id => (_famPerson(id) || {}).name;
+  const home = d.home_from && name(d.home_from)
+    ? `They start with the same home screen as ${name(d.home_from)}.` : 'They start with Tentacle’s standard home screen.';
+  const fromP = d.channels_from && _famPerson(d.channels_from);
+  const n = fam.data?.pool_channels || 0;
+  const tv = kid ? 'Live TV: the kids channels.'
+    : fromP ? `Live TV: all ${n} channels, starting with ${fromP.name}’s favourites; they star their own under My Channels.`
+    : `Live TV: all ${n} channels and no favourites yet, as you haven’t chosen whose to start with; they star their own under My Channels.`;
+  document.getElementById('invite-defaults-hint').textContent = `${home} ${tv}`;
+}
+
 function famShowInvite() {
   document.getElementById('invite-title').textContent = 'Invite someone';
   document.getElementById('invite-step-form').style.display = '';
@@ -270,15 +287,10 @@ function famShowInvite() {
     const kid = !!sel.value;
     document.getElementById('invite-direct-row').style.display = kid ? 'none' : '';
     if (kid) document.querySelector('input[name="invite-requests"][value="ask"]').checked = true;
+    _famInviteHint(kid);
   };
   sel.onchange();
   document.querySelector('input[name="invite-requests"][value="ask"]').checked = true;
-  const d = fam.data?.defaults || {};
-  const name = id => (_famPerson(id) || {}).name;
-  const bits = [];
-  bits.push(d.home_from && name(d.home_from) ? `the same home screen as ${name(d.home_from)}` : 'Tentacle’s standard home screen');
-  bits.push(d.channels_from && name(d.channels_from) ? `${name(d.channels_from)}’s Live TV channels` : 'all Live TV channels');
-  document.getElementById('invite-defaults-hint').textContent = `They start with ${bits.join(' and ')} (change that on this page).`;
   document.getElementById('invite-go').disabled = false;
   showModal('modal-invite');
   setTimeout(() => document.getElementById('invite-name').focus(), 50);
