@@ -673,6 +673,7 @@ function showSettingsSection(name) {
   document.getElementById(`section-${name}`)?.classList.add('active');
   document.querySelector(`.settings-nav-item[data-section="${name}"]`)?.classList.add('active');
   if (state.currentPage === 'settings') setRoute('settings', name);
+  if (name === 'signin' && typeof famLoadServer === 'function') famLoadServer();
 }
 
 // Escape text before it is interpolated into an innerHTML string. Jellyfin

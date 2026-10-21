@@ -64,6 +64,8 @@ class FakeJellyfin:
             return {"Items": []}
         if path == "/System/Info/Public":
             return {"Version": "10.11.8"}
+        if path == "/Library/VirtualFolders":
+            return []
         raise AssertionError(path)
 
     def post(self, path, body=None, **p):

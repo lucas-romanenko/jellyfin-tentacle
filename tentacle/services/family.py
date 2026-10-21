@@ -275,14 +275,17 @@ def invite(db: Session, admin: TentacleUser, name: str, kids_level: Optional[str
     uid = L.norm_user_id(created.get("Id") or "")
     if len(uid) != 32:
         raise FamilyError("Jellyfin made the account but didn't say its id.", 502)
+    # Jellyfin's defaults hide new accounts from its login screens and leave
+    # them unable to record; an invited person starts on the household's
+    # (services/person_access.py). A policy POST replaces the whole policy,
+    # so it starts from Jellyfin's.
+    from services.person_access import new_person_policy
     try:
-        # Jellyfin hides new accounts from its login screens; an invited
-        # person picks themselves on the sign-in screen instead.
         policy = _policy(jf, _Uid(uid))
-        if policy.get("IsHidden"):
-            jf.post(f"/Users/{dashed(uid)}/Policy", {**policy, "IsHidden": False})
+        if policy:
+            jf.post(f"/Users/{dashed(uid)}/Policy", new_person_policy(policy, bool(kids_level)))
     except (requests.RequestException, FamilyError) as e:
-        logger.warning(f"[Family] Could not show {name} on the sign-in screen: {e}")
+        logger.warning(f"[Family] {name}'s starting settings weren't set in Jellyfin: {e}")
     row = db.query(TentacleUser).filter(TentacleUser.jellyfin_user_id == uid).first()
     if row is None:
         row = TentacleUser(jellyfin_user_id=uid, display_name=created.get("Name") or name, is_admin=False)
@@ -566,7 +569,7 @@ def tv_sign_in(db: Session, user: TentacleUser, code: str) -> dict:
                               "and type it again.", 404)
         if status == 401:
             raise FamilyError("Sign-in codes are switched off in Jellyfin. An admin can turn them on "
-                              "in Tentacle → Settings → People.", 409)
+                              "in Tentacle → Settings → People & sign-in.", 409)
         raise _jf_error(e, "take the code")
     except requests.RequestException as e:
         raise _jf_error(e, "take the code")

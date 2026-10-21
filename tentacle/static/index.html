@@ -1662,7 +1662,24 @@ label.pool-row:hover { background: var(--bg2); }
 .req-buttons { display: flex; gap: 6px; flex-shrink: 0; }
 .req-answer { text-align: right; flex-shrink: 0; }
 .req-answer .fam-hint { margin: 4px 0 0; }
+.fam-more span { font-size: 10px; margin-left: 2px; }
+.fam-access { flex: 1 1 100%; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px 24px;
+  padding: 14px 0 2px 50px; border-top: 1px dashed var(--border); }
+.fam-access-item .fam-hint { margin: 4px 0 0; }
+.fam-access-item .fam-select { width: 100%; max-width: 260px; margin-top: 4px; }
+.fam-check { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.fam-check input { width: 16px; height: 16px; margin: 0; cursor: pointer; flex-shrink: 0; }
+.fam-check input:disabled { cursor: default; }
+.fam-libs { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.fam-hours { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; color: var(--text2); }
+.fam-hours select { padding: 6px 8px; font-size: 13px; width: auto; }
+.fam-danger { color: var(--red); }
+.fam-link { color: var(--accent-text); text-decoration: none; font-weight: 500; }
+.fam-link:hover { text-decoration: underline; }
+.fam-access-off { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-top: 12px; border-top: 1px solid var(--border); }
+.fam-access-off .fam-hint { margin: 0; }
 @media (max-width: 760px) {
+  .fam-access { padding-left: 0; }
   .fam-controls { width: 100%; }
   .fam-ctl { flex: 1 1 140px; }
   .fam-select, .fam-fixed { width: 100%; }
@@ -3352,6 +3369,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           <div class="settings-nav">
             <button class="settings-nav-item active" data-section="services">Services</button>
             <button class="settings-nav-item" data-section="schedule">Schedule &amp; notifications</button>
+            <button class="settings-nav-item" data-section="signin">People &amp; sign-in</button>
             <button class="settings-nav-item" data-section="advanced">Advanced</button>
           </div>
 
@@ -3659,6 +3677,13 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <div style="margin-top:20px">
                 <button class="btn btn-primary" onclick="saveSettings()">Save</button>
               </div>
+            </div>
+
+            <!-- People & sign-in: Jellyfin's server-wide settings an admin needs (family.js) -->
+            <div class="settings-section card" id="section-signin">
+              <h3>People &amp; sign-in</h3>
+              <p class="section-desc">Jellyfin&rsquo;s settings for everyone in your household, read from Jellyfin and saved there straight away.</p>
+              <div id="signin-settings"><div class="loading-state"><div class="spinner"></div> Loading&hellip;</div></div>
             </div>
 
             <!-- Advanced: the few things that really differ between installs -->

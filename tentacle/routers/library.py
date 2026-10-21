@@ -34,6 +34,17 @@ router = APIRouter(prefix="/api/library", tags=["library"])
 _JELLYFIN_ID_RE = re.compile(r"\A[0-9a-fA-F]{32}\Z|\A[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\Z")
 
 
+def _sees_only_some(db, user) -> bool:
+    """A kids profile, or someone an admin gave only some libraries (People):
+    Tentacle's Library then lists only what Jellyfin lets them open."""
+    if user.kids_level:
+        return True
+    if user.is_admin:
+        return False
+    from services.person_access import library_limited
+    return library_limited(db, user)
+
+
 def _validate_jellyfin_item_id(item_id: str) -> str:
     if not _JELLYFIN_ID_RE.match(item_id or ""):
         raise HTTPException(400, "Invalid Jellyfin item id")
@@ -176,9 +187,9 @@ def get_library_items(
             if tag:
                 breakdown[tag] = breakdown.get(tag, 0) + 1
 
-    if user.kids_level:
-        # A kids profile: only what Jellyfin lets this person open (their age
-        # limit), and no per-source counts that would hint at the rest.
+    if _sees_only_some(db, user):
+        # A kids profile or a few libraries (People): only what Jellyfin lets
+        # this person open, and no per-source counts that would hint at the rest.
         from services.family import visible_titles
         allowed = visible_titles(db, user)
         items = [i for i in items if (i["media_type"], i["tmdb_id"]) in allowed]
@@ -303,7 +314,7 @@ def get_item_detail(
     """Library item detail. Requires a session (#74): the response carries the
     on-disk .strm path and the playlist tags for the title. The dashboard
     sends its cookie and the plugin forwards the caller's token."""
-    if user.kids_level:
+    if _sees_only_some(db, user):
         from services.family import visible_titles
         if (("series" if media_type == "series" else "movie"), tmdb_id) not in visible_titles(db, user):
             raise HTTPException(404, "Not found")
