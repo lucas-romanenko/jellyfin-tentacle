@@ -88,6 +88,8 @@ Gotchas:
 | GET | `/Tentacle/home.js` | none | GetHomeJs |  |
 | GET | `/Tentacle/livetv.css` | none | GetLiveTvCss |  |
 | GET | `/Tentacle/livetv.js` | none | GetLiveTvJs |  |
+| GET | `/Tentacle/login.css` | none | GetLoginCss |  |
+| GET | `/Tentacle/login.js` | none | GetLoginJs |  |
 | GET | `/Tentacle/logo.png` | none | GetLogo |  |
 | GET | `/Tentacle/mdblist.css` | none | GetMdbListCss |  |
 | GET | `/Tentacle/mdblist.js` | none | GetMdbListJs |  |

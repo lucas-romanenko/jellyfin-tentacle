@@ -54,6 +54,7 @@ const fam = {};
 function dashTimeAgo() { return ''; }
 function _fmtDuration(s) { return s + 's'; }
 function loginShowManual() {}
+function loginStep() {}
 // The reply could not be read: the error text quotes what came back.
 async function fetch() { return { ok: true, status: 200, json: async () => { throw new Error('Unexpected reply: ' + NAME); } }; }
 async function api() { throw new Error('Jellyfin said: ' + NAME); }
@@ -82,7 +83,7 @@ class TextIsShownAsText(unittest.TestCase):
 
     def test_sign_in_screen_failed_to_load_users(self):
         out = _run("await showLoginOverlay(); out.html = els['login-user-grid'].innerHTML;")
-        self.assertIn("Failed to load users", out["html"])
+        self.assertIn("Failed to load", out["html"])
         self.assertText(out["html"])
 
     def test_people_failed_to_load(self):

@@ -166,6 +166,35 @@ function loadHealthAlerts() {
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────
+// Three steps on one overlay: the people picker (only at home: the server
+// sends names to the home network only), the password form (for a picked
+// person, or a typed name), and a Quick Connect code.
+
+const LOGIN_COLORS = ['#6c63ff', '#e0607e', '#2bb6a3', '#e3913b', '#4f8fe8', '#a35ee0', '#5bb05f', '#d0574a'];
+
+// A person's colour: the same name always gets the same one.
+function loginColor(name) {
+  let h = 0;
+  for (const ch of String(name || '')) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+  return LOGIN_COLORS[h % LOGIN_COLORS.length];
+}
+
+function loginAvatar(u) {
+  const initial = escHtml((Array.from(String(u.name || '?').trim())[0] || '?').toUpperCase());
+  // The initial sits under the photo, so a photo that fails to load leaves it.
+  const img = u.image_tag
+    ? `<img src="${escHtml(`${u.jellyfin_url}/Users/${u.id}/Images/Primary?tag=${u.image_tag}&quality=90&maxWidth=300`)}" alt="" onerror="this.remove()">`
+    : '';
+  return `<div class="user-avatar" style="background:${loginColor(u.name)}" aria-hidden="true">${initial}${img}</div>`;
+}
+
+// Which step shows: 'people', 'form' or 'code'.
+function loginStep(step) {
+  document.getElementById('login-step-people').style.display = step === 'people' ? 'flex' : 'none';
+  document.getElementById('login-password-form').style.display = step === 'form' ? 'flex' : 'none';
+  document.getElementById('login-code').style.display = step === 'code' ? 'flex' : 'none';
+  if (step !== 'code') loginStopCode();
+}
 
 async function showLoginOverlay() {
   const overlay = document.getElementById('login-overlay');
@@ -179,8 +208,9 @@ async function showLoginOverlay() {
   const shell = document.querySelector('.app');
   if (shell) shell.setAttribute('inert', '');
   const grid = document.getElementById('login-user-grid');
-  grid.innerHTML = '<div style="color:var(--text3)">Loading users...</div>';
-  document.getElementById('login-password-form').style.display = 'none';
+  grid.innerHTML = '<div class="login-note">Loading…</div>';
+  state._loginPeople = [];
+  loginStep('people');
 
   try {
     const resp = await fetch('/api/auth/users');
@@ -198,54 +228,59 @@ async function showLoginOverlay() {
       } else {
         // Connection error (bad API key, unreachable, etc.). Nobody is signed
         // in here, so nobody can open Settings.
-        grid.innerHTML = '<div style="color:var(--red)">Cannot connect to Jellyfin right now. Check that Jellyfin is running, then try again.</div>';
+        grid.innerHTML = '<div class="login-note" style="color:var(--red)">Cannot connect to Jellyfin right now. Check that Jellyfin is running, then try again.</div>';
       }
       return;
     }
-    const users = await resp.json();
+    const d = await resp.json();
+    const users = d.people || [];
+    state._loginPeople = users;
+    state._loginCodes = !!d.quick_connect;
+    document.getElementById('login-code-link').style.display = d.quick_connect ? '' : 'none';
     if (!users.length) {
-      // Jellyfin only lists users that are NOT "hidden from login screens", and
-      // hidden is its default for new accounts -- an empty list is normal, not a
-      // connection problem. Without a way to type a name nobody could sign in.
-      grid.innerHTML = '<div style="color:var(--text2)">No users are shown on Jellyfin\'s login screen. Sign in with your Jellyfin username.</div>';
+      // Away from home (names stay private), or nobody is shown on the
+      // sign-in screen (Jellyfin hides new accounts unless an admin shows
+      // them on the People page): type a name instead.
       loginShowManual();
       return;
     }
-    grid.innerHTML = users.map(u => {
-      const avatarUrl = u.image_tag
-        ? `${u.jellyfin_url}/Users/${u.id}/Images/Primary?tag=${u.image_tag}&quality=90&maxWidth=150`
-        : '';
-      const avatarContent = avatarUrl
-        ? `<img src="${escHtml(avatarUrl)}" alt="${escHtml(u.name)}">`
-        : escHtml(u.name.charAt(0).toUpperCase());
-      // The payload is escaped after JSON encoding, so a name containing the
-      // literal "&quot;" cannot decode back into a quote and break out.
-      return `<div class="user-card" tabindex="0" onclick="selectLoginUser(${escHtml(JSON.stringify(u))},this)" onkeydown="if(event.key==='Enter')this.click()">
-        <div class="user-avatar">${avatarContent}</div>
+    grid.innerHTML = users.map((u, i) =>
+      // Cards carry an index, never the user's name: display names are
+      // attacker-settable and this page is shown before anyone signs in.
+      `<button type="button" class="user-card" onclick="loginPick(${i},this)">
+        ${loginAvatar(u)}
         <div class="user-card-name">${escHtml(u.name)}</div>
-      </div>`;
-    }).join('');
+      </button>`).join('');
   } catch (e) {
-    grid.innerHTML = `<div style="color:var(--red)">Failed to load users: ${escHtml(e.message)}</div>`;
+    grid.innerHTML = `<div class="login-note" style="color:var(--red)">Failed to load: ${escHtml(e.message)}</div>`;
   }
+}
+
+function loginPick(i, el) {
+  const user = (state._loginPeople || [])[i];
+  if (user) selectLoginUser(user, el);
 }
 
 function selectLoginUser(user, el) {
   state._loginSelectedUser = user;
   state._loginManual = false;
-  document.getElementById('login-manual-link').style.display = '';
-  document.getElementById('login-username').style.display = 'none';
   document.querySelectorAll('.user-card').forEach(c => c.classList.remove('selected'));
-  el.classList.add('selected');
+  if (el) el.classList.add('selected');
 
   if (!user.has_password) {
     // No password — login immediately
     doLogin(user.name, '');
     return;
   }
-  // Show password form
-  const form = document.getElementById('login-password-form');
-  form.style.display = 'flex';
+  // Show password form, with who is signing in
+  loginStep('form');
+  document.getElementById('login-who').innerHTML = `${loginAvatar(user)}<div class="login-who-name">${escHtml(user.name)}</div>`;
+  document.getElementById('login-who').style.display = 'flex';
+  document.getElementById('login-form-title').style.display = 'none';
+  document.getElementById('login-form-note').style.display = 'none';
+  document.getElementById('login-username').style.display = 'none';
+  document.getElementById('login-back-link').style.display = '';
+  document.getElementById('login-form-code-link').style.display = 'none';
   document.getElementById('login-error').textContent = '';
   const input = document.getElementById('login-password');
   input.value = '';
@@ -259,7 +294,7 @@ async function submitLogin() {
   if (state._loginManual) {
     const name = document.getElementById('login-username').value.trim();
     if (!name) {
-      document.getElementById('login-error').textContent = 'Enter your Jellyfin username';
+      document.getElementById('login-error').textContent = 'Type your name first';
       return;
     }
     await doLogin(name, pw);
@@ -269,14 +304,19 @@ async function submitLogin() {
   await doLogin(state._loginSelectedUser.name, pw);
 }
 
-// Type a username instead of picking a card: for accounts Jellyfin hides from
-// its login screen, which /Users/Public (rightly) does not list.
+// Type a name instead of picking a card: away from home, or for accounts not
+// shown on the sign-in screen, which /Users/Public (rightly) does not list.
 function loginShowManual() {
   state._loginManual = true;
   state._loginSelectedUser = null;
-  document.getElementById('login-manual-link').style.display = 'none';
   document.querySelectorAll('.user-card').forEach(c => c.classList.remove('selected'));
-  document.getElementById('login-password-form').style.display = 'flex';
+  loginStep('form');
+  const nobody = !(state._loginPeople || []).length;
+  document.getElementById('login-who').style.display = 'none';
+  document.getElementById('login-form-title').style.display = '';
+  document.getElementById('login-form-note').style.display = '';
+  document.getElementById('login-back-link').style.display = nobody ? 'none' : '';
+  document.getElementById('login-form-code-link').style.display = nobody && state._loginCodes ? '' : 'none';
   document.getElementById('login-error').textContent = '';
   const name = document.getElementById('login-username');
   name.style.display = '';
@@ -301,13 +341,17 @@ async function doLogin(username, password) {
     });
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
-      errEl.textContent = err.detail || 'Login failed';
+      errEl.textContent = r.status === 401
+        ? (state._loginManual ? 'That name and password don’t match. Check both and try again.' : 'Wrong password. Try again.')
+        : (err.detail || 'Signing in didn’t work. Try again.');
+      const pw = document.getElementById('login-password');
+      if (pw && r.status === 401) { pw.value = ''; pw.focus(); }
       return;
     }
     // Full page reload to clear all cached SPA state from previous user session
     window.location.reload();
   } catch (e) {
-    errEl.textContent = e.message;
+    errEl.textContent = 'Tentacle can’t be reached. Check your connection and try again.';
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -316,10 +360,65 @@ async function doLogin(username, password) {
 function loginBackToUsers() {
   state._loginSelectedUser = null;
   state._loginManual = false;
-  document.getElementById('login-manual-link').style.display = '';
   document.getElementById('login-username').style.display = 'none';
-  document.getElementById('login-password-form').style.display = 'none';
   document.querySelectorAll('.user-card').forEach(c => c.classList.remove('selected'));
+  if (!(state._loginPeople || []).length) { loginShowManual(); return; }
+  loginStep('people');
+}
+
+// ── Sign in with a code (Jellyfin's Quick Connect, through Tentacle) ──
+function loginStopCode() {
+  if (state._loginCodeTimer) clearTimeout(state._loginCodeTimer);
+  state._loginCodeTimer = null;
+  state._loginCodeHandle = null;
+}
+
+async function loginShowCode() {
+  loginStep('code');
+  const val = document.getElementById('login-code-value');
+  const err = document.getElementById('login-code-error');
+  const wait = document.getElementById('login-code-wait');
+  const again = document.getElementById('login-code-new');
+  val.textContent = '······';
+  err.textContent = '';
+  wait.style.display = '';
+  again.style.display = 'none';
+  try {
+    const r = await fetch('/api/auth/quick-connect', { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || 'No code right now. Try again.');
+    val.textContent = String(d.code).replace(/^(\d{3})(\d{3})$/, '$1 $2');
+    state._loginCodeHandle = d.handle;
+    loginPollCode(d.handle);
+  } catch (e) {
+    val.textContent = '—';
+    wait.style.display = 'none';
+    err.textContent = e.message;
+    again.style.display = '';
+  }
+}
+
+async function loginPollCode(handle) {
+  if (state._loginCodeHandle !== handle) return;   // left, or a newer code
+  let r;
+  try {
+    r = await fetch(`/api/auth/quick-connect/${encodeURIComponent(handle)}`);
+  } catch (e) {
+    r = null;  // a dropped request: keep waiting
+  }
+  if (state._loginCodeHandle !== handle) return;
+  if (r && r.ok) {
+    const d = await r.json().catch(() => ({}));
+    if (d.approved) { window.location.reload(); return; }
+  } else if (r) {
+    const d = await r.json().catch(() => ({}));
+    document.getElementById('login-code-wait').style.display = 'none';
+    document.getElementById('login-code-error').textContent = d.detail || 'This code didn’t work. Get a new one.';
+    document.getElementById('login-code-new').style.display = '';
+    state._loginCodeHandle = null;
+    return;
+  }
+  state._loginCodeTimer = setTimeout(() => loginPollCode(handle), 2500);
 }
 
 function applyUserRole() {

@@ -19,6 +19,7 @@ import json
 import shutil
 import subprocess
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
 
@@ -77,7 +78,7 @@ class UsersBeforeTheFirstSignIn(unittest.TestCase):
     def users(self, failure):
         with mock.patch.object(auth_router.requests, "get", side_effect=failure):
             with self.assertRaises(HTTPException) as cm:
-                auth_router.get_jellyfin_users(self.db)
+                auth_router.get_jellyfin_users(SimpleNamespace(client=SimpleNamespace(host="192.168.1.5"), headers={}), self.db)
         return cm.exception
 
     def test_an_address_that_does_not_answer_reopens_the_wizard(self):
@@ -100,7 +101,7 @@ class UsersBeforeTheFirstSignIn(unittest.TestCase):
         self.db.query(Setting).filter(Setting.key == "jellyfin_url").delete()
         self.db.commit()
         with self.assertRaises(HTTPException) as cm:
-            auth_router.get_jellyfin_users(self.db)
+            auth_router.get_jellyfin_users(SimpleNamespace(client=SimpleNamespace(host="192.168.1.5"), headers={}), self.db)
         self.assertEqual((400, "Jellyfin URL not configured"), (cm.exception.status_code, cm.exception.detail))
 
 
@@ -159,6 +160,7 @@ var raw = {};
 async function api(path) { return raw; }
 var steps = [];
 function setupGoTo(step) { steps.push(step); }
+function loginStep() {}
 %FUNCS%
 function answer(status, body) {
   return { ok: status < 300, status: status, json: async function () { return body; } };

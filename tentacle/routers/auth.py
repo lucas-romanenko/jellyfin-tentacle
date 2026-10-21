@@ -447,6 +447,10 @@ def require_internal_or_admin(request: Request, db: Session = Depends(get_db)):
     return require_admin(request, db)
 
 
+# How Tentacle introduces itself to Jellyfin when it signs someone in.
+_JF_CLIENT = 'MediaBrowser Client="Tentacle", Device="Server", DeviceId="tentacle", Version="1.0"'
+
+
 # ─── Models ──────────────────────────────────────────────────────────────────
 
 class LoginRequest(BaseModel):
@@ -457,24 +461,30 @@ class LoginRequest(BaseModel):
 # ─── Endpoints ───────────────────────────────────────────────────────────────
 
 @router.get("/users")
-def get_jellyfin_users(db: Session = Depends(get_db)):
-    """Fetch Jellyfin users for the login picker. No auth required.
+def get_jellyfin_users(request: Request, db: Session = Depends(get_db)):
+    """The sign-in screen: who to show, and whether codes work. No auth required.
 
-    Uses the unauthenticated /Users/Public endpoint, which only returns accounts
-    Jellyfin itself shows on its login screen. The privileged /Users endpoint is
-    NOT used here — calling it (with the server API key) over an unauthenticated
+    People come from the unauthenticated /Users/Public, which only returns
+    accounts Jellyfin itself shows on its login screen (an admin hides or
+    shows someone on the People page). The privileged /Users endpoint is NOT
+    used here — calling it (with the server API key) over an unauthenticated
     route enumerated every account including admin-hidden ones plus their ids,
     which is exactly the data an attacker needs.
+
+    Names go only to a browser on the home network (services/sign_in.py):
+    from the internet the list is empty and people type their name.
     """
+    from services import sign_in
     jf_url = get_setting(db, "jellyfin_url")
     if not jf_url:
         raise HTTPException(400, "Jellyfin URL not configured")
+    home = sign_in.at_home(request)
     try:
         browser_url = (get_setting(db, "jellyfin_public_url") or "").strip().rstrip("/") or jf_url.rstrip("/")
         r = requests.get(f"{jf_url.rstrip('/')}/Users/Public", timeout=10)
         r.raise_for_status()
-        users = r.json()
-        return [
+        users = r.json() if home else []
+        people = [
             {
                 "id": u["Id"],
                 "name": u["Name"],
@@ -498,6 +508,11 @@ def get_jellyfin_users(db: Session = Depends(get_db)):
                                      "Check the address, then continue.")
         logger.error(f"Failed to fetch Jellyfin users: {e}")
         raise HTTPException(502, f"Could not reach Jellyfin ({type(e).__name__})")
+    try:
+        codes = requests.get(f"{jf_url.rstrip('/')}/QuickConnect/Enabled", timeout=5).json() is True
+    except Exception:
+        codes = False
+    return {"people": people, "at_home": home, "quick_connect": codes}
 
 
 @router.post("/login")
@@ -512,7 +527,7 @@ def login(body: LoginRequest, response: Response, request: Request, db: Session 
         r = requests.post(
             f"{jf_url.rstrip('/')}/Users/AuthenticateByName",
             headers={
-                "Authorization": 'MediaBrowser Client="Tentacle", Device="Server", DeviceId="tentacle", Version="1.0"',
+                "Authorization": _JF_CLIENT,
                 "Content-Type": "application/json",
             },
             json={"Username": body.username, "Pw": body.password},
@@ -533,7 +548,12 @@ def login(body: LoginRequest, response: Response, request: Request, db: Session 
         logger.error(f"Login: could not reach Jellyfin: {e}")
         raise HTTPException(502, f"Could not reach Jellyfin ({type(e).__name__})")
 
-    data = r.json()
+    return _finish_sign_in(r.json(), response, request, db)
+
+
+def _finish_sign_in(data: dict, response: Response, request: Request, db: Session) -> dict:
+    """Make or update the Tentacle user Jellyfin just authenticated (by
+    password or Quick Connect code) and give the browser its session."""
     jf_user_id = data["User"]["Id"]
     jf_user_name = data["User"]["Name"]
     jf_image_tag = data["User"].get("PrimaryImageTag")
@@ -636,6 +656,58 @@ def login(body: LoginRequest, response: Response, request: Request, db: Session 
         "is_admin": user.is_admin,
         "profile_image_tag": user.profile_image_tag,
     }
+
+
+
+# ─── Quick Connect: sign in with a code ──────────────────────────────────────
+
+def _jf_url(db: Session) -> str:
+    jf_url = get_setting(db, "jellyfin_url")
+    if not jf_url:
+        raise HTTPException(400, "Jellyfin URL not configured")
+    return jf_url.rstrip("/")
+
+
+@router.post("/quick-connect")
+def quick_connect_start(db: Session = Depends(get_db)):
+    """Ask Jellyfin for a sign-in code. The browser shows the code and gets a
+    handle to poll with; Jellyfin's secret never leaves Tentacle."""
+    from services import sign_in
+    try:
+        r = requests.post(f"{_jf_url(db)}/QuickConnect/Initiate", headers={"Authorization": _JF_CLIENT}, timeout=10)
+    except requests.RequestException as e:
+        raise HTTPException(502, f"Could not reach Jellyfin ({type(e).__name__})")
+    if r.status_code == 401:
+        raise HTTPException(409, "Sign-in codes are switched off. An admin can turn them on in Settings → People.")
+    if not r.ok:
+        raise HTTPException(502, f"Jellyfin answered HTTP {r.status_code}")
+    data = r.json()
+    return {"code": data["Code"], "handle": sign_in.remember(data["Secret"])}
+
+
+@router.get("/quick-connect/{handle}")
+def quick_connect_poll(handle: str, response: Response, request: Request, db: Session = Depends(get_db)):
+    """Whether the code has been approved yet; once it has, sign in."""
+    from services import sign_in
+    secret = sign_in.secret_for(handle)
+    if not secret:
+        raise HTTPException(410, "This code has run out. Get a new one.")
+    jf = _jf_url(db)
+    try:
+        r = requests.get(f"{jf}/QuickConnect/Connect", params={"secret": secret}, timeout=10)
+        if r.status_code == 404:
+            sign_in.forget(handle)
+            raise HTTPException(410, "This code has run out. Get a new one.")
+        r.raise_for_status()
+        if not r.json().get("Authenticated"):
+            return {"approved": False}
+        a = requests.post(f"{jf}/Users/AuthenticateWithQuickConnect", json={"Secret": secret},
+                          headers={"Authorization": _JF_CLIENT}, timeout=10)
+        a.raise_for_status()
+    except requests.RequestException as e:
+        raise HTTPException(502, f"Could not reach Jellyfin ({type(e).__name__})")
+    sign_in.forget(handle)
+    return {"approved": True, "user": _finish_sign_in(a.json(), response, request, db)}
 
 
 @router.post("/logout")

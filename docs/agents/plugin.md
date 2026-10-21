@@ -21,7 +21,8 @@ Services/LiveTvIsolation.cs             Live TV per person: Harmony prefixes on 
 HomeScreen/                             HomeScreenManager (per-user home config from the server, awaited and shared per user)
 Playlists/, Tasks/                      PlaylistManager, SmartListConfig, PlaylistRefreshTask
 Services/                               LibraryDeleteHandler (Jellyfin ItemRemoved → server, 2 s debounce), MdbListCacheService,
-                                        VodNoVideoCopyFilter (Tentacle VOD as HLS: re-encode the video, never copy it)
+                                        VodNoVideoCopyFilter (Tentacle VOD as HLS: re-encode the video, never copy it),
+                                        PublicUsersFilter (/Users/Public is empty outside Jellyfin's local network)
 Inject/                                 the injected tentacle-*.js/.css and the logo (embedded resources)
 Web/                                    per-user settings page
 Assets/                                 rating source icons (served by AssetsController, file names sanitized)
@@ -68,6 +69,19 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   fetch behind a per-user `lock` starved Jellyfin's thread pool on a burst of
   home loads and stalled all of Jellyfin (#256). Never add
   `.GetAwaiter().GetResult()` or `.Result` on a request path.
+- **Names on the login screen only at home** (`PublicUsersFilter`, a
+  global MVC action filter like the one below): `GET /Users/Public`
+  (`User.GetPublicUsers`; Jellyfin Web asks for `/users/public`) answers
+  `[]` to a caller outside Jellyfin's local network
+  (`INetworkManager.IsInLocalNetwork(GetNormalizedRemoteIP())`, so its
+  LAN and known-proxy settings count) or one a CF-Connecting-IP /
+  True-Client-IP / X-Real-IP / X-Forwarded-For / Forwarded header names
+  outside it (a tunnel connects from inside the home, and Known proxies is
+  usually empty), so every client shows its name form.
+  Before the startup wizard is done it leaves Jellyfin alone. The login
+  page's look is `tentacle-login.css/js` (scoped to
+  `#loginPage.tentacle-login`; words and decoration only, signing in stays
+  Jellyfin's; same per-name colours as the dashboard's `LOGIN_COLORS`).
 - **Tentacle VOD as HLS re-encodes the video** (`VodNoVideoCopyFilter`,
   a global MVC action filter, `Configure<MvcOptions>` in the registrator):
   on `POST /Items/{id}/PlaybackInfo` and the HLS video requests

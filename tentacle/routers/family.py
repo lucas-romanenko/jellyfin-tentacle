@@ -127,6 +127,7 @@ class PersonBody(BaseModel):
     kids_level: Optional[str] = None
     set_kids: bool = False
     request_mode: Optional[str] = None
+    on_sign_in: Optional[bool] = None
 
 
 @router.put("/api/family/people/{user_id}")
@@ -144,9 +145,14 @@ def update_person(user_id: int, body: PersonBody, admin: TentacleUser = Depends(
             row.request_mode = body.request_mode
             db.commit()
             logger.info(f"[Family] {admin.display_name} set {row.display_name}'s requests to {body.request_mode}")
+        if body.on_sign_in is not None:
+            F.set_on_sign_in(db, row, body.on_sign_in)
     except F.FamilyError as e:
         raise _refusal(e)
-    return F.person(db, row)
+    out = F.person(db, row)
+    if body.on_sign_in is not None:
+        out["on_sign_in"] = body.on_sign_in
+    return out
 
 
 @router.post("/api/family/people/{user_id}/password")
