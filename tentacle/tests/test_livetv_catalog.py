@@ -113,8 +113,13 @@ class Folding(CatalogCase):
         self.assertNotEqual("NBC Buffalo", pool[nbc]["variant_name"])
 
     def test_people_who_watched_a_variant_keep_it(self):
-        # Someone had New York in their list before folding: it is the default.
+        # Someone had New York in their list before folding: it is the default
+        # when no variant is the household's place (Toronto: Buffalo is).
         self.db.add(mdb.LiveUserChannel(jellyfin_user_id="a" * 32, channel_key="c2", position=0))
+        self.db.commit()
+        pool = self.pool()
+        self.assertEqual("NBC Buffalo", pool[f"n{self.nid_of(1)}"]["variant_name"])
+        self.db.query(mdb.LiveChannel).filter(mdb.LiveChannel.id == 3).update({"enabled": False})
         self.db.commit()
         pool = self.pool()
         self.assertEqual("NBC WNBC New York", pool[f"n{self.nid_of(1)}"]["variant_name"])

@@ -46,14 +46,17 @@ def _favourites(db, user_id: str, entries: list):
         return None
 
 
-def my_lineup(db, user: TentacleUser) -> list:
-    """The lineup as this person sees it: a kids profile only the
-    household's kids channels (chosen by an admin, services/family.py)."""
-    entries = L.lineup(db)
+def my_lineup(db, user: TentacleUser, entries: list = None) -> list:
+    """The lineup as this person sees it: their place's channels (CTV ·
+    Vancouver instead of CTV, services/livetv_locations.py), and a kids
+    profile only the household's kids channels (chosen by an admin,
+    services/family.py)."""
+    from services import livetv_locations
+    entries = L.view_for(L.lineup(db) if entries is None else entries, livetv_locations.of_person(db, user))
     if user.kids_level:
         from services import family
         kids = set(family.kids_channels(db))
-        entries = [c for c in entries if c["key"] in kids]
+        entries = [c for c in entries if L.base_key(c["key"]) in kids]
     return entries
 
 
@@ -74,9 +77,15 @@ def _state(db, user: TentacleUser) -> dict:
         return e
 
     out = [entry(c) for c in entries]
+    from services import livetv_locations
+    place = livetv_locations.public(livetv_locations.of_person(db, user))
+    if place is not None:
+        place["own"] = bool(livetv_locations.get(user.livetv_location))
     return {
         "available": bool(entries),
         "kids": kids_profile,
+        # Where they watch from (an admin sets it): their local channels' place.
+        "location": place,
         "total": len(entries),
         "count": sum(1 for e in out if e["favourite"]),
         "favourites_known": favs is not None,
@@ -106,7 +115,11 @@ def _set_favourites(db, user: TentacleUser, keys: list, on: bool) -> int:
     if jf is None or not url:
         raise HTTPException(409, "Live TV isn't set up in Jellyfin yet. Try again in a minute.")
     by_key = {k: i for i, k in L.item_ids_for(url, entries).items()}
-    wanted = [by_key[k] for k in dict.fromkeys(L.resolve_keys(db, keys, set(by_key)))]
+    # A network is their place's channel of it ("n7" is "n7@vancouver" for
+    # someone in Vancouver), whichever of its keys is asked for.
+    mine = {L.base_key(k): k for k in by_key}
+    asked = L.resolve_keys(db, [L.base_key(k) for k in keys], set(mine))
+    wanted = [by_key[mine[k]] for k in dict.fromkeys(asked)]
     if not wanted:
         raise HTTPException(404, "No such channel")
     try:
@@ -157,22 +170,23 @@ def live_people(db: Session = Depends(get_db)):
     """Everyone's Live TV at a glance (how many favourites each has, kids
     profiles' channels), and how Jellyfin is set up."""
     entries = L.lineup(db)
-    from services import family
+    from services import family, livetv_locations
     kids = set(family.kids_channels(db))
-    kids_count = sum(1 for c in entries if c["key"] in kids)
+    kids_count = sum(1 for c in L.view_for(entries, None) if c["key"] in kids)
     people = []
     for u in db.query(TentacleUser).order_by(TentacleUser.display_name).all():
-        favs = _favourites(db, L.norm_user_id(u.jellyfin_user_id),
-                           [c for c in entries if c["key"] in kids] if u.kids_level else entries)
+        theirs = my_lineup(db, u, entries)
+        favs = _favourites(db, L.norm_user_id(u.jellyfin_user_id), theirs)
         people.append({
             "name": u.display_name,
             "kids": bool(u.kids_level),
-            "channels": kids_count if u.kids_level else len(entries),
+            "channels": len(theirs),
             "favourites": len(favs) if favs is not None else None,
+            "location": livetv_locations.public(livetv_locations.of_person(db, u)),
         })
     st = T.last_status(db)
     return {
-        "total": len(entries),
+        "total": len(L.view_for(entries, None)),
         "kids_channels": kids_count,
         "people": people,
         "setup": {

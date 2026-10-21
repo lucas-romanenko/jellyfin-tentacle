@@ -252,7 +252,8 @@ def invite_card(db: Session, name: str, password: Optional[str]) -> dict:
 
 
 def invite(db: Session, admin: TentacleUser, name: str, kids_level: Optional[str] = None,
-           request_mode: Optional[str] = None) -> dict:
+           request_mode: Optional[str] = None, location: Optional[str] = None) -> dict:
+    from services import livetv_locations
     name = (name or "").strip()
     if not NAME_RE.match(name):
         raise FamilyError("Use a name of letters, numbers, spaces, dots, dashes or apostrophes (up to 64).")
@@ -260,6 +261,8 @@ def invite(db: Session, admin: TentacleUser, name: str, kids_level: Optional[str
         raise FamilyError("Unknown kids level.")
     if request_mode not in (None, "ask", "direct"):
         raise FamilyError("Unknown request setting.")
+    if location and not livetv_locations.get(location):
+        raise FamilyError("Unknown place.")
     jf = jellyfin(db)
     try:
         users = jf.get("/Users") or []
@@ -292,6 +295,7 @@ def invite(db: Session, admin: TentacleUser, name: str, kids_level: Optional[str
         db.add(row)
     row.invited_by, row.invited_at = admin.display_name, datetime.utcnow()
     row.request_mode = request_mode or "ask"
+    row.livetv_location = _own_place(db, location)
     try:
         db.commit()
     except IntegrityError:   # the plugin made the row in between (a first plugin call)
@@ -299,6 +303,7 @@ def invite(db: Session, admin: TentacleUser, name: str, kids_level: Optional[str
         row = db.query(TentacleUser).filter(TentacleUser.jellyfin_user_id == uid).first()
         row.invited_by, row.invited_at = admin.display_name, datetime.utcnow()
         row.request_mode = request_mode or "ask"
+        row.livetv_location = _own_place(db, location)
         db.commit()
     logger.info(f"[Family] {admin.display_name} invited {row.display_name}"
                 f"{' (kids: ' + kids_level + ')' if kids_level else ''}")
@@ -306,6 +311,44 @@ def invite(db: Session, admin: TentacleUser, name: str, kids_level: Optional[str
         set_kids(db, row, kids_level)
     start_new_person(row.id)
     return {"user": person(db, row, created), "invite": invite_card(db, row.display_name, password)}
+
+
+# ── Where someone watches from ──────────────────────────────────────────────
+
+def _own_place(db: Session, location: Optional[str]) -> Optional[str]:
+    """A place to store for someone: None for the household's own (they follow it)."""
+    from services import livetv_locations
+    slug = (location or "").strip().lower() or None
+    if slug is None or not livetv_locations.get(slug):
+        return None
+    return None if slug == livetv_locations.household(db) else slug
+
+
+def set_location(db: Session, user: TentacleUser, location: Optional[str]) -> dict:
+    """Where someone watches Live TV from (an admin sets it; "" / None: the
+    household's). Their local and regional channels follow: the lineup
+    carries their place's variants, their favourites move to them and they
+    no longer see other places' (services/livetv_tuners.py). The first
+    admin's place is the household's: people without one follow it."""
+    from services import livetv_locations, livetv_tuners
+    slug = (location or "").strip().lower() or None
+    if slug and not livetv_locations.get(slug):
+        raise FamilyError("Unknown place.")
+    owner = (db.query(TentacleUser).filter(TentacleUser.is_admin == True)  # noqa: E712
+             .order_by(TentacleUser.id).first())
+    if owner is not None and owner.id == user.id:
+        # The household's place: kept as the admin's own, never "none".
+        slug = slug or livetv_locations.household(db)
+    elif slug == livetv_locations.household(db):
+        slug = None
+    if user.livetv_location == slug:
+        return person(db, user)
+    user.livetv_location = slug
+    db.commit()
+    where = livetv_locations.public(livetv_locations.of_person(db, user))
+    logger.info(f"[Family] {user.display_name} watches Live TV from {where['label'] if where else 'the household'}")
+    livetv_tuners.schedule_sync(f"{user.display_name}'s place", delay=1)
+    return person(db, user)
 
 
 def new_password(db: Session, user: TentacleUser) -> dict:
@@ -615,4 +658,13 @@ def person(db: Session, user: TentacleUser, jf_user: Optional[dict] = None) -> d
         # the sign-in screens until an admin shows them.
         "on_sign_in": not policy.get("IsHidden", True) if jf_user else None,
         "has_image": bool(user.profile_image_tag),
+        "location": _place_of(db, user),
     }
+
+
+def _place_of(db: Session, user: TentacleUser) -> Optional[dict]:
+    from services import livetv_locations
+    p = livetv_locations.public(livetv_locations.of_person(db, user))
+    if p is not None:
+        p["own"] = bool(livetv_locations.get(user.livetv_location))
+    return p

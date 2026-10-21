@@ -162,3 +162,24 @@ async def network_stream_head(nid: int, db: Session = Depends(get_db)):
 async def network_stream(nid: int, db: Session = Depends(get_db)):
     from routers.livetv import stream_proxy
     return await stream_proxy(_variant(db, nid), db)
+
+
+def _place_variant(db: Session, nid: int, place: str) -> int:
+    cid = C.place_channel(db, nid, place)
+    if cid is None:
+        raise HTTPException(404, "Channel not found")
+    return cid
+
+
+@stream_router.head("/api/live/net/{nid}/at/{place}")
+async def network_place_stream_head(nid: int, place: str, db: Session = Depends(get_db)):
+    from routers.livetv import stream_head
+    return await stream_head(_place_variant(db, nid, place), db)
+
+
+@stream_router.get("/api/live/net/{nid}/at/{place}")
+async def network_place_stream(nid: int, place: str, db: Session = Depends(get_db)):
+    """A network as people in a place watch it (its variant there, else the
+    network's): the lineup's "CTV · Vancouver" (services/livetv_lineups.py)."""
+    from routers.livetv import stream_proxy
+    return await stream_proxy(_place_variant(db, nid, place), db)

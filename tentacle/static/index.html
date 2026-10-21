@@ -4150,6 +4150,11 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <label class="form-label" for="invite-kids">Age limit</label>
         <select class="form-input" id="invite-kids"></select>
       </div>
+      <div class="form-group" id="invite-location-group">
+        <label class="form-label" for="invite-location">Where they watch from</label>
+        <select class="form-input" id="invite-location"></select>
+        <div class="form-hint">Their local channels (CTV, Global, CBC, NBC…) come from there.</div>
+      </div>
       <div class="form-group">
         <div class="form-label">When they ask for a movie or show</div>
         <label class="fam-radio"><input type="radio" name="invite-requests" value="ask" checked> Ask me first</label>
@@ -4551,9 +4556,9 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 <script src="/static/js/sources.js?v=45"></script>
 <script src="/static/js/pages.js?v=45"></script>
 <script src="/static/js/music.js?v=45"></script>
-<script src="/static/js/mychannels.js?v=45"></script>
+<script src="/static/js/mychannels.js?v=46"></script>
 <script src="/static/js/newgroups.js?v=45"></script>
-<script src="/static/js/family.js?v=45"></script>
+<script src="/static/js/family.js?v=46"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {

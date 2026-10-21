@@ -41,6 +41,8 @@ A new person can have a short list of favourites in under a minute: tap **Sports
 
 Kids profiles see only the kids channels an admin picked, and can star them.
 
+**Local channels where you are.** An admin sets where each person watches from (People → *Live TV from*; the admin's own city by default). Someone in Vancouver sees "CTV · Vancouver", "Global · Vancouver", "NBC · Seattle" and the West feeds where the household's lineup has Toronto's, Buffalo's or the East feed, with the same numbers, their own guides and their own favourites; nobody sees another city's. Everything else is the same lineup for everyone.
+
 On a phone, **My favourites** and **All channels** are two tabs under the quick picks.
 
 Stars save by themselves and show in Jellyfin at once.

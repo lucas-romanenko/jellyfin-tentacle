@@ -125,8 +125,11 @@ same tags hide non-kids channels from kids on one lineup.
   `GuideManager.GetChannel`, and keeps `-kids` on a channel that has it
   (`WithTag(..., keepKids: true)`), so a kid never sees a channel before an
   admin makes it a kids channel; programmes always take their channel's
-  tag. Only one `tentacle-livetv-*` tag per channel survives the plugin: a
-  second dimension (e.g. a region per person) needs its own prefix.
+  tag. Only one `tentacle-livetv-*` tag per channel survives the plugin, so
+  people's places have their own prefix: `tentacle-notlocal-<place>` on a
+  channel people at <place> don't see (they block it); the plugin keeps
+  them on channels (it strips only `tentacle-livetv-*`) and copies them
+  onto the programmes with the tuner tag (`ProgramTags`).
 - Everything a person has on a channel (favourite, timers) hangs on the
   channel item id, so on the tuner URL and the stream URL: a channel whose
   stream address changes (a pool key `c123` folded into network `n7`:

@@ -124,18 +124,80 @@ def pool(db: Session) -> list:
         return out
 
 
-def lineup(db: Session, channels: Optional[list] = None) -> list:
+def lineup(db: Session, channels: Optional[list] = None, places=None) -> list:
     """What the household's tuner carries, in the pool's order, numbered
     1..N: every pool entry except event channels with no event in their name
-    now (an empty slot; it comes back when the provider names an event)."""
+    now (an empty slot; it comes back when the provider names an event).
+
+    People elsewhere (services/livetv_locations.py) get their own variant of
+    a network whose default is another city's: an entry "n<id>@<place>"
+    right after the network's, with its number ("CTV · Vancouver" is 27 like
+    "CTV"); each person sees one of them (place_tags()). `places`: the
+    places to carry (default: every place someone watches from)."""
     channels = pool(db) if channels is None else channels
     shown = [c for c in channels if c.get("event") != "no_event"]
-    return [{**c, "number": i} for i, c in enumerate(shown, 1)]
+    out = [{**c, "number": i} for i, c in enumerate(shown, 1)]
+    try:
+        from services import livetv_catalog, livetv_locations
+        places = livetv_locations.in_use(db) if places is None else places
+        extra = livetv_catalog.place_entries(db, out, places)
+    except Exception as e:   # a place must never take the channels away
+        import logging
+        logging.getLogger(__name__).exception(f"[LiveTV] Places' channels left out: {e}")
+        db.rollback()
+        extra = []
+    if not extra:
+        return out
+    after = {}
+    for e in extra:
+        after.setdefault(e["base"], []).append(e)
+    merged = []
+    for c in out:
+        merged.append(c)
+        merged.extend(after.get(c["key"], ()))
+    return merged
+
+
+def base_key(key: str) -> str:
+    """The pool key a lineup entry is (a place's "n7@vancouver" is "n7")."""
+    return str(key or "").split("@", 1)[0]
+
+
+def place_of_key(key: str) -> Optional[str]:
+    key = str(key or "")
+    return key.split("@", 1)[1] if "@" in key else None
+
+
+def view_for(entries: list, place: Optional[str]) -> list:
+    """The lineup as someone at `place` sees it: their place's entry instead
+    of a network's default where there is one, no other place's."""
+    mine = {e["base"]: e for e in entries if e.get("place") and e["place"] == place}
+    return [mine.get(e["key"], e) for e in entries if not e.get("place")]
+
+
+def place_tags(entries: list, places: set) -> dict:
+    """key -> the places' tags (services/livetv_locations.NOT_LOCAL_PREFIX)
+    an entry carries: a place's entry is hidden from every other place
+    someone watches from, a network's default from the places that have
+    their own. Everyone blocks their own place's tag."""
+    from services.livetv_locations import not_local_tag
+    places = {p for p in places if p}
+    has = {}
+    for e in entries:
+        if e.get("place"):
+            has.setdefault(e["base"], set()).add(e["place"])
+    out = {}
+    for e in entries:
+        if e.get("place"):
+            out[e["key"]] = {not_local_tag(p) for p in places if p != e["place"]}
+        elif e["key"] in has:
+            out[e["key"]] = {not_local_tag(p) for p in has[e["key"]]}
+    return out
 
 
 def kids_tag_of(entry: dict, kids: set) -> str:
     """The tag a lineup channel carries: kids channels the kids tag."""
-    return KIDS_TAG if entry["key"] in kids else ALL_TAG
+    return KIDS_TAG if base_key(entry["key"]) in kids else ALL_TAG
 
 
 # ── Lists of before (per-person tuners) ─────────────────────────────────────
@@ -194,6 +256,9 @@ def stream_path_of_key(key: str) -> Optional[str]:
         return f"/api/live/stream/{key[1:]}"
     if key[:1] == "n" and key[1:].isdigit():
         return f"/api/live/net/{key[1:]}"
+    if key[:1] == "n" and "@" in key and key[1:].split("@", 1)[0].isdigit():
+        nid, place = key[1:].split("@", 1)
+        return f"/api/live/net/{nid}/at/{place}"
     if key[:1] == "y" and len(key) > 1:
         return f"/api/youtube/live/{key[1:]}/stream.ts"
     return None

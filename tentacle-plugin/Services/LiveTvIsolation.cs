@@ -38,6 +38,10 @@ public class LiveTvIsolation : IHostedService
     public const string TagPrefix = "tentacle-livetv-";
     public const string AllTag = TagPrefix + "all";
     public const string KidsTag = TagPrefix + "kids";
+    /// <summary>A channel for one place (or a network's default where a place has its own) carries
+    /// "tentacle-notlocal-&lt;place&gt;" for every place whose people don't see it; each person blocks
+    /// their own place's. The server sets them; channels keep them here, programmes copy them.</summary>
+    public const string NotLocalPrefix = "tentacle-notlocal-";
 
     private static readonly Regex UserTunerRe = new(@"/api/live/users/([0-9a-fA-F]{32})/tuner\.m3u$", RegexOptions.Compiled);
 
@@ -228,7 +232,8 @@ public class LiveTvNewUser : IEventConsumer<UserCreatedEventArgs>
 /// items raise no ItemAdded event, so the tags are set here:
 ///   - GetChannel (prefix): a Tentacle tuner's channel is created (and kept)
 ///     with its tuner's tag, so nobody else sees it for a moment first;
-///   - GetProgram (prefix + postfix): the programme gets its channel's tag.
+///   - GetProgram (prefix + postfix): the programme gets its channel's tag
+///     (and its places' tags, tentacle-notlocal-*).
 ///     GetProgram sets a programme's tags afresh from the guide, so the prefix
 ///     notes whether the stored programme had it; one that didn't is marked
 ///     updated (Jellyfin saves XMLTV programmes every refresh anyway).
@@ -341,6 +346,23 @@ public static class LiveTvTagPatches
     public static string? ChannelTag(LiveTvChannel? channel)
         => channel?.Tags?.FirstOrDefault(t => t.StartsWith(LiveTvIsolation.TagPrefix, StringComparison.OrdinalIgnoreCase));
 
+    private static bool IsPlaceTag(string t) => t.StartsWith(LiveTvIsolation.NotLocalPrefix, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>A programme's tags with its channel's: the tuner tag and the places' tags (null when nothing changes).</summary>
+    public static string[]? ProgramTags(string[]? programTags, string tag, string[]? channelTags)
+    {
+        var current = programTags ?? Array.Empty<string>();
+        var places = (channelTags ?? Array.Empty<string>()).Where(IsPlaceTag).OrderBy(t => t, StringComparer.Ordinal).ToArray();
+        var had = current.Where(IsPlaceTag).OrderBy(t => t, StringComparer.Ordinal).ToArray();
+        var withTag = LiveTvIsolation.WithTag(current, tag);
+        if (withTag == null && had.SequenceEqual(places, StringComparer.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return (withTag ?? current).Where(t => !IsPlaceTag(t)).Concat(places).ToArray();
+    }
+
     private static void Prefix(ProgramInfo info, Dictionary<Guid, LiveTvProgram> allExistingPrograms, LiveTvChannel channel, out bool __state)
     {
         __state = false;
@@ -355,7 +377,7 @@ public static class LiveTvTagPatches
             // LiveTvDtoService.GetInternalProgramId
             var id = _libraryManager.GetNewItemId(("Emby" + info.Id + "4").ToLowerInvariant(), typeof(LiveTvProgram));
             __state = allExistingPrograms.TryGetValue(id, out var existing)
-                && existing.Tags.Contains(tag, StringComparer.OrdinalIgnoreCase);
+                && ProgramTags(existing.Tags, tag, channel.Tags) == null;
         }
         catch
         {
@@ -372,7 +394,7 @@ public static class LiveTvTagPatches
             return;
         }
 
-        var tags = LiveTvIsolation.WithTag(item.Tags, tag);
+        var tags = ProgramTags(item.Tags, tag, channel.Tags);
         if (tags != null)
         {
             item.Tags = tags;

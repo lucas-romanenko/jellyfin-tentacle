@@ -94,7 +94,8 @@ function mychRender() {
   const kids = !!d.kids;
   document.getElementById('mych-sub').textContent = kids
     ? `${d.kids.chosen_by} picked these channels for you. Star the ones you watch: they come first in the guide.`
-    : 'Everyone has the same channels. Star the ones you watch: your favourites come first in the guide’s Favorites view and in every Jellyfin app.';
+    : 'Everyone has the same channels. Star the ones you watch: your favourites come first in the guide’s Favorites view and in every Jellyfin app.'
+      + (d.location && d.location.own ? ` Your local channels (CTV, Global, CBC, NBC…) are ${d.location.city}’s.` : '');
   document.getElementById('mych-picks-card').style.display = kids ? 'none' : '';
   document.getElementById('mych-all-title').textContent = kids ? 'Your channels' : 'All channels';
   document.getElementById('mych-all-tab').textContent = kids ? 'Your channels' : 'All channels';
@@ -693,9 +694,11 @@ async function loadLivePeople() {
   if (!d.people.length) { el.innerHTML = '<div class="mych-none">Nobody has signed in yet.</div>'; return; }
   const favs = p => p.favourites == null ? '<span class="muted">Not known yet</span>'
     : `${p.favourites} favourite${p.favourites === 1 ? '' : 's'}`;
+  const places = new Set(d.people.map(p => p.location && p.location.slug));
+  const where = p => places.size > 1 && p.location ? ` · local channels from ${escHtml(p.location.city)}` : '';
   el.innerHTML = `<table class="mych-people"><thead><tr><th>Person</th><th>Favourites</th><th>Channels</th></tr></thead><tbody>${
     d.people.map(p => `<tr><td>${escHtml(p.name)}${p.kids ? ' <span class="badge badge-blue">Kids</span>' : ''}</td><td>${favs(p)}</td>`
-      + `<td class="muted">${p.kids ? `Kids channels only (${p.channels})` : `All ${p.channels}`}</td></tr>`).join('')
+      + `<td class="muted">${p.kids ? `Kids channels only (${p.channels})` : `All ${p.channels}`}${where(p)}</td></tr>`).join('')
   }</tbody></table>`;
 }
 

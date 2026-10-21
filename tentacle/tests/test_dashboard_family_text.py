@@ -25,7 +25,7 @@ class FamilyTextIsEscaped(unittest.TestCase):
         raw = []
         for m in re.finditer(r"\$\{([^{}]+)\}", FAMILY):
             expr = m.group(1).strip()
-            if expr.startswith(("escHtml(", "_fam", "chips.", "meta.", "kidsSel", "reqSel", "poster", "side",
+            if expr.startswith(("escHtml(", "_fam", "chips.", "meta.", "kidsSel", "reqSel", "placeSel", "places", "poster", "side",
                                 "note", "status", "take", "label", "levels.", "named.", "lists.", "rows.", "list.",
                                 "d.people", "row(", "jf}", "jf", "encodeURIComponent(", "libList",
                                 "fam.open.has(", "(d.away_quality / 1e6)")):
@@ -45,7 +45,7 @@ class FamilyTextIsEscaped(unittest.TestCase):
                          "bits.join(' and ')", "card.tv_app_address", "card.password", "card.jellyfin_address",
                          "d.tv_app.newest", "r.title", "r.requested_by", "p ? p.name : 'their'", "p ? p.name : 'Their'",
                          "r ? r.title : 'this'", "r ? r.requested_by : 'them'", "keys.length === 1 ? '' : 's'",
-                         "n === 1 ? '' : 's'", "fromP.name", "home", "tv", "nfav(p.favourite_count || 0)", "names.join(', ')",
+                         "n === 1 ? '' : 's'", "fromP.name", "where", "home", "tv", "nfav(p.favourite_count || 0)", "names.join(', ')",
                          "d.kids_channels === 1 ? 'one channel' : d.kids_channels + ' channels'", "name(d.home_from)", "d.kids_channels === 1 ? '' : 's'", "r.episodes === 1 ? '' : 's'",
                          "a.libraries.length === 1 ? '1 library' : a.libraries.length + ' libraries'",
                          "c.libraries.length === 1 ? 'one library' : c.libraries.length + ' libraries'",
