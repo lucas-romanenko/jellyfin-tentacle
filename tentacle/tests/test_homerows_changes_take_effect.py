@@ -118,17 +118,18 @@ class TestNewUserWithPlaylistsGetsStarterRows(unittest.TestCase):
                    "rows": [{"type": "builtin", "section_id": "resumevideo", "display_name": "Continue Watching", "order": 1}],
                    "toolbar": [{"id": "search", "enabled": True}]}
 
-        def fake_seed(db_, user):
+        def fake_seed(db_, user, build=True, default=None):
             path.write_text(json.dumps(starter))
             return starter
 
         with mock.patch.object(ssl, "_get_smartlists_with_playlist_ids", lambda db, user_id=None: SMARTLISTS[1:2]), \
              mock.patch.object(ssl, "_user_home_config_path", lambda db, user_id=None: path), \
-             mock.patch("routers.smartlists._seed_home_config_from_jellyfin", fake_seed), \
+             mock.patch("services.default_home.apply_default", fake_seed), \
              mock.patch.object(ssl, "bump_playlist_version"):
             cfg = ssl.write_home_config(db, user_id=1)
         self.assertEqual([r.get("section_id") for r in cfg["rows"]], ["resumevideo"],
-                         "a new user with only a YouTube playlist got a home config with no rows")
+                         "a new user with only a YouTube playlist got a home config with no rows "
+                         "(the first write gives them the default home)")
 
     def test_an_existing_config_is_never_reseeded(self):
         tmp = Path(temp_dir(self))
@@ -139,7 +140,7 @@ class TestNewUserWithPlaylistsGetsStarterRows(unittest.TestCase):
         seed = mock.Mock(return_value={})
         with mock.patch.object(ssl, "_get_smartlists_with_playlist_ids", lambda db, user_id=None: SMARTLISTS), \
              mock.patch.object(ssl, "_user_home_config_path", lambda db, user_id=None: path), \
-             mock.patch("routers.smartlists._seed_home_config_from_jellyfin", seed), \
+             mock.patch("services.default_home.apply_default", seed), \
              mock.patch.object(ssl, "bump_playlist_version"):
             ssl.write_home_config(db, user_id=1)
         seed.assert_not_called()

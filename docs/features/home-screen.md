@@ -9,6 +9,14 @@ Tentacle gives you a Netflix-style home screen in Jellyfin with a hero spotlight
 
 Go to **My Home Screen** in the Tentacle dashboard.
 
+## The default home
+
+Everyone starts on the **default home**, so a fresh install looks right with no setup: Continue Watching, Next Up, Recently Added Movies, Recently Added TV and your biggest sources, with recently added movies in the spotlight.
+
+- **Admins** change it with **My Home Screen → Default for everyone**: the same rows, order, poster or wide cards and spotlight as your own home, or **Copy my home here** to make your own layout the default (your personal lists are left out; nobody else has them). Everyone on the default sees a change within seconds.
+- **Everyone else** keeps the default until they change something on their own Home Screen; from then on the layout is theirs and later changes to the default leave it alone. **Reset to default** goes back.
+- **Kids** get the same rows, showing only what their age limit allows.
+
 ## Hero Spotlight
 
 The hero spotlight is a large banner at the top of the Jellyfin home page that cycles through featured content with a Ken Burns zoom effect and smooth crossfade transitions.

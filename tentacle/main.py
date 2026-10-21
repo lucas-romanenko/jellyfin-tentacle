@@ -362,7 +362,7 @@ def _run_scheduled_sync():
         logger.info("Syncing per-user playlists and home configs")
         try:
             from models.database import TentacleUser
-            from services.smartlists import sync_smartlists, write_home_config, migrate_global_smartlists_to_user, refresh_smartlist_playlists
+            from services.smartlists import sync_smartlists, write_home_config, migrate_global_smartlists_to_user, refresh_smartlist_playlists, get_home_config
             # Nobody's playlists are rebuilt for an account deleted in Jellyfin.
             try:
                 from services import gone_people
@@ -395,6 +395,11 @@ def _run_scheduled_sync():
                         _rollback(db)
                         logger.warning(f"[Nightly] Duplicate playlist cleanup failed for user {user.id}: {e}")
                     write_home_config(db, user_id=user.id)
+                    # Someone on the default home gets today's default
+                    # (new sources, the admin's latest layout)
+                    from services import default_home
+                    if default_home.follows_default(get_home_config(db, user_id=user.id)):
+                        default_home.apply_default(db, user, build=True)
                     logger.info(
                         f"[Nightly] Playlists rebuilt for user {user.id}: "
                         f"{stats.get('processed', 0)} processed, {stats.get('created', 0)} created, "
@@ -815,6 +820,15 @@ async def lifespan(app: FastAPI):
                 migrate_global_smartlists_to_user(db, _u.id)
             except Exception as e:
                 logger.warning(f"SmartLists migration failed for {_u.display_name}: {e}")
+
+        # Once: homes still on the old starter rows (Jellyfin's own sections)
+        # follow the default home from now on; nobody's own layout is touched
+        try:
+            from services import default_home
+            if default_home.migrate_existing_homes(db):
+                default_home.apply_to_followers_soon("homes moved to the default")
+        except Exception as e:
+            logger.warning(f"Default home migration failed: {e}")
 
         # Validate Jellyfin connection
         jf_url = get_setting(db, "jellyfin_url")
