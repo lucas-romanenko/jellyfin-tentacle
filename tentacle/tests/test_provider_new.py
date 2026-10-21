@@ -166,7 +166,7 @@ class Review(Case):
         self.sync_groups([("1", "CA| SPORTS"), ("2", "US| AT&T"), ("3", "UK| PPV"), ("4", "ES| F1 PPV ᴿᴬᵂ"),
                           ("5", "CA| CINEMA FR")])
         with mock.patch.object(N, "read_new_in_background"), \
-                mock.patch("services.livetv_catalog._region", return_value=(None, [])):
+                mock.patch("services.livetv_catalog._household", return_value=(None, "en")):
             groups = {g["name"]: g for g in N.live_overview(self.db)["groups"]}
             self.assertEqual("language", groups["US| AT&T"]["for_you"])    # English, like the pool
             self.assertEqual("country", groups["CA| CINEMA FR"]["for_you"])

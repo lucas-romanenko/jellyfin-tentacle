@@ -351,11 +351,12 @@ def _book(db: Session):
 
 def household(db: Session, country: Optional[str] = None, lang: Optional[str] = None) -> dict:
     """The countries and languages this household watches: the places with
-    a real share of the channels it has (by their groups), the admin's region
-    (livetv_region, else the server's time zone) and what the admin's browser
-    says (`country`, `lang`). `book` reads group names."""
+    a real share of the channels it has (by their groups), the household of
+    the catalog (livetv_region, else the server's time zone, and
+    livetv_language) and what the admin's browser says (`country`, `lang`).
+    `book` reads group names."""
     from sqlalchemy import func
-    from services.livetv_catalog import _region
+    from services.livetv_catalog import _household
     from services.livetv_groups import COUNTRIES, LANGUAGE_OF
     book = _book(db)
     rows = (db.query(LiveChannel.group_title, func.count(LiveChannel.id))
@@ -368,16 +369,16 @@ def household(db: Session, country: Optional[str] = None, lang: Optional[str] = 
             share[place["iso"] or place["code"]] += n
     countries = [k for k, n in sorted(share.items(), key=lambda kv: -kv[1]) if n >= POOL_SHARE * total]
     try:
-        region = _region(db)[0]
+        region, home_lang = _household(db)
     except Exception:
-        region = None
+        region, home_lang = None, None
     for c in (region, (country or "").upper() or None):
         if c == "UK":
             c = "GB"
         if c in COUNTRIES and c not in countries:
             countries.append(c)
     langs = []
-    for lg in [LANGUAGE_OF.get(c) for c in countries] + [(lang or "").lower()[:2] or None]:
+    for lg in [home_lang] + [LANGUAGE_OF.get(c) for c in countries] + [(lang or "").lower()[:2] or None]:
         if lg and lg not in langs:
             langs.append(lg)
     return {"countries": countries, "languages": langs, "book": book}
