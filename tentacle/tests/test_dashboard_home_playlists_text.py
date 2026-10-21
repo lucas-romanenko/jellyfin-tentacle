@@ -33,8 +33,8 @@ class HomeAndPlaylistNames(unittest.TestCase):
         self.assertEqual([], missing_text(values, html))
 
     def test_home_rows_and_add_row_picker(self):
-        src = (ESC + "let homeRows = [];\n" + functions(
-            "pages.js", ["rowKey", "renderHomeRows", "makeSortable", "showAddHomeRow"]))
+        src = (ESC + "let homeRows = []; let homeScope = 'mine';\n" + functions(
+            "pages.js", ["homeUrl", "rowKey", "renderHomeRows", "makeSortable", "showAddHomeRow"]))
         rows = [{"type": "playlist", "playlist_id": f"p{i}", "display_name": v} for i, v in enumerate(VALUES)]
         setup = ("API['/api/smartlists/available-playlists'] = %s; API['/api/smartlists/builtin-sections'] = %s;"
                  % (json.dumps({"playlists": [{"playlist_id": f"q{i}", "name": v + " pl"} for i, v in enumerate(VALUES)]}),
