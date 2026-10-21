@@ -16,6 +16,17 @@ Jellyfin  ←→  one M3U tuner (the lineup) ←→  Tentacle  ←→  IPTV Prov
 
 Two people watching the same channel use one connection to the provider. Recordings and recording schedules are the household's, like a family recorder: everyone sees them.
 
+## Watching: the guide
+
+In Jellyfin's web app, **Live TV** opens straight to Tentacle's guide:
+
+- **Favorites / All** at the top: Favorites is the guide with only your favourite channels, All is every channel you can see. It remembers your choice (on every browser you sign in to). With no favourites yet it says how to star one and offers All.
+- **☆** next to a channel stars it (or unstars it); **Find a channel** searches by name or number.
+- **Dates** run from today to the last day the TV guide has programmes for, so there are no empty days to tap through (a guide with one day of data shows no dates at all).
+- A line marks **now**; what's on now is highlighted with how far in it is. Tap a channel or what's on now to watch; tap a later programme to see it and record it. **Recordings** and **Schedule** are next to the search.
+
+It stays quick with thousands of channels and works on a phone. (Jellyfin's TV layout keeps Jellyfin's own guide.)
+
 ## My Channels
 
 Everyone (admins too) has **My Channels** in Tentacle's sidebar once the household has Live TV channels.
