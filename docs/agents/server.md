@@ -346,6 +346,26 @@ user_id)` computes them every time from source tags, list subscriptions
   (`services/jellyfin.py`) turns Jellyfin's own home sections off for that
   user (DisplayPreferences), so rows don't appear twice.
 
+## Discover search (`routers/discover.py:search_discover`)
+
+The TV app searches on every keystroke, so `/api/discover/search` must
+answer fast (the plugin gives up after 15 s and the TV says "Tentacle is
+busy"). Order: enabled Live TV channels (local table, max 20), then TMDB
+movies/series, then Sonarr/Radarr text-lookup titles TMDB lacks (TheTVDB).
+
+- Radarr/Sonarr `lookup_by_term` asks the internet metadata services and can
+  take its whole 15 s. It runs on the shared `_search_executor("arr")`
+  threads and gets `SEARCH_ARR_WAIT` (2 s) from the request's start; later
+  answers fill the cache for the next request. Never wait on it longer.
+- Per query (lowercased, spaces collapsed) and type, the futures are kept
+  `SEARCH_CACHE_TTL` (5 min); a request for a query still running shares it.
+  A failed TMDB search is dropped from the cache. 1 character = channels
+  only; 2 = no *arr lookups (`SEARCH_MIN_CHARS`, `SEARCH_ARR_MIN_CHARS`).
+- "In Library" / "Requested" come from the Movie/Series tables and the
+  cached Jellyfin and *arr id maps; a stale map is used while it refreshes in
+  the background (`_search_jellyfin_ids`, `_search_arr_ids`), only a first
+  fetch ever is waited for (up to the same 2 s).
+
 ## Deleting things
 
 - Deleting a provider removes its VOD files and DB records, then rebuilds
