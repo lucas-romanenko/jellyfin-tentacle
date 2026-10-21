@@ -1,45 +1,130 @@
-// Tentacle Live TV — Favorites grid replacing native Jellyfin Live TV page
+// Tentacle Live TV — the guide, replacing Jellyfin's Live TV landing and guide tabs
 //
 // Architecture (same pattern as tentacle-search.js):
 //   - #tentacleLiveTvContainer mounted on document.body
 //   - Body class `tentacle-livetv-active` hides native content
-//   - Active on #/livetv (tab 0 or no tab). Inactive on ?tab=1+ so Guide/Recordings work natively.
-//   - Fetches favorites via LiveTv/Channels?IsFavorite=true&AddCurrentProgram=true
-//   - Click card → playbackManager.play({ ids: [channelId] })
-//   - Guide button → navigates to native Guide tab
-//   - 60s auto-refresh for now-playing info
+//   - Active on #/livetv with no tab, tab 0 (Programs) or tab 1 (Guide);
+//     Channels, Recordings, Schedule and Series stay native.
+//   - Favorites / All toggle: Favorites = this person's favourite channels
+//     (Jellyfin favourites are per user), All = every channel they can see.
+//     The choice is kept in Jellyfin's display preferences (id tentacle-livetv,
+//     client tentacle, CustomPrefs.guideView) so it follows the person, plus
+//     localStorage for an instant first paint.
+//   - Dates only as far as the guide data goes: today up to the day of the
+//     furthest programme end (in the current view), not Jellyfin's 14 days.
+//   - Fast with thousands of channels: one channel list request, rows are
+//     virtualized (only the visible ones exist), programmes are fetched per
+//     day for the visible rows in batches (POST LiveTv/Programs).
+//   - Click a programme on now / a channel → play; a later programme → its
+//     details page (record from there); the star toggles the favourite.
 (function () {
   'use strict';
 
-  var LIVETV = {
+  var PREFS_ID = 'tentacle-livetv';
+  var PREFS_CLIENT = 'tentacle';
+  var BATCH = 100;            // channels per programme request
+  var OVERSCAN = 8;           // rows rendered above/below the viewport
+  var PREFETCH = 30;          // rows whose programmes are fetched ahead
+
+  var G = {
     active: false,
-    refreshTimer: null,
     container: null,
-    notice: '',      // Tentacle's plain words while Live TV is down ("" = fine)
+    notice: '',             // Tentacle's plain words while Live TV is down ("" = fine)
+    userId: '',
+    view: '',               // 'favorites' | 'all'
+    channels: null,         // every channel this person can see (Jellyfin order)
+    loadError: false,
+    query: '',
+    rows: [],               // channels shown (view + search)
+    days: [],               // [{start: ms, end: ms}]
+    dayIndex: 0,
+    maxEnd: {},             // view -> furthest programme end (ms, 0 = no data)
+    progs: {},              // dayStart -> {channelId: [programmes]}
+    pending: {},            // dayStart + ':' + channelId -> true
+    mounted: {},            // channelId -> row element
+    tick: null,
+    scrollRaf: 0,
+    m: null,                // metrics for the current screen size
   };
 
   // ── Helpers ────────────────────────────────────────────────────────
 
   function esc(str) {
-    if (!str) return '';
+    if (str === null || str === undefined) return '';
     var d = document.createElement('div');
-    d.textContent = str;
+    d.textContent = String(str);
     return d.innerHTML;
   }
 
-  function apiGet(path) {
-    return window.ApiClient.getJSON(window.ApiClient.getUrl(path));
+  // For attributes: esc() leaves quotes as they are, which would end the attribute.
+  function escAttr(str) {
+    return esc(str).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function api() { return window.ApiClient; }
+
+  function apiGet(path, params) {
+    return api().getJSON(api().getUrl(path, params));
+  }
+
+  function apiPost(path, body) {
+    return api().ajax({
+      type: 'POST',
+      url: api().getUrl(path),
+      data: JSON.stringify(body),
+      contentType: 'application/json',
+      dataType: 'json',
+    });
+  }
+
+  function metrics() {
+    var phone = window.innerWidth < 700;
+    return phone
+      ? { phone: true, ppm: 4, rowH: 60, chanW: 92, headH: 34 }
+      : { phone: false, ppm: 6.5, rowH: 66, chanW: 260, headH: 38 };
+  }
+
+  var MIN = 60000;
+
+  function startOfDay(t) {
+    var d = new Date(t);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  }
+
+  function addDays(t, n) {
+    var d = new Date(t);
+    d.setDate(d.getDate() + n);
+    return d.getTime();
+  }
+
+  function fmtTime(t) {
+    return new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+
+  // "2:00 – 4:30 PM": the AM/PM once when both ends share it.
+  function fmtRange(a, b) {
+    var x = fmtTime(a), y = fmtTime(b);
+    var mx = x.match(/^(.*?)\s?([AaPp]\.?[Mm]\.?)$/), my = y.match(/^(.*?)\s?([AaPp]\.?[Mm]\.?)$/);
+    if (mx && my && mx[2] === my[2]) x = mx[1];
+    return x + ' – ' + y;
+  }
+
+  function dayLabel(start, i) {
+    if (i === 0) return 'Today';
+    if (i === 1) return 'Tomorrow';
+    var d = new Date(start);
+    return d.toLocaleDateString([], { weekday: 'short' }) + ' ' + d.getDate();
   }
 
   // ── Route detection ────────────────────────────────────────────────
 
-  function isLiveTvFavoritesPage() {
+  function isGuidePage() {
     var h = (location.hash || '').replace('#', '').replace(/^\//, '');
     var path = h.split('?')[0];
     if (path !== 'livetv' && path !== 'livetv.html') return false;
-    // Only active on tab 0 (favorites) or no tab specified
     var match = h.match(/[?&]tab=(\d+)/);
-    if (match && parseInt(match[1], 10) > 0) return false;
+    if (match && parseInt(match[1], 10) > 1) return false;
     return true;
   }
 
@@ -47,162 +132,588 @@
 
   function activate() {
     if (window.TentacleStandAside && window.TentacleStandAside()) return; // TV layout — native page renders
-    if (LIVETV.active) { refresh(); return; }
-    LIVETV.active = true;
+    if (G.active) return;
+    G.active = true;
     document.body.classList.add('tentacle-livetv-active');
     ensureContainer();
-    LIVETV.container.style.display = 'block';
-    refresh();
-    LIVETV.refreshTimer = setInterval(refresh, 60000);
+    G.container.style.display = 'flex';
+    start();
   }
 
   function deactivate() {
-    if (!LIVETV.active) return;
-    LIVETV.active = false;
+    if (!G.active) return;
+    G.active = false;
     document.body.classList.remove('tentacle-livetv-active');
-    if (LIVETV.container) LIVETV.container.style.display = 'none';
-    if (LIVETV.refreshTimer) { clearInterval(LIVETV.refreshTimer); LIVETV.refreshTimer = null; }
+    if (G.container) G.container.style.display = 'none';
+    if (G.tick) { clearInterval(G.tick); G.tick = null; }
   }
 
   // ── Container ──────────────────────────────────────────────────────
 
   function ensureContainer() {
-    if (LIVETV.container) return;
+    if (G.container) return;
     var el = document.createElement('div');
     el.id = 'tentacleLiveTvContainer';
     document.body.appendChild(el);
-    el.addEventListener('click', onContainerClick);
-    LIVETV.container = el;
+    el.addEventListener('click', onClick);
+    el.addEventListener('input', onInput);
+    el.addEventListener('focusout', function (e) {
+      if (e.target.matches('.tg-search input') && !e.target.value) {
+        var top = el.querySelector('.tg-top');
+        if (top) top.classList.remove('searching');
+      }
+    });
+    G.container = el;
+    window.addEventListener('resize', function () {
+      if (!G.active) return;
+      var m = metrics();
+      if (G.m && m.phone === G.m.phone) return;
+      renderGrid(true);
+    });
   }
-
-  // ── Fetch & Render ─────────────────────────────────────────────────
 
   // Family: "Live TV is unavailable right now. Lucas knows." from Tentacle
-  // (TentacleDiscover/FamilyStatus), shown above the grid while it lasts.
+  // (TentacleDiscover/FamilyStatus), shown above the guide while it lasts.
   function loadNotice() {
-    var uid = window.ApiClient.getCurrentUserId();
-    return apiGet('TentacleDiscover/FamilyStatus?userId=' + encodeURIComponent(uid))
+    return apiGet('TentacleDiscover/FamilyStatus', { userId: G.userId })
       .then(function (r) {
         var m = ((r && r.messages) || []).filter(function (x) { return x.area === 'livetv'; })[0];
-        LIVETV.notice = m ? String(m.text || '') : '';
+        G.notice = m ? String(m.text || '') : '';
       })
-      .catch(function () { LIVETV.notice = ''; });
+      .catch(function () { G.notice = ''; });
   }
 
-  function refresh() {
-    if (!LIVETV.active) return;
-    ensureContainer();
-    loadNotice().then(function () {
-      var n = LIVETV.container && LIVETV.container.querySelector('.tltv-notice');
-      if (n) { n.textContent = LIVETV.notice; n.style.display = LIVETV.notice ? '' : 'none'; }
-    });
+  function showNotice() {
+    var n = G.container && G.container.querySelector('.tltv-notice');
+    if (n) { n.textContent = G.notice; n.style.display = G.notice ? '' : 'none'; }
+  }
 
-    apiGet('LiveTv/Channels?IsFavorite=true&AddCurrentProgram=true&SortBy=SortName&SortOrder=Ascending')
-      .then(function (result) {
-        if (!LIVETV.active) return;
-        var channels = (result && result.Items) || [];
-        render(channels);
+  // ── Start: user, saved view, channels ─────────────────────────────
+
+  function start() {
+    var uid = api().getCurrentUserId();
+    if (uid !== G.userId) {
+      G.userId = uid;
+      G.view = '';
+      G.channels = null;
+      G.progs = {};
+      G.pending = {};
+      G.maxEnd = {};
+      G.query = '';
+    }
+    if (!G.view) {
+      var saved = '';
+      try { saved = localStorage.getItem('tentacle-guide-view-' + uid) || ''; } catch (e) { }
+      G.view = saved === 'all' ? 'all' : 'favorites';
+    }
+    G.m = metrics();
+    renderShell();
+    loadNotice().then(showNotice);
+    loadSavedView();
+    loadChannels().then(function () { if (G.active) applyView(true); });
+    if (G.tick) clearInterval(G.tick);
+    G.tick = setInterval(onTick, 30000);
+  }
+
+  // The choice follows the person between browsers: Jellyfin's display
+  // preferences are per user. localStorage only makes the first paint right.
+  function loadSavedView() {
+    apiGet('DisplayPreferences/' + PREFS_ID, { userId: G.userId, client: PREFS_CLIENT })
+      .then(function (p) {
+        var v = p && p.CustomPrefs && p.CustomPrefs.guideView;
+        if ((v === 'all' || v === 'favorites') && v !== G.view && G.active) {
+          G.view = v;
+          rememberLocal();
+          renderToggle();
+          if (G.channels) applyView(true);
+        }
       })
-      .catch(function () {
-        if (!LIVETV.active) return;
-        LIVETV.container.innerHTML = renderHeader() +
-          '<div class="tltv-empty"><div class="tltv-empty-icon"><svg viewBox="0 0 24 24"><path d="M21 6h-7.59l3.29-3.29L16 2l-4 4-4-4-.71.71L10.59 6H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 14H3V8h18v12z"/></svg></div>Failed to load channels.</div>';
+      .catch(function () { });
+  }
+
+  function rememberLocal() {
+    try { localStorage.setItem('tentacle-guide-view-' + G.userId, G.view); } catch (e) { }
+  }
+
+  function saveView() {
+    rememberLocal();
+    var path = 'DisplayPreferences/' + PREFS_ID;
+    var q = { userId: G.userId, client: PREFS_CLIENT };
+    apiGet(path, q).catch(function () { return {}; }).then(function (p) {
+      p = p || {};
+      p.Id = PREFS_ID;
+      p.Client = PREFS_CLIENT;
+      p.CustomPrefs = p.CustomPrefs || {};
+      p.CustomPrefs.guideView = G.view;
+      return api().ajax({
+        type: 'POST',
+        url: api().getUrl(path, q),
+        data: JSON.stringify(p),
+        contentType: 'application/json',
       });
+    }).catch(function () { });
   }
 
-  function render(channels) {
-    var html = renderHeader();
+  function loadChannels() {
+    G.loadError = false;
+    return apiGet('LiveTv/Channels', {
+      UserId: G.userId,
+      EnableImages: true,
+      ImageTypeLimit: 1,
+      EnableImageTypes: 'Primary',
+      EnableUserData: true,
+      AddCurrentProgram: false,
+      EnableFavoriteSorting: false,
+      Fields: '',
+    }).then(function (r) {
+      G.channels = ((r && r.Items) || []).map(function (c) {
+        return {
+          id: c.Id,
+          name: c.Name || '',
+          number: c.ChannelNumber || c.Number || '',
+          logo: (c.ImageTags && c.ImageTags.Primary) || '',
+          fav: !!(c.UserData && c.UserData.IsFavorite),
+        };
+      });
+    }).catch(function () {
+      G.channels = [];
+      G.loadError = true;
+    });
+  }
 
-    if (channels.length === 0) {
-      html += '<div class="tltv-empty">' +
-        '<div class="tltv-empty-icon"><svg viewBox="0 0 24 24"><path d="M21 6h-7.59l3.29-3.29L16 2l-4 4-4-4-.71.71L10.59 6H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 14H3V8h18v12z"/></svg></div>' +
-        '<div>No favorite channels.<br>Mark channels as favorites in the <a href="#/livetv.html?tab=1" onclick="event.stopPropagation()">Guide</a> to see them here.</div>' +
-        '</div>';
-    } else {
-      html += '<div class="tltv-grid">';
-      for (var i = 0; i < channels.length; i++) {
-        html += renderCard(channels[i]);
+  // Furthest programme end in the guide for this view (favourites: only
+  // their channels), so the date strip stops where the data stops.
+  function loadMaxEnd(view) {
+    if (G.maxEnd[view] !== undefined) return Promise.resolve(G.maxEnd[view]);
+    var body = {
+      UserId: G.userId,
+      SortBy: ['StartDate'],
+      SortOrder: ['Descending'],
+      Limit: 1,
+      EnableImages: false,
+      EnableUserData: false,
+      EnableTotalRecordCount: false,
+    };
+    if (view === 'favorites') {
+      var ids = favChannels().map(function (c) { return c.id; });
+      if (!ids.length) { G.maxEnd[view] = 0; return Promise.resolve(0); }
+      body.ChannelIds = ids;
+    }
+    return apiPost('LiveTv/Programs', body).then(function (r) {
+      var p = r && r.Items && r.Items[0];
+      G.maxEnd[view] = p ? Date.parse(p.EndDate) : 0;
+      return G.maxEnd[view];
+    }).catch(function () { G.maxEnd[view] = 0; return 0; });
+  }
+
+  function favChannels() {
+    return (G.channels || []).filter(function (c) { return c.fav; });
+  }
+
+  function computeDays(maxEnd) {
+    var today = startOfDay(Date.now());
+    var days = [];
+    var last = maxEnd > Date.now() ? startOfDay(maxEnd - 1) : today;
+    for (var s = today, i = 0; s <= last && i < 21; s = addDays(s, 1), i++) {
+      var end = addDays(s, 1);
+      // The last day ends with the data (to the next whole hour), not at midnight.
+      if (s === last && maxEnd > s && maxEnd < end) {
+        end = Math.min(end, Math.ceil(maxEnd / (60 * MIN)) * 60 * MIN);
       }
-      html += '</div>';
+      days.push({ start: s, end: end });
     }
-
-    LIVETV.container.innerHTML = html;
+    return days;
   }
 
-  function renderHeader() {
-    return '<div class="tltv-header">' +
-      '<div class="tltv-title">Live TV</div>' +
-      '<button class="tltv-guide-btn" data-action="guide">' +
-        '<svg viewBox="0 0 24 24"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>' +
-        'Guide' +
-      '</button>' +
-    '</div>' +
-    '<div class="tltv-notice" role="status"' + (LIVETV.notice ? '' : ' style="display:none"') + '>' + esc(LIVETV.notice) + '</div>';
+  // ── View: Favorites / All + search ────────────────────────────────
+
+  function applyView(scrollToNow) {
+    var base = G.view === 'favorites' ? favChannels() : (G.channels || []);
+    var q = G.query.trim().toLowerCase();
+    G.rows = q ? base.filter(function (c) {
+      return c.name.toLowerCase().indexOf(q) !== -1 || String(c.number).indexOf(q) === 0;
+    }) : base;
+    renderToggle();
+    loadMaxEnd(G.view).then(function (maxEnd) {
+      if (!G.active) return;
+      var before = G.days.length && G.days[G.dayIndex] ? G.days[G.dayIndex].start : 0;
+      G.days = computeDays(maxEnd);
+      G.dayIndex = 0;
+      for (var i = 0; i < G.days.length; i++) if (G.days[i].start === before) G.dayIndex = i;
+      renderDays();
+      renderGrid(scrollToNow);
+    });
   }
 
-  function renderCard(channel) {
-    var name = esc(channel.Name || 'Unknown');
-    var program = channel.CurrentProgram;
-    var programName = program ? esc(program.Name || '') : '';
-    var timeStr = '';
-    var progress = 0;
+  // ── Render: shell (header, toggle, days) ──────────────────────────
 
-    if (program && program.StartDate && program.EndDate) {
-      var start = new Date(program.StartDate);
-      var end = new Date(program.EndDate);
-      var now = new Date();
-      timeStr = formatTime(start) + ' - ' + formatTime(end);
-      var total = end - start;
-      if (total > 0) {
-        progress = Math.min(100, Math.max(0, ((now - start) / total) * 100));
-      }
-    }
+  var ICON_REC = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16z"/></svg>';
+  var ICON_SCHED = '<svg viewBox="0 0 24 24"><path d="M19 4h-1V2h-2v2H8V2H6v2H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2V6a2 2 0 00-2-2zm0 16H5V9h14v11zM7 11h5v5H7z"/></svg>';
+  var ICON_SEARCH = '<svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0016 9.5 6.5 6.5 0 109.5 16a6.47 6.47 0 004.23-1.57l.27.28v.79l5 5L20.5 19l-5-5zm-6 0A4.5 4.5 0 1114 9.5 4.49 4.49 0 019.5 14z"/></svg>';
+  var STAR_ON = '<svg viewBox="0 0 24 24"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>';
+  var STAR_OFF = '<svg viewBox="0 0 24 24"><path d="M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z"/></svg>';
 
-    var logoHtml;
-    if (channel.ImageTags && channel.ImageTags.Primary) {
-      var imgUrl = window.ApiClient.getUrl('Items/' + channel.Id + '/Images/Primary', { maxHeight: 112, quality: 90 });
-      logoHtml = '<div class="tltv-logo"><img src="' + imgUrl + '" alt="" loading="lazy" /></div>';
-    } else {
-      logoHtml = '<div class="tltv-logo"><div class="tltv-logo-fallback"><svg viewBox="0 0 24 24"><path d="M21 6h-7.59l3.29-3.29L16 2l-4 4-4-4-.71.71L10.59 6H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 14H3V8h18v12z"/></svg></div></div>';
-    }
-
-    return '<div class="tltv-card" data-channel-id="' + channel.Id + '">' +
-      logoHtml +
-      '<div class="tltv-info">' +
-        '<div class="tltv-channel-name">' + name + '</div>' +
-        (programName ? '<div class="tltv-program-name">' + programName + '</div>' : '') +
-        (timeStr ? '<div class="tltv-program-time">' + timeStr + '</div>' : '') +
+  function renderShell() {
+    G.mounted = {};
+    G.container.innerHTML =
+      '<div class="tg-top' + (G.query ? ' searching' : '') + '">' +
+        '<div class="tg-title">Live TV</div>' +
+        '<div class="tg-toggle" role="tablist"></div>' +
+        '<label class="tg-search">' + ICON_SEARCH +
+          '<input type="search" placeholder="Find a channel" aria-label="Find a channel" value="' + escAttr(G.query) + '">' +
+        '</label>' +
+        '<div class="tg-links">' +
+          '<a class="tg-link" href="#/livetv?tab=3" title="Recordings">' + ICON_REC + '<span>Recordings</span></a>' +
+          '<a class="tg-link" href="#/livetv?tab=4" title="Schedule">' + ICON_SCHED + '<span>Schedule</span></a>' +
+        '</div>' +
       '</div>' +
-      '<div class="tltv-progress"><div class="tltv-progress-bar" style="width:' + progress.toFixed(1) + '%"></div></div>' +
-    '</div>';
+      '<div class="tltv-notice" role="status"' + (G.notice ? '' : ' style="display:none"') + '>' + esc(G.notice) + '</div>' +
+      '<div class="tg-days"></div>' +
+      '<div class="tg-body"><div class="tg-loading">Loading the guide…</div></div>';
+    renderToggle();
   }
 
-  function formatTime(date) {
-    var h = date.getHours();
-    var m = date.getMinutes();
-    var ampm = h >= 12 ? 'PM' : 'AM';
-    h = h % 12 || 12;
-    return h + ':' + (m < 10 ? '0' : '') + m + ' ' + ampm;
+  function renderToggle() {
+    var t = G.container && G.container.querySelector('.tg-toggle');
+    if (!t) return;
+    var n = G.channels ? favChannels().length : null;
+    t.innerHTML = ['favorites', 'all'].map(function (v) {
+      var label = v === 'favorites' ? 'Favorites' : 'All';
+      var count = '';
+      if (G.channels) count = ' <span class="tg-count">' + (v === 'favorites' ? n : G.channels.length).toLocaleString() + '</span>';
+      return '<button type="button" role="tab" data-view="' + v + '" aria-selected="' + (G.view === v) + '"' +
+        ' class="tg-seg' + (G.view === v ? ' on' : '') + '">' + label + count + '</button>';
+    }).join('');
   }
 
-  // ── Click handling ─────────────────────────────────────────────────
+  function renderDays() {
+    var el = G.container.querySelector('.tg-days');
+    if (!el) return;
+    // One day of data: no strip, nothing to choose.
+    if (G.days.length < 2) { el.innerHTML = ''; el.style.display = 'none'; return; }
+    el.style.display = '';
+    el.innerHTML = G.days.map(function (d, i) {
+      return '<button type="button" class="tg-day' + (i === G.dayIndex ? ' on' : '') + '" data-day="' + i + '">' +
+        esc(dayLabel(d.start, i)) + '</button>';
+    }).join('');
+  }
 
-  function onContainerClick(e) {
-    // Guide button
-    var guideBtn = e.target.closest('[data-action="guide"]');
-    if (guideBtn) {
-      e.preventDefault();
-      location.hash = '#/livetv.html?tab=1';
+  // ── Render: grid ──────────────────────────────────────────────────
+
+  // Pixels from the start of the day shown (or of `day`).
+  function x(t, day) {
+    day = day || G.days[G.dayIndex];
+    return (t - day.start) / MIN * (G.m || metrics()).ppm;
+  }
+
+  function renderGrid(scrollToNow) {
+    G.m = metrics();
+    G.mounted = {};
+    var body = G.container.querySelector('.tg-body');
+    if (!body) return;
+    var m = G.m;
+    var old = body.querySelector('.tg-scroller');
+    var keepLeft = old ? old.scrollLeft : 0;
+
+    if (G.loadError) {
+      body.innerHTML = '<div class="tg-empty">The channels didn\'t load. <button type="button" class="tg-btn" data-action="retry">Try again</button></div>';
+      return;
+    }
+    if (!G.channels.length) {
+      body.innerHTML = '<div class="tg-empty">No channels yet.</div>';
+      return;
+    }
+    if (!G.rows.length) {
+      if (G.query) {
+        body.innerHTML = '<div class="tg-empty">No channel matches “' + esc(G.query) + '”.</div>';
+      } else {
+        body.innerHTML = '<div class="tg-empty">' +
+          '<div>No favorite channels yet. In All, tap the ☆ next to a channel to add it here.</div>' +
+          '<button type="button" class="tg-btn" data-view="all">Show all channels</button></div>';
+      }
       return;
     }
 
-    // Channel card → play
-    var card = e.target.closest('.tltv-card');
-    if (card && card.dataset.channelId) {
-      e.preventDefault();
-      playChannel(card.dataset.channelId);
+    var day = G.days[G.dayIndex];
+    var width = Math.round(x(day.end));
+    var height = G.rows.length * m.rowH;
+
+    var head = '';
+    for (var t = day.start; t < day.end; t += 30 * MIN) {
+      head += '<div class="tg-tick" style="left:' + Math.round(x(t)) + 'px">' + esc(fmtTime(t)) + '</div>';
+    }
+
+    body.innerHTML =
+      '<div class="tg-scroller' + (m.phone ? ' phone' : '') + '" style="--row:' + m.rowH + 'px;--chan:' + m.chanW + 'px;--head:' + m.headH + 'px">' +
+        '<div class="tg-canvas" style="width:' + (m.chanW + width) + 'px;height:' + (m.headH + height) + 'px">' +
+          '<div class="tg-head" style="width:' + (m.chanW + width) + 'px">' +
+            '<div class="tg-corner"></div>' +
+            '<div class="tg-ticks" style="width:' + width + 'px">' + head + '<div class="tg-nowpill"></div></div>' +
+          '</div>' +
+          '<div class="tg-rows"></div>' +
+          '<div class="tg-now"></div>' +
+        '</div>' +
+      '</div>';
+
+    var sc = body.querySelector('.tg-scroller');
+    sc.addEventListener('scroll', onScroll, { passive: true });
+    placeNow();
+    if (scrollToNow) {
+      var now = Date.now();
+      sc.scrollLeft = (now >= day.start && now < day.end) ? Math.max(0, x(now) - 30 * m.ppm) : 0;
+      sc.scrollTop = 0;
+    } else {
+      sc.scrollLeft = keepLeft;
+    }
+    drawRows();
+  }
+
+  function placeNow() {
+    var line = G.container.querySelector('.tg-now');
+    var pill = G.container.querySelector('.tg-nowpill');
+    if (!line) return;
+    var day = G.days[G.dayIndex], now = Date.now();
+    if (!day || now < day.start || now >= day.end) {
+      line.style.display = 'none';
+      if (pill) pill.style.display = 'none';
+      return;
+    }
+    var left = G.m.chanW + x(now);
+    line.style.display = '';
+    line.style.left = left + 'px';
+    if (pill) {
+      pill.style.display = '';
+      pill.style.left = x(now) + 'px';
+      pill.textContent = fmtTime(now);
+      // The half-hour labels the pill would cover step aside.
+      var ticks = G.container.querySelectorAll('.tg-tick');
+      for (var i = 0; i < ticks.length; i++) {
+        var tx = parseFloat(ticks[i].style.left);
+        ticks[i].style.visibility = (tx > x(now) - 80 && tx < x(now) + 40) ? 'hidden' : '';
+      }
     }
   }
+
+  function onScroll() {
+    if (G.scrollRaf) return;
+    G.scrollRaf = requestAnimationFrame(function () { G.scrollRaf = 0; drawRows(); });
+  }
+
+  // Mount the rows in view (plus a few), drop the rest; fetch programmes ahead.
+  function drawRows() {
+    var sc = G.container && G.container.querySelector('.tg-scroller');
+    var layer = sc && sc.querySelector('.tg-rows');
+    if (!layer) return;
+    var m = G.m;
+    var top = Math.max(0, sc.scrollTop - m.headH);
+    var first = Math.max(0, Math.floor(top / m.rowH) - OVERSCAN);
+    var last = Math.min(G.rows.length - 1, Math.ceil((top + sc.clientHeight) / m.rowH) + OVERSCAN);
+
+    var keep = {};
+    for (var i = first; i <= last; i++) {
+      var c = G.rows[i];
+      keep[c.id] = true;
+      var el = G.mounted[c.id];
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'tg-row';
+        el.dataset.channelId = c.id;
+        el.innerHTML = chanCell(c) + '<div class="tg-progs"></div>';
+        G.mounted[c.id] = el;
+        fillProgs(el, c.id);
+        layer.appendChild(el);
+      }
+      el.style.top = (m.headH + i * m.rowH) + 'px';
+    }
+    Object.keys(G.mounted).forEach(function (id) {
+      if (!keep[id]) { G.mounted[id].remove(); delete G.mounted[id]; }
+    });
+
+    var want = [];
+    var lo = Math.max(0, first - PREFETCH), hi = Math.min(G.rows.length - 1, last + PREFETCH);
+    for (var j = lo; j <= hi; j++) want.push(G.rows[j].id);
+    fetchProgs(want);
+  }
+
+  function chanCell(c) {
+    var logo = c.logo
+      ? '<img class="tg-logo" loading="lazy" alt="" src="' + escAttr(api().getUrl('Items/' + c.id + '/Images/Primary', { maxHeight: 96, tag: c.logo, quality: 90 })) + '">'
+      : '<div class="tg-logo tg-logo-text">' + esc(c.name.slice(0, 3)) + '</div>';
+    return '<div class="tg-chan" data-action="play" title="' + escAttr(c.name) + '">' +
+      logo +
+      '<div class="tg-chan-text">' +
+        '<div class="tg-chan-name">' + esc(c.name) + '</div>' +
+        (c.number ? '<div class="tg-chan-num">' + esc(c.number) + '</div>' : '') +
+      '</div>' +
+      '<button type="button" class="tg-star' + (c.fav ? ' on' : '') + '" data-action="star" aria-pressed="' + c.fav + '"' +
+        ' title="' + (c.fav ? 'Remove from Favorites' : 'Add to Favorites') + '">' + (c.fav ? STAR_ON : STAR_OFF) + '</button>' +
+    '</div>';
+  }
+
+  function fillProgs(rowEl, channelId) {
+    var day = G.days[G.dayIndex];
+    var list = G.progs[day.start] && G.progs[day.start][channelId];
+    rowEl.querySelector('.tg-progs').innerHTML = progsHtml(list, day, Date.now());
+  }
+
+  // One channel's programmes for `day` (undefined = still loading).
+  function progsHtml(list, day, now) {
+    if (!list) return '<div class="tg-prog tg-wait" style="left:0;width:100%"></div>';
+    if (!list.length) {
+      return '<div class="tg-prog tg-none" style="left:0;width:' + Math.round(x(day.end, day)) + 'px"><span class="tg-sticky">No guide information</span></div>';
+    }
+    var html = '';
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
+      var s = Math.max(p.s, day.start), e = Math.min(p.e, day.end);
+      if (e <= s) continue;
+      var left = Math.round(x(s, day)), w = Math.round(x(e, day)) - left;
+      var cls = 'tg-prog' + (p.e <= now ? ' past' : (p.s <= now ? ' live' : ''));
+      var prog = p.e > p.s && p.s <= now && now < p.e ? (now - p.s) / (p.e - p.s) * 100 : 0;
+      html += '<div class="' + cls + '" data-action="prog" data-id="' + esc(p.id) + '" data-s="' + p.s + '" data-e="' + p.e + '"' +
+        ' style="left:' + left + 'px;width:' + Math.max(0, w - 2) + 'px" title="' + escAttr(p.name + (p.ov ? '\n\n' + p.ov : '')) + '">' +
+        '<span class="tg-sticky">' +
+          '<span class="tg-prog-name">' + (p.s < day.start ? '‹ ' : '') + esc(p.name) + '</span>' +
+          (w > 96 ? '<span class="tg-prog-time">' + esc(fmtRange(p.s, p.e)) + '</span>' : '') +
+        '</span>' +
+        (prog ? '<i class="tg-bar" style="width:' + prog.toFixed(1) + '%"></i>' : '') +
+      '</div>';
+    }
+    return html;
+  }
+
+  function fetchProgs(ids) {
+    var day = G.days[G.dayIndex];
+    var cache = G.progs[day.start] = G.progs[day.start] || {};
+    var need = ids.filter(function (id) { return !cache[id] && !G.pending[day.start + ':' + id]; });
+    for (var i = 0; i < need.length; i += BATCH) {
+      loadBatch(day, need.slice(i, i + BATCH));
+    }
+  }
+
+  function loadBatch(day, ids) {
+    ids.forEach(function (id) { G.pending[day.start + ':' + id] = true; });
+    var done = function () { ids.forEach(function (id) { delete G.pending[day.start + ':' + id]; }); };
+    apiPost('LiveTv/Programs', {
+      UserId: G.userId,
+      ChannelIds: ids,
+      MinEndDate: new Date(day.start).toISOString(),
+      MaxStartDate: new Date(day.end).toISOString(),
+      SortBy: ['StartDate'],
+      EnableImages: false,
+      EnableUserData: false,
+      EnableTotalRecordCount: false,
+      Fields: ['Overview'],
+    }).then(function (r) {
+      done();
+      var cache = G.progs[day.start] = G.progs[day.start] || {};
+      ids.forEach(function (id) { cache[id] = []; });
+      ((r && r.Items) || []).forEach(function (p) {
+        (cache[p.ChannelId] = cache[p.ChannelId] || []).push({
+          id: p.Id,
+          name: p.EpisodeTitle && p.Name ? p.Name + ': ' + p.EpisodeTitle : (p.Name || ''),
+          s: Date.parse(p.StartDate),
+          e: Date.parse(p.EndDate),
+          ov: p.Overview || '',
+        });
+      });
+      if (!G.active || G.days[G.dayIndex] !== day) return;
+      ids.forEach(function (id) { if (G.mounted[id]) fillProgs(G.mounted[id], id); });
+    }).catch(done);
+  }
+
+  // Every 30 s: move the now line; at a programme change redraw what's in view.
+  function onTick() {
+    if (!G.active) return;
+    placeNow();
+    var today = startOfDay(Date.now());
+    if (G.days.length && G.days[0].start !== today) { applyView(true); return; }
+    Object.keys(G.mounted).forEach(function (id) { fillProgs(G.mounted[id], id); });
+  }
+
+  // ── Events ────────────────────────────────────────────────────────
+
+  function onInput(e) {
+    if (!e.target.matches('.tg-search input')) return;
+    G.query = e.target.value || '';
+    applyView(false);
+  }
+
+  function setView(v) {
+    if (v === G.view) return;
+    G.view = v;
+    G.query = '';
+    var input = G.container.querySelector('.tg-search input');
+    if (input) input.value = '';
+    saveView();
+    applyView(true);
+  }
+
+  function onClick(e) {
+    var t = e.target;
+    var search = t.closest('.tg-search');
+    if (search) {
+      var top = G.container.querySelector('.tg-top');
+      if (top && !top.classList.contains('searching')) {
+        top.classList.add('searching');
+        search.querySelector('input').focus();
+      }
+      return;
+    }
+    var viewBtn = t.closest('[data-view]');
+    if (viewBtn) { e.preventDefault(); setView(viewBtn.dataset.view); return; }
+
+    var dayBtn = t.closest('[data-day]');
+    if (dayBtn) {
+      e.preventDefault();
+      G.dayIndex = parseInt(dayBtn.dataset.day, 10) || 0;
+      renderDays();
+      renderGrid(true);
+      return;
+    }
+
+    if (t.closest('[data-action="retry"]')) {
+      e.preventDefault();
+      loadChannels().then(function () { if (G.active) applyView(true); });
+      return;
+    }
+
+    var row = t.closest('.tg-row');
+    if (!row) return;
+    var id = row.dataset.channelId;
+
+    if (t.closest('[data-action="star"]')) { e.preventDefault(); e.stopPropagation(); toggleFav(id); return; }
+
+    var cell = t.closest('[data-action="prog"]');
+    if (cell) {
+      e.preventDefault();
+      var now = Date.now();
+      if (+cell.dataset.s <= now && now < +cell.dataset.e) playChannel(id);
+      else location.hash = '#/details?id=' + cell.dataset.id + '&serverId=' + api().serverId();
+      return;
+    }
+    if (t.closest('[data-action="play"]')) { e.preventDefault(); playChannel(id); }
+  }
+
+  function toggleFav(id) {
+    var c = (G.channels || []).filter(function (x) { return x.id === id; })[0];
+    if (!c) return;
+    c.fav = !c.fav;
+    G.maxEnd.favorites = undefined;
+    var redraw = function () {
+      if (G.view === 'favorites') { applyView(false); return; }
+      renderToggle();
+      var el = G.mounted[id];
+      if (el) el.querySelector('.tg-chan').outerHTML = chanCell(c);
+    };
+    redraw();
+    var p = c.fav
+      ? api().ajax({ type: 'POST', url: api().getUrl('UserFavoriteItems/' + id, { userId: G.userId }) })
+      : api().ajax({ type: 'DELETE', url: api().getUrl('UserFavoriteItems/' + id, { userId: G.userId }) });
+    Promise.resolve(p).catch(function () { c.fav = !c.fav; redraw(); });
+  }
+
+  // ── Playback ──────────────────────────────────────────────────────
 
   function playChannel(channelId) {
     // Try playbackManager first (global in Jellyfin web)
@@ -227,14 +738,14 @@
   }
 
   function playViaSession(channelId) {
-    var api = window.ApiClient;
-    if (!api) return;
+    var a = window.ApiClient;
+    if (!a) return;
 
-    if (typeof api.sendPlayCommand === 'function') {
-      var deviceId = api.deviceId();
-      api.getSessions({ DeviceId: deviceId }).then(function (sessions) {
+    if (typeof a.sendPlayCommand === 'function') {
+      var deviceId = a.deviceId();
+      a.getSessions({ DeviceId: deviceId }).then(function (sessions) {
         if (sessions && sessions.length > 0) {
-          return api.sendPlayCommand(sessions[0].Id, {
+          return a.sendPlayCommand(sessions[0].Id, {
             ItemIds: [channelId],
             PlayCommand: 'PlayNow'
           });
@@ -257,7 +768,7 @@
   // ── Navigation listeners ───────────────────────────────────────────
 
   function onRouteChange() {
-    if (isLiveTvFavoritesPage()) {
+    if (isGuidePage()) {
       // Small delay to let Jellyfin finish its view transition
       setTimeout(activate, 50);
     } else {
@@ -273,14 +784,16 @@
   // one. The Live TV overlay sits at z-index 900, so anything opened without
   // dismissing it first would be invisible underneath.
   window.TentacleLiveTV = {
-    isActive: function () { return LIVETV.active; },
+    isActive: function () { return G.active; },
     hide: function () { deactivate(); },
     // Shared with the Favorites page (favorited channel cards play on click)
     playChannel: playChannel,
+    // For the unit tests (tests/test_livetv_guide.py)
+    internals: { computeDays: computeDays, isGuidePage: isGuidePage, progsHtml: progsHtml, chanCell: chanCell, fmtRange: fmtRange },
   };
 
   // Initial check
-  if (isLiveTvFavoritesPage()) {
+  if (isGuidePage()) {
     setTimeout(activate, 100);
   }
 })();

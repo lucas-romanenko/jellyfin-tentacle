@@ -57,8 +57,8 @@ class FamilyTextIsEscaped(unittest.TestCase):
     def test_plugin_escapes_what_people_typed(self):
         self.assertIn("esc(item.request.note)", DISCOVER)
         self.assertIn("esc(item.request.decided_by || 'Your admin')", DISCOVER)
-        self.assertIn("esc(LIVETV.notice)", LIVETV)
-        self.assertIn("n.textContent = LIVETV.notice", LIVETV)
+        self.assertIn("esc(G.notice)", LIVETV)
+        self.assertIn("n.textContent = G.notice", LIVETV)
 
 
 if __name__ == "__main__":
