@@ -899,6 +899,14 @@ class LiveChannel(Base):
     enabled = Column(Boolean, default=False)  # User must enable channels
     sort_order = Column(Integer, default=0)
 
+    # The background stream checker (services/livetv_checker.py): "works" /
+    # "broken" (two failed checks in a row) / NULL = not checked yet; when it
+    # last got a verdict (UTC), failed checks in a row, and the last outcome.
+    check_state = Column(String, nullable=True)
+    check_at = Column(DateTime, nullable=True)
+    check_fails = Column(Integer, nullable=True)
+    check_detail = Column(String, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -977,6 +985,47 @@ class LiveUserChannel(Base):
     __table_args__ = (
         UniqueConstraint("jellyfin_user_id", "channel_key", name="uq_live_user_channel"),
     )
+
+
+class LiveNetwork(Base):
+    """One network the provider lists many times (per city, quality or time
+    zone feed): one pool entry, key "n<id>", streaming the variant the admin
+    chose (services/livetv_catalog.py). Kept when it empties, so its key and
+    Jellyfin channel stay the same if its channels come back. `data`: name_set
+    (the admin renamed it), auto_channel_id (the default variant), excluded
+    (the admin took it out of the pool), dissolved (split up: never folded
+    again), types (the admin's types)."""
+    __tablename__ = "live_networks"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, nullable=False)
+    # What the channels' names reduce to (services/livetv_names.fold_key);
+    # NULL for a network the admin made by merging.
+    fold_key = Column(String, nullable=True, index=True)
+    # The admin's choice of variant; NULL = the default (data.auto_channel_id).
+    chosen_channel_id = Column(Integer, ForeignKey("live_channels.id", ondelete="SET NULL"), nullable=True)
+    # Merged into another network: its channels and key went there.
+    merged_into = Column(Integer, ForeignKey("live_networks.id", ondelete="SET NULL"), nullable=True)
+    data = Column(JSON, default=dict)
+
+
+class LiveChannelCatalog(Base):
+    """A channel's place in the catalog: the network it folds into (NULL =
+    on its own). `data`: pinned (the admin split or merged it: folding leaves
+    it where it is), types (the admin's types), key (the pool key it was
+    last served under, so a change leaves an alias)."""
+    __tablename__ = "live_channel_catalog"
+    channel_id = Column(Integer, ForeignKey("live_channels.id", ondelete="CASCADE"), primary_key=True)
+    network_id = Column(Integer, ForeignKey("live_networks.id", ondelete="SET NULL"), nullable=True, index=True)
+    data = Column(JSON, default=dict)
+
+
+class LiveKeyAlias(Base):
+    """A pool key that stopped being one (folded, merged, split) and the key
+    it became: people's lists, favourites and recordings follow it."""
+    __tablename__ = "live_key_aliases"
+    old_key = Column(String, primary_key=True)
+    new_key = Column(String, nullable=False)
+    data = Column(JSON, default=dict)
 
 
 class EPGProgram(Base):

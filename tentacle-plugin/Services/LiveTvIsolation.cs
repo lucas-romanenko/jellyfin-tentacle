@@ -16,15 +16,18 @@ using Microsoft.Extensions.Logging;
 namespace Jellyfin.Plugin.Tentacle.Services;
 
 /// <summary>
-/// Live TV per person. Tentacle gives Jellyfin one M3U tuner for everyone on
-/// "All channels" and one per person with a list of their own; each tuner's
-/// channels carry its tag (tentacle-livetv-all / tentacle-livetv-&lt;user id&gt;)
-/// and everyone blocks the other tuners' tags. The server sets all of that
-/// through the API; this closes the gaps it can't:
-///   - a channel Jellyfin creates gets its tag at once (the server only tags
-///     after the guide refresh, minutes later);
-///   - a new Jellyfin user blocks every person's own tuner at once (the
-///     server notices new users within the hour);
+/// Live TV for the household. Tentacle gives Jellyfin one M3U tuner, the
+/// lineup (/api/live/tuner/all.m3u); its channels carry tentacle-livetv-all,
+/// or tentacle-livetv-kids for the household's kids channels, and kids
+/// profiles block tentacle-livetv-all. Per-person tuners of before
+/// (tentacle-livetv-&lt;user id&gt;) are still recognised while the server moves
+/// everyone off them. The server sets all of that through the API; this
+/// closes the gaps it can't:
+///   - a channel Jellyfin creates gets its tuner's tag at once (the server
+///     only tags after the guide refresh, minutes later), so a kid never sees
+///     a new channel before it is made a kids channel; a lineup channel the
+///     server made a kids channel keeps that tag;
+///   - a new Jellyfin user blocks every per-person tuner of before at once;
 ///   - each programme gets its channel's tag, so programme lists ("On now",
 ///     the Programs tab, search) are filtered in Jellyfin's database. Without
 ///     it nobody sees another person's programmes either (Jellyfin drops them
@@ -34,6 +37,7 @@ public class LiveTvIsolation : IHostedService
 {
     public const string TagPrefix = "tentacle-livetv-";
     public const string AllTag = TagPrefix + "all";
+    public const string KidsTag = TagPrefix + "kids";
 
     private static readonly Regex UserTunerRe = new(@"/api/live/users/([0-9a-fA-F]{32})/tuner\.m3u$", RegexOptions.Compiled);
 
@@ -97,11 +101,14 @@ public class LiveTvIsolation : IHostedService
         return prefixes.TryGetValue(externalId[..36], out var tag) ? tag : null;
     }
 
-    /// <summary>Tags with Tentacle's tuner tag set to <paramref name="tag"/> (null when nothing changes).</summary>
-    public static string[]? WithTag(string[]? tags, string tag)
+    /// <summary>Tags with Tentacle's tuner tag set to <paramref name="tag"/> (null when nothing changes).
+    /// With <paramref name="keepKids"/> (a channel), a lineup channel (tag <see cref="AllTag"/>) the server
+    /// made a kids channel keeps <see cref="KidsTag"/>; a programme always takes its channel's tag.</summary>
+    public static string[]? WithTag(string[]? tags, string tag, bool keepKids = false)
     {
         var current = tags ?? Array.Empty<string>();
-        if (current.Contains(tag, StringComparer.OrdinalIgnoreCase))
+        if (current.Contains(tag, StringComparer.OrdinalIgnoreCase)
+            || (keepKids && tag == AllTag && current.Contains(KidsTag, StringComparer.OrdinalIgnoreCase)))
         {
             return null;
         }
@@ -109,7 +116,7 @@ public class LiveTvIsolation : IHostedService
         return current.Where(t => !t.StartsWith(TagPrefix, StringComparison.OrdinalIgnoreCase)).Append(tag).ToArray();
     }
 
-    /// <summary>A new person's blocked tags: their own kept, plus every person's own tuner (they start on "All channels").</summary>
+    /// <summary>A new person's blocked tags: their own kept, plus every per-person tuner of before (they see the lineup).</summary>
     public static string[] NewUserBlockedTags(string[]? blocked, IEnumerable<string> tunerTags)
         => (blocked ?? Array.Empty<string>())
             .Where(t => !t.StartsWith(TagPrefix, StringComparison.OrdinalIgnoreCase))
@@ -144,7 +151,7 @@ public class LiveTvIsolation : IHostedService
         try
         {
             var tag = TagForChannel(channel.ExternalId, TunerPrefixes(Tuners()));
-            var tags = tag == null ? null : WithTag(channel.Tags, tag);
+            var tags = tag == null ? null : WithTag(channel.Tags, tag, keepKids: true);
             if (tags == null)
             {
                 return;
@@ -161,7 +168,7 @@ public class LiveTvIsolation : IHostedService
     }
 }
 
-/// <summary>A new Jellyfin user starts on "All channels": block every person's own tuner right away.</summary>
+/// <summary>A new Jellyfin user sees the lineup: block every per-person tuner of before right away.</summary>
 public class LiveTvNewUser : IEventConsumer<UserCreatedEventArgs>
 {
     private readonly IUserManager _userManager;
@@ -204,7 +211,7 @@ public class LiveTvNewUser : IEventConsumer<UserCreatedEventArgs>
 
                 policy.BlockedTags = blocked;
                 await _userManager.UpdatePolicyAsync(userId, policy).ConfigureAwait(false);
-                _logger.LogInformation("[Tentacle] New user {Name}: Live TV set to All channels", user.Username);
+                _logger.LogInformation("[Tentacle] New user {Name}: Live TV set to the lineup", user.Username);
             }
             catch (Exception ex)
             {
@@ -299,7 +306,7 @@ public static class LiveTvTagPatches
             return null;
         }
 
-        return LiveTvIsolation.WithTag(storedTags, tag) ?? storedTags;
+        return LiveTvIsolation.WithTag(storedTags, tag, keepKids: true) ?? storedTags;
     }
 
     private static void ChannelPrefix(ChannelInfo channelInfo)

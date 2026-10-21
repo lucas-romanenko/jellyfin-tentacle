@@ -822,8 +822,13 @@ async def lifespan(app: FastAPI):
     setup_sse_logging()
 
     scheduler.start()
+    # Live TV: the background stream checker (one channel at a time, only
+    # while nobody watches or records; any stream open pre-empts it).
+    from services import livetv_checker
+    livetv_checker.start()
     logger.info("Tentacle ready")
     yield
+    livetv_checker.stop()
     scheduler.shutdown(wait=False)
     logger.info("Tentacle shutting down")
 
@@ -897,6 +902,11 @@ app.include_router(activity_router.router)
 app.include_router(livetv_router.router)
 from routers import my_livetv as my_livetv_router
 app.include_router(my_livetv_router.router)
+from routers import livetv_checker as livetv_checker_router
+app.include_router(livetv_checker_router.router)
+from routers import livetv_catalog as livetv_catalog_router
+app.include_router(livetv_catalog_router.router)
+app.include_router(livetv_catalog_router.stream_router)
 from routers import family as family_router
 app.include_router(family_router.router)
 app.include_router(family_router.tv_router)

@@ -1285,51 +1285,124 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 }
 
 /* ── My channels ── */
-.card.mych-head { display: flex; align-items: center; gap: 14px 20px; flex-wrap: wrap; margin-bottom: 16px; }
+.card.mych-head { display: flex; align-items: center; gap: 8px 20px; flex-wrap: wrap; margin-bottom: 16px; }
 .mych-head-text { flex: 1; min-width: 240px; }
 .mych-title { font-size: 16px; font-weight: 600; }
-.mych-sub { font-size: 13px; color: var(--text2); margin-top: 4px; }
-.mych-mode .filter-btn { padding: 8px 14px; font-size: 13px; }
+.mych-total { font-weight: 400; color: var(--text3); font-size: 13px; margin-left: 6px; }
+.mych-sub { font-size: 13px; color: var(--text2); margin-top: 4px; max-width: 720px; }
 .mych-count { opacity: .75; font-family: 'DM Mono', monospace; font-size: 11px; margin-left: 4px; }
-.mych-status { width: 100%; font-size: 12px; color: var(--text3); margin-top: -4px; }
+.mych-status { width: 100%; font-size: 12px; color: var(--text3); }
 .mych-status:empty { display: none; }
 .mych-status.ok { color: var(--green); }
 .mych-status.busy { color: var(--amber); }
+.card.mych-picks-card { margin-bottom: 16px; }
+.mych-step-title { font-size: 14px; font-weight: 600; }
+.mych-picks { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.mych-pick { display: inline-flex; align-items: baseline; gap: 6px; padding: 8px 12px; font-size: 13px; font-weight: 500; font-family: 'DM Sans', sans-serif;
+  color: var(--text); background: var(--bg2); border: 1px solid var(--border2); border-radius: 3px; cursor: pointer; }
+.mych-pick:hover { border-color: var(--accent); }
+.mych-pick .n { font-size: 11px; color: var(--text3); font-weight: 400; }
+.mych-pick.on { background: var(--accent-dim); border-color: var(--accent); }
+.mych-pick.on .n { color: var(--accent-text); }
+.mych-pick.more { display: none; color: var(--accent-text); }
+.mych-name .via { font-size: 11px; color: var(--text3); margin-left: 8px; }
+.mych-pick .star { color: var(--text3); }
+.mych-pick.on .star { color: var(--amber); }
 .mych-own { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
-.mych-own .mych-phone-tabs { display: none; grid-column: 1 / -1; margin-bottom: 0; }
-.card.mych-panel { padding: 0; overflow: hidden; }
-.mych-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.live-tabs.mych-phone-tabs { display: none; margin-bottom: 0; }
+.card.mych-panel { padding: 0; overflow: hidden; border-radius: 3px; }
+.mych-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.mych-panel-head > div:first-child { flex: 1 1 220px; min-width: 0; }
+.mych-panel-head .card-title { margin-bottom: 2px; }
 .mych-hint { font-size: 12px; color: var(--text3); }
-.mych-search { width: 220px; max-width: 100%; padding: 6px 10px; font-size: 13px; }
-.mych-list { max-height: calc(100vh - 300px); min-height: 160px; overflow-y: auto; }
+.mych-filters { display: flex; gap: 8px; flex-wrap: wrap; }
+.mych-search { width: 200px; max-width: 100%; padding: 6px 10px; font-size: 13px; }
+.mych-type { width: 130px; padding: 6px 8px; font-size: 13px; }
+.mych-list { max-height: calc(100vh - 330px); min-height: 160px; overflow-y: auto; }
 .mych-row { display: flex; align-items: center; gap: 10px; padding: 7px 12px 7px 14px; border-bottom: 1px solid var(--border); font-size: 13px; background: var(--bg1); }
 .mych-row:last-child { border-bottom: none; }
-.mych-row.dragging { opacity: .4; }
-.mych-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
-.mych-num { width: 30px; text-align: right; font-family: 'DM Mono', monospace; font-size: 12px; color: var(--text3); flex-shrink: 0; }
+.mych-row.starred { background: linear-gradient(90deg, var(--accent-dim), transparent 60%); }
+#mych-fav-list .mych-row.starred { background: var(--bg1); }
+.mych-row.broken .mych-name { color: var(--text2); }
+.mych-num { width: 34px; text-align: right; font-family: 'DM Mono', monospace; font-size: 12px; color: var(--text3); flex-shrink: 0; }
 .mych-logo { width: 34px; height: 22px; object-fit: contain; flex-shrink: 0; }
-.mych-logo.none { background: var(--bg3); border-radius: 3px; }
-.mych-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mych-icon { background: none; border: none; color: var(--text3); cursor: pointer; font-size: 15px; padding: 4px 6px; border-radius: var(--radius-sm); line-height: 1; }
+.mych-logo.none { background: var(--bg3); border-radius: 2px; }
+.mych-text { flex: 1; min-width: 0; }
+.mych-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mych-meta { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 11px; color: var(--text3); margin-top: 2px; }
+.mych-meta .ok { color: var(--green); }
+.mych-meta .bad { color: var(--red); }
+.mych-meta .ev { color: var(--accent-text); }
+.mych-meta .via { color: var(--text2); }
+.mych-icon { background: none; border: none; color: var(--text3); cursor: pointer; font-size: 15px; padding: 4px 6px; border-radius: 2px; line-height: 1; }
 .mych-icon:hover { color: var(--text); background: var(--bg3); }
 .mych-icon:disabled { opacity: .25; cursor: default; background: none; }
+.mych-star { font-size: 17px; }
 .mych-star.on { color: var(--amber); }
-.mych-grip { cursor: grab; color: var(--text3); font-size: 13px; letter-spacing: -2px; user-select: none; padding: 0 2px; }
-.mych-added { font-size: 12px; color: var(--text3); padding: 0 6px; }
 .mych-none { padding: 28px 16px; text-align: center; font-size: 13px; color: var(--text3); }
+.mych-more { display: block; width: 100%; padding: 10px; background: var(--bg2); border: none; border-top: 1px solid var(--border); color: var(--accent-text); cursor: pointer; font-size: 13px; }
 @media (max-width: 760px) {
   .mych-own { grid-template-columns: minmax(0, 1fr); gap: 0; }
-  .mych-own .mych-phone-tabs { display: flex; }
-  .mych-own .mych-panel { border-top-left-radius: 0; border-top-right-radius: 0; }
-  .mych-own.tab-list #mych-add-panel, .mych-own.tab-add #mych-list-panel { display: none; }
-  .mych-own .mych-panel-head .mych-hint { display: none; }
+  .live-tabs.mych-phone-tabs { display: flex; }
+  .mych-picks:not(.all) .mych-pick.extra { display: none; }
+  .mych-pick.more { display: inline-flex; }
+  .mych-sub { font-size: 12px; }
+  .mych-own.tab-list #mych-all-panel, .mych-own.tab-all #mych-fav-panel { display: none; }
+  .mych-panel-head .card-title { display: none; }
   .mych-list { max-height: none; }
-  .mych-search { width: 100%; }
-  .mych-mode { width: 100%; }
-  .mych-mode .filter-btn { flex: 1; }
-  .mych-grip { display: none; }
-  .mych-row { gap: 8px; padding-left: 10px; }
+  .mych-filters { width: 100%; }
+  .mych-search { flex: 1 1 0; width: auto; min-width: 0; }
+  .mych-row { gap: 8px; padding-left: 10px; padding-right: 8px; }
   .mych-num { width: 22px; }
+  .mych-picks { display: grid; grid-template-columns: 1fr 1fr; }
+  .mych-pick { justify-content: center; padding: 9px 8px; }
+}
+
+/* ── Sources → Live TV → Channels: the pool (mychannels.js) ── */
+.pool-checker { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; font-size: 12px; color: var(--text2); padding: 10px 14px; margin-bottom: 12px;
+  background: var(--bg1); border: 1px solid var(--border); border-radius: 3px; }
+.pool-checker .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: var(--text3); vertical-align: middle; }
+.pool-checker .dot.on { background: var(--green); }
+.pool-checker .dot.paused { background: var(--amber); }
+.pool-count { font-size: 12px; color: var(--text2); margin-bottom: 4px; }
+.pool-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.pool-tools .form-input { padding: 5px 10px; font-size: 12px; }
+.pool-tools .grow { flex: 1; }
+.pool-row { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.pool-row:last-child { border-bottom: none; }
+.pool-row.out { opacity: .55; }
+.pool-row input[type=checkbox] { width: 15px; height: 15px; flex-shrink: 0; cursor: pointer; }
+.pool-name { font-weight: 500; }
+.pool-types { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.pool-type { font-size: 10px; padding: 1px 6px; border-radius: 2px; background: var(--bg3); color: var(--text2); border: none; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+.pool-type.set { background: var(--blue-dim); color: var(--blue); }
+.pool-variant { width: 260px; max-width: 100%; padding: 4px 8px; font-size: 12px; }
+.pool-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.pool-detail { padding: 10px 14px 14px 52px; background: var(--bg2); border-bottom: 1px solid var(--border); font-size: 12px; }
+.pool-detail h4 { font-size: 12px; font-weight: 600; margin: 4px 0 6px; color: var(--text2); }
+.pool-typepick { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.pool-typepick label { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border: 1px solid var(--border2); border-radius: 2px; cursor: pointer; }
+.pool-var { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.pool-var .feeds { font-size: 10px; padding: 1px 6px; border-radius: 2px; background: var(--accent-dim); color: var(--accent-text); margin-right: 6px; }
+.pool-var span.n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pool-var-list { max-height: 240px; overflow-y: auto; margin-bottom: 8px; }
+.pool-region { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; color: var(--text3); padding: 10px 16px; border-top: 1px solid var(--border); }
+.pool-region .form-input { width: 280px; max-width: 100%; padding: 5px 10px; font-size: 12px; }
+@media (max-width: 760px) {
+  .pool-row { flex-wrap: wrap; padding: 10px 12px; }
+  .pool-row .mych-text { flex: 1 1 0; min-width: 0; }
+  .pool-row .mych-logo { display: none; }
+  .pool-actions { margin-left: auto; }
+  .pool-actions:has(select) { width: 100%; justify-content: flex-end; }
+  .pool-variant { flex: 1 1 0; width: auto; min-width: 0; }
+  .pool-var { flex-wrap: wrap; gap: 2px 8px; padding: 5px 0; }
+  .pool-var .feeds { font-size: 10px; padding: 1px 6px; border-radius: 2px; background: var(--accent-dim); color: var(--accent-text); margin-right: 6px; }
+.pool-var span.n { flex: 1 1 calc(100% - 30px); white-space: normal; }
+  .pool-var .mych-meta { padding-left: 25px; }
+  .pool-detail { padding-left: 14px; }
+  .pool-tools .grow { flex-basis: 100%; }
+  .pool-tools select.form-input { flex: 1 1 0; width: auto !important; min-width: 0; }
+  .pool-checker .note { display: none; }
 }
 
 /* ── Family: People, Requests, invites (family.js) ── */
@@ -2317,50 +2390,53 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
       </div>
 
       <!-- ── SOURCES (admins): where the library comes from ── -->
-      <!-- ── MY CHANNELS: everyone picks their own Live TV channels (mychannels.js) ── -->
+      <!-- ── MY CHANNELS: everyone stars their favourites from the household's lineup (mychannels.js) ── -->
       <div class="page" id="page-mychannels">
         <div class="card mych-head">
           <div class="mych-head-text">
-            <div class="mych-title">Your Live TV channels</div>
-            <p class="mych-sub">What you see in Live TV on every TV, phone and browser. Only you see your list.</p>
-          </div>
-          <div class="filter-group mych-mode" role="radiogroup" aria-label="Which channels you see">
-            <button class="filter-btn" id="mych-mode-all" role="radio" onclick="mychSetMode(false)">All channels <span class="mych-count" id="mych-count-all"></span></button>
-            <button class="filter-btn" id="mych-mode-own" role="radio" onclick="mychSetMode(true)">My own list <span class="mych-count" id="mych-count-own"></span></button>
+            <div class="mych-title">My channels <span class="mych-total" id="mych-total"></span></div>
+            <p class="mych-sub" id="mych-sub">Everyone has the same channels. Star the ones you watch: your favourites come first in the guide&rsquo;s Favorites view and in every Jellyfin app.</p>
           </div>
           <div class="mych-status" id="mych-status" aria-live="polite"></div>
         </div>
 
         <div id="mych-empty" class="empty-state" style="display:none"><p>Live TV isn&rsquo;t set up on this server yet.</p></div>
 
-        <!-- All channels: the household's list, stars only -->
-        <div class="card mych-panel" id="mych-all" style="display:none">
-          <div class="mych-panel-head">
-            <span class="mych-hint">Everything your household has. Star the ones you watch most: they come first in the guide.</span>
-            <input class="form-input mych-search" id="mych-all-search" placeholder="Search channels" aria-label="Search channels" oninput="mychRenderAll()">
+        <div id="mych-body" style="display:none">
+          <!-- Quick picks: star or unstar a type's best-known channels at once -->
+          <div class="card mych-picks-card" id="mych-picks-card">
+            <div class="mych-step-title">Quick picks</div>
+            <p class="mych-hint">Tap a type to star its best-known channels (every other one is under All channels). Tap it again to unstar them.</p>
+            <div class="mych-picks" id="mych-picks"></div>
           </div>
-          <div class="mych-list" id="mych-all-list"></div>
-        </div>
 
-        <!-- My own list: your channels in your order, and the ones to add -->
-        <div class="mych-own" id="mych-own" style="display:none">
-          <div class="mych-phone-tabs live-tabs">
-            <button class="live-tab active" data-mychtab="list" onclick="mychPhoneTab('list')">My list</button>
-            <button class="live-tab" data-mychtab="add" onclick="mychPhoneTab('add')">Add channels</button>
+          <div class="mych-phone-tabs live-tabs" id="mych-phone-tabs">
+            <button class="live-tab active" data-mychtab="list" onclick="mychPhoneTab('list')">My favourites <span class="mych-count" id="mych-tab-count"></span></button>
+            <button class="live-tab" data-mychtab="all" onclick="mychPhoneTab('all')"><span id="mych-all-tab">All channels</span> <span class="mych-count" id="mych-all-count"></span></button>
           </div>
-          <div class="card mych-panel" id="mych-list-panel">
-            <div class="mych-panel-head">
-              <div class="card-title">My list <span class="mych-count" id="mych-list-count"></span></div>
-              <span class="mych-hint">Your numbers follow this order. Drag, or use the arrows.</span>
+          <div class="mych-own tab-list" id="mych-own">
+            <div class="card mych-panel" id="mych-fav-panel">
+              <div class="mych-panel-head">
+                <div>
+                  <div class="card-title">My favourites <span class="mych-count" id="mych-fav-count"></span></div>
+                  <div class="mych-hint">In the guide&rsquo;s order. Tap &#9733; to unstar one.</div>
+                </div>
+              </div>
+              <div class="mych-list" id="mych-fav-list"></div>
             </div>
-            <div class="mych-list" id="mych-own-list"></div>
-          </div>
-          <div class="card mych-panel" id="mych-add-panel">
-            <div class="mych-panel-head">
-              <div class="card-title">Add channels</div>
-              <input class="form-input mych-search" id="mych-add-search" placeholder="Search channels" aria-label="Search channels to add" oninput="mychRenderAdd()">
+            <div class="card mych-panel" id="mych-all-panel">
+              <div class="mych-panel-head">
+                <div>
+                  <div class="card-title" id="mych-all-title">All channels</div>
+                  <div class="mych-hint" id="mych-all-hint">Everything the household has, with the guide&rsquo;s numbers. Tap &#9734; to star one.</div>
+                </div>
+                <div class="mych-filters">
+                  <input class="form-input mych-search" id="mych-all-search" placeholder="Search channels" aria-label="Search channels" oninput="mychRenderAll()">
+                  <select class="form-input mych-type" id="mych-all-type" aria-label="Show one type" onchange="mychRenderAll()"><option value="">All types</option></select>
+                </div>
+              </div>
+              <div class="mych-list" id="mych-all-list"></div>
             </div>
-            <div class="mych-list" id="mych-add-list"></div>
           </div>
         </div>
       </div>
@@ -2389,7 +2465,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <select class="form-input" id="fam-default-home" onchange="famSaveDefaults()"></select>
             </div>
             <div class="form-group" id="fam-default-channels-group">
-              <label class="form-label" for="fam-default-channels">Live TV channels</label>
+              <label class="form-label" for="fam-default-channels">Live TV favourites</label>
               <select class="form-input" id="fam-default-channels" onchange="famSaveDefaults()"></select>
             </div>
           </div>
@@ -2452,7 +2528,8 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
         <!-- Tab bar -->
         <div class="live-tabs">
-          <button class="live-tab active" data-livetab="channels" onclick="showLiveTab('channels')">Channels</button>
+          <button class="live-tab active" data-livetab="pool" onclick="showLiveTab('pool')">Channels</button>
+          <button class="live-tab" data-livetab="channels" onclick="showLiveTab('channels')">Provider list</button>
           <button class="live-tab" data-livetab="people" onclick="showLiveTab('people')">People</button>
           <button class="live-tab" data-livetab="recordings" onclick="showLiveTab('recordings')">Recordings</button>
           <button class="live-tab" data-livetab="setup" onclick="showLiveTab('setup')">In Jellyfin</button>
@@ -2464,7 +2541,41 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         </div>
 
 
-        <div class="live-tab-panel active" id="live-panel-channels">
+        <!-- Tab: Channels -- the pool people pick from: folded networks, types, guide and works marks (mychannels.js) -->
+        <div class="live-tab-panel active" id="live-panel-pool">
+          <div class="pool-checker" id="pool-checker"></div>
+          <div class="card mych-panel">
+            <div class="mych-panel-head">
+              <div>
+                <div class="card-title">The household&rsquo;s channels</div>
+                <div class="pool-count" id="pool-count"></div>
+                <div class="mych-hint">The channel groups switched on for a provider, with the same network in many places or qualities shown once. This is the household&rsquo;s lineup: everyone gets these channels in Jellyfin, with the same numbers, and stars their favourites under <strong>My Channels</strong>.</div>
+              </div>
+            </div>
+            <div class="pool-tools">
+              <input class="form-input grow" id="pool-search" placeholder="Search channels" aria-label="Search channels" oninput="poolRender()">
+              <select class="form-input" id="pool-type" aria-label="Show one type" onchange="poolRender()" style="width:140px"><option value="">All types</option></select>
+              <select class="form-input" id="pool-show" aria-label="Show" onchange="poolRender()" style="width:170px">
+                <option value="">Everything</option>
+                <option value="networks">Networks (folded)</option>
+                <option value="broken">Not working</option>
+                <option value="noguide">No guide</option>
+                <option value="noevent">Event slots with no event</option>
+                <option value="out">Taken out</option>
+              </select>
+              <button class="btn btn-secondary btn-sm" id="pool-merge-btn" onclick="poolMerge()" disabled>Merge selected</button>
+            </div>
+            <div id="pool-list"><div class="loading-state"><div class="spinner"></div></div></div>
+            <div class="pool-region">
+              <label for="pool-region">Your region (picks each network&rsquo;s default place)</label>
+              <input class="form-input" id="pool-region" placeholder="e.g. CA: Toronto, Ontario, Buffalo">
+              <button class="btn btn-secondary btn-sm" onclick="poolSaveRegion()">Save</button>
+              <span id="pool-region-note"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="live-tab-panel" id="live-panel-channels">
           <!-- YouTube channels are Live TV channels too. They come from the
                YouTube page, where Live TV is chosen when the channel is added;
                this is where they sit alongside everything else in the lineup,
@@ -2478,7 +2589,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           </div>
           <div class="card">
             <div class="card-header">
-              <div class="card-title">Channels for everyone <span id="live-ch-count" style="color:var(--text3);font-weight:400"></span></div>
+              <div class="card-title">The provider&rsquo;s channels <span id="live-ch-count" style="color:var(--text3);font-weight:400"></span></div>
               <div style="display:flex;gap:8px;align-items:center">
                 <input class="form-input" id="live-ch-search" placeholder="Search channels..." style="width:200px;padding:5px 10px;font-size:12px" oninput="searchLiveChannels()">
                 <select class="form-input" id="live-ch-group-filter" aria-label="Filter channels by group" style="width:160px;padding:5px 10px;font-size:12px" onchange="filterLiveChannels()">
@@ -2510,7 +2621,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           <div class="card">
             <div class="card-header">
               <div class="card-title">Who watches what</div>
-              <span style="font-size:12px;color:var(--text3)">Everyone picks their own channels under <strong>My Channels</strong>, from the channels switched on here.</span>
+              <span style="font-size:12px;color:var(--text3)">Everyone has the same channels; each person stars their favourites under <strong>My Channels</strong>. Kids profiles see the kids channels only.</span>
             </div>
             <div id="live-people"></div>
           </div>
@@ -2520,7 +2631,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <div class="live-tab-panel" id="live-panel-recordings">
           <div class="card">
             <h3 style="margin-bottom:4px">Recordings</h3>
-            <p style="color:var(--text3);font-size:13px;margin-bottom:12px">You schedule and watch recordings in Jellyfin (Live TV &rarr; Guide &rarr; Record; they appear under Live TV &rarr; Recordings). Tentacle is the tuner they record from. Recordings and recording schedules are the household&rsquo;s: everyone sees them, like a family recorder, whoever&rsquo;s channel they came from.</p>
+            <p style="color:var(--text3);font-size:13px;margin-bottom:12px">You schedule and watch recordings in Jellyfin (Live TV &rarr; Guide &rarr; Record; they appear under Live TV &rarr; Recordings). Tentacle is the tuner they record from. Recordings and recording schedules are the household&rsquo;s: everyone sees them, like a family recorder, whoever scheduled them.</p>
             <ul style="font-size:13px;color:var(--text2);line-height:1.7;margin:0 0 0 18px">
               <li>A recording keeps its connection to the provider: if the provider drops it, Tentacle reconnects and the recording carries on.</li>
               <li>How many channels can record at once is <strong>Streams at once</strong> on each provider&rsquo;s card under <a href="#" onclick="showSourcesTab('providers');return false" style="color:var(--accent)">IPTV providers</a>.</li>
@@ -2533,7 +2644,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <div class="live-tab-panel" id="live-panel-setup">
           <div class="card">
             <h3 style="margin-bottom:4px">Live TV in Jellyfin</h3>
-            <p style="color:var(--text3);font-size:13px;margin-bottom:16px">Tentacle sets this up in Jellyfin itself: one tuner for everyone on <strong>All channels</strong>, one for each person with a list of their own, and the TV guide for all of them. Each person only sees their own channels, in every Jellyfin app.</p>
+            <p style="color:var(--text3);font-size:13px;margin-bottom:16px">Tentacle sets this up in Jellyfin itself: one tuner with the household&rsquo;s channels and one TV guide. Everyone&rsquo;s favourites (starred under <strong>My Channels</strong>) are Jellyfin&rsquo;s own, so every app shows them; kids profiles see the kids channels only.</p>
             <div id="live-setup-status" class="mych-setup-status"></div>
             <div style="display:flex;gap:8px;margin-top:16px">
               <button class="btn btn-secondary btn-sm" onclick="liveSetupNow(this)">Set up again now</button>

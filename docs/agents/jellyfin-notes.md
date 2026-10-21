@@ -75,6 +75,9 @@ The code wins where they differ.
 
 ### Live TV per person (proven on 10.11.8, Oct 2026)
 
+What was proven for per-person tuners (v1.11-1.12); since 21 Oct 2026 the
+same tags hide non-kids channels from kids on one lineup.
+
 - M3U channel id: `m3u_` + MD5(tuner URL) + MD5(stream URL) (`M3UTunerHost`,
   `M3uParser.cs:104`); `string.GetMD5()` is MD5 of the UTF-16LE text read
   as a .NET Guid. Item id = MD5("MediaBrowser.Controller.LiveTv.LiveTvChannel"
@@ -105,6 +108,38 @@ The code wins where they differ.
   `POST /Users/New` fail (DbUpdateConcurrencyException, 500): do it later.
 - Favourite (`POST /UserFavoriteItems/{id}?userId=`) on a channel the user
   can't see: 404.
+- **Many M3U tuners make the guide refresh quadratic (measured Oct 2026,
+  10.11.8).** `BaseTunerHost.GetChannels` builds every M3U tuner's channel
+  list and de-duplicates them against each other with a list scan, and
+  `GuideManager` calls it once per channel while refreshing. One tuner of
+  5,669 channels: 2 m 10 s (20 ms/channel). 7 tuners × 1,734 channels (one
+  per person): 358 ms/channel, ≈73 min per refresh (stopped at 20 min);
+  a Harmony prefix with a hash-set merge brought that to 10.5 min (67 ms/
+  channel, DB 212 MB), still 5× one lineup, and it would be a patch on
+  Jellyfin internals. So Tentacle has **one M3U tuner** (the household's
+  lineup) and per-person tuners are gone (Decisions, 21 Oct 2026). The
+  prototype patch is not shipped.
+- One tuner, two tags: lineup channels carry `tentacle-livetv-all`, the
+  household's kids channels `tentacle-livetv-kids`; kids profiles block
+  `-all`. The plugin tags a new channel with its tuner's tag (`-all`) in
+  `GuideManager.GetChannel`, and keeps `-kids` on a channel that has it
+  (`WithTag(..., keepKids: true)`), so a kid never sees a channel before an
+  admin makes it a kids channel; programmes always take their channel's
+  tag. Only one `tentacle-livetv-*` tag per channel survives the plugin: a
+  second dimension (e.g. a region per person) needs its own prefix.
+- Everything a person has on a channel (favourite, timers) hangs on the
+  channel item id, so on the tuner URL and the stream URL: a channel whose
+  stream address changes (a pool key `c123` folded into network `n7`:
+  `/api/live/stream/123` → `/api/live/net/7`) is a new channel to Jellyfin.
+  The guide refresh (`GuideManager.CleanDatabase`) deletes the channels a
+  tuner no longer lists, and with them what `/LiveTv/Channels?isFavorite=true`
+  can report, so the sync reads favourites *before* the refresh and sets
+  them on the new channel after it; schedules are made again from the new
+  channel's guide (exact title) and the old ones cancelled. The same moves
+  people off per-person tuners of before (v1.11-1.12) and the old
+  HDHomeRun tuner: favourites read while they still see the old channels,
+  then their BlockedTags change, then the favourites are set on the
+  lineup's channels (the 404 above).
 
 ## Radarr and Sonarr
 

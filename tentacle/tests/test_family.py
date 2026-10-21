@@ -143,6 +143,12 @@ class KidsPolicy(unittest.TestCase):
         self.assertFalse(p["EnableLiveTvAccess"])
         self.assertEqual(["x"], p["BlockedTags"])
 
+    def test_kids_with_live_tv_see_only_kids_channels_at_once(self):
+        p = F.kids_policy({"BlockedTags": ["x"]}, "kids", live_tv=True)
+        self.assertEqual(["x", L.ALL_TAG], p["BlockedTags"])
+        self.assertEqual(["x", L.ALL_TAG], F.kids_policy(p, "teens", live_tv=True)["BlockedTags"])
+        self.assertNotIn("LiveTvProgram", p["BlockUnratedItems"])   # Tentacle's guide has no ratings
+
     def test_levels_are_jellyfins_scores(self):
         # G/TV-Y 0 and TV-Y7 7; PG/TV-PG 10; PG-13 13, TV-14 14 (us.json, ca.json).
         self.assertEqual({"young": 7, "kids": 10, "teens": 14},
@@ -168,26 +174,16 @@ class Kids(Case):
         self.assertEqual(["Horror", L.ALL_TAG], p["BlockedTags"])   # Live TV tags left to the tuner sync
         self.assertEqual("young", self.ann.kids_level)
 
-    def test_off_restores_the_policy_and_channels(self):
+    def test_off_restores_the_policy(self):
         before = json.loads(json.dumps(self.jf.users[ANN]["Policy"]))
-        L.save_own_list(self.db, ANN, True, ["c3", "c1"])
         F.set_kids_channels(self.db, ["c2", "c4"])
         F.set_kids(self.db, self.ann, "kids")
-        self.assertEqual(["c2", "c4"], L.own_keys(self.db, ANN))
         self.assertTrue(self.jf.users[ANN]["Policy"]["EnableLiveTvAccess"])
+        self.mocks[1].assert_called()     # the sync blocks the other channels by tag
         F.set_kids(self.db, self.ann, None)
         self.assertEqual(before, self.jf.users[ANN]["Policy"])
-        self.assertTrue(L.has_own_list(self.db, ANN))
-        self.assertEqual(["c3", "c1"], L.own_keys(self.db, ANN))
         self.assertIsNone(self.ann.kids_level)
         self.assertIsNone(self.ann.kids_saved_policy)
-
-    def test_off_back_to_all_channels(self):
-        F.set_kids_channels(self.db, ["c2"])
-        F.set_kids(self.db, self.ann, "kids")
-        F.set_kids(self.db, self.ann, None)
-        self.assertFalse(L.has_own_list(self.db, ANN))
-        self.assertEqual([], L.own_keys(self.db, ANN))
 
     def test_changing_the_level_keeps_the_first_saved_policy(self):
         F.set_kids(self.db, self.ann, "young")
@@ -208,7 +204,7 @@ class Kids(Case):
         self.assertFalse(self.jf.users[ANN]["Policy"]["EnableLiveTvAccess"])
         F.set_kids_channels(self.db, ["c4", "c2", "nope", "c4"])
         self.assertEqual(["c4", "c2"], F.kids_channels(self.db))
-        self.assertEqual(["c4", "c2"], L.own_keys(self.db, ANN))
+        self.assertIn(L.ALL_TAG, self.jf.users[ANN]["Policy"]["BlockedTags"])
         self.assertTrue(self.jf.users[ANN]["Policy"]["EnableLiveTvAccess"])
         F.set_kids_channels(self.db, [])
         self.assertFalse(self.jf.users[ANN]["Policy"]["EnableLiveTvAccess"])
@@ -218,7 +214,7 @@ class Kids(Case):
             F.set_kids(self.db, self.admin, "kids")
         self.assertIsNone(self.jf.users[ADMIN]["Policy"]["MaxParentalRating"])
 
-    def test_my_channels_shows_a_kid_only_kids_channels_and_refuses_changes(self):
+    def test_my_channels_shows_a_kid_only_kids_channels(self):
         from routers import my_livetv
         from routers.auth import get_user_from_request
         F.set_kids_channels(self.db, ["c2", "c4"])
@@ -232,9 +228,6 @@ class Kids(Case):
             d = c.get("/api/my/channels").json()
             self.assertEqual(["Cartoons", "Toons 2"], [x["name"] for x in d["channels"]])
             self.assertEqual({"chosen_by": "Lucas"}, d["kids"])
-            r = c.put("/api/my/channels", json={"own_list": True, "keys": ["c1"]})
-            self.assertEqual(403, r.status_code)
-        self.assertEqual(["c2", "c4"], L.own_keys(self.db, ANN))
 
 
 class KidsInTentaclesOwnPages(Case):
@@ -358,14 +351,22 @@ class Invites(Case):
         F.enable_quick_connect(self.db)
         self.assertTrue(self.jf.quick_connect)
 
-    def test_defaults_copy_someones_channels(self):
-        L.save_own_list(self.db, ANN, True, ["c3", "c1"])
+    def test_defaults_copy_someones_favourites(self):
         new = mdb.TentacleUser(jellyfin_user_id="e" * 32, display_name="New")
         self.db.add(new)
         self.db.commit()
-        self.assertEqual(2, F.copy_channels(self.db, self.ann, new))
-        self.assertEqual(["c3", "c1"], L.own_keys(self.db, "e" * 32))
-        self.assertEqual(0, F.copy_channels(self.db, self.ben, new))   # Ben uses all channels
+        favs = {ANN: {"i3", "i1"}, "e" * 32: {"i1"}, BEN: set()}
+        with mock.patch("services.livetv_tuners.favourite_ids", lambda jf, u: set(favs[u])), \
+                mock.patch("services.livetv_tuners.set_favourite",
+                           lambda jf, u, i, on: favs[u].add(i)):
+            self.assertEqual(1, F.copy_channels(self.db, self.ann, new))
+            self.assertEqual({"i3", "i1"}, favs["e" * 32])
+            self.assertEqual(0, F.copy_channels(self.db, self.ben, new))   # Ben has none
+
+    def test_starter_favourites(self):
+        self.assertIsNone(F.starter_favourites(self.db))          # nobody chosen: no favourites
+        F.save_defaults(self.db, None, self.ben.id)
+        self.assertEqual(self.ben.id, F.starter_favourites(self.db).id)
 
     def test_defaults_are_checked(self):
         self.assertEqual({"home_from": None, "channels_from": None}, F.defaults(self.db))
