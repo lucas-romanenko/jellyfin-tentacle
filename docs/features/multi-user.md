@@ -95,6 +95,7 @@ Tentacle is built for one person running a home server for their family. Admins 
 - **Sign in a TV:** on the TV, open Tentacle, choose *Use Quick Connect* and type the code it shows into Tentacle. Everyone can do this for their own TV (sidebar → *Sign in a TV*); admins can do it for anyone. If Quick Connect is off in Jellyfin, People offers to turn it on.
 - **New password:** gives someone a fresh password when they lost theirs.
 - Each person's row shows which Tentacle TV app version their TV runs, and when a newer one is waiting.
+- **Removing someone:** delete their account in Jellyfin (Dashboard → Users). Jellyfin removes their playlists and signs them out everywhere; Tentacle forgets the rest (their home screen, playlist settings, requests, notifications, Live TV lists) the next time People is opened, or in the nightly sync.
 
 ## Requests with approval
 
