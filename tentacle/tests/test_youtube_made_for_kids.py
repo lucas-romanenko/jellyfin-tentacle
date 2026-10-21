@@ -69,10 +69,11 @@ class TestGuessedValuesAreReset(unittest.TestCase):
     """The rows the old expression wrote are cleared once, and only once."""
 
     def _db(self):
+        # A database in the layout before the data column, as an upgrade finds it
         from sqlalchemy import create_engine
-        import models.database as mdb
+        from models.legacy_schema import LEGACY
         path = f"{temp_dir(self)}/t.db"
-        mdb.Base.metadata.create_all(create_engine(f"sqlite:///{path}"))
+        LEGACY.create_all(create_engine(f"sqlite:///{path}"))
         conn = sqlite3.connect(path)
         conn.execute("INSERT INTO youtube_channels (id, input_url, kind, title, slug) "
                      "VALUES (1, 'u', 'channel', 'Ch', 'ch')")

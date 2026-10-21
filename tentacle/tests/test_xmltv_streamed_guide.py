@@ -156,13 +156,13 @@ class GuideIsStreamed(unittest.TestCase):
         db.commit()
         db.execute(mdb.LiveChannel.__table__.insert(), [
             {"provider_id": p.id, "name": f"Channel {i}", "stream_id": str(1000 + i),
-             "stream_url": f"http://192.0.2.10/live/{1000 + i}.ts", "epg_channel_id": f"c{i}.example",
-             "enabled": True, "sort_order": 0} for i in range(channels)])
+             "enabled": True, "sort_order": 0,
+             "data": {"stream_url": f"http://192.0.2.10/live/{1000 + i}.ts", "epg_channel_id": f"c{i}.example"}} for i in range(channels)])
         start = datetime.utcnow().replace(microsecond=0)
         db.execute(mdb.EPGProgram.__table__.insert(), [
-            {"channel_id": f"c{i}.example", "title": f"Programme {i}-{k}", "description": "x" * 120,
-             "category": "Sports", "start": start + timedelta(minutes=30 * k),
-             "stop": start + timedelta(minutes=30 * k + 30)}
+            {"channel_id": f"c{i}.example", "start": start + timedelta(minutes=30 * k),
+             "stop": start + timedelta(minutes=30 * k + 30),
+             "data": {"title": f"Programme {i}-{k}", "description": "x" * 120, "category": "Sports"}}
             for i in range(channels) for k in range(per_channel)])
         db.commit()
         return db
@@ -212,12 +212,13 @@ class GuideDownloadsGiveTheDatabaseBack(unittest.TestCase):
         db.commit()
         db.execute(mdb.LiveChannel.__table__.insert(), [
             {"provider_id": p.id, "name": f"Channel {i}", "stream_id": str(1000 + i),
-             "stream_url": f"http://192.0.2.10/live/{1000 + i}.ts", "epg_channel_id": f"c{i}.example",
-             "enabled": True, "sort_order": 0} for i in range(30)])
+             "enabled": True, "sort_order": 0,
+             "data": {"stream_url": f"http://192.0.2.10/live/{1000 + i}.ts", "epg_channel_id": f"c{i}.example"}} for i in range(30)])
         start = datetime.utcnow().replace(microsecond=0)
         db.execute(mdb.EPGProgram.__table__.insert(), [
-            {"channel_id": f"c{i}.example", "title": f"Programme {i}-{k}", "description": "x" * 120,
-             "start": start + timedelta(minutes=30 * k), "stop": start + timedelta(minutes=30 * k + 30)}
+            {"channel_id": f"c{i}.example", "start": start + timedelta(minutes=30 * k),
+             "stop": start + timedelta(minutes=30 * k + 30),
+             "data": {"title": f"Programme {i}-{k}", "description": "x" * 120}}
             for i in range(30) for k in range(100)])
         db.commit()
         db.close()

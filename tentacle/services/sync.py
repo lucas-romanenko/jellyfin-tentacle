@@ -3489,7 +3489,10 @@ def _record_series_listings(db: Session, provider: Provider, met: dict, fetch_ok
         if ids != (had or []):
             changes.append({"id": rid, "provider_series_ids": ids})
     if changes:
-        db.bulk_update_mappings(Series, changes)
+        # Kept in the row's data column, which bulk_update_mappings doesn't write
+        for change in changes:
+            db.query(Series).filter(Series.id == change["id"]).update(
+                {Series.provider_series_ids: change["provider_series_ids"]}, synchronize_session=False)
         db.commit()
 
 

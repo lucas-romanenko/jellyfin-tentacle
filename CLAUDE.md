@@ -51,6 +51,9 @@ Jellyfin), YouTube and an optional music module (Lidarr).
 
 Server (details in server.md, pipelines.md, jellyfin-notes.md):
 
+- The database keeps a few real columns per table and the rest in a JSON
+  `data` column (`DataField`s, server.md "Database"): bulk mappings, Core
+  inserts and `flag_modified` don't reach those fields.
 - Credentials (Jellyfin, *arr, TMDB, ... keys, IPTV logins) live only in the
   database (`settings`, `providers`), set in the dashboard. Never in files,
   env or logs. A new credential in a URL needs a secret-like parameter name

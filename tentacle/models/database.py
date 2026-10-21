@@ -5,10 +5,14 @@ SQLAlchemy models for all entities
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Boolean, Float,
-    DateTime, Text, JSON, ForeignKey, UniqueConstraint, or_
+    DateTime, Text, JSON, ForeignKey, UniqueConstraint, or_,
+    CheckConstraint, ForeignKeyConstraint, case, cast, literal, text
 )
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import sessionmaker, relationship
+from models.data_fields import DataField, register as _register_data_fields
+from models.legacy_schema import LEGACY
 from datetime import datetime
 import os
 import logging
@@ -26,7 +30,15 @@ DATABASE_URL = f"sqlite:///{_data_dir}/{_db_name}"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False, "timeout": 30},
                        pool_size=10, max_overflow=20, pool_timeout=60)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+class _Row:
+    """What every table has: `data`, the row's details as JSON (Database.md
+    in the project page: a few real columns, everything else in data).
+    Models declare them as DataField(type)."""
+    data = Column(JSON, nullable=False, default=dict, server_default=text("'{}'"))
+
+
+Base = declarative_base(cls=_Row)
+_register_data_fields(Base)
 
 
 # Enable WAL mode for concurrent read/write access (critical for background sync threads)
@@ -54,7 +66,7 @@ class Setting(Base):
     __tablename__ = "settings"
     key = Column(String, primary_key=True)
     value = Column(Text, nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = DataField(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 # ─── Providers ────────────────────────────────────────────────────────────────
@@ -63,47 +75,47 @@ class Provider(Base):
     __tablename__ = "providers"
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String, nullable=False)
-    provider_type = Column(String, default="xtream")  # xtream, m3u_url, m3u_file
-    server_url = Column(String, nullable=False)
-    username = Column(String, nullable=False)
-    password = Column(String, nullable=False)
+    provider_type = DataField(String, default="xtream")  # xtream, m3u_url, m3u_file
+    server_url = DataField(String)
+    username = DataField(String)
+    password = DataField(String)
     active = Column(Boolean, default=False)
     priority = Column(Integer, default=1)  # Lower = higher priority
-    status = Column(String, default="untested")  # untested, ok, error
-    last_tested = Column(DateTime, nullable=True)
-    expiry = Column(DateTime, nullable=True)
-    max_connections = Column(Integer, nullable=True)
+    status = DataField(String, default="untested")  # untested, ok, error
+    last_tested = DataField(DateTime)
+    expiry = DataField(DateTime)
+    max_connections = DataField(Integer)
 
     # Live TV settings
-    m3u_url = Column(String, nullable=True)  # For m3u_url provider type
-    epg_url = Column(String, nullable=True)  # Override EPG/XMLTV URL
-    user_agent = Column(String, default="TiviMate/4.7.0 (Linux; Android 12)")
+    m3u_url = DataField(String)  # For m3u_url provider type
+    epg_url = DataField(String)  # Override EPG/XMLTV URL
+    user_agent = DataField(String, default="TiviMate/4.7.0 (Linux; Android 12)")
     live_tv_enabled = Column(Boolean, default=False)
-    last_live_sync = Column(DateTime, nullable=True)
+    last_live_sync = DataField(DateTime)
 
     # Auto-detected capabilities
-    has_live = Column(Boolean, default=False)
-    has_vod = Column(Boolean, default=False)
-    has_series = Column(Boolean, default=False)
-    require_tmdb_match = Column(Boolean, default=True)
+    has_live = DataField(Boolean, default=False)
+    has_vod = DataField(Boolean, default=False)
+    has_series = DataField(Boolean, default=False)
+    require_tmdb_match = DataField(Boolean, default=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = DataField(DateTime, default=datetime.utcnow)
+    updated_at = DataField(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Several addresses (services/provider_addresses.py): what to do when the
     # address in use fails and a backup works. "switch" (the default),
     # "switch_back" (and back to preferred_address once it works again) or
     # "off" (only say so).
-    address_auto_switch = Column(String, default="switch")
+    address_auto_switch = DataField(String, default="switch")
     # The address the admin chose by hand ("Use this one"), for switch_back.
-    preferred_address = Column(String, nullable=True)
+    preferred_address = DataField(String)
     # Live TV: streams this provider's account carries at once (None: the
     # account's own max_connections, else the Live TV default).
-    live_max_streams = Column(Integer, nullable=True)
+    live_max_streams = DataField(Integer)
     # Live TV: added to this provider's own channel numbers, so two providers
     # never hand Jellyfin the same one (routers/livetv.py guide_number). The
     # first Live TV provider keeps its own (0); others get one once, kept.
-    channel_number_offset = Column(Integer, nullable=True)
+    channel_number_offset = DataField(Integer)
 
     categories = relationship("ProviderCategory", back_populates="provider", cascade="all, delete-orphan")
     sync_runs = relationship("SyncRun", back_populates="provider", cascade="all, delete-orphan")
@@ -120,11 +132,11 @@ class ProviderAddress(Base):
     health check keep what each answered (services/provider_addresses.py)."""
     __tablename__ = "provider_addresses"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    provider_id = Column(Integer, ForeignKey("providers.id"), nullable=False, index=True)
+    provider_id = Column(Integer, ForeignKey("providers.id", ondelete="CASCADE"), nullable=False, index=True)
     url = Column(String, nullable=False)          # scheme://host[:port], no path, no login
-    added_at = Column(DateTime, default=datetime.utcnow)
-    last_result = Column(JSON, nullable=True)     # the latest test (see provider_addresses.test_address)
-    history = Column(JSON, default=list)          # [{"at", "ok", "word"}], newest last, a few days' worth
+    added_at = DataField(DateTime, default=datetime.utcnow)
+    last_result = DataField(JSON)  # the latest test (see provider_addresses.test_address)
+    history = DataField(JSON, default=list)  # [{"at", "ok", "word"}], newest last, a few days' worth
 
     provider = relationship("Provider", back_populates="addresses")
 
@@ -138,20 +150,20 @@ class ProviderAddress(Base):
 class ProviderCategory(Base):
     __tablename__ = "provider_categories"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    provider_id = Column(Integer, ForeignKey("providers.id"), nullable=False, index=True)
+    provider_id = Column(Integer, ForeignKey("providers.id", ondelete="CASCADE"), nullable=False, index=True)
     category_id = Column(String, nullable=False)  # Provider's internal ID
     category_name = Column(String, nullable=False)
     type = Column(String, nullable=False)  # movie | series
     whitelisted = Column(Boolean, default=False)
-    source_tag = Column(String, nullable=True)  # Netflix, Amazon, etc.
-    title_count = Column(Integer, default=0)
-    last_seen = Column(DateTime, default=datetime.utcnow)
-    last_sync_matched = Column(Integer, nullable=True)  # Items matched TMDB last sync
-    last_sync_skipped = Column(Integer, nullable=True)  # Items with no TMDB match last sync
+    source_tag = DataField(String)  # Netflix, Amazon, etc.
+    title_count = DataField(Integer, default=0)
+    last_seen = DataField(DateTime, default=datetime.utcnow)
+    last_sync_matched = DataField(Integer)  # Items matched TMDB last sync
+    last_sync_skipped = DataField(Integer)  # Items with no TMDB match last sync
     # Consecutive syncs where this category returned nothing while it was known
     # to hold titles. title_count keeps its last non-zero value throughout, so a
     # multi-night outage can't be mistaken for a genuinely emptied category.
-    consecutive_empty_syncs = Column(Integer, default=0)
+    consecutive_empty_syncs = DataField(Integer, default=0)
 
     provider = relationship("Provider", back_populates="categories")
     snapshots = relationship("CategorySnapshot", back_populates="category", cascade="all, delete-orphan")
@@ -166,43 +178,64 @@ class ProviderCategory(Base):
 class CategorySnapshot(Base):
     __tablename__ = "category_snapshots"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    category_id = Column(Integer, ForeignKey("provider_categories.id"), nullable=False)
-    title_count = Column(Integer, default=0)
-    new_count = Column(Integer, default=0)
-    removed_count = Column(Integer, default=0)
-    recorded_at = Column(DateTime, default=datetime.utcnow)
+    category_id = Column(Integer, ForeignKey("provider_categories.id", ondelete="CASCADE"), nullable=False)
+    title_count = DataField(Integer, default=0)
+    new_count = DataField(Integer, default=0)
+    removed_count = DataField(Integer, default=0)
+    recorded_at = DataField(DateTime, default=datetime.utcnow)
 
     category = relationship("ProviderCategory", back_populates="snapshots")
 
 
 # ─── Movies ───────────────────────────────────────────────────────────────────
 
+def _source(downloaded: str):
+    """A Movie/Series row's `source`: "provider_<id>" for a provider's title,
+    else the app that downloaded it ("radarr" / "sonarr"). It's provider_id
+    said another way, so it is worked out, not stored; setting it sets
+    provider_id. Works in queries too (Movie.source == "radarr")."""
+    def get(row):
+        return f"provider_{row.provider_id}" if row.provider_id is not None else downloaded
+
+    def set_(row, value):
+        value = str(value or "")
+        row.provider_id = int(value[len("provider_"):]) if value.startswith("provider_") else None
+
+    def expr(cls):
+        return case((cls.provider_id.isnot(None), literal("provider_") + cast(cls.provider_id, String)),
+                    else_=literal(downloaded))
+
+    prop = hybrid_property(get, set_, expr=expr)
+    prop.__name__ = "source"
+    return prop
+
+
 class Movie(Base):
     __tablename__ = "movies"
     id = Column(Integer, primary_key=True, autoincrement=True)
     tmdb_id = Column(Integer, unique=True, nullable=False)
     title = Column(String, nullable=False)
-    year = Column(String, nullable=True)
-    overview = Column(Text, nullable=True)
-    runtime = Column(Integer, nullable=True)
-    rating = Column(Float, nullable=True)
-    genres = Column(JSON, default=list)  # ["Action", "Drama"]
-    poster_path = Column(String, nullable=True)
-    backdrop_path = Column(String, nullable=True)
+    year = DataField(String)
+    overview = DataField(Text)
+    runtime = DataField(Integer)
+    rating = DataField(Float)
+    genres = DataField(JSON, default=list)  # ["Action", "Drama"]
+    poster_path = DataField(String)
+    backdrop_path = DataField(String)
 
-    # Source info
-    source = Column(String, nullable=False, index=True)  # "radarr" | "provider_{id}"
-    provider_id = Column(Integer, ForeignKey("providers.id"), nullable=True, index=True)
-    strm_path = Column(String, nullable=True)
-    nfo_path = Column(String, nullable=True)
-    radarr_path = Column(String, nullable=True)
+    # Source info: `source` ("radarr" | "provider_{id}") is provider_id said
+    # another way, so it isn't stored (see _source below)
+    provider_id = Column(Integer, ForeignKey("providers.id", ondelete="CASCADE"), nullable=True, index=True)
+    strm_path = DataField(String)
+    nfo_path = DataField(String)
+    radarr_path = DataField(String)
 
     # Tags
-    source_tag = Column(String, nullable=True)  # Netflix, Amazon etc
-    tags = Column(JSON, default=list)  # All tags applied
+    source_tag = DataField(String)  # Netflix, Amazon etc
+    tags = DataField(JSON, default=list)  # All tags applied
 
     # Jellyfin
-    jellyfin_item_id = Column(String, nullable=True)
+    jellyfin_item_id = DataField(String)
 
     # First time each guard found this title gone. Deletion only happens once a
     # second, independent run of the SAME guard agrees it is still gone, so a
@@ -214,14 +247,14 @@ class Movie(Base):
     # mark every night (so a genuinely removed title was never pruned), and a
     # mark from one guard satisfied the other's second strike (so a title could
     # be deleted after a single night).
-    provider_missing_since = Column(DateTime, nullable=True)
-    file_missing_since = Column(DateTime, nullable=True)
+    provider_missing_since = DataField(DateTime)
+    file_missing_since = DataField(DateTime)
 
     # "Keep this in the catalog but stop writing/repairing .strm files for it."
     # For titles the user has deliberately switched to downloaded copies — the
     # sync would otherwise regenerate the .strm every night and, in a merged
     # folder, leave two sources competing.
-    strm_disabled = Column(Boolean, default=False)
+    strm_disabled = DataField(Boolean, default=False)
 
     # Dates
     date_added = Column(DateTime, default=datetime.utcnow)
@@ -229,8 +262,10 @@ class Movie(Base):
     # latest episode import). date_added is when the title first entered the
     # library, which for a title that was VOD first is months earlier — sorting
     # "Downloaded Movies" by it buried every such download mid-row.
-    downloaded_at = Column(DateTime, nullable=True)
-    date_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    downloaded_at = DataField(DateTime)
+    date_updated = DataField(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    source = _source("radarr")
 
 
 # ─── Series ───────────────────────────────────────────────────────────────────
@@ -240,46 +275,48 @@ class Series(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     tmdb_id = Column(Integer, unique=True, nullable=False)
     title = Column(String, nullable=False)
-    year = Column(String, nullable=True)
-    overview = Column(Text, nullable=True)
-    genres = Column(JSON, default=list)
-    poster_path = Column(String, nullable=True)
-    backdrop_path = Column(String, nullable=True)
-    rating = Column(Float, nullable=True)
-    status = Column(String, nullable=True)  # Continuing, Ended etc
+    year = DataField(String)
+    overview = DataField(Text)
+    genres = DataField(JSON, default=list)
+    poster_path = DataField(String)
+    backdrop_path = DataField(String)
+    rating = DataField(Float)
+    status = DataField(String)  # Continuing, Ended etc
 
-    source = Column(String, nullable=False, index=True)
-    provider_id = Column(Integer, ForeignKey("providers.id"), nullable=True, index=True)
-    strm_path = Column(String, nullable=True)
-    nfo_path = Column(String, nullable=True)
-    sonarr_path = Column(String, nullable=True)
+    # `source` ("sonarr" | "provider_{id}"): provider_id, see _source below
+    provider_id = Column(Integer, ForeignKey("providers.id", ondelete="CASCADE"), nullable=True, index=True)
+    strm_path = DataField(String)
+    nfo_path = DataField(String)
+    sonarr_path = DataField(String)
 
-    source_tag = Column(String, nullable=True)
-    tags = Column(JSON, default=list)
-    sonarr_monitored = Column(Boolean, default=False)  # True = following for new episodes
+    source_tag = DataField(String)
+    tags = DataField(JSON, default=list)
+    sonarr_monitored = DataField(Boolean, default=False)  # True = following for new episodes
     # The provider's series ids (strings) its listings placed on this row: a
     # relabelled listing whose label no longer resolves is recognised by them (#621)
-    provider_series_ids = Column(JSON, nullable=True)
+    provider_series_ids = DataField(JSON)
 
     # Jellyfin
-    jellyfin_item_id = Column(String, nullable=True)
-    last_downloaded_episode = Column(String, nullable=True)  # e.g. "S02E05 · Episode Title"
+    jellyfin_item_id = DataField(String)
+    last_downloaded_episode = DataField(String)  # e.g. "S02E05 · Episode Title"
 
     # See Movie.provider_missing_since / file_missing_since — each guard keeps
     # its own mark and deletion requires two runs of that guard to agree.
-    provider_missing_since = Column(DateTime, nullable=True)
-    file_missing_since = Column(DateTime, nullable=True)
+    provider_missing_since = DataField(DateTime)
+    file_missing_since = DataField(DateTime)
 
     # See Movie.strm_disabled — opt this title out of .strm writing/repair.
-    strm_disabled = Column(Boolean, default=False)
+    strm_disabled = DataField(Boolean, default=False)
 
     date_added = Column(DateTime, default=datetime.utcnow)
     # When the downloaded copy arrived (Radarr's file import date / Sonarr's
     # latest episode import). date_added is when the title first entered the
     # library, which for a title that was VOD first is months earlier — sorting
     # "Downloaded Movies" by it buried every such download mid-row.
-    downloaded_at = Column(DateTime, nullable=True)
-    date_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    downloaded_at = DataField(DateTime)
+    date_updated = DataField(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    source = _source("sonarr")
 
 
 # ─── YouTube channels as a source ────────────────────────────────────────────
@@ -292,65 +329,65 @@ class Series(Base):
 class YouTubeChannel(Base):
     __tablename__ = "youtube_channels"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    input_url = Column(String, nullable=False)          # what the user pasted
+    input_url = DataField(String)  # what the user pasted
     kind = Column(String, default="channel")            # channel | playlist
-    channel_id = Column(String, nullable=True, index=True)   # UC…
-    handle = Column(String, nullable=True)              # @handle
-    playlist_id = Column(String, nullable=True)
+    channel_id = DataField(String)  # UC…
+    handle = DataField(String)  # @handle
+    playlist_id = DataField(String)
     title = Column(String, nullable=False)
     slug = Column(String, unique=True, nullable=False)  # filesystem-safe, used in tags
-    avatar_url = Column(String, nullable=True)
-    banner_url = Column(String, nullable=True)
+    avatar_url = DataField(String)
+    banner_url = DataField(String)
 
     # What to index. The one setting a user chooses is keep_count — "keep the
     # newest N" — which drives both how far back the listing is read and how
     # many videos survive retention. The rest are derived or advanced.
-    include_videos = Column(Boolean, default=True)
+    include_videos = DataField(Boolean, default=True)
     # Finished broadcasts. Set automatically on add: on for a channel with no
     # uploads (it only ever streams), off otherwise. Not a user-facing choice.
-    include_streams = Column(Boolean, default=False)
-    include_shorts = Column(Boolean, default=False)
-    min_duration = Column(Integer, default=0)           # seconds; 0 = no length filter
-    keep_count = Column(Integer, nullable=True, default=10)
-    keep_days = Column(Integer, nullable=True)
-    max_height = Column(Integer, default=1080)
+    include_streams = DataField(Boolean, default=False)
+    include_shorts = DataField(Boolean, default=False)
+    min_duration = DataField(Integer, default=0)  # seconds; 0 = no length filter
+    keep_count = DataField(Integer, default=10)
+    keep_days = DataField(Integer)
+    max_height = DataField(Integer, default=1080)
 
     # Jellyfin-side metadata
-    rating = Column(String, nullable=True)              # NFO <mpaa>, for parental controls
-    extra_tags = Column(JSON, default=list)             # NFO <tag>, for allowed-tags policies
+    rating = DataField(String)  # NFO <mpaa>, for parental controls
+    extra_tags = DataField(JSON, default=list)  # NFO <tag>, for allowed-tags policies
 
     enabled = Column(Boolean, default=True)
     # Expose this channel's live/upcoming streams as a Live TV channel.
     live_enabled = Column(Boolean, default=False)
-    channel_number = Column(String, nullable=True)
-    last_checked = Column(DateTime, nullable=True)
+    channel_number = DataField(String)
+    last_checked = DataField(DateTime)
     # The last time the channel's tabs were listed in full. A scheduled check
     # reads the channel's feed first and lists the tabs only when something is
     # new, or when this is a day old (services.youtube.indexer._light_check).
-    last_full_check = Column(DateTime, nullable=True)
+    last_full_check = DataField(DateTime)
     # The ids the feed showed when the tabs were last listed: already dealt
     # with, so the next feed check reacts only to ids beyond these.
-    feed_ids = Column(JSON, nullable=True)
+    feed_ids = DataField(JSON)
     # A playlist source's item count (Data API) at its last full listing. New
     # videos usually go to the bottom of a playlist, where its feed never shows
     # them; a change in size is what tells the light check to list it (#544).
-    playlist_size = Column(Integer, nullable=True)
-    last_error = Column(String, nullable=True)
-    error_count = Column(Integer, default=0)
+    playlist_size = DataField(Integer)
+    last_error = DataField(String)
+    error_count = DataField(Integer, default=0)
     # Why videos were passed over on the last index, as {reason: count}. Skips
     # were silent, so a setting quietly excluding every upload (a min duration
     # above the channel's typical video length, say) looked like nothing had
     # been indexed at all.
-    last_skips = Column(JSON, default=dict)
-    last_indexed_count = Column(Integer, default=0)
+    last_skips = DataField(JSON, default=dict)
+    last_indexed_count = DataField(Integer, default=0)
     # What each listing tab returned on the last index, e.g. {"videos": 12,
     # "streams": 6}. Separates "YouTube listed nothing" from "settings excluded
     # everything" — opposite problems that look identical from outside.
-    last_listing = Column(JSON, default=dict)
+    last_listing = DataField(JSON, default=dict)
     # Set when YouTube asks us to prove we're not a bot. Indexing backs off
     # until this passes rather than hammering and making it worse.
-    blocked_until = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    blocked_until = DataField(DateTime)
+    created_at = DataField(DateTime, default=datetime.utcnow)
 
     videos = relationship("YouTubeVideo", back_populates="channel", cascade="all, delete-orphan")
 
@@ -358,34 +395,34 @@ class YouTubeChannel(Base):
 class YouTubeVideo(Base):
     __tablename__ = "youtube_videos"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    channel_fk = Column(Integer, ForeignKey("youtube_channels.id"), nullable=False, index=True)
+    channel_fk = Column(Integer, ForeignKey("youtube_channels.id", ondelete="CASCADE"), nullable=False, index=True)
     video_id = Column(String, unique=True, nullable=False, index=True)  # 11 chars
     title = Column(String, nullable=False)
-    description = Column(Text, nullable=True)
-    published_at = Column(DateTime, nullable=True)
-    duration = Column(Integer, nullable=True)           # seconds
-    live_status = Column(String, nullable=True)
+    description = DataField(Text)
+    published_at = DataField(DateTime)
+    duration = DataField(Integer)  # seconds
+    live_status = DataField(String)
     media_type = Column(String, default="video")        # video | livestream
-    thumbnail_url = Column(String, nullable=True)
-    is_made_for_kids = Column(Boolean, nullable=True)   # unknown until details are fetched
+    thumbnail_url = DataField(String)
+    is_made_for_kids = DataField(Boolean)  # unknown until details are fetched
 
-    folder_path = Column(String, nullable=True)
-    strm_path = Column(String, nullable=True)
+    folder_path = DataField(String)
+    strm_path = DataField(String)
 
-    first_seen = Column(DateTime, default=datetime.utcnow)
-    last_seen = Column(DateTime, default=datetime.utcnow)
-    removed_at = Column(DateTime, nullable=True)
+    first_seen = DataField(DateTime, default=datetime.utcnow)
+    last_seen = DataField(DateTime, default=datetime.utcnow)
+    removed_at = DataField(DateTime)
     # When to read this video's details again, and how many reads failed in a
     # row: a video that could not be read (members-only, private, a hiccup) is
     # retried later, not on every check; a live or upcoming stream the listing no
     # longer shows is re-read at most this often.
-    next_check_at = Column(DateTime, nullable=True)
-    check_failures = Column(Integer, default=0)
+    next_check_at = DataField(DateTime)
+    check_failures = DataField(Integer, default=0)
     # Why a video was passed over, recorded on the row so it is never detailed
     # again. Details are rate-limited to one every few seconds, and without this
     # a channel's excluded back catalogue was re-fetched on every single
     # refresh — minutes of work per run, to reach the same answer.
-    skip_reason = Column(String, nullable=True)
+    skip_reason = DataField(String)
 
     channel = relationship("YouTubeChannel", back_populates="videos")
 
@@ -397,13 +434,13 @@ class Duplicate(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     tmdb_id = Column(Integer, nullable=False, index=True)
     media_type = Column(String, nullable=False)  # movie | series
-    sources = Column(JSON, default=list)  # [{"source": "radarr", "path": "..."}, ...]
+    sources = DataField(JSON, default=list)  # [{"source": "radarr", "path": "..."}, ...]
     resolution = Column(String, default="pending")  # pending | keep_radarr | keep_provider_1 | keep_both
     detected_at = Column(DateTime, default=datetime.utcnow)
-    resolved_at = Column(DateTime, nullable=True)
+    resolved_at = DataField(DateTime)
     # Users' watched state saved before a same-folder copy was deleted, waiting
     # for the item Jellyfin creates for the kept copy (services/duplicates.py, #333)
-    pending_user_data = Column(JSON(none_as_null=True), nullable=True)
+    pending_user_data = DataField(JSON)
 
 
 # ─── Sync Runs ────────────────────────────────────────────────────────────────
@@ -411,34 +448,34 @@ class Duplicate(Base):
 class SyncRun(Base):
     __tablename__ = "sync_runs"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    provider_id = Column(Integer, ForeignKey("providers.id"), nullable=False, index=True)
+    provider_id = Column(Integer, ForeignKey("providers.id", ondelete="CASCADE"), nullable=False, index=True)
     status = Column(String, default="running", index=True)  # running | completed | failed
-    sync_type = Column(String, default="full")  # full | movies | series
+    sync_type = DataField(String, default="full")  # full | movies | series
 
     # Totals
-    movies_new = Column(Integer, default=0)
-    movies_existing = Column(Integer, default=0)
-    movies_failed = Column(Integer, default=0)
-    movies_skipped = Column(Integer, default=0)  # No TMDB match
-    series_new = Column(Integer, default=0)
-    series_existing = Column(Integer, default=0)
-    series_failed = Column(Integer, default=0)
-    series_skipped = Column(Integer, default=0)
+    movies_new = DataField(Integer, default=0)
+    movies_existing = DataField(Integer, default=0)
+    movies_failed = DataField(Integer, default=0)
+    movies_skipped = DataField(Integer, default=0)  # No TMDB match
+    series_new = DataField(Integer, default=0)
+    series_existing = DataField(Integer, default=0)
+    series_failed = DataField(Integer, default=0)
+    series_skipped = DataField(Integer, default=0)
 
     # Per-category breakdown
-    category_stats = Column(JSON, default=dict)  # {cat_name: {new: x, existing: y}}
+    category_stats = DataField(JSON, default=dict)  # {cat_name: {new: x, existing: y}}
 
     # New additions feed
-    new_movies = Column(JSON, default=list)  # [{tmdb_id, title, year, tags}]
-    new_series = Column(JSON, default=list)
+    new_movies = DataField(JSON, default=list)  # [{tmdb_id, title, year, tags}]
+    new_series = DataField(JSON, default=list)
 
     # New unrecognized categories
-    new_categories = Column(JSON, default=list)
+    new_categories = DataField(JSON, default=list)
 
-    error_message = Column(Text, nullable=True)
+    error_message = DataField(Text)
     started_at = Column(DateTime, default=datetime.utcnow)
-    completed_at = Column(DateTime, nullable=True)
-    duration_seconds = Column(Integer, nullable=True)
+    completed_at = DataField(DateTime)
+    duration_seconds = DataField(Integer)
 
     provider = relationship("Provider", back_populates="sync_runs")
 
@@ -448,19 +485,19 @@ class SyncRun(Base):
 class ListSubscription(Base):
     __tablename__ = "list_subscriptions"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("tentacle_users.id"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("tentacle_users.id", ondelete="CASCADE"), nullable=True, index=True)
     name = Column(String, nullable=False)
-    type = Column(String, nullable=False)  # trakt | letterboxd | imdb_rss
-    url = Column(String, nullable=False)
+    type = DataField(String)  # trakt | letterboxd | imdb_rss
+    url = DataField(String)
     tag = Column(String, nullable=False)  # Tag to apply to matched content
     active = Column(Boolean, default=True)
-    auto_add_radarr = Column(Boolean, default=False)
+    auto_add_radarr = DataField(Boolean, default=False)
     playlist_enabled = Column(Boolean, default=False)  # Generate a Jellyfin playlist from this list
-    last_fetched = Column(DateTime, nullable=True)
-    last_item_count = Column(Integer, default=0)
+    last_fetched = DataField(DateTime)
+    last_item_count = DataField(Integer, default=0)
     # What the user needs to know about the last refresh when it did not read
     # the whole list (a movies-only fallback, a page that failed), else NULL.
-    last_fetch_note = Column(String, nullable=True)
+    last_fetch_note = DataField(String)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("TentacleUser", backref="list_subscriptions")
@@ -472,14 +509,14 @@ class ListSubscription(Base):
 class ListItem(Base):
     __tablename__ = "list_items"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    list_id = Column(Integer, ForeignKey("list_subscriptions.id"), nullable=False, index=True)
+    list_id = Column(Integer, ForeignKey("list_subscriptions.id", ondelete="CASCADE"), nullable=False, index=True)
     tmdb_id = Column(Integer, nullable=True, index=True)
-    imdb_id = Column(String, nullable=True, index=True)
+    imdb_id = DataField(String)
     media_type = Column(String, default="movie")  # movie | series
-    title = Column(String, nullable=True)
-    year = Column(String, nullable=True)
-    poster_path = Column(String, nullable=True)
-    added_at = Column(DateTime, default=datetime.utcnow)
+    title = DataField(String)
+    year = DataField(String)
+    poster_path = DataField(String)
+    added_at = DataField(DateTime, default=datetime.utcnow)
 
     list_subscription = relationship("ListSubscription", back_populates="items")
 
@@ -502,12 +539,12 @@ class ListItem(Base):
 class TagRule(Base):
     __tablename__ = "tag_rules"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("tentacle_users.id"), nullable=True, index=True)
-    name = Column(String, nullable=False)
-    conditions = Column(JSON, default=list)  # [{field, operator, value}]
+    user_id = Column(Integer, ForeignKey("tentacle_users.id", ondelete="CASCADE"), nullable=True, index=True)
+    name = DataField(String)
+    conditions = DataField(JSON, default=list)  # [{field, operator, value}]
     output_tag = Column(String, nullable=False)
     active = Column(Boolean, default=True)
-    apply_to = Column(String, default="both")  # movies | series | both
+    apply_to = DataField(String, default="both")  # movies | series | both
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("TentacleUser", backref="tag_rules")
@@ -518,9 +555,9 @@ class TagRule(Base):
 class HomeRowOrder(Base):
     __tablename__ = "home_row_order"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("tentacle_users.id"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("tentacle_users.id", ondelete="CASCADE"), nullable=True, index=True)
     playlist_id = Column(String, nullable=False)
-    display_order = Column(Integer, nullable=False, default=0)
+    display_order = DataField(Integer, default=0)
 
     user = relationship("TentacleUser", backref="home_row_orders")
 
@@ -534,7 +571,7 @@ class HomeRowOrder(Base):
 class AutoPlaylistToggle(Base):
     __tablename__ = "auto_playlist_toggles"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("tentacle_users.id"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("tentacle_users.id", ondelete="CASCADE"), nullable=True, index=True)
     key = Column(String, nullable=False)  # e.g. "source:Netflix:movies", "builtin:recently_added_movies"
     enabled = Column(Boolean, default=False)
 
@@ -553,22 +590,22 @@ class TentacleUser(Base):
     jellyfin_user_id = Column(String, unique=True, nullable=False, index=True)
     display_name = Column(String, nullable=False)
     is_admin = Column(Boolean, default=False)
-    profile_image_tag = Column(String, nullable=True)  # Jellyfin image tag for avatar
-    notifications_enabled = Column(Boolean, default=True)  # Per-user download notifications
+    profile_image_tag = DataField(String)  # Jellyfin image tag for avatar
+    notifications_enabled = DataField(Boolean, default=True)  # Per-user download notifications
     # Bumped by logout: every session token carries the version it was issued
     # under, so a copy of a cookie stops working when its owner logs out.
-    session_version = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    session_version = DataField(Integer, default=0)
+    created_at = DataField(DateTime, default=datetime.utcnow)
     # Family (services/family.py). A kids profile is an age level ("young",
     # "kids", "teens"); None = no limit. The Jellyfin policy fields it changes
     # are saved first (JSON) and put back when it's switched off.
-    kids_level = Column(String, nullable=True)
-    kids_saved_policy = Column(Text, nullable=True)
+    kids_level = DataField(String)
+    kids_saved_policy = DataField(Text)
     # Requests from this person wait for an admin ("ask") or go straight to
     # Radarr/Sonarr/Lidarr ("direct"). Admins' own always go straight through.
-    request_mode = Column(String, nullable=True, default="ask")
-    invited_by = Column(String, nullable=True)   # the admin's name, for an account made in Tentacle
-    invited_at = Column(DateTime, nullable=True)
+    request_mode = DataField(String, default="ask")
+    invited_by = DataField(String)  # the admin's name, for an account made in Tentacle
+    invited_at = DataField(DateTime)
 
 
 # ─── Notifications ───────────────────────────────────────────────────────────
@@ -576,18 +613,18 @@ class TentacleUser(Base):
 class Notification(Base):
     __tablename__ = "notifications"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("tentacle_users.id"), nullable=False, index=True)
-    tmdb_id = Column(Integer, nullable=False)
-    media_type = Column(String, nullable=False, default="movie")  # movie | series
-    title = Column(String, nullable=False)
-    message = Column(String, nullable=False)
-    poster_path = Column(String, nullable=True)
-    jellyfin_item_id = Column(String, nullable=True)  # For click-to-play navigation
+    user_id = Column(Integer, ForeignKey("tentacle_users.id", ondelete="CASCADE"), nullable=False, index=True)
+    tmdb_id = DataField(Integer)
+    media_type = DataField(String, default="movie")  # movie | series
+    title = DataField(String)
+    message = DataField(String)
+    poster_path = DataField(String)
+    jellyfin_item_id = DataField(String)  # For click-to-play navigation
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
-    dismissed_at = Column(DateTime, nullable=True)
+    dismissed_at = DataField(DateTime)
     # "download" (ready to watch), "request" (asked for / approved / declined)
     # or "problem" (admins only: services/admin_alerts.py).
-    kind = Column(String, nullable=True, default="download")
+    kind = DataField(String, default="download")
 
     user = relationship("TentacleUser", backref="notifications")
 
@@ -599,8 +636,8 @@ class DownloadRequest(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     tmdb_id = Column(Integer, nullable=False, index=True)
     media_type = Column(String, nullable=False, default="movie")  # movie | series
-    user_id = Column(Integer, ForeignKey("tentacle_users.id"), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    user_id = Column(Integer, ForeignKey("tentacle_users.id", ondelete="CASCADE"), nullable=False)
+    created_at = DataField(DateTime, default=datetime.utcnow)
 
     user = relationship("TentacleUser", backref="download_requests")
 
@@ -616,19 +653,19 @@ class MediaRequest(Base):
     is the original request body (JSON), replayed as that person on approval."""
     __tablename__ = "media_requests"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("tentacle_users.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("tentacle_users.id", ondelete="CASCADE"), nullable=False, index=True)
     kind = Column(String, nullable=False)           # movie | series | album
-    tmdb_id = Column(Integer, nullable=True, index=True)
-    tvdb_id = Column(Integer, nullable=True)
-    title = Column(String, nullable=False, default="")
-    year = Column(String, nullable=True)
-    poster_path = Column(String, nullable=True)
-    payload = Column(Text, nullable=False, default="{}")
+    tmdb_id = DataField(Integer)
+    tvdb_id = DataField(Integer)
+    title = DataField(String, default="")
+    year = DataField(String)
+    poster_path = DataField(String)
+    payload = DataField(Text, default="{}")
     status = Column(String, nullable=False, default="pending", index=True)  # pending | approved | declined | failed
-    note = Column(String, nullable=True)            # the admin's reason, or why the approved add failed
-    decided_by = Column(String, nullable=True)
+    note = DataField(String)  # the admin's reason, or why the approved add failed
+    decided_by = DataField(String)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
-    decided_at = Column(DateTime, nullable=True)
+    decided_at = DataField(DateTime)
 
     user = relationship("TentacleUser", backref="media_requests")
 
@@ -641,12 +678,12 @@ class AdminAlert(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     key = Column(String, nullable=False, unique=True)   # e.g. "disk:/media/movies", "livetv:setup"
     area = Column(String, nullable=False)               # livetv | library | requests | downloads | server
-    title = Column(String, nullable=False)
-    message = Column(String, nullable=False)
+    title = DataField(String)
+    message = DataField(String)
     active = Column(Boolean, default=True, index=True)
     started_at = Column(DateTime, default=datetime.utcnow)
-    last_seen_at = Column(DateTime, default=datetime.utcnow)
-    resolved_at = Column(DateTime, nullable=True)
+    last_seen_at = DataField(DateTime, default=datetime.utcnow)
+    resolved_at = DataField(DateTime)
 
 
 class MusicArtist(Base):
@@ -654,19 +691,19 @@ class MusicArtist(Base):
     __tablename__ = "music_artists"
     id = Column(Integer, primary_key=True, autoincrement=True)
     mbid = Column(String, nullable=False, unique=True, index=True)   # MusicBrainz artist id
-    lidarr_artist_id = Column(Integer, index=True)
+    lidarr_artist_id = DataField(Integer)
     name = Column(String, nullable=False, default="")
-    sort_name = Column(String, default="")
-    disambiguation = Column(String, default="")
-    path = Column(String, default="")          # the artist's folder, as Lidarr sees it
-    updated_at = Column(DateTime, default=datetime.utcnow)
+    sort_name = DataField(String, default="")
+    disambiguation = DataField(String, default="")
+    path = DataField(String, default="")  # the artist's folder, as Lidarr sees it
+    updated_at = DataField(DateTime, default=datetime.utcnow)
     # Artist picture (services/music/pictures.py): "" (not checked) | set | ok |
     # waiting (the player hasn't scanned the artist yet) | review | error
     picture_status = Column(String, default="", index=True)
-    picture_source = Column(String, default="")    # artist.jpg | deezer | upload
-    picture_note = Column(Text)                    # why it needs review / what failed
-    picture_candidates = Column(JSON)              # Deezer candidates for the review page
-    picture_checked_at = Column(DateTime)
+    picture_source = DataField(String, default="")  # artist.jpg | deezer | upload
+    picture_note = DataField(Text)  # why it needs review / what failed
+    picture_candidates = DataField(JSON)  # Deezer candidates for the review page
+    picture_checked_at = DataField(DateTime)
 
 
 class MusicAlbum(Base):
@@ -675,33 +712,33 @@ class MusicAlbum(Base):
     __tablename__ = "music_albums"
     id = Column(Integer, primary_key=True, autoincrement=True)
     mbid = Column(String, nullable=False, unique=True, index=True)   # release group id
-    lidarr_album_id = Column(Integer, index=True)
-    lidarr_artist_id = Column(Integer, index=True)
-    artist_mbid = Column(String, index=True, default="")
-    artist_name = Column(String, default="")
-    title = Column(String, nullable=False, default="")
-    album_type = Column(String, default="")          # Album | EP | Single | ...
-    secondary_types = Column(String, default="")     # comma-separated: Live, Compilation, ...
-    release_date = Column(String, default="")
+    lidarr_album_id = DataField(Integer)
+    lidarr_artist_id = DataField(Integer)
+    artist_mbid = DataField(String, default="")
+    artist_name = DataField(String, default="")
+    title = DataField(String, default="")
+    album_type = DataField(String, default="")  # Album | EP | Single | ...
+    secondary_types = DataField(String, default="")  # comma-separated: Live, Compilation, ...
+    release_date = DataField(String, default="")
     monitored = Column(Boolean, default=False)
     any_release_ok = Column(Boolean, default=True)
-    track_count = Column(Integer, default=0)         # of the pinned release
-    track_file_count = Column(Integer, default=0)
-    size_on_disk = Column(Integer, default=0)
-    cover_url = Column(String, default="")
+    track_count = DataField(Integer, default=0)  # of the pinned release
+    track_file_count = DataField(Integer, default=0)
+    size_on_disk = DataField(Integer, default=0)
+    cover_url = DataField(String, default="")
     # Tentacle's verdict (services/music/original.py): right | repin | repin_trim |
     # repin_download | review; empty until checked.
     category = Column(String, default="", index=True)
-    verdict = Column(JSON)
-    checked_at = Column(DateTime)
-    check_error = Column(Text)
-    requested_by = Column(Integer, ForeignKey("tentacle_users.id"))
-    requested_at = Column(DateTime)
+    verdict = DataField(JSON)
+    checked_at = DataField(DateTime)
+    check_error = DataField(Text)
+    requested_by = Column(Integer, ForeignKey("tentacle_users.id", ondelete="SET NULL"))
+    requested_at = DataField(DateTime)
     # A request whose pin and search haven't happened yet (jobs.finish_request):
     # kept in the database so a restart or a lost reply can't drop it (#242).
     request_pending = Column(Boolean, default=False)
-    request_choice = Column(JSON)   # the user's pick of a tracklist, for that job
-    updated_at = Column(DateTime, default=datetime.utcnow)
+    request_choice = DataField(JSON)  # the user's pick of a tracklist, for that job
+    updated_at = DataField(DateTime, default=datetime.utcnow)
 
 
 class MusicImport(Base):
@@ -709,21 +746,21 @@ class MusicImport(Base):
     original studio album each one resolved to (services/music/spotify.py)."""
     __tablename__ = "music_imports"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("tentacle_users.id"), index=True)
-    name = Column(String, default="")
-    source = Column(String, default="")          # spotify_url | exportify_csv
-    url = Column(String, default="")             # the playlist link, for Refresh
-    status = Column(String, default="resolving")  # resolving | ready | error
-    done = Column(Integer, default=0)            # songs resolved so far
-    total = Column(Integer, default=0)
+    user_id = Column(Integer, ForeignKey("tentacle_users.id", ondelete="CASCADE"), index=True)
+    name = DataField(String, default="")
+    source = DataField(String, default="")  # spotify_url | exportify_csv
+    url = DataField(String, default="")  # the playlist link, for Refresh
+    status = DataField(String, default="resolving")  # resolving | ready | error
+    done = DataField(Integer, default=0)  # songs resolved so far
+    total = DataField(Integer, default=0)
     # [{title, artist, album, album_artist, result: {mbid, title, artist, artist_mbid,
     #   year} | {reason}}]
-    tracks = Column(JSON)
-    outcomes = Column(JSON)                      # {release group id: "requested" | why not}
-    left_out = Column(Integer, default=0)        # songs past MAX_TRACKS, not imported (shown)
-    error = Column(Text)
+    tracks = DataField(JSON)
+    outcomes = DataField(JSON)  # {release group id: "requested" | why not}
+    left_out = DataField(Integer, default=0)  # songs past MAX_TRACKS, not imported (shown)
+    error = DataField(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = DataField(DateTime, default=datetime.utcnow)
 
 
 # ─── Activity Log ─────────────────────────────────────────────────────────────
@@ -732,8 +769,8 @@ class ActivityLog(Base):
     __tablename__ = "activity_log"
     id = Column(Integer, primary_key=True, autoincrement=True)
     event = Column(String, nullable=False)       # e.g. "vod_sync", "radarr_scan", "radarr_add", "sonarr_add", "list_fetch", "jellyfin_push"
-    message = Column(String, nullable=False)      # Human-readable: "VOD sync completed — 12 new movies, 3 new series"
-    detail = Column(JSON, nullable=True)          # Optional extra data
+    message = DataField(String)  # Human-readable: "VOD sync completed — 12 new movies, 3 new series"
+    detail = DataField(JSON)  # Optional extra data
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
@@ -750,18 +787,18 @@ class BlockedStream(Base):
     """
     __tablename__ = "blocked_streams"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    provider_id = Column(Integer, ForeignKey("providers.id"), nullable=False, index=True)
+    provider_id = Column(Integer, ForeignKey("providers.id", ondelete="CASCADE"), nullable=False, index=True)
     media_type = Column(String, nullable=False, default="movie")
     stream_key = Column(String, nullable=False)    # stream id, or the stream URL
-    tmdb_id = Column(Integer, nullable=True)        # what it had been matched to
-    title = Column(String, nullable=True)
-    reason = Column(String, nullable=True)
-    blocked_by = Column(String, nullable=True)
+    tmdb_id = DataField(Integer)  # what it had been matched to
+    title = DataField(String)
+    reason = DataField(String)
+    blocked_by = DataField(String)
     created_at = Column(DateTime, default=datetime.utcnow)
     # The provider's own label of the stream ("<name>\t<container>"), stored by
     # the sync while it lists the stream: a stream re-listed under a new id
     # with this exact label is held for the admin, never imported silently.
-    label = Column(String, nullable=True)
+    label = DataField(String)
 
     __table_args__ = (
         UniqueConstraint("provider_id", "media_type", "stream_key", name="uq_blocked_stream"),
@@ -774,20 +811,20 @@ class MatchOverride(Base):
     label, so the fix survives every night."""
     __tablename__ = "match_overrides"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    provider_id = Column(Integer, ForeignKey("providers.id"), nullable=False, index=True)
+    provider_id = Column(Integer, ForeignKey("providers.id", ondelete="CASCADE"), nullable=False, index=True)
     media_type = Column(String, nullable=False, default="movie")
     stream_key = Column(String, nullable=False)     # stream id, or the stream URL
     tmdb_id = Column(Integer, nullable=False)        # the film it really is
-    previous_tmdb_id = Column(Integer, nullable=True)
-    title = Column(String, nullable=True)
-    set_by = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    previous_tmdb_id = DataField(Integer)
+    title = DataField(String)
+    set_by = DataField(String)
+    created_at = DataField(DateTime, default=datetime.utcnow)
     # The provider's label of the stream ("<name>\t<container>"), stored by the
     # sync: when the provider re-lists the stream under a new id with this
     # exact label, the fix follows it (moved_from = the key it had before, for
     # the admin's Undo).
-    label = Column(String, nullable=True)
-    moved_from = Column(String, nullable=True)
+    label = DataField(String)
+    moved_from = DataField(String)
 
     __table_args__ = (
         UniqueConstraint("provider_id", "media_type", "stream_key", name="uq_match_override"),
@@ -802,16 +839,16 @@ class MatchSuspect(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     tmdb_id = Column(Integer, nullable=False)
     media_type = Column(String, nullable=False, default="movie")
-    title = Column(String, nullable=True)
-    expected_minutes = Column(Integer, nullable=True)   # TMDB runtime
-    actual_minutes = Column(Integer, nullable=True)     # Jellyfin's probe of the stream
-    jellyfin_item_id = Column(String, nullable=True)
+    title = DataField(String)
+    expected_minutes = DataField(Integer)  # TMDB runtime
+    actual_minutes = DataField(Integer)  # Jellyfin's probe of the stream
+    jellyfin_item_id = DataField(String)
     dismissed = Column(Boolean, default=False)
     detected_at = Column(DateTime, default=datetime.utcnow)
     # None: flagged by its played length. "relist_followed": a fixed stream was
     # re-listed and the fix followed it; "relist_blocked": a re-listed stream is
     # labelled like one the admin blocked. The runtime check leaves these alone.
-    reason = Column(String, nullable=True)
+    reason = DataField(String)
 
     __table_args__ = (
         UniqueConstraint("tmdb_id", "media_type", name="uq_match_suspect"),
@@ -827,13 +864,13 @@ class DeletionLog(Base):
     not feed messages."""
     __tablename__ = "deletion_log"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    kind = Column(String, nullable=False)         # download-delete | jellyfin-delete | provider-cascade | duplicate-resolve | orphan-sweep | vod-sweep | stale-cleanup | download-fix | stream-health
-    name = Column(String, nullable=False)          # Title or item label
-    media_type = Column(String, nullable=True)     # movie | series | None
-    size_bytes = Column(Integer, nullable=True)
-    reason = Column(String, nullable=False, default="manual")  # manual | auto | webhook
-    detail = Column(Text, nullable=True)           # What exactly happened
-    user_name = Column(String, nullable=True)      # Display name for manual actions
+    kind = DataField(String)  # download-delete | jellyfin-delete | provider-cascade | duplicate-resolve | orphan-sweep | vod-sweep | stale-cleanup | download-fix | stream-health
+    name = DataField(String)  # Title or item label
+    media_type = DataField(String)  # movie | series | None
+    size_bytes = DataField(Integer)
+    reason = DataField(String, default="manual")  # manual | auto | webhook
+    detail = DataField(Text)  # What exactly happened
+    user_name = DataField(String)  # Display name for manual actions
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
@@ -845,13 +882,13 @@ class StreamHealth(Base):
     recovers — a bad mark must never silently become permanent bookkeeping."""
     __tablename__ = "stream_health"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    media_type = Column(String, nullable=False)     # movie | series
-    tmdb_id = Column(Integer, nullable=False, index=True)
-    title = Column(String, nullable=False)
-    episode = Column(String, nullable=True)          # "S01E02" for series entries
+    media_type = DataField(String)  # movie | series
+    tmdb_id = DataField(Integer)
+    title = DataField(String)
+    episode = DataField(String)  # "S01E02" for series entries
     strm_path = Column(String, nullable=False)
-    stream_url = Column(String, nullable=True)
-    fail_count = Column(Integer, default=1)
+    stream_url = DataField(String)
+    fail_count = DataField(Integer, default=1)
     first_failed_at = Column(DateTime, default=datetime.utcnow)
     last_checked_at = Column(DateTime, default=datetime.utcnow)
 
@@ -865,47 +902,53 @@ class StreamHealth(Base):
 class LiveChannel(Base):
     __tablename__ = "live_channels"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    provider_id = Column(Integer, ForeignKey("providers.id"), nullable=False, index=True)
+    provider_id = Column(Integer, ForeignKey("providers.id", ondelete="CASCADE"), nullable=False, index=True)
 
     # Channel identity
     name = Column(String, nullable=False)
     # The user's own name for the channel. Channel syncs rewrite `name` from
     # the provider every time and never touch this, so a rename survives.
-    custom_name = Column(String, nullable=True)
-    channel_number = Column(Integer, nullable=True)  # User-assignable
+    custom_name = DataField(String)
+    channel_number = DataField(Integer)  # User-assignable
     stream_id = Column(String, nullable=True)  # Xtream stream_id or M3U index
     # M3U only: the hash of the channel's CURRENT name + URL, what a sync
     # matches the playlist by. stream_id is the GuideNumber Jellyfin keys the
     # channel, its timers and favourites on, so it keeps its first value when
     # the URL changes (#259). NULL (rows from before it existed) = stream_id.
-    m3u_key = Column(String, nullable=True)
+    m3u_key = DataField(String)
 
     # Stream info
-    stream_url = Column(String, nullable=False)
+    stream_url = DataField(String)
 
     # Metadata
-    logo_url = Column(String, nullable=True)
+    logo_url = DataField(String)
     group_title = Column(String, nullable=True)  # Category/group from provider
-    epg_channel_id = Column(String, nullable=True)  # tvg-id for EPG matching
+    epg_channel_id = DataField(String)  # tvg-id for EPG matching
     # The admin's own guide id for the channel. Channel syncs never touch it,
     # and it wins over everything below (#141).
-    epg_id_override = Column(String, nullable=True)
+    epg_id_override = DataField(String)
     # The feed channel the last EPG sync matched by NAME, because the tvg-id
     # was missing or the feed did not carry it (#141), or the feed's spelling
     # of a tvg-id it lists only in other case (#523). Recomputed every sync.
-    epg_name_match = Column(String, nullable=True)
+    epg_name_match = DataField(String)
 
     # Management
     enabled = Column(Boolean, default=False)  # User must enable channels
     sort_order = Column(Integer, default=0)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = DataField(DateTime, default=datetime.utcnow)
+    updated_at = DataField(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     provider = relationship("Provider", back_populates="live_channels")
 
     __table_args__ = (
         UniqueConstraint("provider_id", "stream_id", name="uq_live_channel_stream"),
+        # The channel's group by its name. Not enforced (foreign keys are off):
+        # an Xtream channel whose category the provider doesn't list has the
+        # group "" and no live_channel_groups row.
+        ForeignKeyConstraint(["provider_id", "group_title"],
+                             ["live_channel_groups.provider_id", "live_channel_groups.name"],
+                             onupdate="CASCADE", name="fk_live_channel_group"),
     )
 
     @property
@@ -935,11 +978,11 @@ class LiveChannel(Base):
 class LiveChannelGroup(Base):
     __tablename__ = "live_channel_groups"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    provider_id = Column(Integer, ForeignKey("providers.id"), nullable=False, index=True)
+    provider_id = Column(Integer, ForeignKey("providers.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String, nullable=False)
-    category_id = Column(String, nullable=True)  # Provider's internal category ID
+    category_id = DataField(String)  # Provider's internal category ID
     enabled = Column(Boolean, default=False)  # Enable/disable entire group
-    channel_count = Column(Integer, default=0)
+    channel_count = DataField(Integer, default=0)
 
     __table_args__ = (
         UniqueConstraint("provider_id", "name", name="uq_live_group"),
@@ -952,31 +995,59 @@ class LiveUserLineup(Base):
     Jellyfin). No row = all channels."""
     __tablename__ = "live_user_lineups"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    jellyfin_user_id = Column(String, unique=True, nullable=False, index=True)  # no dashes
-    own_list = Column(Boolean, default=False)
+    jellyfin_user_id = Column(String, ForeignKey("tentacle_users.jellyfin_user_id", ondelete="CASCADE"),
+                              unique=True, nullable=False, index=True)  # no dashes
+    own_list = DataField(Boolean, default=False)
     # The address Jellyfin was given for this person's tuner, kept as it was
     # first given: Jellyfin keys every channel (and so its favourites and
     # recordings) on the tuner's URL, so it must never change by itself.
-    tuner_url = Column(String, nullable=True)
+    tuner_url = DataField(String)
     # What Jellyfin was last set up with (own_list as of the last sync), so a
     # switch is noticed and the person's favourites are carried across.
-    synced_own_list = Column(Boolean, nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    synced_own_list = DataField(Boolean)
+    updated_at = DataField(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class LiveUserChannel(Base):
     """A channel on someone's own list, in their order (their numbers are
-    1, 2, 3... in this order). `channel_key` is "c<live_channels.id>" or
-    "y<youtube_channels.id>"."""
+    1, 2, 3... in this order): a provider's channel or a YouTube channel,
+    exactly one of the two. `channel_key` names it the way the code and the
+    API do: "c<live_channels.id>" or "y<youtube_channels.id>"."""
     __tablename__ = "live_user_channels"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    jellyfin_user_id = Column(String, nullable=False, index=True)
-    channel_key = Column(String, nullable=False)
+    jellyfin_user_id = Column(String, ForeignKey("tentacle_users.jellyfin_user_id", ondelete="CASCADE"),
+                              nullable=False, index=True)
+    live_channel_id = Column(Integer, ForeignKey("live_channels.id", ondelete="CASCADE"), nullable=True)
+    youtube_channel_id = Column(Integer, ForeignKey("youtube_channels.id", ondelete="CASCADE"), nullable=True)
     position = Column(Integer, nullable=False, default=0)
 
     __table_args__ = (
-        UniqueConstraint("jellyfin_user_id", "channel_key", name="uq_live_user_channel"),
+        UniqueConstraint("jellyfin_user_id", "live_channel_id", name="uq_live_user_channel"),
+        UniqueConstraint("jellyfin_user_id", "youtube_channel_id", name="uq_live_user_youtube_channel"),
+        CheckConstraint("live_channel_id IS NULL OR youtube_channel_id IS NULL", name="ck_live_user_channel_one"),
     )
+
+    @hybrid_property
+    def channel_key(self):
+        if self.live_channel_id is not None:
+            return f"c{self.live_channel_id}"
+        if self.youtube_channel_id is not None:
+            return f"y{self.youtube_channel_id}"
+        return None
+
+    @channel_key.setter
+    def channel_key(self, key):
+        key = str(key or "")
+        kind, number = key[:1], key[1:]
+        if kind not in ("c", "y") or not number.isdigit():
+            raise ValueError(f"not a channel key: {key!r}")
+        self.live_channel_id = int(number) if kind == "c" else None
+        self.youtube_channel_id = int(number) if kind == "y" else None
+
+    @channel_key.expression
+    def channel_key(cls):
+        return case((cls.live_channel_id.isnot(None), literal("c") + cast(cls.live_channel_id, String)),
+                    (cls.youtube_channel_id.isnot(None), literal("y") + cast(cls.youtube_channel_id, String)))
 
 
 class EPGProgram(Base):
@@ -984,19 +1055,23 @@ class EPGProgram(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     channel_id = Column(String, nullable=False, index=True)  # Matches epg_channel_id
 
-    title = Column(String, nullable=False)
+    title = DataField(String)
     # The provider's <sub-title>: an episode or match name ("TOR vs MTL").
-    sub_title = Column(String, nullable=True)
-    description = Column(Text, nullable=True)
+    sub_title = DataField(String)
+    description = DataField(Text)
     start = Column(DateTime, nullable=False)
     stop = Column(DateTime, nullable=False)
 
-    category = Column(String, nullable=True)
-    icon_url = Column(String, nullable=True)
+    category = DataField(String)
+    icon_url = DataField(String)
 
     __table_args__ = (
         UniqueConstraint("channel_id", "start", name="uq_epg_program"),
     )
+
+
+for _table in Base.metadata.tables.values():
+    _table.append_constraint(CheckConstraint("json_valid(data)", name=f"ck_{_table.name}_data"))
 
 
 def log_activity(db, event: str, message: str, detail: dict = None):
@@ -1165,14 +1240,22 @@ def _existing_columns(cursor, table: str) -> set:
         return set()
 
 
-def _migrate_columns():
-    """Add columns that may be missing from older databases.
+def _old_layout(cursor, table: str) -> bool:
+    """The table exists and has no `data` column: a column per detail, as
+    before the data-column layout (models/db_design.py)."""
+    existing = _existing_columns(cursor, table)
+    return bool(existing) and "data" not in existing
+
+
+def _migrate_legacy_layout():
+    """Bring the tables still in the old layout up to its last version
+    (models/legacy_schema.py), so db_design.convert() starts from one known
+    layout. Tables already in the data-column layout are left alone.
 
     Two passes:
       1. An explicit list for columns that need a specific SQL default / FK.
-      2. A generic pass that introspects each mapped table and adds any
-         model-defined column that's absent — so newly added model columns
-         don't silently go missing on upgraded DBs.
+      2. A generic pass that adds every column of the last old layout that's
+         absent, with its default.
     """
     import sqlite3
     db_path = DATABASE_URL.replace("sqlite:///", "")
@@ -1208,8 +1291,8 @@ def _migrate_columns():
     _migrate_auto_playlist_toggles(cursor, conn)
     for table, column, col_type in migrations:
         existing = _existing_columns(cursor, table)
-        if not existing:
-            continue  # table doesn't exist yet (create_all handles it)
+        if not existing or "data" in existing:
+            continue  # no table yet (create_all makes it), or the data-column layout
         if column in existing:
             continue
         try:
@@ -1222,12 +1305,23 @@ def _migrate_columns():
             else:
                 logger.error(f"[migrate] ALTER {table}.{column} failed: {e}")
 
-    # Generic pass: add any model-defined column missing from the live table.
-    # SQLite can't add NOT NULL columns without a default, so skip those.
-    for table_name, table_obj in Base.metadata.tables.items():
+    _add_missing_columns(cursor, conn, LEGACY, old_layout=True)
+
+    _migrate_list_items_key(conn)
+    _drop_retired_tables(cursor, conn)
+    _reset_guessed_made_for_kids(cursor, conn)
+    conn.close()
+
+
+def _add_missing_columns(cursor, conn, metadata, old_layout: bool):
+    """Add every column of `metadata`'s tables that a table lacks: the last old
+    layout's (old_layout=True, only tables still in it) or this version's real
+    columns (old_layout=False, only tables in the data-column layout).
+    SQLite can't add NOT NULL columns without a default, so skip those."""
+    for table_name, table_obj in metadata.tables.items():
         existing = _existing_columns(cursor, table_name)
-        if not existing:
-            continue  # table not created yet
+        if not existing or ("data" in existing) == old_layout:
+            continue  # table not created yet, or in the other layout
         for col in table_obj.columns:
             if col.name in existing:
                 continue
@@ -1250,11 +1344,6 @@ def _migrate_columns():
                 continue
             _backfill_default(cursor, conn, table_name, col)
 
-    _migrate_list_items_key(conn)
-    _drop_retired_tables(cursor, conn)
-    _reset_guessed_made_for_kids(cursor, conn)
-    conn.close()
-
 
 def _reset_guessed_made_for_kids(cursor, conn):
     """Forget the Made for Kids values the age_limit guess wrote (#130).
@@ -1268,6 +1357,10 @@ def _reset_guessed_made_for_kids(cursor, conn):
     """
     import sqlite3
     marker = "migrated_youtube_made_for_kids_reset"
+    if not _old_layout(cursor, "settings") or not _old_layout(cursor, "youtube_videos"):
+        # A fresh install (create_all comes next), or the data-column layout,
+        # which a database only reaches after this step
+        return
     try:
         cursor.execute("SELECT 1 FROM settings WHERE key = ?", (marker,))
         if cursor.fetchone():
@@ -1311,7 +1404,7 @@ def _recreate_per_user_table(conn, table, old_name, columns):
     from sqlalchemy.schema import CreateIndex, CreateTable
 
     cursor = conn.cursor()
-    model = Base.metadata.tables[table]
+    model = LEGACY.tables[table]
     has_old = bool(cursor.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (old_name,)).fetchone())
     existing = _existing_columns(cursor, table)
@@ -1363,7 +1456,7 @@ def _migrate_list_items_key(conn):
             old_key = old_key or cols == ["list_id", "tmdb_id"]
     if not old_key:
         return  # current schema, a fresh install, or no table yet
-    model = Base.metadata.tables["list_items"]
+    model = LEGACY.tables["list_items"]
     old_cols = _existing_columns(cursor, "list_items")
     cols = [c.name for c in model.columns if c.name in old_cols]
     select = ", ".join("COALESCE(media_type, 'movie')" if c == "media_type" else f'"{c}"' for c in cols)
@@ -1397,8 +1490,20 @@ def _migrate_auto_playlist_toggles(cursor, conn):
 
 
 def create_tables():
+    """Bring the database to this version's layout: tables in the old layout
+    first to its last version, then once to the data-column layout (one
+    transaction, a copy of the database first: models/db_design.py), then the
+    tables and real columns this version adds. A conversion that fails stops
+    the start: the database is as it was, and the models can't use it."""
+    from models import db_design
+    _migrate_legacy_layout()
+    db_design.convert(DATABASE_URL.replace("sqlite:///", ""))
     Base.metadata.create_all(bind=engine)
-    _migrate_columns()
+    conn = sqlite3.connect(DATABASE_URL.replace("sqlite:///", ""))
+    try:
+        _add_missing_columns(conn.cursor(), conn, Base.metadata, old_layout=False)
+    finally:
+        conn.close()
 
 
 def seed_defaults(db):

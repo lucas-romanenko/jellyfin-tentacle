@@ -25,7 +25,6 @@ from datetime import datetime
 from typing import Optional
 
 import requests
-from sqlalchemy.orm.attributes import flag_modified
 
 from models.database import MusicImport
 from services.music import worker
@@ -161,7 +160,6 @@ def refresh_import(db, imp: MusicImport) -> MusicImport:
     imp.name, imp.tracks, imp.total = name[:200], tracks, len(tracks)
     imp.done = sum(1 for t in tracks if t.get("result") is not None)
     imp.status, imp.error, imp.updated_at = "resolving", None, datetime.utcnow()
-    flag_modified(imp, "tracks")
     db.commit()
     _submit(imp.id)
     return imp
@@ -287,7 +285,6 @@ def _store(db, import_id: int, results: dict, status: Optional[str] = None, erro
             imp.status = status
         imp.error = error
         imp.updated_at = datetime.utcnow()
-        flag_modified(imp, "tracks")
         db.commit()
         return imp
     except (ObjectDeletedError, StaleDataError):
@@ -339,7 +336,6 @@ def _note_outcome(db, import_id: int, rgid: str, outcome: str) -> None:
         if imp is None:
             return
         imp.outcomes = dict(imp.outcomes or {}, **{rgid: outcome})
-        flag_modified(imp, "outcomes")
         db.commit()
     except (ObjectDeletedError, StaleDataError):
         db.rollback()

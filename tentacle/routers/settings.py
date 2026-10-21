@@ -54,7 +54,9 @@ SENSITIVE_KEYS = {"tmdb_bearer_token", "tmdb_api_key", "radarr_api_key", "sonarr
 # Signing keys: session_secret signs the dashboard's session cookies,
 # vod_token_secret the .strm playback tokens. Nothing in the dashboard shows or
 # edits them, so no settings route serves them and a Save cannot set them.
-NEVER_SERVED = {"session_secret", "vod_token_secret"}
+# db_design_previous_schema: the old tables' SQL, kept for the way back
+# (models/db_design.py), not a setting
+NEVER_SERVED = {"session_secret", "vod_token_secret", "db_design_previous_schema"}
 
 
 # Passwords and shared secrets show no characters at all; API keys keep

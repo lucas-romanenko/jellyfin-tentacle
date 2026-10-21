@@ -490,6 +490,31 @@ auto_playlist_toggles, tentacle_users, notifications, download_requests,
 music_artists, music_albums, and the Live TV tables. Credentials live in
 `settings` (key/value) and `providers`; never log or print them.
 
+Layout (since v1.13): every table has a few real columns (ids, foreign keys,
+unique keys, and what every row has and SQL filters, sorts or joins on) and a
+JSON `data` column (`CHECK (json_valid(data))`) with everything else. A
+detail is a `DataField(type)` on the model (`models/data_fields.py`):
+`row.overview` reads/writes `data["overview"]`, `Movie.overview` in a query
+is `json_extract(data, '$.overview')`, so filters, sorts and
+`query.update({Model.field: v})` work as on a column. What doesn't:
+`bulk_update_mappings` / `bulk_insert_mappings` and Core
+`Model.__table__.insert()` only write real columns (use the ORM or
+`query.update`); `flag_modified(row, "field")` (just set the field again: a
+read gives a copy); `sqlalchemy.distinct(Model.field)` (use
+`query(Model.field).distinct()`). A new detail needs no migration: add a
+DataField. A new real column is added by `_add_missing_columns`. Derived,
+not stored: `Movie/Series.source` (from provider_id) and
+`LiveUserChannel.channel_key` (from live_channel_id / youtube_channel_id).
+Foreign keys are declared with ON DELETE but not enforced (PRAGMA
+foreign_keys stays off).
+
+Upgrade: `create_tables()` brings tables in the old column-per-detail layout
+to its last version (frozen in `models/legacy_schema.py`), then
+`models/db_design.py convert()` moves them, once, in one transaction, after
+a copy to `tentacle.db.before-db-design`; the old SQL is kept in settings
+(`db_design_previous_schema`, never served). Way back, Tentacle stopped:
+`python -m models.db_design revert /data/tentacle.db`.
+
 A list item is keyed on (list_id, tmdb_id, media_type): TMDB numbers films
 and shows separately, so a list may hold movie/N and tv/N. Anything that
 looks up list items by TMDB number filters on the type too

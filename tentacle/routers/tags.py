@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
 
-from sqlalchemy import distinct
 from models.database import get_db, get_setting, TagRule, Movie, Series, ListSubscription, TentacleUser
 from routers.auth import get_user_from_request
 from services.jellyfin import JellyfinService
@@ -23,12 +22,12 @@ def condition_options(db: Session = Depends(get_db), user: TentacleUser = Depend
     """Return available values for Source and List condition dropdowns.
     Sources are global (from content), lists are per-user."""
     # Distinct source_tags from synced content (global)
-    movie_tags = db.query(distinct(Movie.source_tag)).filter(
+    movie_tags = db.query(Movie.source_tag).filter(
         Movie.source_tag.isnot(None), Movie.source_tag != ""
-    ).all()
-    series_tags = db.query(distinct(Series.source_tag)).filter(
+    ).distinct().all()
+    series_tags = db.query(Series.source_tag).filter(
         Series.source_tag.isnot(None), Series.source_tag != ""
-    ).all()
+    ).distinct().all()
     sources = sorted({tag for (tag,) in movie_tags} | {tag for (tag,) in series_tags})
 
     # Per-user active list subscriptions
