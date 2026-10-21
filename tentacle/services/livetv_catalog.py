@@ -17,6 +17,9 @@
   categories / titles, the provider's group name and the channel name.
 - has_guide: guide data for the next 24 h in the last refresh.
 - Events: services/livetv_events.py, read from event channel names.
+- new: the entry joined the pool in the last NEW_DAYS days (My channels
+  marks it New). Every key the pool ever had is kept (live_pool_arrivals);
+  a key that took over a known one (folding) isn't new.
 
 refresh() rebuilds the folding when the channel list changed (a hash of every
 channel's id, name, group and switch, kept in the settings); pool() calls
@@ -33,7 +36,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from models.database import (EPGProgram, LiveChannel, LiveChannelCatalog, LiveKeyAlias, LiveNetwork,
-                             LiveUserChannel, get_setting, set_setting)
+                             LivePoolArrival, LiveUserChannel, get_setting, set_setting)
 from services import livetv_events, livetv_names
 
 logger = logging.getLogger(__name__)
@@ -729,7 +732,38 @@ def fold_pool(db: Session, entries: list, channels_by_id: dict) -> list:
             entry["check"] = checks.get(key) or {"state": "unchecked", "at": None}
         out.append(entry)
     _mark_main(db, out, channels_by_id)
+    try:
+        _mark_new(db, out)
+    except Exception as e:   # a mark must never take the channels away
+        logger.warning(f"[LiveTV] New channels not marked: {e}")
     return out
+
+
+NEW_DAYS = 14
+
+
+def _mark_new(db: Session, entries: list, now: Optional[datetime] = None) -> None:
+    """entry["new"]: in the pool for less than NEW_DAYS (live_pool_arrivals).
+    The first time (no record yet) every entry is the baseline, not new."""
+    now = now or datetime.utcnow()
+    known = {a.key: a.added_at for a in db.query(LivePoolArrival).all()}
+    fresh = [e["key"] for e in entries if e["key"] not in known]
+    if fresh:
+        baseline = not known
+        came_from = defaultdict(set)
+        if not baseline:
+            for old, new in aliases(db).items():
+                came_from[new].add(old)
+        before = set(known)
+        for k in dict.fromkeys(fresh):
+            at = None if baseline or came_from.get(k, set()) & before else now
+            db.add(LivePoolArrival(key=k, added_at=at))
+            known[k] = at
+        db.commit()
+    cutoff = now - timedelta(days=NEW_DAYS)
+    for e in entries:
+        at = known.get(e["key"])
+        e["new"] = at is not None and at >= cutoff
 
 
 # French-language channels: no quick pick for an English household (setting

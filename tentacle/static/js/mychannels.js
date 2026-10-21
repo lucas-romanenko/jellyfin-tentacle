@@ -126,11 +126,30 @@ function _mychTypeOptions() {
   const have = new Set();
   for (const c of _mychChoosable()) for (const t of (c.types || [])) have.add(t);
   const types = MYCH_TYPE_ORDER.filter(t => have.has(t)).concat([...have].filter(t => !MYCH_TYPE_ORDER.includes(t)).sort());
-  sel.style.display = types.length ? '' : 'none';
+  const fresh = _mychChoosable().filter(c => c.new).length;
+  sel.style.display = types.length || fresh ? '' : 'none';
   const cur = sel.value;
   sel.innerHTML = '<option value="">All types</option>' +
+    (fresh ? `<option value="${MYCH_NEW}">New (${fresh})</option>` : '') +
     types.map(t => `<option value="${escHtml(t)}">${escHtml(MYCH_TYPE_LABEL[t] || t)}</option>`).join('');
-  sel.value = types.includes(cur) ? cur : '';
+  sel.value = types.includes(cur) || (fresh && cur === MYCH_NEW) ? cur : '';
+  const line = document.getElementById('mych-new-line');
+  if (line) {
+    line.style.display = fresh ? '' : 'none';
+    line.innerHTML = fresh ? `<span class="mych-new" style="margin:0 6px 0 0">New</span>${fresh === 1 ? '1 channel was' : `${fresh} channels were`} added lately. <a href="#" onclick="mychShowNew();return false" style="color:var(--accent-text)">Show ${fresh === 1 ? 'it' : 'them'}</a>` : '';
+  }
+}
+
+// The channels added to the household's channels lately (marked New).
+const MYCH_NEW = '__new';
+
+function mychShowNew() {
+  const sel = document.getElementById('mych-all-type');
+  if (!sel) return;
+  sel.value = MYCH_NEW;
+  mychPhoneTab('all');   // phone: the All channels tab
+  mychRenderAll();
+  document.getElementById('mych-all-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 // ── Quick picks ─────────────────────────────────────────────────────────────
@@ -280,7 +299,7 @@ function _mychRow(c, meta, via = true) {
   return `
     <div class="mych-row${c.favourite ? ' starred' : ''}${broken ? ' broken' : ''}" data-key="${escHtml(c.key)}">
       <span class="mych-num">${c.number != null ? escHtml(String(c.number)) : ''}</span>${_mychLogo(c)}
-      <span class="mych-text"><span class="mych-name" title="${escHtml(c.name)}">${escHtml(c.name)}${via ? _mychVia(c) : ''}</span>${meta}</span>${_mychStar(c)}
+      <span class="mych-text"><span class="mych-name" title="${escHtml(c.name)}">${escHtml(c.name)}${c.new ? '<span class="mych-new" title="Added to the household’s channels in the last two weeks">New</span>' : ''}${via ? _mychVia(c) : ''}</span>${meta}</span>${_mychStar(c)}
     </div>`;
 }
 
@@ -304,7 +323,8 @@ function mychRenderAll() {
   const el = document.getElementById('mych-all-list');
   const q = (document.getElementById('mych-all-search').value || '').trim().toLowerCase();
   const type = document.getElementById('mych-all-type')?.value || '';
-  const rows = _mychChoosable().filter(c => _mychMatches(c, q) && (!type || (c.types || []).includes(type)));
+  const rows = _mychChoosable().filter(c => _mychMatches(c, q)
+    && (!type || (type === MYCH_NEW ? c.new : (c.types || []).includes(type))));
   if (!rows.length) { el.innerHTML = `<div class="mych-none">${q || type ? 'No channel matches.' : 'No channels yet.'}</div>`; return; }
   const shown = rows.slice(0, mych.allLimit);
   el.innerHTML = shown.map(c => _mychRow(c, _mychMeta([_mychGuide(c), _mychWorks(c)]))).join('')

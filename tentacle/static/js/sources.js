@@ -29,7 +29,7 @@ function showSourcesTab(tab) {
     if (el) el.style.display = t === tab ? '' : 'none';
   });
   if (tab !== 'youtube' && typeof stopYouTubePolling === 'function') stopYouTubePolling();
-  if (tab === 'providers') loadProviders();
+  if (tab === 'providers') { loadProviders(); if (typeof loadNewCategories === 'function') loadNewCategories(); }
   else loadProviders({ quiet: true });   // the Live TV tab follows the switches
   if (tab === 'live') loadLiveTV();
   if (tab === 'youtube') loadYouTubePage();

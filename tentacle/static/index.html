@@ -1405,6 +1405,27 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
   .pool-checker .note { display: none; }
 }
 
+/* ── Sources → Live TV → New from your provider, and new categories (newgroups.js) ── */
+.nfp-reading { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text2); padding: 10px 14px; margin-bottom: 12px;
+  background: var(--bg1); border: 1px solid var(--border); border-radius: 3px; }
+.nfp-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text2); cursor: pointer; white-space: nowrap; }
+.nfp-check input { width: 15px; height: 15px; cursor: pointer; }
+label.pool-row { cursor: pointer; }
+label.pool-row:hover { background: var(--bg2); }
+.pool-row.broken .pool-name { color: var(--text2); }
+.nfp-back { background: none; border: none; padding: 0; margin-bottom: 8px; color: var(--accent-text); font-size: 13px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+.nfp-ghead { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--bg2); border-bottom: 1px solid var(--border); font-size: 13px; position: sticky; top: 0; z-index: 1; }
+.nfp-foot { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px 14px; padding: 12px 16px; border-top: 1px solid var(--border);
+  position: sticky; bottom: 0; background: var(--bg1); font-size: 12px; color: var(--text2); }
+.mych-meta .new, .mych-new { display: inline-block; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 2px; background: var(--accent-dim); color: var(--accent-text); }
+.mych-new { margin-left: 8px; vertical-align: 1px; }
+@media (max-width: 760px) {
+  .nfp-foot { justify-content: stretch; }
+  .nfp-foot .btn { width: 100%; }
+  .nfp-ghead { flex-wrap: wrap; padding: 10px 12px; }
+  .nfp-check { white-space: normal; }
+}
+
 /* ── Family: People, Requests, invites (family.js) ── */
 .family-banner { margin: 0 0 16px; padding: 10px 14px; border-radius: var(--radius-sm); border: 1px solid rgba(251,191,36,.35);
   background: var(--amber-dim); color: var(--text); font-size: 13px; line-height: 1.5; }
@@ -2069,6 +2090,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         </button>
         <button class="nav-item" data-page="sources">
           <span class="icon">◉</span> Sources
+          <span class="nav-badge nav-badge-accent" id="sources-badge" style="display:none" title="New from your provider: groups and categories to look at">0</span>
         </button>
         <button class="nav-item" data-page="health">
           <span class="icon">✚</span> Health
@@ -2396,6 +2418,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           <div class="mych-head-text">
             <div class="mych-title">My channels <span class="mych-total" id="mych-total"></span></div>
             <p class="mych-sub" id="mych-sub">Everyone has the same channels. Star the ones you watch: your favourites come first in the guide&rsquo;s Favorites view and in every Jellyfin app.</p>
+            <p class="mych-sub" id="mych-new-line" style="display:none"></p>
           </div>
           <div class="mych-status" id="mych-status" aria-live="polite"></div>
         </div>
@@ -2509,6 +2532,27 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
             <button class="btn btn-primary" onclick="showAddProvider()">+ Add provider</button>
           </div>
         </div>
+        <div class="nfp-reading" id="nfp-live-note" style="display:none">
+          <span id="nfp-live-note-text" style="flex:1"></span>
+          <button class="btn btn-primary btn-sm" onclick="nfpOpenLive()">Look at them</button>
+        </div>
+        <!-- New categories from a provider: add to the library or dismiss (newgroups.js) -->
+        <div class="card mych-panel" id="nfp-vod" style="display:none;margin-bottom:16px">
+          <div class="mych-panel-head">
+            <div>
+              <div class="card-title">New categories from your provider</div>
+              <div class="pool-count" id="nfp-vod-count"></div>
+              <div class="mych-hint">Tick the ones you want and add them to the library: their movies and series come in with tonight&rsquo;s sync. <strong>Dismiss</strong> the rest: they won&rsquo;t show up here again (they stay on the provider&rsquo;s card).</div>
+            </div>
+          </div>
+          <div class="pool-tools">
+            <label class="nfp-check"><input type="checkbox" id="nfp-vod-dismissed" onchange="loadNewCategories()"> <span id="nfp-vod-dismissed-label">Show dismissed</span></label>
+            <span class="grow"></span>
+            <button class="btn btn-secondary btn-sm" id="nfp-vod-dismiss-btn" onclick="nfpVodDecide(false)" disabled>Dismiss</button>
+            <button class="btn btn-primary btn-sm" id="nfp-vod-add-btn" onclick="nfpVodDecide(true)" disabled>Add to the library</button>
+          </div>
+          <div id="nfp-vod-list"></div>
+        </div>
         <div class="provider-list" id="provider-grid">
           <div class="loading-state"><div class="spinner"></div> Loading...</div>
         </div>
@@ -2529,6 +2573,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <!-- Tab bar -->
         <div class="live-tabs">
           <button class="live-tab active" data-livetab="pool" onclick="showLiveTab('pool')">Channels</button>
+          <button class="live-tab" data-livetab="new" onclick="showLiveTab('new')">New from your provider <span class="nav-badge nav-badge-accent" id="live-new-badge" style="display:none;margin-left:6px">0</span></button>
           <button class="live-tab" data-livetab="channels" onclick="showLiveTab('channels')">Provider list</button>
           <button class="live-tab" data-livetab="people" onclick="showLiveTab('people')">People</button>
           <button class="live-tab" data-livetab="recordings" onclick="showLiveTab('recordings')">Recordings</button>
@@ -2571,6 +2616,51 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <input class="form-input" id="pool-region" placeholder="e.g. CA: Toronto, Ontario, Buffalo">
               <button class="btn btn-secondary btn-sm" onclick="poolSaveRegion()">Save</button>
               <span id="pool-region-note"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab: New from your provider -- groups the provider added: tick, look at their channels, add (newgroups.js) -->
+        <div class="live-tab-panel" id="live-panel-new">
+          <div class="nfp-reading" id="nfp-reading" style="display:none"></div>
+          <div class="card mych-panel" id="nfp-step1">
+            <div class="mych-panel-head">
+              <div>
+                <div class="card-title">New channel groups from your provider</div>
+                <div class="pool-count" id="nfp-count"></div>
+                <div class="mych-hint">Tick the groups you want to look at, then <strong>Show their channels</strong> to pick the ones you want. <strong>Dismiss</strong> the groups you don&rsquo;t want: they won&rsquo;t show up here again.</div>
+              </div>
+            </div>
+            <div class="pool-tools">
+              <input class="form-input grow" id="nfp-search" placeholder="Search groups" aria-label="Search groups" oninput="nfpRenderGroups()">
+              <label class="nfp-check"><input type="checkbox" id="nfp-show-dismissed" onchange="loadNewGroups()"> <span id="nfp-dismissed-label">Show dismissed</span></label>
+              <button class="btn btn-secondary btn-sm" id="nfp-dismiss-btn" onclick="nfpDismiss()" disabled>Dismiss</button>
+              <button class="btn btn-primary btn-sm" id="nfp-look-btn" onclick="nfpLook()" disabled>Show their channels</button>
+            </div>
+            <div id="nfp-groups"><div class="loading-state"><div class="spinner"></div></div></div>
+          </div>
+          <div class="card mych-panel" id="nfp-step2" style="display:none">
+            <div class="mych-panel-head">
+              <div>
+                <button class="nfp-back" onclick="nfpBack()">&larr; Back to the new groups</button>
+                <div class="card-title" id="nfp-step2-title">Channels</div>
+                <div class="mych-hint">Tick the channels you want and add them: everyone gets them in Live TV, marked <strong>New</strong> on My Channels for two weeks. Channels you don&rsquo;t tick stay out. These groups then leave the new list.</div>
+              </div>
+            </div>
+            <div class="pool-tools">
+              <input class="form-input grow" id="nfp-ch-search" placeholder="Search channels" aria-label="Search channels" oninput="nfpRenderChannels()">
+              <select class="form-input" id="nfp-ch-show" aria-label="Show" onchange="nfpRenderChannels()" style="width:190px">
+                <option value="">All channels</option>
+                <option value="works">Works</option>
+                <option value="guide">Has a guide</option>
+                <option value="notin">Not in your channels yet</option>
+              </select>
+              <label class="nfp-check"><input type="checkbox" id="nfp-show-noevent" onchange="nfpRenderChannels()"> <span id="nfp-noevent-label">Show event slots with no event</span></label>
+            </div>
+            <div id="nfp-channels"></div>
+            <div class="nfp-foot">
+              <span id="nfp-picked"></span>
+              <button class="btn btn-primary" id="nfp-add-btn" onclick="nfpAdd()">Add</button>
             </div>
           </div>
         </div>
@@ -2912,18 +3002,6 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           </div>
         </div>
 
-        <!-- New provider content notice (nightly discovery) -->
-        <div class="card" id="new-content-banner" style="display:none;margin-bottom:16px;border-left:3px solid var(--accent)">
-          <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
-            <strong style="color:var(--accent)">Your providers have something new</strong>
-            <p style="margin:4px 0 10px" id="new-content-msg"></p>
-            <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button class="btn btn-secondary btn-sm" id="new-content-vod-btn" style="display:none" onclick="showPage('sources','providers')">Choose categories</button>
-              <button class="btn btn-secondary btn-sm" id="new-content-live-btn" style="display:none" onclick="showPage('sources','providers')">Choose channel groups</button>
-              <button class="btn btn-secondary btn-sm" onclick="dismissNewContentNotice()">Dismiss</button>
-            </div>
-          </div>
-        </div>
         <!-- VOD titles that play a different film than their label -->
         <div class="card" id="wrong-match-card" style="display:none;margin-bottom:16px;border-left:3px solid var(--amber)">
           <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
@@ -4236,6 +4314,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 <script src="/static/js/pages.js?v=42"></script>
 <script src="/static/js/music.js?v=42"></script>
 <script src="/static/js/mychannels.js?v=42"></script>
+<script src="/static/js/newgroups.js?v=42"></script>
 <script src="/static/js/family.js?v=42"></script>
 <script>
   // ── Mobile off-canvas sidebar ──

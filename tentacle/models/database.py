@@ -152,6 +152,13 @@ class ProviderCategory(Base):
     # to hold titles. title_count keeps its last non-zero value throughout, so a
     # multi-night outage can't be mistaken for a genuinely emptied category.
     consecutive_empty_syncs = Column(Integer, default=0)
+    # New from the provider (services/provider_new.py): review_state "new" /
+    # "dismissed" / "reviewed" (NULL = there before reviews existed, or part
+    # of the provider's first setup), when it first appeared and when the
+    # admin dismissed or reviewed it.
+    review_state = Column(String, nullable=True)
+    first_seen_at = Column(DateTime, nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
 
     provider = relationship("Provider", back_populates="categories")
     snapshots = relationship("CategorySnapshot", back_populates="category", cascade="all, delete-orphan")
@@ -948,6 +955,16 @@ class LiveChannelGroup(Base):
     category_id = Column(String, nullable=True)  # Provider's internal category ID
     enabled = Column(Boolean, default=False)  # Enable/disable entire group
     channel_count = Column(Integer, default=0)
+    # New from the provider (services/provider_new.py): review_state "new" /
+    # "dismissed" / "reviewed" (NULL = there before reviews existed, or part
+    # of the provider's first setup), first_seen_at, reviewed_at, looked_at
+    # (the admin ticked it to look at its channels: the checker tries them
+    # first) and channels_read_at (its channels last read from the provider).
+    review_state = Column(String, nullable=True)
+    first_seen_at = Column(DateTime, nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    looked_at = Column(DateTime, nullable=True)
+    channels_read_at = Column(DateTime, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("provider_id", "name", name="uq_live_group"),
@@ -1030,6 +1047,16 @@ class LiveKeyAlias(Base):
     old_key = Column(String, primary_key=True)
     new_key = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class LivePoolArrival(Base):
+    """Every key the pool has had and when it joined (services/livetv_catalog.py
+    _mark_new): My channels marks the ones that joined lately New. added_at
+    is NULL for the keys there when the record started, and for a key that
+    took over a known one (folding)."""
+    __tablename__ = "live_pool_arrivals"
+    key = Column(String, primary_key=True)
+    added_at = Column(DateTime, nullable=True)
 
 
 class EPGProgram(Base):

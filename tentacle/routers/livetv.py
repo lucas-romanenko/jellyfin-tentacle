@@ -2711,6 +2711,8 @@ def _sync_groups(provider_id: int, categories: list[dict], db: Session, channel_
     for cat in categories:
         cats.setdefault(str(cat.get("category_id", "")), cat.get("category_name", ""))
 
+    first_setup = not by_name
+    created = []
     claimed = set()
     assigned = {}
     for cat_id, name in cats.items():
@@ -2734,6 +2736,7 @@ def _sync_groups(provider_id: int, categories: list[dict], db: Session, channel_
                 g = LiveChannelGroup(provider_id=provider_id, name=candidate,
                                      category_id=cat_id, enabled=False)
                 db.add(g)
+                created.append(g)
                 by_name[candidate] = g
             elif candidate in claimed or (candidate != name and g.category_id != cat_id):
                 continue
@@ -2745,6 +2748,11 @@ def _sync_groups(provider_id: int, categories: list[dict], db: Session, channel_
     for cat_id, g in assigned.items():
         if update_counts or g.channel_count is None:
             g.channel_count = channel_counts.get(cat_id, 0)
+    if created:
+        # New from the provider: waiting for the admin's review (not on a
+        # provider's first list, its setup).
+        from services import provider_new
+        provider_new.note_created(db, created, first_setup)
     db.flush()
 
 
@@ -3138,13 +3146,15 @@ def _upsert_channels_from_m3u(
         g.name: g
         for g in db.query(LiveChannelGroup).filter(LiveChannelGroup.provider_id == provider_id).all()
     }
+    created = []
     for name in groups:
         if name not in existing_groups:
-            db.add(LiveChannelGroup(
-                provider_id=provider_id,
-                name=name,
-                enabled=False,
-            ))
+            g = LiveChannelGroup(provider_id=provider_id, name=name, enabled=False)
+            db.add(g)
+            created.append(g)
+    if created:
+        from services import provider_new
+        provider_new.note_created(db, created, first_setup=not existing_groups)
 
     db.flush()
     _update_group_counts(provider_id, db)

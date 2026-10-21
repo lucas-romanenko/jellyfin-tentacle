@@ -590,6 +590,7 @@ def fetch_categories(provider_id: int, db: Session = Depends(get_db)):
     }
 
     new_count = 0
+    created = []
     for cat_type, cats, counts in [("movie", vod_cats, vod_counts), ("series", series_cats, series_counts)]:
         # Not a single title of this type in the provider's answer is a blip, not
         # every category emptying at once. A category's count is also the sync's
@@ -620,8 +621,12 @@ def fetch_categories(provider_id: int, db: Session = Depends(get_db)):
                     last_seen=datetime.utcnow(),
                 )
                 db.add(new_cat)
+                created.append(new_cat)
                 new_count += 1
 
+    if created:
+        from services import provider_new
+        provider_new.note_created(db, created, first_setup=not existing)
     db.commit()
     return {"success": True, "new_categories": new_count}
 

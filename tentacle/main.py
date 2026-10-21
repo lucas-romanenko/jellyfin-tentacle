@@ -907,6 +907,8 @@ app.include_router(livetv_checker_router.router)
 from routers import livetv_catalog as livetv_catalog_router
 app.include_router(livetv_catalog_router.router)
 app.include_router(livetv_catalog_router.stream_router)
+from routers import provider_new as provider_new_router
+app.include_router(provider_new_router.router)
 from routers import family as family_router
 app.include_router(family_router.router)
 app.include_router(family_router.tv_router)
