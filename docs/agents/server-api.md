@@ -150,7 +150,7 @@ provider names, URLs or logins).
 | PUT | `/api/live/catalog/channels/{channel_id}/enabled` | admin | livetv_catalog.py:catalog_tick (`{enabled}`) |
 | PUT | `/api/live/catalog/types` | admin | livetv_catalog.py:catalog_set_types (`{key, types}`; [] = automatic) |
 | GET, HEAD | `/api/live/net/{nid}` | none | livetv_catalog.py:network_stream (the network's chosen variant through stream_proxy) |
-| GET | `/api/live/new-groups` | admin | provider_new.py:new_groups (new groups, `?dismissed=true` also the dismissed; starts reading their channels in the background) |
+| GET | `/api/live/new-groups` | admin | provider_new.py:new_groups (new groups read: country, title, tags, `for_you`, samples; `?dismissed=true` also the dismissed; `?country=&lang=` the browser's locale; starts reading their channels in the background) |
 | POST | `/api/live/new-groups/add` | admin | provider_new.py:new_groups_add (picked channels into the pool; the groups reviewed) |
 | POST | `/api/live/new-groups/channels` | admin | provider_new.py:new_group_channels (step 2: the ticked groups' channels, folded) |
 | POST | `/api/live/new-groups/dismiss` | admin | provider_new.py:new_groups_dismiss |

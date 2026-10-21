@@ -39,9 +39,9 @@ def _plain(name: str) -> str:
 
 
 # A leading country / language / source tag: "US:", "CA EN:", "|US|", "US|",
-# "[UK]", "TV:", "PRIME:", "NBA:". Repeated ("US: PRIME: ...").
+# "[UK]", "TV:", "PRIME:", "AT&T:", "NBA:". Repeated ("US: PRIME: ...").
 _PREFIX_RE = re.compile(
-    r"^\s*(?:[|\[(]\s*)?(?:[A-Z]{2,3}(?:[ /-][A-Z]{2})?|USA|EXYU|LATAM|ARAB|PRIME|SLING|TUBI)\s*[|\]):]\s*",
+    r"^\s*(?:[|\[(]\s*)?(?:[A-Z]{2,3}(?:[ /-][A-Z]{2})?|USA|EXYU|LATAM|ARAB|PRIME|SLING|TUBI|AT&T)\s*[|\]):]\s*",
     re.IGNORECASE)
 # Source words in front of the network: "US: SLING MLB NETWORK", "PRIME CA ...".
 _SOURCE_WORDS = {"SLING", "TUBI", "PRIME"}
