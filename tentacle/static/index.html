@@ -1516,11 +1516,71 @@ label.pool-row:hover { background: var(--bg2); }
   position: sticky; bottom: 0; background: var(--bg1); font-size: 12px; color: var(--text2); }
 .mych-meta .new, .mych-new { display: inline-block; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 2px; background: var(--accent-dim); color: var(--accent-text); }
 .mych-new { margin-left: 8px; vertical-align: 1px; }
+.nfp-link { background: none; border: none; padding: 2px 0; color: var(--accent-text); font-size: 12px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+.nfp-link:hover { text-decoration: underline; }
+.nfp-sel { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text3); white-space: nowrap; }
+.nfp-sec-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; padding: 12px 16px 10px; border-bottom: 1px solid var(--border); }
+.nfp-sec-head .grow { flex: 1 1 220px; min-width: 0; }
+.nfp-sec-title { font-size: 14px; font-weight: 600; }
+.nfp-sec-sub { display: block; font-size: 12px; color: var(--text3); margin-top: 2px; }
+.nfp-mine { background: linear-gradient(180deg, var(--accent-dim), transparent 80px); border-bottom: 1px solid var(--border); }
+.nfp-label { padding: 14px 16px 6px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text3); }
+.nfp-fold { border-top: 1px solid var(--border); }
+.nfp-fold:last-of-type { border-bottom: 1px solid var(--border); }
+.nfp-fold > summary { display: flex; align-items: center; gap: 10px; padding: 11px 16px; cursor: pointer; list-style: none; font-size: 13px; }
+.nfp-fold > summary::-webkit-details-marker { display: none; }
+.nfp-fold > summary:hover { background: var(--bg2); }
+.nfp-fold[open] > summary { background: var(--bg2); border-bottom: 1px solid var(--border); }
+.nfp-flag { width: 22px; text-align: center; font-size: 17px; line-height: 1; flex-shrink: 0; }
+.nfp-fold-name { font-weight: 600; white-space: nowrap; }
+.nfp-fold-sub { flex: 1; min-width: 0; color: var(--text3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nfp-chev { width: 8px; height: 8px; border-right: 1.5px solid var(--text3); border-bottom: 1.5px solid var(--text3); transform: rotate(-45deg); transition: transform .15s; flex-shrink: 0; margin: 0 4px; }
+.nfp-fold[open] > summary .nfp-chev { transform: rotate(45deg); }
+.nfp-fold-acts { display: inline-flex; gap: 6px; flex-shrink: 0; }
+.nfp-fold:not([open]) [data-act=tick-all] { display: none; }
+/* The bar with what's ticked floats over the page bottom, wherever the list is scrolled. */
+.nfp-foot.nfp-float { position: fixed; bottom: 16px; left: calc(var(--sidebar-w) + (100vw - var(--sidebar-w)) / 2); transform: translateX(-50%);
+  width: min(760px, calc(100vw - var(--sidebar-w) - 48px)); z-index: 50; border: 1px solid var(--border2); border-radius: 6px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.45); background: var(--bg2); color: var(--text); font-size: 13px; }
+.nfp-foot.nfp-float span:first-child { margin-right: auto; }
+#nfp-step1, #nfp-step2 { padding-bottom: 76px; }
+.nfp-g { display: flex; align-items: flex-start; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.nfp-g:last-child { border-bottom: none; }
+.nfp-g:hover { background: var(--bg2); }
+.nfp-g.ticked { background: var(--accent-dim); }
+.nfp-g input[type=checkbox] { width: 16px; height: 16px; margin-top: 2px; flex-shrink: 0; cursor: pointer; }
+.nfp-g-main { flex: 1; min-width: 0; }
+.nfp-g-title { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; font-size: 14px; font-weight: 500; }
+.nfp-tag { font-size: 10px; font-weight: 500; padding: 1px 6px; border-radius: 2px; background: var(--bg3); color: var(--text2); }
+.nfp-tag.place { background: none; border: 1px solid var(--border2); color: var(--text2); }
+.nfp-tag.ev { background: var(--accent-dim); color: var(--accent-text); }
+.nfp-tag.empty { background: var(--amber-dim); color: var(--amber); }
+.nfp-samples { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; color: var(--text2); min-width: 0; }
+.nfp-samples img { width: 30px; height: 20px; object-fit: contain; flex-shrink: 0; background: rgba(255,255,255,.04); border-radius: 2px; }
+.nfp-samples .names { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.nfp-x { flex-shrink: 0; background: none; border: 1px solid transparent; color: var(--text3); font-size: 12px; padding: 4px 8px; border-radius: 3px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+.nfp-x:hover { color: var(--text); border-color: var(--border2); background: var(--bg3); }
+.nfp-g.out { cursor: default; }
+.nfp-g.out .nfp-g-main { opacity: .6; }
+.toast .nfp-undo { margin-left: 10px; background: none; border: 1px solid var(--border2); color: var(--accent-text); border-radius: 3px; padding: 2px 10px; cursor: pointer; font-size: 12px; }
 @media (max-width: 760px) {
   .nfp-foot { justify-content: stretch; }
-  .nfp-foot .btn { width: 100%; }
+  .nfp-foot .btn { flex: 1 1 0; }
+  .nfp-foot.nfp-float { left: 50%; width: calc(100vw - 20px); bottom: calc(10px + env(safe-area-inset-bottom)); padding: 10px 12px; }
+  #nfp-ch-sel { flex-basis: 100%; }
+  #nfp-ch-show { flex: 1 1 0; width: auto !important; }
   .nfp-ghead { flex-wrap: wrap; padding: 10px 12px; }
   .nfp-check { white-space: normal; }
+  #nfp-step1 .mych-panel-head .card-title, #nfp-step2 .mych-panel-head .card-title { display: block; }
+  .nfp-g { padding: 10px 12px; gap: 10px; }
+  .nfp-fold > summary { flex-wrap: wrap; padding: 11px 12px; gap: 4px 10px; }
+  .nfp-fold-sub { flex: 1 1 0; }
+  .nfp-fold[open] .nfp-fold-acts { order: 5; width: 100%; padding-left: 32px; }
+  .nfp-fold[open] > summary .nfp-chev { margin-left: auto; }
+  .nfp-sel { flex-wrap: wrap; white-space: normal; }
+  .nfp-sec-head { padding: 12px 12px 10px; }
+  .nfp-samples img:nth-of-type(n+4) { display: none; }
+  #nfp-dismiss-rest-btn { width: 100%; }
 }
 
 /* ── Family: People, Requests, invites (family.js) ── */
@@ -2728,18 +2788,27 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           <div class="card mych-panel" id="nfp-step1">
             <div class="mych-panel-head">
               <div>
-                <div class="card-title">New channel groups from your provider</div>
+                <div class="card-title nfp-title">New channel groups from your provider</div>
                 <div class="pool-count" id="nfp-count"></div>
-                <div class="mych-hint">Tick the groups you want to look at, then <strong>Show their channels</strong> to pick the ones you want. <strong>Dismiss</strong> the groups you don&rsquo;t want: they won&rsquo;t show up here again.</div>
+                <div class="mych-hint">Groups from the places you watch come first; the rest are folded by country. Tick groups to see their channels and pick the ones you want, or dismiss what you don&rsquo;t need: dismissed groups don&rsquo;t come back as new.</div>
               </div>
             </div>
             <div class="pool-tools">
-              <input class="form-input grow" id="nfp-search" placeholder="Search groups" aria-label="Search groups" oninput="nfpRenderGroups()">
-              <label class="nfp-check"><input type="checkbox" id="nfp-show-dismissed" onchange="loadNewGroups()"> <span id="nfp-dismissed-label">Show dismissed</span></label>
-              <button class="btn btn-secondary btn-sm" id="nfp-dismiss-btn" onclick="nfpDismiss()" disabled>Dismiss</button>
-              <button class="btn btn-primary btn-sm" id="nfp-look-btn" onclick="nfpLook()" disabled>Show their channels</button>
+              <input class="form-input grow" id="nfp-search" placeholder="Search groups or countries" aria-label="Search groups" oninput="nfpRenderGroups()">
+              <span class="nfp-sel"><button class="nfp-link" onclick="nfpSelectAll(true)">Select all</button><span aria-hidden="true">&middot;</span><button class="nfp-link" onclick="nfpSelectAll(false)">None</button></span>
+              <button class="btn btn-secondary btn-sm" id="nfp-dismiss-rest-btn" onclick="nfpDismissRest()" style="display:none"></button>
             </div>
             <div id="nfp-groups"><div class="loading-state"><div class="spinner"></div></div></div>
+            <details class="nfp-fold nfp-dismissed" id="nfp-dismissed" style="display:none" ontoggle="nfpDismissedToggle(this)">
+              <summary><span class="nfp-flag" aria-hidden="true">&#8634;</span><span class="nfp-fold-name" id="nfp-dismissed-label">Dismissed</span><span class="nfp-fold-sub">Bring one back to see it here again</span><span class="nfp-chev" aria-hidden="true"></span></summary>
+              <div id="nfp-dismissed-list"></div>
+            </details>
+            <div class="nfp-foot nfp-float" id="nfp-step1-foot" style="display:none">
+              <span id="nfp-ticked"></span>
+              <button class="nfp-link" onclick="nfpSelectAll(false)">Clear</button>
+              <button class="btn btn-secondary" id="nfp-dismiss-btn" onclick="nfpDismiss()">Dismiss</button>
+              <button class="btn btn-primary" id="nfp-look-btn" onclick="nfpLook()">Show their channels</button>
+            </div>
           </div>
           <div class="card mych-panel" id="nfp-step2" style="display:none">
             <div class="mych-panel-head">
@@ -2751,6 +2820,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
             </div>
             <div class="pool-tools">
               <input class="form-input grow" id="nfp-ch-search" placeholder="Search channels" aria-label="Search channels" oninput="nfpRenderChannels()">
+              <span class="nfp-sel" id="nfp-ch-sel" title="Channels you already have stay unticked">Tick: <button class="nfp-link" onclick="nfpPickBulk('all')">All</button><span aria-hidden="true">&middot;</span><button class="nfp-link" onclick="nfpPickBulk('works')">Only working</button><span aria-hidden="true">&middot;</span><button class="nfp-link" onclick="nfpPickBulk('guide')">Only with a guide</button><span aria-hidden="true">&middot;</span><button class="nfp-link" onclick="nfpPickBulk('none')">None</button></span>
               <select class="form-input" id="nfp-ch-show" aria-label="Show" onchange="nfpRenderChannels()" style="width:190px">
                 <option value="">All channels</option>
                 <option value="works">Works</option>
@@ -2760,7 +2830,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <label class="nfp-check"><input type="checkbox" id="nfp-show-noevent" onchange="nfpRenderChannels()"> <span id="nfp-noevent-label">Show event slots with no event</span></label>
             </div>
             <div id="nfp-channels"></div>
-            <div class="nfp-foot">
+            <div class="nfp-foot nfp-float" id="nfp-step2-foot">
               <span id="nfp-picked"></span>
               <button class="btn btn-primary" id="nfp-add-btn" onclick="nfpAdd()">Add</button>
             </div>
@@ -4435,7 +4505,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 <script src="/static/js/pages.js?v=43"></script>
 <script src="/static/js/music.js?v=43"></script>
 <script src="/static/js/mychannels.js?v=43"></script>
-<script src="/static/js/newgroups.js?v=43"></script>
+<script src="/static/js/newgroups.js?v=44"></script>
 <script src="/static/js/family.js?v=43"></script>
 <script>
   // ── Mobile off-canvas sidebar ──

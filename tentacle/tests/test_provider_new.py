@@ -156,6 +156,38 @@ class Review(Case):
         ppv = groups["UK| PPV"]
         self.assertEqual((2, 2, 1), (ppv["channels"], ppv["events"], ppv["no_event"]))
 
+    def test_the_household_is_its_channels_places_its_region_and_the_browser(self):
+        home = N.household(self.db, country="us", lang="en-CA")
+        self.assertEqual("CA", home["countries"][0])     # the pool: CA| SPORTS
+        self.assertIn("US", home["countries"])           # the browser
+        self.assertEqual(["en"], home["languages"])
+
+    def test_groups_from_the_households_places_and_languages_are_probably_for_it(self):
+        self.sync_groups([("1", "CA| SPORTS"), ("2", "US| AT&T"), ("3", "UK| PPV"), ("4", "ES| F1 PPV ᴿᴬᵂ"),
+                          ("5", "CA| CINEMA FR")])
+        with mock.patch.object(N, "read_new_in_background"), \
+                mock.patch("services.livetv_catalog._region", return_value=(None, [])):
+            groups = {g["name"]: g for g in N.live_overview(self.db)["groups"]}
+            self.assertEqual("language", groups["US| AT&T"]["for_you"])    # English, like the pool
+            self.assertEqual("country", groups["CA| CINEMA FR"]["for_you"])
+            self.assertIsNone(groups["ES| F1 PPV ᴿᴬᵂ"]["for_you"])
+            us = {g["name"]: g for g in N.live_overview(self.db, country="US")["groups"]}
+            self.assertEqual("country", us["US| AT&T"]["for_you"])
+        es = groups["ES| F1 PPV ᴿᴬᵂ"]
+        self.assertEqual(("F1", ["Raw"], "Spain", "ES", True),
+                         (es["title"], es["tags"], es["place"]["name"], es["place"]["iso"], es["event_group"]))
+
+    def test_samples_show_a_few_channels_and_only_events_that_are_on(self):
+        groups = {g["name"]: g for g in N.live_overview(self.db)["groups"]}
+        names = [s["name"] for s in groups["US| AT&T"]["samples"]]
+        self.assertEqual(3, len(names))                  # TSN 1, HGTV, CNN; no separator
+        self.assertIn("CNN", names)
+        self.assertEqual("CNN", names[-1])               # not checked yet: last
+        ppv = groups["UK| PPV"]
+        self.assertTrue(ppv["event_group"])
+        self.assertEqual(1, len(ppv["samples"]))         # the empty slot says nothing
+        self.assertTrue(ppv["samples"][0]["event"])
+
     def test_step_two_shows_folded_channels_and_what_is_in_the_pool_already(self):
         out = N.channels_of(self.db, [self.group("US| AT&T").id, self.group("UK| PPV").id])
         by_name = {c["name"]: c for c in out["channels"]}

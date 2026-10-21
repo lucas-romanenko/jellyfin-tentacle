@@ -250,6 +250,51 @@ def _best(members: list, with_guide: set):
     return min(members, key=lambda c: (_STATE_RANK[_state(c)], 0 if c.guide_epg_id in with_guide else 1, c.id))
 
 
+def _unit_name(u: dict, best, ev) -> str:
+    """The name a unit goes by: its network, the event on now, else the
+    channel's own name made readable."""
+    from services import livetv_names
+    if u["network"] is not None:
+        return u["network"].name
+    if isinstance(ev, dict):
+        return ev["title"]
+    return (best.custom_name or "").strip() or livetv_names.clean_name(best.name)
+
+
+SAMPLES = 5
+_HEAD_RE = re.compile(r"^\s*[|\[]?[A-Za-z0-9&+]{1,6}\s*[:|\]]\s*")
+_SLOT_RE = re.compile(r"\b(?:EVENTO?S?|PPV|SLOT)\s*\d+\s*$", re.I)
+
+
+def _samples(units: list, with_guide: set) -> list:
+    """A few channels to judge a group by without opening it: working ones
+    with a logo first. Event slots only when an event is on (a slot's name
+    says nothing)."""
+    from services.livetv_catalog import _event_for
+    picks = []
+    for i, u in enumerate(units):
+        best = _best(u["members"], with_guide)
+        ev = _event_for(best.name, best.group_title)
+        if ev is not None and not isinstance(ev, dict):
+            continue
+        guide = any(c.guide_epg_id in with_guide for c in u["members"])
+        rank = (_STATE_RANK[_state(best)], 0 if u["network"] is not None else 1, 0 if guide else 1,
+                0 if best.logo_url else 1, i)
+        picks.append((rank, {"name": _unit_name(u, best, ev), "logo_url": best.logo_url or None,
+                             "event": isinstance(ev, dict)}))
+    picks.sort(key=lambda t: t[0])
+    _drop_shared_head([p for _, p in picks])
+    out, seen = [], set()
+    for _, p in picks:
+        if len(p["name"]) < 3 or _SLOT_RE.search(p["name"]) or p["name"].lower() in seen:
+            continue
+        seen.add(p["name"].lower())
+        out.append(p)
+        if len(out) == SAMPLES:
+            break
+    return out
+
+
 def _stats(units: list, with_guide: set) -> dict:
     from services.livetv_catalog import _event_for
     works = guide = events = no_event = checked = 0
@@ -275,20 +320,86 @@ def _with_guide(db: Session) -> set:
         return set()
 
 
-def _group_json(g, provider_name: str, chans: list, units: Optional[list], with_guide: set) -> dict:
+def _group_json(g, provider_name: str, chans: list, units: Optional[list], with_guide: set,
+                home: Optional[dict] = None) -> dict:
     out = {"id": g.id, "name": g.name, "provider_id": g.provider_id, "provider": provider_name,
            "review": g.review_state, "first_seen": _iso(g.first_seen_at), "reviewed_at": _iso(g.reviewed_at),
            "provider_count": g.channel_count or 0, "loaded": bool(g.channels_read_at or chans),
            "enabled": bool(g.enabled)}
+    if home is not None:
+        d = home["book"].read(g.name)
+        out.update(title=d["title"], tags=d["tags"], place=d["place"], lang=d["lang"],
+                   event_group=d["event"], for_you=for_you(home, d))
     if units is not None and out["loaded"]:
         out.update(_stats(units, with_guide))
+        out["samples"] = _samples(units, with_guide)
+        if out["events"] and out["events"] * 2 >= out["channels"]:
+            out["event_group"] = True   # mostly event slots, whatever the name says
     return out
 
 
-def live_overview(db: Session, dismissed: bool = False) -> dict:
+# ── Which new groups are probably for this household ───────────────────────
+
+POOL_SHARE = 0.05   # a place with this share of the household's channels is theirs
+
+
+def _book(db: Session):
+    from services.livetv_groups import CodeBook
+    names = [n for (n,) in db.query(LiveChannelGroup.name).all()]
+    return CodeBook(names)
+
+
+def household(db: Session, country: Optional[str] = None, lang: Optional[str] = None) -> dict:
+    """The countries and languages this household watches: the places with
+    a real share of the channels it has (by their groups), the admin's region
+    (livetv_region, else the server's time zone) and what the admin's browser
+    says (`country`, `lang`). `book` reads group names."""
+    from sqlalchemy import func
+    from services.livetv_catalog import _region
+    from services.livetv_groups import COUNTRIES, LANGUAGE_OF
+    book = _book(db)
+    rows = (db.query(LiveChannel.group_title, func.count(LiveChannel.id))
+            .filter(LiveChannel.enabled == True).group_by(LiveChannel.group_title).all())  # noqa: E712
+    total = sum(n for _, n in rows)
+    share = defaultdict(int)
+    for title, n in rows:
+        place = book.read(title or "")["place"]
+        if place:
+            share[place["iso"] or place["code"]] += n
+    countries = [k for k, n in sorted(share.items(), key=lambda kv: -kv[1]) if n >= POOL_SHARE * total]
+    try:
+        region = _region(db)[0]
+    except Exception:
+        region = None
+    for c in (region, (country or "").upper() or None):
+        if c == "UK":
+            c = "GB"
+        if c in COUNTRIES and c not in countries:
+            countries.append(c)
+    langs = []
+    for lg in [LANGUAGE_OF.get(c) for c in countries] + [(lang or "").lower()[:2] or None]:
+        if lg and lg not in langs:
+            langs.append(lg)
+    return {"countries": countries, "languages": langs, "book": book}
+
+
+def for_you(home: dict, d: dict) -> Optional[str]:
+    """"country" (a place the household watches), "language" (in a language
+    it speaks) or None."""
+    place = d.get("place")
+    if place and (place["iso"] or place["code"]) in home["countries"]:
+        return "country"
+    if d.get("lang") and d["lang"] in home["languages"]:
+        return "language"
+    return None
+
+
+def live_overview(db: Session, dismissed: bool = False, country: Optional[str] = None,
+                  lang: Optional[str] = None) -> dict:
     """The new groups (and, asked for, the dismissed ones), newest first,
-    with their channel counts after folding and the checker's and guide's
-    marks once their channels are read."""
+    each read (country, clean title, tags), with whether it is probably for
+    this household, its channel counts after folding, the checker's and
+    guide's marks and a few sample channels once its channels are read."""
     ensure_migrated(db)
     from services import livetv_catalog
     want = {NEW, DISMISSED} if dismissed else {NEW}
@@ -300,12 +411,14 @@ def live_overview(db: Session, dismissed: bool = False) -> dict:
     names = {p.id: p.name for p in db.query(Provider).all()}
     chans = _group_channels(db, groups)
     with_guide = _with_guide(db)
+    home = household(db, country, lang)
     out = []
     for g in sorted(groups, key=lambda g: (g.review_state != NEW, -_ts(g.first_seen_at), g.name.lower())):
         cs = chans.get(g.id, [])
-        out.append(_group_json(g, names.get(g.provider_id, ""), cs, _units(db, cs) if cs else [], with_guide))
+        out.append(_group_json(g, names.get(g.provider_id, ""), cs, _units(db, cs) if cs else [], with_guide, home))
     return {"groups": out, "new": sum(1 for x in out if x["review"] == NEW),
-            "dismissed": len(_live_groups(db, {DISMISSED})), "loading": dict(loading)}
+            "dismissed": len(_live_groups(db, {DISMISSED})), "loading": dict(loading),
+            "household": {"countries": home["countries"], "languages": home["languages"]}}
 
 
 def _groups_by_ids(db: Session, group_ids: list) -> list:
@@ -418,7 +531,6 @@ def channels_of(db: Session, group_ids: list) -> dict:
     same network from a group switched on)."""
     from services import livetv_catalog
     from services.livetv_catalog import _event_for, _event_json, channel_types
-    from services import livetv_names
     groups = _groups_by_ids(db, group_ids)
     if not groups:
         return {"groups": [], "channels": []}
@@ -437,11 +549,13 @@ def channels_of(db: Session, group_ids: list) -> dict:
     with_guide = _with_guide(db)
     gtypes = livetv_catalog.guide_facts(db).get("types", {})
     nets_in_pool = _networks_in_pool(db)
+    home = household(db)
     out_groups, out, seen = [], [], set()
     for g in groups:
         cs = chans.get(g.id, [])
         units = _units(db, cs)
-        out_groups.append(_group_json(g, names.get(g.provider_id, ""), cs, units, with_guide))
+        out_groups.append(_group_json(g, names.get(g.provider_id, ""), cs, units, with_guide, home))
+        first = len(out)
         for u in units:
             if u["key"] in seen:
                 continue   # the same network in two ticked groups: shown once
@@ -450,12 +564,7 @@ def channels_of(db: Session, group_ids: list) -> dict:
             n = u["network"]
             ev = _event_for(best.name, best.group_title)
             gid = best.guide_epg_id
-            if n is not None:
-                name = n.name
-            elif isinstance(ev, dict):
-                name = ev["title"]
-            else:
-                name = (best.custom_name or "").strip() or livetv_names.clean_name(best.name)
+            name = _unit_name(u, best, ev)
             out.append({
                 "key": u["key"], "group_id": g.id, "name": name, "provider_name": best.name,
                 "logo_url": best.logo_url, "channel_ids": [c.id for c in u["members"]],
@@ -466,7 +575,27 @@ def channels_of(db: Session, group_ids: list) -> dict:
                                        guide_types=gtypes.get(gid)),
                 "in_pool": bool(n is not None and n.id in nets_in_pool) or any(c.enabled for c in u["members"]),
             })
+        _drop_shared_head(out[first:])
     return {"groups": out_groups, "channels": out}
+
+
+def _drop_shared_head(items: list) -> None:
+    """"T2: Npo 1", "T2: SBS 6": a tag in front of (nearly) every channel of
+    a group says nothing; the names go without it."""
+    heads = defaultdict(int)
+    for it in items:
+        m = _HEAD_RE.match(it["name"])
+        if m:
+            heads[m.group(0).strip().upper()] += 1
+    if not heads:
+        return
+    head, n = max(heads.items(), key=lambda kv: kv[1])
+    if n < 2 or n < 0.8 * len(items):
+        return
+    for it in items:
+        m = _HEAD_RE.match(it["name"])
+        if m and m.group(0).strip().upper() == head and it["name"][m.end():].strip():
+            it["name"] = it["name"][m.end():]
 
 
 def _networks_in_pool(db: Session) -> set:

@@ -91,6 +91,15 @@ Toggle on the groups you want, then click **Save & Sync Channels**. Only channel
 
 You can enable or disable multiple groups at once, or filter groups by keyword to quickly find what you need.
 
+### New groups from your provider
+
+Providers add groups all the time. **Sources → Live TV → New from your provider** lists the ones added since you last looked, with clean names (the provider's "ES| DAZN BALONCESTO ᴿᴬᵂ" shows as *DAZN Baloncesto*, with a Spain flag and a *Raw* label), how many channels each has, and a few of its channels with their logos.
+
+- **Probably for you** comes first: new groups from the countries your channels already come from, your own country and your language.
+- Everything else is folded by country or language, each with **Dismiss all**.
+- **Dismiss everything not for you** clears the rest in one click. Every dismiss can be undone from its message, and the **Dismissed** list at the bottom brings any group back.
+- Tick groups and **Show their channels** to pick channels: **Tick all**, **Only working** or **Only with a guide**, then **Add**. Channels you already have stay unticked.
+
 ## The channels people pick from
 
 **Sources → Live TV → Channels** shows the household's lineup: the channels of the groups switched on, with the same network in different places or qualities folded into one entry.

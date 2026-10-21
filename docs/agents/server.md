@@ -546,8 +546,17 @@ User docs: `docs/features/live-tv.md`.
   Live TV → New from your provider, plus a card on the VOD providers tab):
   every group or category a refresh or the nightly discovery creates gets
   `review_state` "new" (not on a provider's first list, its setup), counted
-  on the sidebar's Sources badge. Step 1 ticks groups or dismisses them
-  ("dismissed" never comes back as new; Show dismissed lists them); step 2
+  on the sidebar's Sources badge. Each group name is read by
+  `services/livetv_groups.py` (country or language from the prefix, a clean
+  title, tags such as Raw / Gold / Backup, event groups; `CodeBook` learns a
+  provider's own codes from all its group names: "SR| SERBIA" is Serbia,
+  "AR|" Arabic, "LA|" Latin America). `household()` = places holding 5% of
+  the pool's channels + the admin's region (`livetv_region` / time zone) +
+  the browser's locale (`?country=&lang=`), and their languages: those new
+  groups are "Probably for you" on top, the rest folded by country, with
+  sample channels (`_samples`). Step 1 ticks groups or dismisses them, one,
+  a country, or everything not for you, with Undo ("dismissed" never comes
+  back as new; the Dismissed fold lists them); step 2
   shows the ticked groups' channels folded like the pool (Works / Guide,
   "No event" slots hidden) and adds the picked ones (`LiveChannel.enabled`,
   the group switched on); the groups become "reviewed". Their channels are
