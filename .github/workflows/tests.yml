@@ -36,6 +36,16 @@ jobs:
         run: scripts/check --shard ${{ matrix.shard }}/4 -v
         env:
           CHECK_PYTHON: python
+          TENTACLE_DURATIONS: ${{ runner.temp }}/durations-${{ matrix.shard }}.json
+      - name: Keep the timings
+        # how long each module took here, to rebalance the shards (tests/shards.py)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: durations-${{ matrix.shard }}
+          path: ${{ runner.temp }}/durations-${{ matrix.shard }}.json
+          if-no-files-found: ignore
+          retention-days: 30
 
   unit:
     # The check the main ruleset requires: green only when every shard is.

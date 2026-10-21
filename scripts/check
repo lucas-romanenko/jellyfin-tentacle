@@ -5,7 +5,8 @@
 #
 #   scripts/check [-j N] [unittest args, e.g. -v]   the whole suite in N parallel shards
 #                                                   (default: the machine's cores, at most 4)
-#   scripts/check --shard K/N [-v]                  one shard (each CI job runs one of 4)
+#   scripts/check --shard K/N [-j M] [-v]           one shard (each CI job runs one of 4),
+#                                                   in M parallel parts (default 1)
 #   scripts/check --durations                       run everything, rewrite tests/durations.json
 #
 # The shards are whole test modules balanced by tests/durations.json
@@ -26,9 +27,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-jobs=$(nproc 2>/dev/null || echo 1)
-[ "$jobs" -le 4 ] || jobs=4
-shard= durations=
+jobs= shard= durations=
 while [ $# -gt 0 ]; do
 	case $1 in
 	-j) jobs=$2; shift 2 ;;
@@ -38,6 +37,11 @@ while [ $# -gt 0 ]; do
 	*) break ;;
 	esac
 done
+if [ -z "$jobs" ]; then
+	jobs=$(nproc 2>/dev/null || echo 1)
+	[ "$jobs" -le 4 ] || jobs=4
+	[ -z "$shard" ] || jobs=1   # one CI shard: one process unless -j says otherwise
+fi
 case $jobs in ''|*[!0-9]*|0) echo "check: -j wants a number of shards, got '$jobs'" >&2; exit 2 ;; esac
 
 python=${CHECK_PYTHON:-}
@@ -69,27 +73,28 @@ leftovers() {
 }
 
 status=0
-if [ -n "$shard" ]; then
-	mkdir "$tmp/t"
-	TMPDIR=$tmp/t "$python" tests/shards.py "$shard" "$@" || status=$?
-	leftovers "$tmp/t" "the tests of shard $shard " || [ "$status" -ne 0 ] || status=1
-	exit "$status"
-fi
 if [ "$jobs" -eq 1 ] && [ -z "$durations" ]; then
 	mkdir "$tmp/t"
-	TMPDIR=$tmp/t "$python" tests/hermetic.py discover -s tests "$@" || status=$?
+	if [ -n "$shard" ]; then
+		TMPDIR=$tmp/t "$python" tests/shards.py "$shard" "$@" || status=$?
+	else
+		TMPDIR=$tmp/t "$python" tests/hermetic.py discover -s tests "$@" || status=$?
+	fi
 	leftovers "$tmp/t" "the tests " || [ "$status" -ne 0 ] || status=1
 	exit "$status"
 fi
 
-# N shards side by side, each with its own TMPDIR and log; the logs are shown
-# one after the other when all are done
+# N shards side by side (or the N parts of one shard), each with its own
+# TMPDIR and log; the logs are shown one after the other when all are done
 start=$SECONDS
-pids=()
+record=${TENTACLE_DURATIONS:-}   # timings asked for by the caller (CI): one file per part, merged below
+[ -z "$durations" ] || record=tests/durations.json
+specs=() pids=()
 for k in $(seq "$jobs"); do
+	specs+=("${shard:+$shard.}$k/$jobs")
 	mkdir "$tmp/t$k"
-	if [ -n "$durations" ]; then export TENTACLE_DURATIONS=$tmp/d$k.json; fi
-	TMPDIR=$tmp/t$k "$python" tests/shards.py "$k/$jobs" "$@" >"$tmp/log$k" 2>&1 &
+	if [ -n "$record" ]; then export TENTACLE_DURATIONS=$tmp/d$k.json; fi
+	TMPDIR=$tmp/t$k "$python" tests/shards.py "${specs[k-1]}" "$@" >"$tmp/log$k" 2>&1 &
 	pids+=($!)
 done
 summary=()
@@ -97,27 +102,18 @@ for k in $(seq "$jobs"); do
 	s=0
 	wait "${pids[k-1]}" || s=$?
 	cat "$tmp/log$k"
-	leftovers "$tmp/t$k" "the tests of shard $k/$jobs " || [ "$s" -ne 0 ] || s=1
+	leftovers "$tmp/t$k" "the tests of shard ${specs[k-1]} " || [ "$s" -ne 0 ] || s=1
 	[ "$s" -eq 0 ] || status=1
-	summary+=("shard $k/$jobs: $([ "$s" -eq 0 ] && echo ok || echo FAILED), $(grep -E '^Ran [0-9]+ test' "$tmp/log$k" | tail -1 || echo 'did not finish')")
+	summary+=("shard ${specs[k-1]}: $([ "$s" -eq 0 ] && echo ok || echo FAILED), $(grep -E '^Ran [0-9]+ test' "$tmp/log$k" | tail -1 || echo 'did not finish')")
 done
 echo
 printf 'check: %s\n' "${summary[@]}"
 echo "check: $jobs shards, $(grep -hE '^Ran [0-9]+ test' "$tmp"/log* | awk '{n += $2} END {print n + 0}') tests, $((SECONDS - start))s wall; $([ "$status" -eq 0 ] && echo OK || echo FAILED)"
 
-if [ -n "$durations" ]; then
-	if [ "$status" -ne 0 ]; then
-		echo "check: not writing tests/durations.json from a failing run" >&2
-	else
-		"$python" - "$tmp"/d*.json >tests/durations.json <<'PY'
-import json, sys
-times = {}
-for path in sys.argv[1:]:
-    times.update(json.load(open(path)))
-json.dump(times, sys.stdout, indent=0, sort_keys=True)
-print()
-PY
-		echo "check: wrote tests/durations.json ($(grep -c '"' tests/durations.json) modules)"
-	fi
+if [ -n "$durations" ] && [ "$status" -ne 0 ]; then
+	echo "check: not writing tests/durations.json from a failing run" >&2
+elif [ -n "$record" ]; then
+	"$python" tests/shards.py --merge "$tmp"/d*.json >"$record"
+	echo "check: wrote the timings of $(grep -c '"' "$record") modules to $record"
 fi
 exit "$status"
