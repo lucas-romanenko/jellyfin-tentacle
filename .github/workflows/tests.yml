@@ -7,13 +7,23 @@ on:
   pull_request:
 
 jobs:
-  unit:
+  shard:
+    # The suite in 4 parallel jobs of whole test modules, balanced by
+    # tentacle/tests/durations.json (tests/shards.py); scripts/check -j 4 runs
+    # the same shards locally.
+    name: unit ${{ matrix.shard }}/4
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tentacle/requirements.txt
       - name: Install dependencies
         # The real requirements, not a hand-picked subset: the suite now starts
         # the app to test its routing, so anything main.py imports has to be
@@ -23,6 +33,16 @@ jobs:
       - name: Run unit tests
         # The same script as the workbench's pre-push check: it also fails when
         # a test leaves files in TMPDIR.
-        run: scripts/check -v
+        run: scripts/check --shard ${{ matrix.shard }}/4 -v
         env:
           CHECK_PYTHON: python
+
+  unit:
+    # The check the main ruleset requires: green only when every shard is.
+    # (A matrix job reports one check per shard, "unit 1/4" ..., so the
+    # required name comes from this job.)
+    if: always()
+    needs: shard
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.shard.result }}" = success
