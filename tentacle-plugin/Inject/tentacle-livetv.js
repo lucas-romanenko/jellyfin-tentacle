@@ -17,6 +17,11 @@
 //     day for the visible rows in batches (POST LiveTv/Programs).
 //   - Click a programme on now / a channel → play; a later programme → its
 //     details page (record from there); the star toggles the favourite.
+//   - Live: a favourite changed anywhere (Tentacle's My Channels, this guide,
+//     another device) shows within about a second (Jellyfin's UserDataChanged
+//     on its websocket); a lineup change (LibraryChanged, Jellyfin's or the one
+//     Tentacle sends after setting Live TV up) re-reads the channel list. Only
+//     the rows that changed are redrawn; the scroll position stays.
 (function () {
   'use strict';
 
@@ -25,6 +30,7 @@
   var BATCH = 100;            // channels per programme request
   var OVERSCAN = 8;           // rows rendered above/below the viewport
   var PREFETCH = 30;          // rows whose programmes are fetched ahead
+  var POLL_MS = 10000;        // channel list re-read this often when there is no websocket
 
   var G = {
     active: false,
@@ -43,6 +49,9 @@
     pending: {},            // dayStart + ':' + channelId -> true
     mounted: {},            // channelId -> row element
     tick: null,
+    live: null,             // live-update timer (socket watch, fallback poll)
+    socket: null,           // the Jellyfin websocket we listen on
+    reload: { timer: null, busy: false, again: false, at: 0 },
     scrollRaf: 0,
     m: null,                // metrics for the current screen size
   };
@@ -146,6 +155,8 @@
     document.body.classList.remove('tentacle-livetv-active');
     if (G.container) G.container.style.display = 'none';
     if (G.tick) { clearInterval(G.tick); G.tick = null; }
+    if (G.live) { clearInterval(G.live); G.live = null; }
+    if (G.reload.timer) { clearTimeout(G.reload.timer); G.reload.timer = null; }
   }
 
   // ── Container ──────────────────────────────────────────────────────
@@ -213,6 +224,10 @@
     loadChannels().then(function () { if (G.active) applyView(true); });
     if (G.tick) clearInterval(G.tick);
     G.tick = setInterval(onTick, 30000);
+    G.reload.at = Date.now();
+    watchSocket();
+    if (G.live) clearInterval(G.live);
+    G.live = setInterval(onLiveTick, 2000);
   }
 
   // The choice follows the person between browsers: Jellyfin's display
@@ -256,6 +271,16 @@
 
   function loadChannels() {
     G.loadError = false;
+    return fetchChannels().then(function (list) {
+      G.channels = list;
+    }).catch(function () {
+      G.channels = [];
+      G.loadError = true;
+    });
+  }
+
+  // Every channel this person can see, in Jellyfin's order.
+  function fetchChannels() {
     return apiGet('LiveTv/Channels', {
       UserId: G.userId,
       EnableImages: true,
@@ -266,7 +291,7 @@
       EnableFavoriteSorting: false,
       Fields: '',
     }).then(function (r) {
-      G.channels = ((r && r.Items) || []).map(function (c) {
+      return ((r && r.Items) || []).map(function (c) {
         return {
           id: c.Id,
           name: c.Name || '',
@@ -275,9 +300,6 @@
           fav: !!(c.UserData && c.UserData.IsFavorite),
         };
       });
-    }).catch(function () {
-      G.channels = [];
-      G.loadError = true;
     });
   }
 
@@ -327,12 +349,16 @@
 
   // ── View: Favorites / All + search ────────────────────────────────
 
-  function applyView(scrollToNow) {
+  function computeRows() {
     var base = G.view === 'favorites' ? favChannels() : (G.channels || []);
     var q = G.query.trim().toLowerCase();
     G.rows = q ? base.filter(function (c) {
       return c.name.toLowerCase().indexOf(q) !== -1 || String(c.number).indexOf(q) === 0;
     }) : base;
+  }
+
+  function applyView(scrollToNow) {
+    computeRows();
     renderToggle();
     loadMaxEnd(G.view).then(function (maxEnd) {
       if (!G.active) return;
@@ -700,18 +726,183 @@
     if (!c) return;
     c.fav = !c.fav;
     G.maxEnd.favorites = undefined;
-    var redraw = function () {
-      if (G.view === 'favorites') { applyView(false); return; }
-      renderToggle();
-      var el = G.mounted[id];
-      if (el) el.querySelector('.tg-chan').outerHTML = chanCell(c);
-    };
+    var redraw = function () { refreshRows([id]); };
     redraw();
     var p = c.fav
       ? api().ajax({ type: 'POST', url: api().getUrl('UserFavoriteItems/' + id, { userId: G.userId }) })
       : api().ajax({ type: 'DELETE', url: api().getUrl('UserFavoriteItems/' + id, { userId: G.userId }) });
     Promise.resolve(p).catch(function () { c.fav = !c.fav; redraw(); });
   }
+
+  // ── Live updates ──────────────────────────────────────────────────
+
+  function normId(id) { return String(id || '').replace(/-/g, '').toLowerCase(); }
+
+  // Jellyfin web's own websocket (ApiClient._webSocket; a new one after each
+  // reconnect). We only listen; Jellyfin web keeps handling it as before.
+  function watchSocket() {
+    var ws = api() && api()._webSocket;
+    if (!ws || ws === G.socket || typeof ws.addEventListener !== 'function') return;
+    var reconnect = !!G.socket;
+    G.socket = ws;
+    ws.addEventListener('message', onSocketMessage);
+    // Messages sent while it was down are lost: read the list again.
+    if (reconnect && G.active) scheduleReload(0);
+  }
+
+  function socketOpen() {
+    var ws = api() && api()._webSocket;
+    return !!ws && ws === G.socket && ws.readyState === 1;
+  }
+
+  // Jellyfin sends a browser's messages to one socket only (the newest tab's),
+  // so the tab that gets one passes it to the other tabs of this browser.
+  var relay = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('tentacle-livetv') : null;
+  if (relay) {
+    relay.onmessage = function (e) { onMessage(e.data); };
+    if (relay.unref) relay.unref();   // node (the unit tests)
+  }
+
+  function onSocketMessage(e) {
+    if (e.target !== G.socket) return;
+    var msg;
+    try { msg = JSON.parse(e.data); } catch (x) { return; }
+    if (!msg || (msg.MessageType !== 'UserDataChanged' && msg.MessageType !== 'LibraryChanged')) return;
+    var copy = { MessageType: msg.MessageType, Data: msg.MessageType === 'UserDataChanged' ? msg.Data : null };
+    if (relay) { try { relay.postMessage(copy); } catch (x) { } }
+    onMessage(copy);
+  }
+
+  function onMessage(msg) {
+    if (!G.active || !msg) return;
+    if (msg.MessageType === 'UserDataChanged') onUserData(msg.Data);
+    else if (msg.MessageType === 'LibraryChanged') scheduleReload(1500);
+  }
+
+  // Someone's favourites changed: apply the channels of ours that changed.
+  function onUserData(data) {
+    learnUser();
+    if (!data || !G.channels || !G.userId || normId(data.UserId) !== normId(G.userId)) return;
+    var byId = {};
+    G.channels.forEach(function (c) { byId[normId(c.id)] = c; });
+    var changed = [];
+    (data.UserDataList || []).forEach(function (u) {
+      var c = byId[normId(u.ItemId)];
+      if (!c || typeof u.IsFavorite !== 'boolean' || c.fav === u.IsFavorite) return;
+      c.fav = u.IsFavorite;
+      changed.push(c.id);
+    });
+    if (!changed.length) return;
+    G.maxEnd.favorites = undefined;
+    refreshRows(changed);
+  }
+
+  // A first page load opens the guide before Jellyfin web has signed in, so
+  // the user id may still be unknown at start().
+  function learnUser() {
+    if (!G.userId && api()) G.userId = api().getCurrentUserId() || '';
+  }
+
+  function onLiveTick() {
+    if (!G.active) return;
+    learnUser();
+    watchSocket();
+    // No websocket (blocked, or reconnecting): read the list every 10 s.
+    if (!socketOpen() && Date.now() - G.reload.at >= POLL_MS) scheduleReload(0);
+  }
+
+  function scheduleReload(delay) {
+    if (G.reload.timer) clearTimeout(G.reload.timer);
+    G.reload.timer = setTimeout(function () { G.reload.timer = null; reloadChannels(); }, delay);
+  }
+
+  // Read the channel list again (one request, ~60 ms for 1,700 channels) and
+  // redraw only what differs: channels that came or went, a new name, logo,
+  // number or favourite.
+  function reloadChannels() {
+    if (!G.active || !G.channels || G.loadError) return;
+    if (G.reload.busy) { G.reload.again = true; return; }
+    G.reload.busy = true;
+    G.reload.at = Date.now();
+    var uid = G.userId;
+    fetchChannels().then(function (list) {
+      G.reload.busy = false;
+      if (G.reload.again) { G.reload.again = false; scheduleReload(0); }
+      if (!G.active || uid !== G.userId || !G.channels) return;
+      var d = diffChannels(G.channels, list);
+      if (!d.changed.length && !d.moved) return;
+      G.channels = list;
+      if (d.moved) G.maxEnd = {};
+      else if (d.favs) G.maxEnd.favorites = undefined;
+      refreshRows(d.changed);
+    }).catch(function () {
+      G.reload.busy = false;
+      if (G.reload.again) { G.reload.again = false; scheduleReload(1000); }
+    });
+  }
+
+  // What differs between two channel lists: `moved` when channels came, went
+  // or changed order; `changed` the ids whose cell looks different.
+  function diffChannels(old, list) {
+    var was = {};
+    old.forEach(function (c) { was[c.id] = c; });
+    var moved = old.length !== list.length, favs = false, changed = [];
+    list.forEach(function (c, i) {
+      var o = was[c.id];
+      if (!o) { moved = true; return; }
+      if (old[i].id !== c.id) moved = true;
+      if (o.fav !== c.fav) favs = true;
+      if (o.fav !== c.fav || o.name !== c.name || o.number !== c.number || o.logo !== c.logo) changed.push(c.id);
+    });
+    return { moved: moved, favs: favs, changed: changed };
+  }
+
+  // The channels changed (a favourite, the lineup) but not the view: redraw
+  // in place. Rows that came or went move the others; the cells of `ids` are
+  // drawn again; the scroll position and the day stay.
+  function refreshRows(ids) {
+    (ids || []).forEach(function (id) {
+      var c = (G.channels || []).filter(function (x) { return x.id === id; })[0];
+      var el = G.mounted[id];
+      if (c && el) el.querySelector('.tg-chan').outerHTML = chanCell(c);
+    });
+    var before = G.rows.length;
+    computeRows();
+    renderToggle();
+    var sc = G.container && G.container.querySelector('.tg-scroller');
+    loadMaxEnd(G.view).then(function (maxEnd) {
+      if (!G.active) return;
+      var days = computeDays(maxEnd);
+      var sameDays = days.length === G.days.length && days.every(function (d, i) {
+        return d.start === G.days[i].start && d.end === G.days[i].end;
+      });
+      sc = G.container.querySelector('.tg-scroller');
+      if (!sameDays || !sc || !G.rows.length || !before) {
+        var top = sc ? sc.scrollTop : 0, left = sc ? sc.scrollLeft : 0;
+        var start = G.days[G.dayIndex] ? G.days[G.dayIndex].start : 0;
+        G.days = days;
+        G.dayIndex = 0;
+        for (var i = 0; i < days.length; i++) if (days[i].start === start) G.dayIndex = i;
+        renderDays();
+        renderGrid(false);
+        var now = G.container.querySelector('.tg-scroller');
+        if (now) { now.scrollTop = top; now.scrollLeft = left; drawRows(); }
+        return;
+      }
+      var canvas = sc.querySelector('.tg-canvas');
+      if (canvas) canvas.style.height = (G.m.headH + G.rows.length * G.m.rowH) + 'px';
+      drawRows();
+    });
+  }
+
+  // Listen in every tab, also off the guide: this tab may be the one
+  // Jellyfin talks to while another tab shows the guide.
+  var watcher = setInterval(watchSocket, 2000);
+  if (watcher && watcher.unref) watcher.unref();   // node (the unit tests)
+
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden && G.active) scheduleReload(0);
+  });
 
   // ── Playback ──────────────────────────────────────────────────────
 
@@ -789,7 +980,7 @@
     // Shared with the Favorites page (favorited channel cards play on click)
     playChannel: playChannel,
     // For the unit tests (tests/test_livetv_guide.py)
-    internals: { computeDays: computeDays, isGuidePage: isGuidePage, progsHtml: progsHtml, chanCell: chanCell, fmtRange: fmtRange },
+    internals: { diffChannels: diffChannels, onUserData: onUserData, G: G, computeDays: computeDays, isGuidePage: isGuidePage, progsHtml: progsHtml, chanCell: chanCell, fmtRange: fmtRange },
   };
 
   // Initial check

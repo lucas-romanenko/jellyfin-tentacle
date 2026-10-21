@@ -347,6 +347,7 @@ read that row.
 |---|---|---|
 | Version polling | Jellyfin web (`tentacle-home.js`) | polls `GET /api/smartlists/version`; a new number re-fetches and redraws the rows |
 | WebSocket + home version | Android TV (`SocketHandler`, `HomeRowsFragment.kt`, navbars) | the plugin's `LibraryChanged` push carries the user's home version (`tentacle-home:<user\|*>:<v>` in `CollectionFolders`); the app keeps the newest one and, on Home, the navbar, a return to the front or a WebSocket reconnect, compares it with what it shows and refreshes only if it moved; no polling |
+| WebSocket (Jellyfin's own + Tentacle's Live TV push) | Jellyfin web Live TV guide (`tentacle-livetv.js`) | UserDataChanged (favourites, sent by Jellyfin to the person's sessions whoever made the change) updates stars and Favorites rows in place; LibraryChanged (e.g. `tentacle-livetv:<v>` from `livetv_tuners.tell_clients()` after every Live TV setup run) re-reads the channel list and redraws only what differs; tabs relay to each other (`BroadcastChannel`) since Jellyfin talks to one socket per browser |
 | Plugin cache clear | the plugin | `POST /Tentacle/Refresh` after the nightly sync and Settings saves (everything, every user), or `?userId=&homeVersion=` after a save of one user's home or toolbar (that user's home caches and clients only) |
 
 The home version (`services/smartlists.py`: `get_home_version`,

@@ -62,6 +62,17 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   request for the list; rows are virtualized; programmes per day for the
   visible rows, 100 channels per `POST LiveTv/Programs`. Programme cells use
   `overflow: clip`, not hidden (hidden stops the sticky title).
+  Live updates: every Jellyfin web tab listens on `ApiClient._webSocket`
+  (re-attached after a reconnect). UserDataChanged (a favourite changed
+  anywhere, Tentacle included: it sets Jellyfin's favourite) flips the star
+  and the Favorites rows in place; LibraryChanged (Jellyfin's, or Tentacle's
+  `tentacle-livetv` push) re-reads `LiveTv/Channels` (~60 ms, 1,700
+  channels) and redraws only the rows that differ, keeping the scroll.
+  Jellyfin sends a browser's messages to ONE socket only (the newest tab's),
+  so the tab that gets one relays it on `BroadcastChannel('tentacle-livetv')`.
+  No socket: the list is re-read every 10 s; back to the tab: at once.
+  A first page load can open the guide before Jellyfin web knows the user
+  (`getCurrentUserId()` empty); `learnUser()` fills it in later.
 - **Libraries list**: a fixed element on `<body>` (the pill's
   backdrop-filter breaks `position: fixed` inside it), so it must be given a
   top/left on every width, phones included, or it opens far below the
