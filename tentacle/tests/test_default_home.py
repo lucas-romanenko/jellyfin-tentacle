@@ -377,3 +377,63 @@ class Picker(Base):
             {"type": "builtin", "section_id": "livetv", "display_name": "Live TV", "order": 2}]})
         sl.write_home_config(self.db, user_id=3)
         self.assertEqual(self.names(3), ["My Media", "Live TV"])
+
+
+class BackgroundApply(unittest.TestCase):
+    """At start-up Jellyfin is often still restarting (a plugin update): the
+    first production run built homes with only the built-in rows because no
+    playlist could be made. The run waits for Jellyfin, then tries again for
+    anyone whose rows aren't all there."""
+
+    DEFAULT = {"hero": {"enabled": True, "playlist_id": "builtin:recently_added_movies"},
+               "rows": [{"type": "builtin", "section_id": "resumevideo"},
+                        {"type": "playlist", "playlist_id": "builtin:recently_added_movies"},
+                        {"type": "playlist", "playlist_id": "source:Netflix:movies"}]}
+    FULL = {"follows_default": True, "hero": {"enabled": True},
+            "rows": [{"type": "builtin"}, {"type": "playlist"}, {"type": "playlist"}]}
+    BARE = {"follows_default": True, "hero": {"enabled": False}, "rows": [{"type": "builtin"}]}
+
+    def run_it(self, up, results):
+        people = [mock.Mock(id=1, display_name="ethan"), mock.Mock(id=2, display_name="fahad")]
+        calls, sleeps = [], []
+        answers = {1: list(results[1]), 2: list(results[2])}
+
+        def apply(db, u, build=True, default=None):
+            calls.append(u.id)
+            return answers[u.id].pop(0) if len(answers[u.id]) > 1 else answers[u.id][0]
+
+        class Now:  # run the background thread at once
+            def __init__(self, target, **kw): self.target = target
+            def start(self): self.target()
+
+        ups = list(up)
+        with mock.patch.object(dh.threading, "Thread", Now), \
+                mock.patch("models.database.SessionLocal", lambda: mock.MagicMock()), \
+                mock.patch.object(dh, "get_default", lambda db: self.DEFAULT), \
+                mock.patch.object(dh, "followers", lambda db: people), \
+                mock.patch.object(dh, "apply_default", apply), \
+                mock.patch.object(dh, "_jellyfin_up", lambda db: ups.pop(0) if len(ups) > 1 else ups[0]), \
+                mock.patch.object(dh.time, "sleep", sleeps.append):
+            dh.apply_to_followers_soon("test")
+        return calls, sleeps
+
+    def test_it_waits_for_jellyfin_before_building(self):
+        calls, sleeps = self.run_it([False, False, True], {1: [self.FULL], 2: [self.FULL]})
+        self.assertEqual(sleeps, [10, 10])
+        self.assertEqual(calls, [1, 2])
+
+    def test_people_missing_rows_are_tried_again(self):
+        calls, sleeps = self.run_it([True], {1: [self.BARE, self.FULL], 2: [self.FULL]})
+        self.assertEqual(calls, [1, 2, 1], "only the incomplete home is built again")
+        self.assertEqual(sleeps, [dh.RETRY_AFTER_S])
+
+    def test_it_gives_up_after_a_few_tries(self):
+        calls, sleeps = self.run_it([True], {1: [self.BARE], 2: [self.FULL]})
+        self.assertEqual(calls, [1, 2] + [1] * dh.RETRIES)
+        self.assertEqual(len(sleeps), dh.RETRIES)
+
+    def test_complete_means_every_playlist_row_and_the_spotlight(self):
+        self.assertTrue(dh.is_complete(self.DEFAULT, self.FULL))
+        self.assertFalse(dh.is_complete(self.DEFAULT, self.BARE))
+        self.assertFalse(dh.is_complete(self.DEFAULT, dict(self.FULL, hero={"enabled": False})))
+        self.assertTrue(dh.is_complete({"rows": [{"type": "builtin"}]}, {"rows": [{"type": "builtin"}]}))

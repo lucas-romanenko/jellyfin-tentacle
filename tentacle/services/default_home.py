@@ -19,6 +19,7 @@ that person open, so their rows show only what their age limit allows.
 import json
 import logging
 import threading
+import time
 from datetime import datetime, timedelta
 
 from sqlalchemy import func
@@ -312,31 +313,92 @@ def followers(db: Session) -> list:
 _apply_lock = threading.Lock()
 _apply_state = {"running": False, "again": False}
 
+# Jellyfin restarts with Tentacle (a plugin update): wait this long for it to
+# answer before building anyone's playlists, then retry people whose rows
+# still couldn't all be built.
+JELLYFIN_WAIT_S = 600
+RETRY_AFTER_S = 120
+RETRIES = 3
+
+
+def _jellyfin_up(db: Session) -> bool:
+    from services.jellyfin import JellyfinService
+    url, key = get_setting(db, "jellyfin_url", ""), get_setting(db, "jellyfin_api_key", "")
+    if not url or not key:
+        return False
+    try:
+        return bool(JellyfinService(url, key).test_connection())
+    except Exception:
+        return False
+
+
+def _wait_for_jellyfin(db: Session) -> bool:
+    deadline = time.monotonic() + JELLYFIN_WAIT_S
+    while True:
+        if _jellyfin_up(db):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(10)
+
+
+def is_complete(default: dict, config: dict) -> bool:
+    """Whether a follower's home has every row and the spotlight of the
+    default (a playlist Jellyfin couldn't make leaves its row out)."""
+    want = [r for r in default.get("rows") or [] if r.get("type") != "builtin" and is_shareable_key(r.get("playlist_id", ""))]
+    have = [r for r in (config or {}).get("rows") or [] if r.get("type") != "builtin"]
+    hero_wanted = bool((default.get("hero") or {}).get("enabled") and (default.get("hero") or {}).get("playlist_id"))
+    hero_there = bool(((config or {}).get("hero") or {}).get("enabled"))
+    return len(have) >= len(want) and (hero_there or not hero_wanted)
+
 
 def apply_to_followers_soon(reason: str = "") -> None:
     """Rewrite every follower's home from the default, in the background.
     Saves made while it runs (an admin dragging rows) make it run once more
-    at the end, never twice at once."""
+    at the end, never twice at once. It waits for Jellyfin first (at start-up
+    it is often still restarting) and tries again a few times for anyone
+    whose playlists couldn't all be made."""
     with _apply_lock:
         if _apply_state["running"]:
             _apply_state["again"] = True
             return
         _apply_state["running"] = True
 
+    def _apply(db, default, people) -> list:
+        incomplete = []
+        for u in people:
+            try:
+                cfg = apply_default(db, u, build=True, default=default)
+                if follows_default(cfg) and not is_complete(default, cfg):
+                    incomplete.append(u.id)
+            except Exception as e:
+                db.rollback()
+                incomplete.append(u.id)
+                logger.warning(f"[Default home] Could not update {u.display_name}'s home: {e}")
+        return incomplete
+
     def _run():
         from models.database import SessionLocal
         while True:
             db = SessionLocal()
             try:
+                if not _wait_for_jellyfin(db):
+                    logger.warning("[Default home] Jellyfin isn't answering; homes are built with what exists now")
                 default = get_default(db)
                 people = followers(db)
-                for u in people:
-                    try:
-                        apply_default(db, u, build=True, default=default)
-                    except Exception as e:
-                        db.rollback()
-                        logger.warning(f"[Default home] Could not update {u.display_name}'s home: {e}")
+                incomplete = _apply(db, default, people)
                 logger.info(f"[Default home] Applied to {len(people)} people{' (' + reason + ')' if reason else ''}")
+                for attempt in range(RETRIES):
+                    if not incomplete:
+                        break
+                    logger.info(f"[Default home] {len(incomplete)} home(s) missing rows; trying again in {RETRY_AFTER_S} s")
+                    time.sleep(RETRY_AFTER_S)
+                    db.expire_all()
+                    default = get_default(db)
+                    people = [u for u in followers(db) if u.id in incomplete]
+                    incomplete = _apply(db, default, people)
+                if incomplete:
+                    logger.warning(f"[Default home] {len(incomplete)} home(s) still miss rows; the nightly sync tries again")
             except Exception as e:
                 logger.warning(f"[Default home] Apply failed: {e}")
             finally:
