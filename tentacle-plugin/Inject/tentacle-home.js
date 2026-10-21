@@ -606,12 +606,26 @@
   // ── On Now: what's on right now on your favourite channels ──────────
   // Jellyfin's own favourites (the Plan B lineup), filtered by Jellyfin to the
   // channels this person may see (kids: only kids channels). Hidden when there
-  // are no favourites or nothing is on; refilled when a programme ends.
+  // are no favourites or nothing is on. Read again every 5 s while Home is
+  // showing, so a channel starred anywhere (Tentacle's My Channels, the guide,
+  // another device) and a programme ending show within seconds; the cards are
+  // only redrawn when something on them changed.
+  var ON_NOW_REFRESH_MS = 5000;
+
   function loadOnNow(row) {
     var gen = MH.generation;
+    clearTimeout(row._onNowTimer);
+    var again = function () {
+      row._onNowTimer = setTimeout(function () {
+        if (gen !== MH.generation || !document.body.contains(row)) return;
+        if (document.hidden) { again(); return; }
+        loadOnNow(row);
+      }, ON_NOW_REFRESH_MS);
+    };
     apiGet('LiveTv/Channels?UserId=' + MH.userId + '&IsFavorite=true&AddCurrentProgram=true&EnableUserData=true' +
            '&Fields=PrimaryImageAspectRatio&ImageTypeLimit=1&EnableImageTypes=Primary&Limit=100')
       .then(function (data) {
+        if (gen !== MH.generation) return;
         var itemsEl = row.querySelector('.mh-row-items');
         if (!itemsEl) return;
         itemsEl.classList.remove('mh-loading-row');
@@ -619,25 +633,27 @@
         var onNow = ((data && data.Items) || []).filter(function (ch) {
           var p = ch.CurrentProgram;
           return p && p.EndDate && Date.parse(p.EndDate) > now && (!p.StartDate || Date.parse(p.StartDate) <= now);
-        });
-        if (!onNow.length) {
-          row.classList.add('mh-row-hidden');
-        } else {
-          row.classList.remove('mh-row-hidden');
-          itemsEl.innerHTML = '';
-          onNow.slice(0, 30).forEach(function (ch) { itemsEl.appendChild(createOnNowCard(ch, now)); });
+        }).slice(0, 30);
+        // What the cards show, to the minute
+        var key = onNow.map(function (ch) {
+          return ch.Id + ':' + ch.CurrentProgram.Id + ':' + Math.round((Date.parse(ch.CurrentProgram.EndDate) - now) / 60000);
+        }).join(',');
+        if (key !== row._onNowKey) {
+          row._onNowKey = key;
+          if (!onNow.length) {
+            row.classList.add('mh-row-hidden');
+          } else {
+            row.classList.remove('mh-row-hidden');
+            itemsEl.innerHTML = '';
+            onNow.forEach(function (ch) { itemsEl.appendChild(createOnNowCard(ch, now)); });
+          }
         }
-        // Refill when the first programme ends (and at least every 10 minutes,
-        // for channels whose guide starts something new)
-        var nextEnd = onNow.reduce(function (m, ch) { return Math.min(m, Date.parse(ch.CurrentProgram.EndDate)); }, now + 600000);
-        clearTimeout(row._onNowTimer);
-        row._onNowTimer = setTimeout(function () {
-          if (gen === MH.generation && document.body.contains(row)) loadOnNow(row);
-        }, Math.max(30000, Math.min(nextEnd - now + 5000, 600000)));
+        again();
       })
       .catch(function (err) {
         console.warn('[Tentacle] On Now unavailable:', err);
-        row.classList.add('mh-row-hidden');
+        if (!row._onNowKey) row.classList.add('mh-row-hidden');
+        again();
       });
   }
 

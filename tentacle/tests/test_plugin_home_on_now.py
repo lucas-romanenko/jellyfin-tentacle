@@ -44,10 +44,15 @@ class OnNowRow(unittest.TestCase):
         self.assertIn("mh-row-hidden", body)
         self.assertIn(".catch(", body, "no Live TV access or no guide: the row hides")
 
-    def test_it_refills_when_a_programme_ends(self):
+    def test_it_is_read_again_every_5_seconds_while_home_shows(self):
+        """Live updates (SHIPPING.md, 2026-10-21): a channel starred in Tentacle
+        reaches an open home within ~10 s; programmes ending too."""
         body = _function(self.js, "loadOnNow")
+        self.assertIn("var ON_NOW_REFRESH_MS = 5000;", self.js)
         self.assertIn("setTimeout", body)
         self.assertIn("MH.generation", body, "a timer from an older render never draws")
+        self.assertIn("document.hidden", body, "a hidden tab does not ask")
+        self.assertIn("_onNowKey", body, "cards are redrawn only when they changed")
 
     def test_cards_show_the_programme_channel_and_time_left_and_tune_in(self):
         body = _function(self.js, "createOnNowCard")
