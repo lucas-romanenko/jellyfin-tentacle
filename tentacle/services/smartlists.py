@@ -556,18 +556,23 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
                     existing_tags.add(user_tag)
 
     # ── YouTube channel playlists ──
-    # Every added channel becomes a playlist of its uploads, for every user.
-    # Adding the channel is the decision; the per-user choice is whether it
-    # goes on a home screen, made on the Home Screen tab like any other row.
+    # Every channel someone follows becomes a playlist of its uploads, for
+    # them (services/youtube/follows.py: nobody else sees its videos).
+    # Following is the decision; the choice is whether it goes on a home
+    # screen, made on the Home Screen tab like any other row.
     # The tag is already in every video's NFO, which Jellyfin reads for .strm
     # files, so no tagger pass is needed. Being *desired* is also what keeps
     # the orphan cleanup and write_home_config from dropping the row.
     if user_id is not None:
         from models.database import YouTubeChannel
         from services.youtube.indexer import MAX_KEEP
+        from services.youtube.follows import followed_ids
+        theirs = followed_ids(db, _get_jellyfin_user_id(db, user_id) or "")
         channels = db.query(YouTubeChannel).filter(
             YouTubeChannel.enabled == True).order_by(YouTubeChannel.title).all()  # noqa: E712
         for channel in channels:
+            if channel.id not in theirs:
+                continue
             if channel.title in existing_tags:
                 continue
             smartlists.append({

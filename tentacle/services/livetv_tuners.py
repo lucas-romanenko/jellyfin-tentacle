@@ -47,6 +47,7 @@ from models.database import (
 )
 from services import livetv_lineups as L
 from services import livetv_locations as P
+from services.youtube import follows as F
 
 logger = logging.getLogger(__name__)
 
@@ -197,13 +198,23 @@ def _ours(tag) -> bool:
     return t.startswith(L.TAG_PREFIX) or t.startswith(P.NOT_LOCAL_PREFIX)
 
 
-def blocked_tags(policy_tags: list, kid: bool, tags_in_use: set, place_tag=_KEEP) -> list:
+def _hide_tag(tag) -> bool:
+    """A tag that hides a channel from some people, kept on the channel next
+    to its tuner tag: a place's (tentacle-notlocal-*) or a YouTube channel's
+    (tentacle-youtube-<id>, services/youtube/follows.py)."""
+    t = str(tag).lower()
+    return t.startswith(P.NOT_LOCAL_PREFIX) or t.startswith(F.LIVE_TAG_PREFIX)
+
+
+def blocked_tags(policy_tags: list, kid: bool, tags_in_use: set, place_tag=_KEEP, youtube=_KEEP) -> list:
     """A person's BlockedTags: their own blocked tags kept; Tentacle's are the
     per-person tuners of before still in Jellyfin, for a kid every channel
-    that isn't a kids channel, and `place_tag`: the tag of the channels for
+    that isn't a kids channel, `place_tag`: the tag of the channels for
     other places than theirs (None: no such channels; default: the one they
-    have now is kept)."""
-    keep = [t for t in (policy_tags or []) if not _ours(t)]
+    have now is kept), and `youtube`: the tags of the YouTube channels they
+    don't follow (default: kept as they are; always last, as
+    follows.with_blocked puts them)."""
+    keep = [t for t in (policy_tags or []) if not _ours(t) and not F.is_ours(t)]
     ours = {t for t in tags_in_use if t not in (L.ALL_TAG, L.KIDS_TAG)}
     if kid:
         ours.add(L.ALL_TAG)
@@ -211,7 +222,9 @@ def blocked_tags(policy_tags: list, kid: bool, tags_in_use: set, place_tag=_KEEP
         ours |= {t for t in (policy_tags or []) if str(t).lower().startswith(P.NOT_LOCAL_PREFIX)}
     elif place_tag:
         ours.add(place_tag)
-    return keep + sorted(ours)
+    if youtube is _KEEP:
+        youtube = [t for t in (policy_tags or []) if F.is_ours(t)]
+    return keep + sorted(ours) + sorted(youtube)
 
 
 def apply_policies(db, jf: Jellyfin, users: list, tags_in_use: set, place_tags: Optional[dict] = None) -> int:
@@ -219,27 +232,30 @@ def apply_policies(db, jf: Jellyfin, users: list, tags_in_use: set, place_tags: 
     `place_tags`: user id -> their place's tag (or None); without it the
     place tags they have stay."""
     kids = kids_user_ids(db)
+    yt_tags, yt_follows = F.all_tags(db), F.followers_by_channel(db)
     changed = 0
     for u in users:
         kid = L.norm_user_id(u["Id"]) in kids
         ptag = place_tags.get(L.norm_user_id(u["Id"])) if place_tags is not None else _KEEP
+        youtube = F.blocked_for(db, u["Id"], yt_tags, yt_follows)
         policy = u.get("Policy") or {}
-        want = blocked_tags(policy.get("BlockedTags") or [], kid, tags_in_use, ptag)
+        want = blocked_tags(policy.get("BlockedTags") or [], kid, tags_in_use, ptag, youtube)
         if list(policy.get("BlockedTags") or []) == want:
             continue
-        # The policy as Jellyfin has it now, not as this sync read it (that can
-        # be minutes old after a guide refresh): a kids profile or an admin
-        # switch set meanwhile must not be put back.
-        try:
-            fresh = (jf.get(f"/Users/{u['Id']}") or {}).get("Policy") or policy
-        except requests.RequestException:
-            fresh = policy
-        want = blocked_tags(fresh.get("BlockedTags") or [], kid, tags_in_use, ptag)
-        if list(fresh.get("BlockedTags") or []) == want:
-            u["Policy"] = fresh
-            continue
-        policy = {**fresh, "BlockedTags": want}
-        jf.post(f"/Users/{u['Id']}/Policy", policy)
+        with F.policy_lock:
+            # The policy as Jellyfin has it now, not as this sync read it (that can
+            # be minutes old after a guide refresh): a kids profile or an admin
+            # switch set meanwhile must not be put back.
+            try:
+                fresh = (jf.get(f"/Users/{u['Id']}") or {}).get("Policy") or policy
+            except requests.RequestException:
+                fresh = policy
+            want = blocked_tags(fresh.get("BlockedTags") or [], kid, tags_in_use, ptag, youtube)
+            if list(fresh.get("BlockedTags") or []) == want:
+                u["Policy"] = fresh
+                continue
+            policy = {**fresh, "BlockedTags": want}
+            jf.post(f"/Users/{u['Id']}/Policy", policy)
         u["Policy"] = policy
         changed += 1
     return changed
@@ -271,11 +287,11 @@ def tag_channels(jf: Jellyfin, admin_id: str, item_ids: list, tag: str, places: 
     for item in _items(jf, admin_id, item_ids):
         tags = list(item.get("Tags") or [])
         mine = sorted((places or {}).get(str(item["Id"]).replace("-", ""), ()))
-        have = sorted(t for t in tags if str(t).lower().startswith(P.NOT_LOCAL_PREFIX))
+        have = sorted(t for t in tags if _hide_tag(t))
         if tag in tags and (places is None or have == mine):
             continue
         keep_places = have if places is None else mine
-        tags = [t for t in tags if not _ours(t)] + [tag] + keep_places
+        tags = [t for t in tags if not _ours(t) and not _hide_tag(t)] + [tag] + keep_places
         jf.post(f"/Items/{item['Id']}", _item_update_payload(item, Tags=tags))
         done += 1
     return done
@@ -558,8 +574,10 @@ def _scheduled_channel_ids(jf: Jellyfin) -> set:
 
 
 def _kids_keys(db) -> set:
+    """The kids channels, and the YouTube channels a kid follows (an admin
+    added them for them; other kids block them unless they follow them too)."""
     from services import family
-    return set(family.kids_channels(db))
+    return set(family.kids_channels(db)) | {f"y{i}" for i in F.kids_channel_ids(db)}
 
 
 def tag_lineup(jf: Jellyfin, admin_id: str, url: str, entries: list, kids: set,
@@ -571,7 +589,10 @@ def tag_lineup(jf: Jellyfin, admin_id: str, url: str, entries: list, kids: set,
     by_id = {}
     for item_id, key in L.item_ids_for(url, entries).items():
         by_tag.setdefault(L.KIDS_TAG if L.base_key(key) in kids else L.ALL_TAG, []).append(item_id)
-        by_id[item_id] = (places or {}).get(key, set())
+        by_id[item_id] = set((places or {}).get(key, set()))
+        if key[:1] == "y" and key[1:].isdigit():
+            # Only its followers see a YouTube channel (services/youtube/follows.py).
+            by_id[item_id].add(F.live_tag(int(key[1:])))
     return sum(tag_channels(jf, admin_id, ids, tag, by_id) for tag, ids in by_tag.items())
 
 

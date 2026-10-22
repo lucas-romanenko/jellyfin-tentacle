@@ -3166,9 +3166,58 @@ async function loadTentacleAddress() {
   } catch { /* the YouTube page shows the same thing */ }
 }
 
+// Everyone a channel can be for (Sources → YouTube): GET /api/youtube/people.
+let _ytPeople = [];
+
+function _ytPeopleOptions() {
+  const sel = document.getElementById('yt-for');
+  if (!sel) return;
+  const was = sel.value;
+  sel.innerHTML = _ytPeople.map(p => `<option value="${escapeAttr(p.id)}">${escapeAttr(p.me ? `Me (${p.name})` : p.name)}${p.kids ? ' · kids' : ''}</option>`).join('');
+  if (was && _ytPeople.some(p => p.id === was)) sel.value = was;
+  else { const me = _ytPeople.find(p => p.me); if (me) sel.value = me.id; }
+}
+
+// Who sees a channel: its followers (only they have it in Jellyfin), each
+// removable, and anyone else can be given it.
+function _ytFollowers(c) {
+  const chips = (c.followers || []).map(f => `<span class="yt-follower">${escapeAttr(f.name)}${f.kids ? ' <span class="myt-dim">kids</span>' : ''}`
+    + `<button title="Take it away from ${escapeAttr(f.name)}" aria-label="Take ${escapeAttr(c.title)} away from ${escapeAttr(f.name)}" onclick="ytSetFollower(${c.id}, '${escapeJS(f.id)}', false)">✕</button></span>`).join('');
+  const others = _ytPeople.filter(p => !(c.followers || []).some(f => f.id === p.id));
+  const add = others.length
+    ? `<select class="form-input yt-follow-add" aria-label="Give ${escapeAttr(c.title)} to someone" onchange="if(this.value)ytSetFollower(${c.id}, this.value, true)">`
+      + `<option value="">+ Someone else</option>${others.map(p => `<option value="${escapeAttr(p.id)}">${escapeAttr(p.name)}${p.kids ? ' · kids' : ''}</option>`).join('')}</select>`
+    : '';
+  return `<div class="yt-followers"><span class="myt-dim">Seen by</span> ${chips || '<span class="myt-dim">nobody</span>'} ${add}</div>`;
+}
+
+async function ytSetFollower(id, person, on) {
+  const channels = state._ytChannels || [];
+  const c = channels.find(x => x.id === id);
+  if (!c) return;
+  const now = (c.followers || []).map(f => f.id);
+  const want = on ? [...new Set([...now, person])] : now.filter(p => p !== person);
+  if (!want.length && !confirm(`Nobody else has "${c.title}".\n\nRemove it from the server, with its videos, playlist and home rows?`)) {
+    loadYouTubeChannels();
+    return;
+  }
+  try {
+    const r = await api(`/api/youtube/channels/${id}/followers`, { method: 'PUT', body: { people: want } });
+    const name = (_ytPeople.find(p => p.id === person) || {}).name || 'them';
+    toast(r.removed ? `Removed ${c.title}` : on ? `${c.title} is ${name}'s now too` : `${c.title} is no longer ${name}'s`, 'success', 3000);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+  loadYouTubeChannels();
+}
+
 async function loadYouTubeChannels() {
   const box = document.getElementById('yt-channels');
-  const channels = await api('/api/youtube/channels');
+  const [channels, people] = await Promise.all([
+    api('/api/youtube/channels'), api('/api/youtube/people').catch(() => _ytPeople)]);
+  _ytPeople = people || [];
+  state._ytChannels = channels;
+  _ytPeopleOptions();
   if (!channels.length) {
     box.innerHTML = '<div class="empty-state"><p>No channels yet. Paste a channel URL above — its newest videos appear in Jellyfin and stream on demand.</p></div>';
     return;
@@ -3191,8 +3240,9 @@ async function loadYouTubeChannels() {
         <div style="font-size:12px;color:var(--text3)">${c.library_count} in library · keeps newest ${c.keep_count}${shorts}${replays} · checked ${escapeAttr(checked)}</div>
         ${err}
         ${ytSkipNote(c)}
+        ${_ytFollowers(c)}
       </div>
-      <button class="btn btn-secondary btn-sm" onclick="ytDeleteChannel(${c.id}, '${escapeJS(c.title)}')">Remove</button>
+      <button class="btn btn-secondary btn-sm" title="For everyone: its videos leave the server" onclick="ytDeleteChannel(${c.id}, '${escapeJS(c.title)}')">Remove for everyone</button>
     </div>`;
   }).join('');
 }
@@ -3240,11 +3290,13 @@ async function ytAddChannel() {
     keep_count: Math.max(1, Math.min(100, parseInt(document.getElementById('yt-keep').value) || 10)),
     include_shorts: document.getElementById('yt-inc-shorts').checked,
     live: document.getElementById('yt-live').checked,
+    people: document.getElementById('yt-for')?.value ? [document.getElementById('yt-for').value] : [],
   };
   const t = toast('Looking up channel…', 'loading', 0);
   try {
     const r = await api('/api/youtube/channels', { method: 'POST', body });
     t.remove();
+    if (r.existing) toast(`${r.title} was already on the server: it's theirs now too`, 'success', 5000);
     document.getElementById('yt-url').value = '';
     loadYouTubeChannels();
     // Indexing started on its own; the poll shows progress and says what to
@@ -3299,7 +3351,7 @@ async function ytDeleteChannel(id, title) {
   // One action, and it does the whole thing: the channel, its videos, its
   // playlist and its home rows all go. A channel half-removed — gone from the
   // list but still in Jellyfin — is the state that used to need explaining.
-  if (!confirm(`Remove "${title}"?\n\nIts videos, playlist and home row are removed from Jellyfin too.`)) return;
+  if (!confirm(`Remove "${title}" for everyone?\n\nIts videos, playlist and home rows are removed from Jellyfin too.`)) return;
   try {
     const r = await api(`/api/youtube/channels/${id}`, { method: 'DELETE' });
     toast(`Removed ${title}${r.files_deleted ? ` — ${r.files_deleted} file(s) cleaned up` : ''}`);
@@ -7055,7 +7107,7 @@ function renderHealthLog() {
     showManageEpisodesModal, confirmManageEpisodes,
     showDownloadMoreModal, confirmDownloadMore, detailToggleSeason, toggleFollow,
     // YouTube
-    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytStartPolling, ytDiagnose, ytSkipNote, ytReprobe, ytRefill, loadLiveYouTubeChannels, toggleLiveYouTube, ytSaveAddress, ytShowAddress, loadTentacleAddress, ytUseAddress, ytDetectAddress, ytLoadTraffic, ytSaveTraffic,
+    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytSetFollower, ytRefreshNow, ytStartPolling, ytDiagnose, ytSkipNote, ytReprobe, ytRefill, loadLiveYouTubeChannels, toggleLiveYouTube, ytSaveAddress, ytShowAddress, loadTentacleAddress, ytUseAddress, ytDetectAddress, ytLoadTraffic, ytSaveTraffic,
     // Following
     loadFollowing,
     toggleStrmManaged,

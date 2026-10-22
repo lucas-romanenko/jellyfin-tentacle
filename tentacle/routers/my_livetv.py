@@ -52,10 +52,14 @@ def my_lineup(db, user: TentacleUser, entries: list = None) -> list:
     profile only the household's kids channels (chosen by an admin,
     services/family.py)."""
     from services import livetv_locations
+    from services.youtube import follows
     entries = L.view_for(L.lineup(db) if entries is None else entries, livetv_locations.of_person(db, user))
+    # A YouTube channel is its followers' only (services/youtube/follows.py).
+    mine = {f"y{i}" for i in follows.followed_ids(db, user.jellyfin_user_id)}
+    entries = [c for c in entries if not c["key"].startswith("y") or c["key"] in mine]
     if user.kids_level:
         from services import family
-        kids = set(family.kids_channels(db))
+        kids = set(family.kids_channels(db)) | mine
         entries = [c for c in entries if L.base_key(c["key"]) in kids]
     return entries
 

@@ -397,6 +397,23 @@ class YouTubeVideo(Base):
     channel = relationship("YouTubeChannel", back_populates="videos")
 
 
+class YouTubeFollow(Base):
+    """Someone follows a YouTube channel: its videos and its Live TV channel
+    are theirs to see (services/youtube/follows.py). The channel is fetched
+    once for all its followers; when the last one leaves it is removed."""
+    __tablename__ = "youtube_follows"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    channel_fk = Column(Integer, ForeignKey("youtube_channels.id"), nullable=False, index=True)
+    jellyfin_user_id = Column(String, nullable=False, index=True)   # no dashes
+    # The admin who added it for them (a kid's channels), else None: their own.
+    added_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("channel_fk", "jellyfin_user_id", name="uq_youtube_follow"),
+    )
+
+
 # ─── Duplicates ───────────────────────────────────────────────────────────────
 
 class Duplicate(Base):
@@ -1339,6 +1356,7 @@ def _migrate_columns():
     _migrate_home_row_order(cursor, conn)
     _migrate_auto_playlist_toggles(cursor, conn)
     _migrate_welcomed(cursor, conn)
+    _migrate_youtube_follows(cursor, conn)
     for table, column, col_type in migrations:
         existing = _existing_columns(cursor, table)
         if not existing:
@@ -1690,6 +1708,35 @@ def _migrate_welcomed(cursor, conn):
         return
     cursor.execute("ALTER TABLE tentacle_users ADD COLUMN welcomed_at DATETIME")
     cursor.execute("UPDATE tentacle_users SET welcomed_at = CURRENT_TIMESTAMP")
+    conn.commit()
+
+
+YOUTUBE_FOLLOWS_MIGRATED = "youtube_follows_migrated"
+
+
+def _migrate_youtube_follows(cursor, conn):
+    """YouTube channels were the whole household's until follows (Oct 2026):
+    once, every channel becomes followed by the household's admin only (the
+    one who added them; services/family.admin_of), so nobody else sees them.
+    Waits for a start with an admin when there is none yet."""
+    cursor.execute("SELECT value FROM settings WHERE key = ?", (YOUTUBE_FOLLOWS_MIGRATED,))
+    if cursor.fetchone():
+        return
+    cursor.execute("SELECT id FROM youtube_channels")
+    channels = [r[0] for r in cursor.fetchall()]
+    if channels:
+        cursor.execute("SELECT value FROM settings WHERE key = 'jellyfin_user_id'")
+        row = cursor.fetchone()
+        owner = ((row[0] if row else "") or "").replace("-", "")
+        cursor.execute("SELECT jellyfin_user_id FROM tentacle_users WHERE is_admin = 1 ORDER BY id")
+        admins = [r[0] for r in cursor.fetchall()]
+        if not admins:
+            return
+        admin = owner if owner in admins else admins[0]
+        for cid in channels:
+            cursor.execute("INSERT OR IGNORE INTO youtube_follows (channel_fk, jellyfin_user_id, created_at) "
+                           "VALUES (?, ?, CURRENT_TIMESTAMP)", (cid, admin))
+    cursor.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (YOUTUBE_FOLLOWS_MIGRATED, "true"))
     conn.commit()
 
 

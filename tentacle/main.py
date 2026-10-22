@@ -635,6 +635,20 @@ def _resume_youtube_channels() -> None:
         logger.warning(f"[YouTube] Could not resume unfinished channels: {e}")
 
 
+def _youtube_follows() -> None:
+    """Everyone's YouTube blocked tags as their follows say (services/youtube/
+    follows.py): also people made in Jellyfin since, who follow nothing."""
+    from models.database import SessionLocal
+    from services.youtube import follows
+    db = SessionLocal()
+    try:
+        follows.apply_everyone(db)
+    except Exception as e:
+        logger.warning(f"[YouTube] Could not update who sees which channels: {e}")
+    finally:
+        db.close()
+
+
 def _resume_provider_relinks() -> None:
     from services.provider_relink import resume_pending
     try:
@@ -757,6 +771,11 @@ def setup_scheduler(db):
     # A channel whose first index a restart cut short is picked up a minute
     # after start-up, background checks or not (#288).
     schedule_once(_resume_youtube_channels, 60, "youtube_resume_first_index")
+    # Who sees which YouTube channels: soon after start-up (a migrated
+    # install's channels become the admin's only), then hourly.
+    from apscheduler.triggers.interval import IntervalTrigger as _Every
+    scheduler.add_job(_youtube_follows, _Every(hours=1, start_date=datetime.now() + timedelta(seconds=30)),
+                      id="youtube_follows", replace_existing=True)
     # A provider save's .strm rewrite a restart cut short (#149)
     schedule_once(_resume_provider_relinks, 60, "provider_relink_resume")
     # VOD through Tentacle (the default): existing .strm files move to the
@@ -945,6 +964,8 @@ app.include_router(activity_router.router)
 app.include_router(livetv_router.router)
 from routers import my_livetv as my_livetv_router
 app.include_router(my_livetv_router.router)
+from routers import my_youtube as my_youtube_router
+app.include_router(my_youtube_router.router)
 from routers import livetv_checker as livetv_checker_router
 app.include_router(livetv_checker_router.router)
 from routers import livetv_catalog as livetv_catalog_router

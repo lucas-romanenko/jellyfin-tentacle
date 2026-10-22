@@ -81,6 +81,8 @@ def guide_number(channel: YouTubeChannel, taken: set = None) -> str:
 
 
 def _lineup_channels(db: Session) -> list:
+    """The YouTube channels in the household's lineup: only their followers
+    see them (services/youtube/follows.py)."""
     return db.query(YouTubeChannel).filter(
         YouTubeChannel.live_enabled == True,  # noqa: E712
         YouTubeChannel.enabled == True,  # noqa: E712

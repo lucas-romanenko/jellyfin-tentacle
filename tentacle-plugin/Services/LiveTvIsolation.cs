@@ -3,8 +3,10 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using HarmonyLib;
+using Jellyfin.Data.Enums;
 using Jellyfin.Data.Events.Users;
 using MediaBrowser.Common.Configuration;
+using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Events;
 using MediaBrowser.Controller.Library;
@@ -42,6 +44,13 @@ public class LiveTvIsolation : IHostedService
     /// "tentacle-notlocal-&lt;place&gt;" for every place whose people don't see it; each person blocks
     /// their own place's. The server sets them; channels keep them here, programmes copy them.</summary>
     public const string NotLocalPrefix = "tentacle-notlocal-";
+    /// <summary>A YouTube channel's Live TV channel (and its programmes) carries "tentacle-youtube-&lt;id&gt;",
+    /// its videos "yt:&lt;slug&gt;"; everyone who doesn't follow the channel blocks both (the server sets
+    /// that). The channel gets its tag here when Jellyfin makes it, from its stream address.</summary>
+    public const string YouTubePrefix = "tentacle-youtube-";
+    public const string YouTubeVideoPrefix = "yt:";
+
+    private static readonly Regex YouTubeStreamRe = new(@"/api/youtube/live/(\d+)/stream\.ts$", RegexOptions.Compiled);
 
     private static readonly Regex UserTunerRe = new(@"/api/live/users/([0-9a-fA-F]{32})/tuner\.m3u$", RegexOptions.Compiled);
 
@@ -67,6 +76,27 @@ public class LiveTvIsolation : IHostedService
 
         var m = UserTunerRe.Match(path);
         return m.Success ? TagPrefix + m.Groups[1].Value.ToLowerInvariant() : null;
+    }
+
+    /// <summary>The tag a YouTube channel's Live TV channel carries, from its stream address; null for any other.</summary>
+    public static string? YouTubeTagForPath(string? path)
+    {
+        var m = YouTubeStreamRe.Match((path ?? string.Empty).Split('?')[0]);
+        return m.Success ? YouTubePrefix + m.Groups[1].Value : null;
+    }
+
+    public static bool IsYouTubeTag(string t)
+        => t.StartsWith(YouTubePrefix, StringComparison.OrdinalIgnoreCase)
+           || t.StartsWith(YouTubeVideoPrefix, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>A new person's blocked tags with every YouTube channel's (they follow none yet): the
+    /// others kept in their order, the YouTube ones sorted last, as the server writes them.</summary>
+    public static string[] NewUserYouTubeTags(string[]? blocked, IEnumerable<string> youtubeTags)
+    {
+        var current = blocked ?? Array.Empty<string>();
+        var yt = current.Where(IsYouTubeTag).Concat(youtubeTags).Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(t => t, StringComparer.Ordinal);
+        return current.Where(t => !IsYouTubeTag(t)).Concat(yt).ToArray();
     }
 
     /// <summary>Jellyfin's string.GetMD5() printed as "N": an M3U channel's id prefix uses it.</summary>
@@ -178,13 +208,36 @@ public class LiveTvNewUser : IEventConsumer<UserCreatedEventArgs>
 {
     private readonly IUserManager _userManager;
     private readonly IConfigurationManager _config;
+    private readonly ILibraryManager _libraryManager;
     private readonly ILogger<LiveTvNewUser> _logger;
 
-    public LiveTvNewUser(IUserManager userManager, IConfigurationManager config, ILogger<LiveTvNewUser> logger)
+    public LiveTvNewUser(IUserManager userManager, IConfigurationManager config, ILibraryManager libraryManager, ILogger<LiveTvNewUser> logger)
     {
         _userManager = userManager;
         _config = config;
+        _libraryManager = libraryManager;
         _logger = logger;
+    }
+
+    /// <summary>Every YouTube channel's tags Jellyfin has: its videos' (tagged "youtube") and its Live TV channel's.</summary>
+    private List<string> YouTubeTags()
+    {
+        var items = _libraryManager.GetItemList(new InternalItemsQuery
+        {
+            IncludeItemTypes = new[] { BaseItemKind.Movie },
+            Tags = new[] { "youtube" },
+            Recursive = true,
+            DtoOptions = new DtoOptions(false),
+        }).Concat(_libraryManager.GetItemList(new InternalItemsQuery
+        {
+            IncludeItemTypes = new[] { BaseItemKind.LiveTvChannel },
+            Recursive = true,
+            DtoOptions = new DtoOptions(false),
+        }));
+        return items.SelectMany(i => i.Tags ?? Array.Empty<string>())
+            .Where(t => t.StartsWith(LiveTvIsolation.YouTubePrefix, StringComparison.OrdinalIgnoreCase)
+                        || t.StartsWith(LiveTvIsolation.YouTubeVideoPrefix, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     /// <summary>How long after the event the policy is set: the request creating the user
@@ -201,14 +254,18 @@ public class LiveTvNewUser : IEventConsumer<UserCreatedEventArgs>
                 await Task.Delay(Delay).ConfigureAwait(false);
                 var tuners = (_config.GetConfiguration("livetv") as LiveTvOptions)?.TunerHosts ?? Array.Empty<TunerHostInfo>();
                 var tags = tuners.Select(t => LiveTvIsolation.TagForTunerUrl(t.Url)).OfType<string>().ToList();
+                var youtube = YouTubeTags();
                 var user = _userManager.GetUserById(userId);
-                if (tags.Count == 0 || user == null)
+                if ((tags.Count == 0 && youtube.Count == 0) || user == null)
                 {
                     return;
                 }
 
                 var policy = _userManager.GetUserDto(user).Policy;
-                var blocked = LiveTvIsolation.NewUserBlockedTags(policy.BlockedTags, tags);
+                var blocked = tags.Count == 0 ? (policy.BlockedTags ?? Array.Empty<string>())
+                    : LiveTvIsolation.NewUserBlockedTags(policy.BlockedTags, tags);
+                // Nobody's YouTube channels: they add their own in Tentacle.
+                blocked = LiveTvIsolation.NewUserYouTubeTags(blocked, youtube);
                 if (blocked.SequenceEqual(policy.BlockedTags ?? Array.Empty<string>()))
                 {
                     return;
@@ -216,7 +273,7 @@ public class LiveTvNewUser : IEventConsumer<UserCreatedEventArgs>
 
                 policy.BlockedTags = blocked;
                 await _userManager.UpdatePolicyAsync(userId, policy).ConfigureAwait(false);
-                _logger.LogInformation("[Tentacle] New user {Name}: Live TV set to the lineup", user.Username);
+                _logger.LogInformation("[Tentacle] New user {Name}: Live TV set to the lineup, nobody's YouTube channels", user.Username);
             }
             catch (Exception ex)
             {
@@ -304,7 +361,7 @@ public static class LiveTvTagPatches
 
     /// <summary>The tags a channel Jellyfin is about to build should get: its stored tags with
     /// the tuner's tag, or null to leave Jellyfin's own handling alone.</summary>
-    public static string[]? ChannelTags(string? channelId, string[]? storedTags, Dictionary<string, string> prefixes)
+    public static string[]? ChannelTags(string? channelId, string[]? storedTags, Dictionary<string, string> prefixes, string? path = null)
     {
         var tag = LiveTvIsolation.TagForChannel(channelId, prefixes);
         if (tag == null)
@@ -312,7 +369,10 @@ public static class LiveTvTagPatches
             return null;
         }
 
-        return LiveTvIsolation.WithTag(storedTags, tag, keepKids: true) ?? storedTags;
+        var tags = LiveTvIsolation.WithTag(storedTags, tag, keepKids: true) ?? storedTags ?? Array.Empty<string>();
+        // A YouTube channel is only its followers' from the moment it exists.
+        var youtube = LiveTvIsolation.YouTubeTagForPath(path);
+        return youtube == null || tags.Contains(youtube, StringComparer.OrdinalIgnoreCase) ? tags : tags.Append(youtube).ToArray();
     }
 
     private static void ChannelPrefix(ChannelInfo channelInfo)
@@ -336,7 +396,7 @@ public static class LiveTvTagPatches
             var stored = (_libraryManager.GetItemById(id) as LiveTvChannel)?.Tags;
             // Jellyfin keeps a channel's tags when the tuner gives none, and takes these when it
             // gives some (adding "Kids" itself later, as before).
-            channelInfo.Tags = ChannelTags(channelInfo.Id, stored, prefixes)!;
+            channelInfo.Tags = ChannelTags(channelInfo.Id, stored, prefixes, channelInfo.Path)!;
         }
         catch
         {
@@ -347,9 +407,11 @@ public static class LiveTvTagPatches
     public static string? ChannelTag(LiveTvChannel? channel)
         => channel?.Tags?.FirstOrDefault(t => t.StartsWith(LiveTvIsolation.TagPrefix, StringComparison.OrdinalIgnoreCase));
 
-    private static bool IsPlaceTag(string t) => t.StartsWith(LiveTvIsolation.NotLocalPrefix, StringComparison.OrdinalIgnoreCase);
+    /// <summary>A tag that hides a channel from some people, copied onto its programmes: a place's or a YouTube channel's.</summary>
+    private static bool IsPlaceTag(string t) => t.StartsWith(LiveTvIsolation.NotLocalPrefix, StringComparison.OrdinalIgnoreCase)
+        || t.StartsWith(LiveTvIsolation.YouTubePrefix, StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>A programme's tags with its channel's: the tuner tag and the places' tags (null when nothing changes).</summary>
+    /// <summary>A programme's tags with its channel's: the tuner tag, the places' and the YouTube channel's tags (null when nothing changes).</summary>
     public static string[]? ProgramTags(string[]? programTags, string tag, string[]? channelTags)
     {
         var current = programTags ?? Array.Empty<string>();

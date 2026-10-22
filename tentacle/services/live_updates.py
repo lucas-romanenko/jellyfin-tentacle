@@ -18,6 +18,8 @@ Topics:
   livetv         the Live TV lineup, pool or folded networks changed
   mychannels     this person's favourite channels changed
   groups         new provider groups or categories to look at (admins)
+  youtube        who follows which YouTube channel changed (My YouTube,
+                 Sources → YouTube)
   library        a title came into or left the library ({"event": ...})
 
 Jellyfin Web and the Tentacle TV app hear about requests, activity and

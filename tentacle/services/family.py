@@ -447,10 +447,14 @@ def invite(db: Session, admin: TentacleUser, name: str, kids_level: Optional[str
     # (services/person_access.py). A policy POST replaces the whole policy,
     # so it starts from Jellyfin's.
     from services.person_access import new_person_policy
+    from services.youtube import follows
     try:
         policy = _policy(jf, _Uid(uid))
         if policy:
-            jf.post(f"/Users/{dashed(uid)}/Policy", new_person_policy(policy, bool(kids_level), live_tv))
+            policy = new_person_policy(policy, bool(kids_level), live_tv)
+            # Nobody's YouTube channels: they add their own (services/youtube/follows.py).
+            policy["BlockedTags"] = follows.with_blocked(policy.get("BlockedTags"), follows.blocked_for(db, uid))
+            jf.post(f"/Users/{dashed(uid)}/Policy", policy)
     except (requests.RequestException, FamilyError) as e:
         logger.warning(f"[Family] {name}'s starting settings weren't set in Jellyfin: {e}")
     row = db.query(TentacleUser).filter(TentacleUser.jellyfin_user_id == uid).first()

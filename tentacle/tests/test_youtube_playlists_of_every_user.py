@@ -66,6 +66,9 @@ class ChannelPlaylistsOfEveryUser(_Db):
             self.db.commit()
             self.users[jid] = u.id
         self.ch = self.channel(title="Chan", slug="chan", keep_count=5)
+        from services.youtube import follows
+        for jid in (ADMIN, OTHER, KID):
+            follows.follow(self.db, self.ch, jid)
         for k in range(5):
             self.db.add(YouTubeVideo(channel_fk=self.ch.id, video_id=f"vid{k:08d}", title=f"V{k}"))
         self.db.commit()

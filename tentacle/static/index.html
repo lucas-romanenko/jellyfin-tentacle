@@ -1465,6 +1465,27 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
   .mych-pick { justify-content: center; padding: 9px 8px; }
 }
 
+/* ── Sources → YouTube: who sees a channel (pages.js) ── */
+.yt-followers { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; }
+.yt-follower { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 8px; background: var(--bg2); border: 1px solid var(--border2); border-radius: 3px; }
+.yt-follower button { background: none; border: none; color: var(--text3); cursor: pointer; font-size: 11px; padding: 0 3px; }
+.yt-follower button:hover { color: var(--red); }
+.yt-follow-add { width: auto; padding: 2px 6px; font-size: 12px; height: auto; }
+
+/* ── My YouTube (myyoutube.js) ── */
+.myt-add { display: flex; gap: 8px; margin-top: 12px; }
+.myt-add .form-input { flex: 1; min-width: 0; }
+.myt-live { display: block; margin-top: 10px; font-size: 13px; color: var(--text2); }
+.myt-dim { color: var(--text3); }
+.myt-list { max-height: none; min-height: 0; }
+.myt-row { padding-top: 10px; padding-bottom: 10px; }
+.myt-avatar { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
+.myt-avatar.none { background: var(--bg3); }
+.myt-row .mych-name { font-size: 14px; }
+@media (max-width: 760px) {
+  .myt-row .btn { padding: 6px 10px; }
+}
+
 /* ── Sources → Live TV → Channels: the pool (mychannels.js) ── */
 .pool-checker { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; font-size: 12px; color: var(--text2); padding: 10px 14px; margin-bottom: 12px;
   background: var(--bg1); border: 1px solid var(--border); border-radius: 3px; }
@@ -2302,6 +2323,10 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <button class="nav-item" data-page="mychannels" id="nav-mychannels" style="display:none">
           <span class="icon">▤</span> My Channels
         </button>
+        <!-- Everyone's own YouTube channels (myyoutube.js) -->
+        <button class="nav-item" data-page="myyoutube">
+          <span class="icon">▶</span> My YouTube
+        </button>
         <!-- A dialog, not a page: type the code a TV shows (family.js) -->
         <button class="nav-item" id="nav-tvcode" onclick="famShowTvCode(null)">
           <span class="icon">▭</span> Sign in a TV
@@ -2714,6 +2739,37 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         </div>
       </div>
 
+      <!-- ── MY YOUTUBE: everyone's own YouTube channels, theirs alone in Jellyfin (myyoutube.js) ── -->
+      <div class="page" id="page-myyoutube">
+        <div class="card mych-head">
+          <div class="mych-head-text">
+            <div class="mych-title">My YouTube <span class="mych-total" id="myt-total"></span></div>
+            <p class="mych-sub" id="myt-sub">Paste a link to add a channel. Its newest videos come into your library and you can put it on your home screen. Nobody else sees your channels.</p>
+          </div>
+          <div class="mych-status" id="myt-status" aria-live="polite"></div>
+        </div>
+
+        <div class="card" id="myt-add-card" style="display:none;margin-bottom:16px">
+          <div class="mych-step-title">Add a channel</div>
+          <form class="myt-add" onsubmit="mytAdd(event)">
+            <input class="form-input" id="myt-url" type="text" placeholder="https://www.youtube.com/@channel" aria-label="YouTube channel or playlist link" autocomplete="off" spellcheck="false" inputmode="url">
+            <button class="btn btn-primary" id="myt-add-btn" type="submit">Add</button>
+          </form>
+          <label class="myt-live"><input type="checkbox" id="myt-live"> Also a Live TV channel <span class="myt-dim">&mdash; when it streams live, it&rsquo;s in your guide</span></label>
+          <p class="mych-hint" style="margin-top:8px">A channel or a playlist. Nothing is downloaded: videos play straight from YouTube.</p>
+        </div>
+
+        <div class="card mych-panel">
+          <div class="mych-panel-head">
+            <div>
+              <div class="card-title">Your channels <span class="mych-count" id="myt-count"></span></div>
+              <div class="mych-hint">Their newest videos are in your library. Put one on your home screen under <strong>My Home Screen</strong>.</div>
+            </div>
+          </div>
+          <div class="mych-list myt-list" id="myt-list"><div class="loading-state"><div class="spinner"></div></div></div>
+        </div>
+      </div>
+
       <!-- ── PEOPLE (admins): the household's accounts (family.js) ── -->
       <div class="page" id="page-people">
         <div class="card fam-head">
@@ -3037,6 +3093,10 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                 <label class="form-label">Keep newest</label>
                 <input type="number" id="yt-keep" class="form-input" value="10" min="1" max="100">
               </div>
+              <div style="width:170px">
+                <label class="form-label" for="yt-for">For</label>
+                <select id="yt-for" class="form-input"></select>
+              </div>
               <button class="btn btn-primary" onclick="ytAddChannel()">Add</button>
             </div>
             <div style="margin-top:12px;font-size:13px;color:var(--text2);display:flex;gap:24px;flex-wrap:wrap">
@@ -3044,8 +3104,10 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <label><input type="checkbox" id="yt-live"> Live TV channel <span style="color:var(--text3)">&mdash; its live and upcoming streams appear in Jellyfin&rsquo;s Live TV</span></label>
             </div>
             <p style="font-size:12px;color:var(--text3);margin:12px 0 0">
-              That&rsquo;s it. The channel&rsquo;s newest videos are added to your library and its playlist
+              That&rsquo;s it. The channel&rsquo;s newest videos are added to their library and its playlist
               is created; from then on it is checked every hour and always holds the newest ones.
+              Only the people it is for see it (each person adds their own under <strong>My YouTube</strong>;
+              a kid&rsquo;s are added here).
               Put it on your home screen from the <strong>Home Screen</strong> tab. Nothing is downloaded &mdash;
               videos stream from YouTube when played.
             </p>
@@ -4701,11 +4763,12 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 <script src="/static/js/sources.js?v=45"></script>
 <script src="/static/js/pages.js?v=45"></script>
 <script src="/static/js/music.js?v=45"></script>
-<script src="/static/js/mychannels.js?v=46"></script>
+<script src="/static/js/mychannels.js?v=48"></script>
 <script src="/static/js/newgroups.js?v=45"></script>
 <script src="/static/js/family.js?v=47"></script>
-<script src="/static/js/welcome.js?v=47"></script>
-<script src="/static/js/live.js?v=1"></script>
+<script src="/static/js/welcome.js?v=48"></script>
+<script src="/static/js/live.js?v=2"></script>
+<script src="/static/js/myyoutube.js?v=48"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {
