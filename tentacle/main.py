@@ -643,6 +643,7 @@ def _youtube_follows() -> None:
     db = SessionLocal()
     try:
         follows.apply_everyone(db)
+        follows.drop_old_playlists(db)
     except Exception as e:
         logger.warning(f"[YouTube] Could not update who sees which channels: {e}")
     finally:
