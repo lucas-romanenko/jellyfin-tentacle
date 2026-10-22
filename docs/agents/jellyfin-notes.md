@@ -58,9 +58,11 @@ The code wins where they differ.
   keeps an open-access one, and deletes the rest from the library with
   `DeleteFileLocation = false`: the folder and its `playlist.xml` stay in
   `data/playlists/`, and the next scan of the playlists folder resolves them
-  again, owned by the deleted user (nobody sees them, but their names stay
-  taken, so new playlists get "1" suffixes). `DELETE /Items/{id}` removes the
-  folder too. Tentacle deletes them (server.md "Gone people").
+  again. Seen on 10.11.8 after a refresh of the playlists folder: it rewrote
+  their `playlist.xml` with no owner and no entries, open access, so every
+  user saw them (empty "Drama", "Ann's Downloads1"). `DELETE /Items/{id}`
+  removes the folder too. The plugin removes the leftover folders on
+  `UserDeletedEventArgs` (plugin.md).
 - **Playlist items**: `POST /Playlists/{id}/Items?EntryIds=…` hits 414 on
   big lists: send `{"Ids": [...]}` as the body with `?UserId=`, in chunks of
   50; removals as EntryIds in chunks of 50.
