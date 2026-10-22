@@ -725,6 +725,22 @@ User docs: `docs/features/live-tv.md`.
   event (None / "no_event" / {title,start,stop,timed}), variants,
   variant_name, channel_id, check. Event channels without a guide get one
   programme from their name in `/api/live/xmltv.xml`.
+- **Fast start** (jellyfin-notes.md "How long a live channel takes to
+  start"): the lineup tuner never has Jellyfin's "Read at native frame
+  rate" (not carried from an old tuner; switched off once on a tuner that
+  had it, `livetv_tuner_native_rate_off`, then the admin's call); a raw
+  stream's first 2 MB go out as they come (`_FAST_START_BYTES`), then in
+  ~128 KB pieces; the plugin skips Jellyfin's 3 s pre-probe sleep.
+- **Nothing on right now** (`services/livetv_slate.py`): a viewer (not a
+  recording) of an event channel whose event starts more than 30 min from
+  now (`livetv_events`), or of a "no event" slot, gets at once a 30 s
+  MPEG-TS picture "Nothing on right now / <event> / starts Friday at
+  8:00 PM", made by ffmpeg (cached per text) and sent without a provider
+  connection or a slot; so does a viewer whose open meets the provider's
+  placeholder (black.ts), or whose raw stream meets it on a re-dial before
+  anything was delivered (`nothing_on`). Header `X-Tentacle-Reason: nothing
+  on right now`. Recordings keep the 503 (Jellyfin retries). Without ffmpeg
+  the open goes on as before.
 - Stream format: Xtream channels open as continuous MPEG-TS (`.ts`) by
   default, HLS only when the account's `allowed_output_formats` lacks ts or
   the channel's ts open is refused outright (then remembered per channel

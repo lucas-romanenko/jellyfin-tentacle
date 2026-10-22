@@ -135,6 +135,7 @@ public class LiveTvIsolation : IHostedService
         _libraryManager.ItemAdded += OnItemChanged;
         _libraryManager.ItemUpdated += OnItemChanged;
         LiveTvTagPatches.Apply(_libraryManager, _config, _logger);
+        LiveTvProbePatch.Apply(_libraryManager, _config, _logger);
         return Task.CompletedTask;
     }
 

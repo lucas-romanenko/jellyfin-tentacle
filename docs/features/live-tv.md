@@ -176,6 +176,8 @@ When a provider drops a raw MPEG-TS stream, Tentacle reconnects. Many providers 
 
 A recording also waits out a provider refusing it (HTTP 401/403, for example a short IP block or flood protection) for up to three minutes before it ends; a viewer's stream still ends at once.
 
+Channels start in about a second or two. An event or pay-per-view channel with nothing on shows **Nothing on right now** for half a minute, with the event and when it starts if Tentacle knows, instead of a long wait and an error; recordings of it are retried as before.
+
 When the provider interrupts a recording, or serves a placeholder (a black "channel unavailable" video) instead of the channel, Tentacle notes it under **Health → Recent Activity**: a recording that may be missing content shows as **Recording damaged**, a placeholder as **Channel placeholder**. The guide sync, stream checks and nightly sweeps report there too, and anything that failed is shown in red.
 
 ## Tuner Endpoints
