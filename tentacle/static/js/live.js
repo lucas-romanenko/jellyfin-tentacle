@@ -176,6 +176,13 @@ live.handlers.livetv = () => {
   if (state.currentPage === 'sources' && state.sourcesTab === 'live' && !liveBusy('page-sources')) _run('loadLiveTV');
 };
 
+// Someone's YouTube channels changed (services/youtube/follows.py).
+live.handlers.youtube = () => {
+  if (state.currentPage === 'myyoutube' && !liveOwnChange() && !liveBusy('page-myyoutube')) _run('loadMyYouTube');
+  if (_isAdmin() && state.currentPage === 'sources' && state.sourcesTab === 'youtube' && !liveOwnChange()
+      && !liveBusy('page-sources')) _run('loadYouTubeChannels');
+};
+
 live.handlers.groups = () => {
   if (!_isAdmin()) return;
   _run('nfpLoadCounts');

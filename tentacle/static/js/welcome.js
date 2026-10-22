@@ -36,6 +36,7 @@ async function welcomeCheck() {
   if (!d.kids) welcome.steps.push('requests');
   welcome.steps.push('watch');
   welcome.at = 0;
+  mych.onChange = () => { if (welcome.steps[welcome.at] === 'channels') _welcomePicks(); };
   _welcomeShow();
   showModal('modal-welcome');
 }
@@ -127,11 +128,13 @@ function _welcomePicks() {
       + `<span class="star" aria-hidden="true">${c.favourite ? '★' : '☆'}</span> ${escHtml(c.name)}</button>`).join('')
       || '<span class="fam-hint">No channels to pick from yet.</span>';
   }
+  // The pick lights up at the tap; mychannels.js saves it in the background
+  // and redraws (through mych.onChange) when it's saved or put back.
   el.querySelectorAll('button[data-type]').forEach(b => {
-    b.onclick = async () => { await mychPick(b.dataset.type); _welcomePicks(); };
+    b.onclick = () => mychPick(b.dataset.type);
   });
   el.querySelectorAll('button[data-key]').forEach(b => {
-    b.onclick = async () => { await _mychStarToggle(b.dataset.key); _welcomePicks(); };
+    b.onclick = () => _mychStarToggle(b.dataset.key);
   });
 }
 

@@ -17,7 +17,21 @@ const mych = {
   phoneTab: 'list',
   busy: 0,           // star changes on their way to Jellyfin
   allLimit: 150,     // rows of "All channels" drawn before "Show all"
+  queue: Promise.resolve(),   // star changes are sent one after another, in the order tapped
+  lastTap: {},       // pick or channel -> when it was last tapped (a double tap is one tap)
+  onChange: null,    // a redraw besides this page's (the welcome's picks)
 };
+
+// A second tap on the same pick or star this soon is the same tap twice
+// (a double click, a bouncy touch): it would undo the first.
+const MYCH_DOUBLE_TAP_MS = 400;
+
+function _mychTapOk(id) {
+  const now = performance.now();
+  const last = mych.lastTap[id] || 0;
+  mych.lastTap[id] = now;
+  return now - last >= MYCH_DOUBLE_TAP_MS;
+}
 
 const MYCH_PAGE = 150;
 // Quick picks come first in this order, then any other type the channels have.
@@ -206,18 +220,21 @@ function _mychPickChange(type) {
   return { favourite: true, keys: pick.channels.filter(c => !c.favourite).map(c => c.key) };
 }
 
-async function mychPick(type) {
+// The stars change on the page at once; Jellyfin is told in the background
+// (a quick pick is many channels, seconds of work there).
+function mychPick(type) {
+  if (!_mychTapOk('pick:' + type)) return Promise.resolve();
   const change = _mychPickChange(type);
-  if (!change) return;
+  if (!change) return Promise.resolve();
   const label = MYCH_TYPE_LABEL[type] || type;
   const n = change.keys.length;
-  if (!n) return;
+  if (!n) return Promise.resolve();
   const by = _mychByKey();
   for (const k of change.keys) if (by[k]) by[k].favourite = change.favourite;
   _mychChanged();
   const ok = change.favourite ? `Starred ${n} ${label} channel${n === 1 ? '' : 's'}. More under All channels.`
     : `Unstarred ${n} ${label} channel${n === 1 ? '' : 's'}`;
-  await _mychSend('/api/my/channels/favourites', { keys: change.keys, favourite: change.favourite }, () => {
+  return _mychSend('/api/my/channels/favourites', { keys: change.keys, favourite: change.favourite }, () => {
     for (const k of change.keys) if (by[k]) by[k].favourite = !change.favourite;
   }, ok);
 }
@@ -341,10 +358,13 @@ function mychPhoneTab(tab) {
 }
 
 function _mychChanged() {
-  _mychCounts();
-  mychRenderPicks();
-  mychRenderFavs();
-  mychRenderAll();
+  if (document.getElementById('mych-total')) {
+    _mychCounts();
+    mychRenderPicks();
+    mychRenderFavs();
+    mychRenderAll();
+  }
+  if (mych.onChange) mych.onChange();
 }
 
 function _mychStatus(kind, text) {
@@ -354,29 +374,35 @@ function _mychStatus(kind, text) {
   el.textContent = text || '';
 }
 
-// Send a star change to Jellyfin; undo() puts the stars back if it fails.
-async function _mychSend(path, body, undo, ok) {
+// Send a star change to Jellyfin, after the ones before it (two in flight
+// at once could land the wrong way round); undo() puts the stars back if
+// it fails, with a short message.
+function _mychSend(path, body, undo, ok) {
   mych.busy++;
   _mychStatus('busy', 'Saving…');
-  try {
-    const d = await api(path, { method: 'PUT', body });
-    mych.busy--;
-    // A quick pick answers with the whole page: take it once nothing else is on its way.
-    if (d && d.channels && !mych.busy) { mych.data = d; _mychChanged(); }
-    if (!mych.busy) _mychStatus('ok', 'Saved. Every Jellyfin app shows your favourites.');
-    if (ok) toast(ok, 'success', 2500);
-  } catch (e) {
-    mych.busy--;
-    undo();
-    _mychChanged();
-    _mychStatus('', '');
-    if (!e.sessionExpired) toast(e.message, 'warning', 5000);
-  }
+  const run = async () => {
+    try {
+      const d = await api(path, { method: 'PUT', body });
+      mych.busy--;
+      // A quick pick answers with the whole page: take it once nothing else is on its way.
+      if (d && d.channels && !mych.busy) { mych.data = d; _mychChanged(); }
+      if (!mych.busy) _mychStatus('ok', 'Saved. Every Jellyfin app shows your favourites.');
+      if (ok) toast(ok, 'success', 2500);
+    } catch (e) {
+      mych.busy--;
+      undo();
+      _mychChanged();
+      _mychStatus('', '');
+      if (!e.sessionExpired) toast(`Not saved: ${e.message}`, 'warning', 5000);
+    }
+  };
+  mych.queue = mych.queue.then(run, run);
+  return mych.queue;
 }
 
 function _mychStarToggle(key) {
   const c = _mychByKey()[key];
-  if (!c) return;
+  if (!c || !_mychTapOk('star:' + key)) return Promise.resolve();
   const want = !c.favourite;
   c.favourite = want;
   _mychChanged();

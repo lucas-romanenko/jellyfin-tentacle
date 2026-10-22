@@ -364,7 +364,7 @@ def retitle_in_jellyfin(db: Session, channel: YouTubeChannel, video_ids) -> int:
         YouTubeVideo.video_id.in_(list(video_ids))).all()}
     renamed = 0
     try:
-        jf = JellyfinService(url, key, get_setting(db, "jellyfin_user_id", ""))
+        jf = JellyfinService(url, key, "")   # without a user: not hidden by anyone's follows
         for item in jf.query_items(include_types=["Movie"], tags=[f"yt:{channel.slug}"]) or []:
             ids = {k.lower(): v for k, v in (item.get("ProviderIds") or {}).items()}
             title = titles.get(ids.get("youtube"))
@@ -582,7 +582,9 @@ def publish_to_jellyfin(db: Session, channels: list, on_stage=None) -> None:
     if not channels:
         return
 
-    jf = JellyfinService(url, key, get_setting(db, "jellyfin_user_id", ""))
+    # Without a user: the admin Tentacle reads Jellyfin as may not follow these
+    # channels, and so not see their videos (services/youtube/follows.py).
+    jf = JellyfinService(url, key, "")
     library_id, jellyfin_root = youtube_library(jf)
 
     # Jellyfin probes every .strm it imports, and each probe reaches Tentacle's
@@ -635,6 +637,9 @@ def publish_to_jellyfin(db: Session, channels: list, on_stage=None) -> None:
 
     if on_stage:
         on_stage("filling the playlists")
+    # Only their followers find the channels' studios in search (follows.py).
+    from services.youtube import follows
+    follows.tag_studios(db)
     names = [ch.title for ch in channels]
     try:
         from services.smartlists import (
@@ -781,11 +786,16 @@ def reconcile_playlists(db: Session, report: bool = False):
     key = get_setting(db, "jellyfin_api_key", "")
     if not (url and key):
         return (0, False) if report else 0
-    jf = JellyfinService(url, key, get_setting(db, "jellyfin_user_id", ""))
-    want = {ch.title: _library_count(db, ch)
-            for ch in db.query(YouTubeChannel).filter(YouTubeChannel.enabled == True).all()}  # noqa: E712
+    from services.youtube import follows
+    # Without a user: the admin Tentacle reads Jellyfin as may not follow a
+    # channel, and so not see its videos (services/youtube/follows.py).
+    jf = JellyfinService(url, key, "")
+    counts = {ch.id: (ch.title, _library_count(db, ch))
+              for ch in db.query(YouTubeChannel).filter(YouTubeChannel.enabled == True).all()}  # noqa: E712
     fixed, still_behind = 0, False
     for user in db.query(TentacleUser).all():
+        # Their own channels only: nobody else's has a playlist of theirs.
+        want = dict(counts[i] for i in follows.followed_ids(db, user.jellyfin_user_id) if i in counts)
         have_playlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
         # A user with no playlist for an enabled channel at all — created after
         # the channel was published, most likely — gets one made first.

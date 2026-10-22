@@ -1280,8 +1280,15 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
     from models.database import YouTubeChannel, YouTubeVideo
     from services.youtube.indexer import is_library_status
 
+    from services.youtube.follows import followed_ids
+    theirs = None
+    if user_id is not None:
+        owner = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
+        theirs = followed_ids(db, owner.jellyfin_user_id) if owner else set()
     for ch in db.query(YouTubeChannel).filter(
             YouTubeChannel.enabled == True).order_by(YouTubeChannel.title).all():  # noqa: E712
+        if theirs is not None and ch.id not in theirs:
+            continue   # someone else's channel (services/youtube/follows.py)
         count = db.query(func.count(YouTubeVideo.id)).filter(
             YouTubeVideo.channel_fk == ch.id,
             YouTubeVideo.removed_at.is_(None),
@@ -1292,7 +1299,7 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
             "name": ch.title,
             "tag": f"yt:{ch.slug}",
             "category": "youtube",
-            "origin": "YouTube channel · always on — remove it from the YouTube page",
+            "origin": "YouTube channel · always on — remove it on My YouTube",
             "media_type": ["Movie"],
             "item_count": count,
             "youtube_channel_id": ch.id,
@@ -1336,7 +1343,7 @@ def toggle_auto_playlist(req: AutoPlaylistToggleRequest, db: Session = Depends(g
     if req.key.startswith("youtube:"):
         return {"success": False,
                 "message": "YouTube channel playlists are always on. To remove one, "
-                           "remove the channel from the YouTube page."}
+                           "remove the channel on My YouTube."}
     # List playlists use ListSubscription.playlist_enabled
     elif req.key.startswith("list:"):
         list_id = int(req.key.replace("list:", ""))

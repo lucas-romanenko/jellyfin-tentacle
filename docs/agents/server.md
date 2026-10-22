@@ -1009,6 +1009,37 @@ User docs: `docs/features/live-tv.md`.
   everything and served 95% of the known titles (`may_prune`,
   `end_probation`, setting `provider_address_probation_<pid>`).
 
+## YouTube per person (`services/youtube/follows.py`, `routers/my_youtube.py`, dashboard `static/js/myyoutube.js`)
+
+- `youtube_follows` (channel_fk, jellyfin_user_id without dashes, added_by =
+  the admin who added it for them, else None). Everyone adds their own on
+  My YouTube (paste a link; a channel someone already has is followed, never
+  fetched twice); admins add for anyone on Sources → YouTube ("For", and
+  "Seen by" chips per channel; `PUT /api/youtube/channels/<id>/followers`).
+  Kids can't change theirs. The last follower leaving (also a person
+  forgotten by `gone_people`) = `routers/youtube.remove_channel`, the full
+  removal with its files. "Remove for everyone" is the old DELETE.
+- Who sees what is BlockedTags: each channel's videos carry `yt:<slug>`
+  (NFO since the start), its Live TV channel and programmes
+  `tentacle-youtube-<id>` (plugin at creation from the stream address,
+  `livetv_tuners.tag_lineup` after each guide refresh), its Studio item
+  `yt:<slug>` (`tag_studios`: search lists studios). Everyone blocks both
+  tags of every channel they don't follow, always sorted last after their
+  own and Live TV's (`follows.with_blocked` and `livetv_tuners.blocked_tags`
+  write the same list, under `follows.policy_lock`). Set at once on a
+  follow change (`apply_person`), for everyone Jellyfin has hourly and 30 s
+  after start (`main._youtube_follows`), at an invite, and by the plugin for
+  accounts made in Jellyfin. Tentacle reads YouTube items without a user
+  (an admin who doesn't follow a channel would hide it from Tentacle).
+- Playlists, the Playlists page, the refill and My Channels list only a
+  person's own channels; a YouTube live channel a kid follows counts as a
+  kids channel (`_kids_keys`). A channel added for a kid with no rating is
+  rated G (`rate_for_kids`: NFOs and the Jellyfin items), since kids
+  profiles hide unrated films.
+- Migration (`database._migrate_youtube_follows`, once, setting
+  `youtube_follows_migrated`): every channel there was becomes the admin's
+  only (the owner admin, else the first admin; waits for one).
+
 ## Music (Lidarr + MusicBrainz; off by default)
 
 "I like this song/album/artist" → the original studio album through Lidarr.

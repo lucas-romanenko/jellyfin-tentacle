@@ -345,6 +345,11 @@ provider names, URLs or logins).
 | POST | `/api/youtube/channels` | admin | youtube.py:add_channel |
 | DELETE | `/api/youtube/channels/{channel_id}` | admin | youtube.py:delete_channel |
 | POST | `/api/youtube/channels/{channel_id}/live` | admin | youtube.py:toggle_live |
+| PUT | `/api/youtube/channels/{channel_id}/followers` | admin | youtube.py:set_followers |
+| GET | `/api/youtube/people` | admin | youtube.py:youtube_people |
+| GET | `/api/my/youtube` | user | my_youtube.py:my_youtube |
+| POST | `/api/my/youtube` | user (not kids) | my_youtube.py:add_my_channel |
+| DELETE | `/api/my/youtube/{channel_id}` | user (not kids) | my_youtube.py:remove_my_channel |
 | GET | `/api/youtube/diagnose` | admin | youtube.py:diagnose |
 | GET | `/api/youtube/live/{channel_id}/master.m3u8` | none | youtube.py:live_master |
 | GET | `/api/youtube/live/{channel_id}/stream.ts` | none | youtube.py:live_stream |

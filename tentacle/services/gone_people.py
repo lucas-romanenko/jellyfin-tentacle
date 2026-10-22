@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from models.database import (
     AutoPlaylistToggle, DownloadRequest, HomeRowOrder, ListSubscription, LiveUserChannel,
-    LiveUserLineup, MediaRequest, MusicImport, Notification, TagRule, TentacleUser,
+    LiveUserLineup, MediaRequest, MusicImport, Notification, TagRule, TentacleUser, YouTubeFollow,
     get_setting, log_activity,
 )
 from services import livetv_lineups as L
@@ -61,6 +61,22 @@ def forget_gone(db: Session, jf_users: list) -> list:
     return names
 
 
+def _remove_unfollowed(db: Session, channel_ids: list) -> None:
+    """Their YouTube channels nobody else follows go, as when the last
+    follower leaves (routers/youtube.remove_channel)."""
+    from models.database import YouTubeChannel
+    from routers.youtube import remove_channel
+    from services.youtube.follows import follower_ids
+    for cid in channel_ids:
+        channel = db.query(YouTubeChannel).filter(YouTubeChannel.id == cid).first()
+        if channel and not follower_ids(db, cid):
+            try:
+                remove_channel(db, channel)
+            except Exception as e:
+                db.rollback()
+                logger.warning(f"[People] Could not remove YouTube channel {cid} nobody follows now: {e}")
+
+
 def forget(db: Session, row: TentacleUser) -> str:
     """Remove one person's Tentacle data: rows, files, caches, the defaults
     that named them."""
@@ -74,8 +90,11 @@ def forget(db: Session, row: TentacleUser) -> str:
         db.query(model).filter(model.user_id == pk).delete(synchronize_session=False)
     for model in (LiveUserLineup, LiveUserChannel):
         db.query(model).filter(model.jellyfin_user_id == uid).delete(synchronize_session=False)
+    left = [f.channel_fk for f in db.query(YouTubeFollow).filter(YouTubeFollow.jellyfin_user_id == uid).all()]
+    db.query(YouTubeFollow).filter(YouTubeFollow.jellyfin_user_id == uid).delete(synchronize_session=False)
     db.delete(row)
     db.commit()
+    _remove_unfollowed(db, left)
 
     d = F.defaults(db)
     if pk in (d["home_from"], d["channels_from"]):

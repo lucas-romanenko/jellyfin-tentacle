@@ -61,8 +61,15 @@ def _build_playlists_for_new_user(user_id: int) -> None:
             _notify_jellyfin_plugin, bump_playlist_version, refresh_smartlist_playlists,
             sync_smartlists, write_home_config,
         )
+        from models.database import TentacleUser
+        from services.youtube import follows
         db = SessionLocal()
         try:
+            # Someone made in Jellyfin sees nobody's YouTube channels (the
+            # plugin blocks them too, at once); they add their own.
+            row = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
+            if row:
+                follows.apply_person(db, row.jellyfin_user_id)
             sync_smartlists(db, user_id=user_id)
             refresh_smartlist_playlists(db, user_id=user_id)
             write_home_config(db, user_id=user_id)
