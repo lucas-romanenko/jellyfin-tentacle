@@ -65,7 +65,14 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   descending, Limit 1; Favorites: their channel ids). One `LiveTv/Channels`
   request for the list; rows are virtualized; programmes per day for the
   visible rows, 100 channels per `POST LiveTv/Programs`. Programme cells use
-  `overflow: clip`, not hidden (hidden stops the sticky title).
+  `overflow: clip`, not hidden (hidden stops the sticky title); programmes
+  that overlap anyway are drawn side by side (a later one starts where the
+  last ended). Keeps your place: leaving the guide records the view, day,
+  top row (by channel id), the time at the left edge (or "now") and the
+  channel played (`keepPlace`); coming back draws the list it had at once
+  there (`restorePlace`), then re-reads the channels. Channel up/down in the
+  player: the guide asks `Sessions?DeviceId=` (this browser) every 3 s on
+  the player page, so it comes back on the channel you ended on.
   Live updates: every Jellyfin web tab listens on `ApiClient._webSocket`
   (re-attached after a reconnect). UserDataChanged (a favourite changed
   anywhere, Tentacle included: it sets Jellyfin's favourite) flips the star

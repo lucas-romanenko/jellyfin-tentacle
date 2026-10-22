@@ -22,6 +22,12 @@
 //     on its websocket); a lineup change (LibraryChanged, Jellyfin's or the one
 //     Tentacle sends after setting Live TV up) re-reads the channel list. Only
 //     the rows that changed are redrawn; the scroll position stays.
+//   - Keeps your place: leaving the guide (a channel, a programme's page)
+//     and coming back shows it as it was: the view, the day, the rows and
+//     the time you had scrolled to (the current time again if you were at
+//     now), with the channel you watched highlighted and in view. Channel
+//     up/down in the player counts: the guide comes back on the channel
+//     you ended on (Jellyfin's session for this browser says which).
 (function () {
   'use strict';
 
@@ -54,6 +60,8 @@
     reload: { timer: null, busy: false, again: false, at: 0 },
     scrollRaf: 0,
     m: null,                // metrics for the current screen size
+    place: null,            // where the guide was when it was left (see keepPlace)
+    lastId: '',             // the channel last watched from the guide (highlighted)
   };
 
   // ── Helpers ────────────────────────────────────────────────────────
@@ -151,6 +159,7 @@
 
   function deactivate() {
     if (!G.active) return;
+    keepPlace();
     G.active = false;
     document.body.classList.remove('tentacle-livetv-active');
     if (G.container) G.container.style.display = 'none';
@@ -220,8 +229,18 @@
     G.m = metrics();
     renderShell();
     loadNotice().then(showNotice);
-    loadSavedView();
-    loadChannels().then(function () { if (G.active) applyView(true); });
+    var place = G.place && G.place.uid === uid && G.channels && !G.loadError ? G.place : null;
+    G.place = null;
+    if (place) {
+      // Back from a channel: the list we had draws at once, where it was,
+      // then a re-read brings in what changed meanwhile (rows redrawn in place).
+      G.view = place.view;
+      applyView(place);
+      scheduleReload(0);
+    } else {
+      loadSavedView();
+      loadChannels().then(function () { if (G.active) applyView(true); });
+    }
     if (G.tick) clearInterval(G.tick);
     G.tick = setInterval(onTick, 30000);
     G.reload.at = Date.now();
@@ -357,17 +376,24 @@
     }) : base;
   }
 
+  // `scrollToNow`: true = the current time, top row; false = keep the
+  // scroll; a place (keepPlace) = back where the guide was left.
   function applyView(scrollToNow) {
     computeRows();
     renderToggle();
     loadMaxEnd(G.view).then(function (maxEnd) {
       if (!G.active) return;
-      var before = G.days.length && G.days[G.dayIndex] ? G.days[G.dayIndex].start : 0;
+      var place = scrollToNow && typeof scrollToNow === 'object' ? scrollToNow : null;
+      var before = place ? place.day : (G.days.length && G.days[G.dayIndex] ? G.days[G.dayIndex].start : 0);
       G.days = computeDays(maxEnd);
       G.dayIndex = 0;
-      for (var i = 0; i < G.days.length; i++) if (G.days[i].start === before) G.dayIndex = i;
+      var found = false;
+      for (var i = 0; i < G.days.length; i++) if (G.days[i].start === before) { G.dayIndex = i; found = true; }
       renderDays();
-      renderGrid(scrollToNow);
+      // the day it was on has gone (past midnight): today, now
+      if (place && !found) place = null;
+      renderGrid(place ? false : !!scrollToNow);
+      if (place) restorePlace(place);
     });
   }
 
@@ -523,6 +549,68 @@
     }
   }
 
+  // ── Keeping the place ─────────────────────────────────────────────
+
+  // Where the guide is: the view and day, the top row (by channel, so a
+  // row that came or went meanwhile doesn't shift it) and the time at the
+  // left edge, or "now" when it was at the current time.
+  function keepPlace() {
+    if (!G.channels || G.loadError || !G.days.length) return;
+    var sc = G.container && G.container.querySelector('.tg-scroller');
+    var m = G.m || metrics(), day = G.days[G.dayIndex];
+    var place = { uid: G.userId, view: G.view, day: day.start, top: 0, topId: '', topOff: 0,
+      leftT: day.start, atNow: true, channelId: G.lastId };
+    if (sc) {
+      var i = Math.floor(sc.scrollTop / m.rowH);
+      place.top = sc.scrollTop;
+      place.topId = G.rows[i] ? G.rows[i].id : '';
+      place.topOff = sc.scrollTop - i * m.rowH;
+      place.leftT = day.start + sc.scrollLeft / m.ppm * MIN;
+      var now = Date.now();
+      place.atNow = now >= day.start && now < day.end &&
+        Math.abs(sc.scrollLeft - Math.max(0, x(now) - 30 * m.ppm)) <= 15 * m.ppm;
+    }
+    G.place = place;
+  }
+
+  function restorePlace(place) {
+    var sc = G.container && G.container.querySelector('.tg-scroller');
+    if (!sc) return;
+    var m = G.m, day = G.days[G.dayIndex], now = Date.now();
+    var at = G.rows.map(function (c) { return c.id; });
+    var i = place.topId ? at.indexOf(place.topId) : -1;
+    sc.scrollTop = i >= 0 ? i * m.rowH + place.topOff : place.top;
+    sc.scrollLeft = place.atNow && now >= day.start && now < day.end
+      ? Math.max(0, x(now) - 30 * m.ppm) : Math.round(x(place.leftT));
+    // the channel watched (or the one channel up/down ended on) in view
+    var w = place.channelId ? at.indexOf(place.channelId) : -1;
+    if (w >= 0) {
+      var view = sc.clientHeight - m.headH;
+      if (w * m.rowH < sc.scrollTop || (w + 1) * m.rowH > sc.scrollTop + view) {
+        sc.scrollTop = Math.max(0, w * m.rowH - Math.round((view - m.rowH) / 2));
+      }
+    }
+    drawRows();
+  }
+
+  // In the player: which channel plays now (channel up/down changes it).
+  // Jellyfin Web keeps its player to itself; the server's session for this
+  // browser knows. Asked every few seconds, only after the guide started it.
+  var playingAsked = 0;
+  function trackPlaying() {
+    var a = api();
+    if (!G.place || !G.place.channelId || !a || typeof a.deviceId !== 'function' || Date.now() - playingAsked < 3000) return;
+    playingAsked = Date.now();
+    apiGet('Sessions', { DeviceId: a.deviceId() }).then(function (list) {
+      var item = null;
+      (list || []).forEach(function (s) { if (s.NowPlayingItem) item = s.NowPlayingItem; });
+      if (!item || !G.place) return;
+      var id = normId(item.Id);
+      var c = (G.channels || []).filter(function (x) { return normId(x.id) === id; })[0];
+      if (c) { G.place.channelId = c.id; G.lastId = c.id; }
+    }).catch(function () { });
+  }
+
   function onScroll() {
     if (G.scrollRaf) return;
     G.scrollRaf = requestAnimationFrame(function () { G.scrollRaf = 0; drawRows(); });
@@ -545,7 +633,7 @@
       var el = G.mounted[c.id];
       if (!el) {
         el = document.createElement('div');
-        el.className = 'tg-row';
+        el.className = 'tg-row' + (c.id === G.lastId ? ' tg-last' : '');
         el.dataset.channelId = c.id;
         el.innerHTML = chanCell(c) + '<div class="tg-progs"></div>';
         G.mounted[c.id] = el;
@@ -591,11 +679,14 @@
     if (!list.length) {
       return '<div class="tg-prog tg-none" style="left:0;width:' + Math.round(x(day.end, day)) + 'px"><span class="tg-sticky">No guide information</span></div>';
     }
-    var html = '';
+    var html = '', drawn = day.start;
     for (var i = 0; i < list.length; i++) {
       var p = list[i];
-      var s = Math.max(p.s, day.start), e = Math.min(p.e, day.end);
+      // Programmes that overlap (a guide merged from several sources) never
+      // draw on top of each other: a later one starts where the last ended.
+      var s = Math.max(p.s, drawn), e = Math.min(p.e, day.end);
       if (e <= s) continue;
+      drawn = e;
       var left = Math.round(x(s, day)), w = Math.round(x(e, day)) - left;
       var cls = 'tg-prog' + (p.e <= now ? ' past' : (p.s <= now ? ' live' : ''));
       var prog = p.e > p.s && p.s <= now && now < p.e ? (now - p.s) / (p.e - p.s) * 100 : 0;
@@ -959,6 +1050,7 @@
   }
 
   function playChannel(channelId) {
+    G.lastId = channelId;
     var p = localPlayer();
     if (p) {
       p.play({ ids: [channelId] }).catch(function (err) {
@@ -1053,6 +1145,7 @@
     var on = onPlayerPage();
     if (on) {
       leftPlayerAt = 0;
+      trackPlaying();
     } else if (wasOnPlayerPage) {
       leftPlayerAt = Date.now();
     }
@@ -1091,7 +1184,7 @@
     // Shared with the Favorites page (favorited channel cards play on click)
     playChannel: playChannel,
     // For the unit tests (tests/test_livetv_guide.py)
-    internals: { diffChannels: diffChannels, onUserData: onUserData, G: G, computeDays: computeDays, isGuidePage: isGuidePage, progsHtml: progsHtml, chanCell: chanCell, fmtRange: fmtRange },
+    internals: { diffChannels: diffChannels, onUserData: onUserData, G: G, computeDays: computeDays, isGuidePage: isGuidePage, progsHtml: progsHtml, chanCell: chanCell, fmtRange: fmtRange, keepPlace: keepPlace, restorePlace: restorePlace },
   };
 
   // Initial check
