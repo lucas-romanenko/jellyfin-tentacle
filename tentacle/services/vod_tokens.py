@@ -102,5 +102,12 @@ def stream_id_in_url(url_text: str) -> Optional[tuple]:
     return (m.group(1), int(m.group(3))) if m else None
 
 
+def title_in_url(url_text: str) -> Optional[str]:
+    """`movie/1.52300.<sig>.mkv` (the kind and token file, as the relay
+    names a title) if this is a Tentacle VOD URL, else None."""
+    m = _TOKEN_URL.search(url_text or "")
+    return f"{m.group(1)}/{m.group(2)}.{m.group(3)}.{m.group(4)}.{m.group(5)}" if m else None
+
+
 def is_vod_url(url_text: str) -> bool:
     return stream_id_in_url(url_text) is not None

@@ -451,8 +451,24 @@ movies/series, then Sonarr/Radarr text-lookup titles TMDB lacks (TheTVDB).
   opens, under `open_lock`), the parked ones wait and carry on from their
   own byte when the holder ends or has had it `QUANTUM_SECONDS` (8 s); a
   holder stuck on a paused player is taken from after 2 s more. A HEAD
-  during a playback is answered from it. Different titles or clients are
-  separate playbacks (separate connections, counted by the lease broker).
+  during a playback is answered from it. Different titles are separate
+  playbacks (separate connections, counted by the lease broker), and so
+  are different clients of a title when Jellyfin shows as many people
+  watching it.
+- One person watching = one provider connection (`_watch_viewers`): while
+  any playback runs, Jellyfin's `/Sessions` is asked every 2 s which items
+  are playing, and each item's media source address names its title
+  (`vod_tokens.title_in_url`, looked up once per item via `/Items`). A
+  request from another client joins a running playback of its title while
+  Jellyfin shows no more viewers of the title than there are playbacks
+  (Jellyfin Web direct-plays an mkv from the browser's address while
+  Jellyfin's subtitle extraction reads it from Jellyfin's). A playback
+  whose viewer has gone (stopped, next episode) for 4 s is closed and its
+  slot freed: what still reads it is Jellyfin's own work (that extraction
+  reads the whole file, minutes after the stop). A playback no session has
+  reported yet, and everything while Jellyfin can't say (not set up, an
+  error), is left alone. The plugin keeps a cut extraction out of
+  Jellyfin's subtitle cache (plugin.md).
 
 ## Provider health (`services/provider_health.py`)
 
