@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from models.database import TentacleUser, get_db
 from routers.auth import get_user_from_request, require_admin
-from services import admin_alerts, approvals, family as F, gone_people, livetv_lineups as L, tv_app
+from services import admin_alerts, approvals, family as F, gone_people, livetv_lineups as L, person_access as PA, tv_app
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -92,6 +92,8 @@ def people(db: Session = Depends(get_db)):
         p["is_owner"] = bool(owner and owner.id == row.id)
         p["tv_app"] = {"version": tv, "up_to_date": bool(tv and newest and newest["version"]
                                                          and tv_app.version_key(tv) >= tv_app.version_key(newest["version"]))}
+        # What they may do, straight from Jellyfin (never a copy kept here).
+        p["access"] = PA.access_of(jf_user.get("Policy") or {})
         p["last_active"] = jf_user.get("LastActivityDate")
         p["image_tag"] = jf_user.get("PrimaryImageTag")
         # Favourite channels (one lineup for everyone); None when Jellyfin can't say.
@@ -107,6 +109,7 @@ def people(db: Session = Depends(get_db)):
         "kids_channels": len(kids_keys),
         "pool_channels": len(lineup),
         "kids_channel_names": [names[k] for k in kids_keys[:6] if k in names],
+        "libraries": PA.libraries(db),
         "quick_connect": F.quick_connect_enabled(db),
         "addresses": F.addresses(db),
         "tv_app": {"newest": newest["version"] if newest else None},
@@ -160,6 +163,60 @@ def update_person(user_id: int, body: PersonBody, admin: TentacleUser = Depends(
     if body.on_sign_in is not None:
         out["on_sign_in"] = body.on_sign_in
     return out
+
+
+class AccessBody(BaseModel):
+    # Only the fields sent change. libraries null = every library; hours
+    # null = any time, else {"start": h, "end": h} in half hours.
+    can_record: Optional[bool] = None
+    away: Optional[bool] = None
+    libraries: Optional[List[str]] = None
+    hours: Optional[dict] = None
+    disabled: Optional[bool] = None
+
+
+@router.put("/api/family/people/{user_id}/access")
+def update_access(user_id: int, body: AccessBody, admin: TentacleUser = Depends(require_admin),
+                  db: Session = Depends(get_db)):
+    """What someone may do in Jellyfin; answers with the person as Jellyfin
+    has them afterwards."""
+    row = _row(db, user_id)
+    change = body.model_dump(exclude_unset=True)
+    for k in ("can_record", "away", "disabled"):
+        if k in change and change[k] is None:
+            raise HTTPException(400, f"{k} needs true or false.")
+    if len(change.get("libraries") or []) > 500:
+        raise HTTPException(400, "Too many libraries")
+    try:
+        jf_user = PA.set_access(db, admin, row, change)
+    except F.FamilyError as e:
+        raise _refusal(e)
+    p = F.person(db, row, jf_user)
+    p["access"] = PA.access_of(jf_user.get("Policy") or {})
+    return p
+
+
+@router.get("/api/family/server", dependencies=[Depends(require_admin)])
+def server_settings(db: Session = Depends(get_db)):
+    """Settings → People & sign-in, read from Jellyfin each time."""
+    try:
+        return PA.server_settings(db)
+    except F.FamilyError as e:
+        raise _refusal(e)
+
+
+class ServerBody(BaseModel):
+    quick_connect: Optional[bool] = None
+    away_quality: Optional[int] = None
+
+
+@router.put("/api/family/server")
+def save_server_settings(body: ServerBody, admin: TentacleUser = Depends(require_admin),
+                         db: Session = Depends(get_db)):
+    try:
+        return PA.save_server_settings(db, admin, body.quick_connect, body.away_quality)
+    except F.FamilyError as e:
+        raise _refusal(e)
 
 
 @router.post("/api/family/people/{user_id}/password")

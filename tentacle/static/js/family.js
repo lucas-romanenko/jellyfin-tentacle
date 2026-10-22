@@ -14,6 +14,8 @@ const fam = {
   tvFor: null,         // person id the TV code is for (null = me)
   kids: null,          // GET /api/family/kids-channels
   kidsChosen: new Set(),
+  open: new Set(),     // person ids whose "What they can do" panel is open
+  server: null,        // GET /api/family/server (Settings → People & sign-in)
 };
 
 const FAM_LEVEL_NAMES = { young: 'Young kids', kids: 'Kids', teens: 'Teens' };
@@ -122,7 +124,8 @@ function famRenderPeople() {
     if (p.is_owner) chips.push('<span class="badge badge-accent">Owner</span>');
     else if (p.is_admin) chips.push('<span class="badge badge-green">Admin</span>');
     if (p.kids_level) chips.push(`<span class="badge badge-pink">${escHtml(FAM_LEVEL_NAMES[p.kids_level] || 'Kid')}</span>`);
-    if (p.disabled) chips.push('<span class="badge badge-gray">Turned off in Jellyfin</span>');
+    if (p.disabled) chips.push('<span class="badge badge-gray">Turned off</span>');
+    chips.push(..._famLimitChips(p));
     const meta = [_famTv(p, d.tv_app && d.tv_app.newest)];
     if (p.last_active) meta.push(`<span class="fam-meta-item">Active ${escHtml(_famAgo(p.last_active))}</span>`);
     if (p.invited_by) meta.push(`<span class="fam-meta-item">Invited by ${escHtml(p.invited_by)}</span>`);
@@ -158,10 +161,14 @@ function famRenderPeople() {
         <label class="fam-ctl fam-ctl-admin" title="Shown on the sign-in screen at home, to pick instead of typing a name"><span class="fam-ctl-label">On sign-in screen</span>
           <input type="checkbox"${p.on_sign_in ? ' checked' : ''} onchange="famSetOnSignIn(${p.id}, this.checked)"></label>
         <div class="fam-actions">
-          <button class="btn btn-secondary btn-sm" onclick="famShowTvCode(${p.id})">Sign in a TV</button>
+          ${p.disabled && !p.is_admin
+            ? `<button class="btn btn-primary btn-sm" onclick="famSetAccess(${p.id}, {disabled: false})">Turn on</button>`
+            : `<button class="btn btn-secondary btn-sm" onclick="famShowTvCode(${p.id})">Sign in a TV</button>`}
           ${p.is_admin ? '' : `<button class="btn btn-secondary btn-sm" onclick="famNewPassword(${p.id})">New password</button>`}
+          ${p.is_admin || !p.access ? '' : `<button class="btn btn-secondary btn-sm fam-more" aria-expanded="${fam.open.has(p.id)}" aria-controls="fam-access-${p.id}" onclick="famToggleAccess(${p.id})">More <span aria-hidden="true">${fam.open.has(p.id) ? '&#9652;' : '&#9662;'}</span></button>`}
         </div>
       </div>
+      ${p.is_admin || !p.access || !fam.open.has(p.id) ? '' : _famAccessPanel(p)}
     </div>`;
   }).join('') || '<div class="empty-state"><p>Nobody yet.</p></div>';
 
@@ -184,6 +191,203 @@ function famRenderPeople() {
 }
 
 function _famPerson(id) { return (fam.data?.people || []).find(p => p.id === id); }
+
+// ── What each person can do (Jellyfin's own settings, read from Jellyfin) ──
+
+function _famTime(h) {
+  const d = new Date(2000, 0, 1, Math.floor(h % 24), Math.round((h % 1) * 60));
+  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function _famHoursText(hours) {
+  if (!hours) return 'Any time';
+  if (hours.custom) return 'Set in Jellyfin';
+  return `${_famTime(hours.start)} to ${_famTime(hours.end)}`;
+}
+
+// Chips for what differs from a new person's defaults, so the list reads at a glance.
+function _famLimitChips(p) {
+  const a = p.access;
+  if (!a || p.is_admin) return [];
+  const out = [];
+  if (!a.away) out.push('<span class="badge badge-gray">Home only</span>');
+  if (a.libraries) out.push(`<span class="badge badge-gray">${a.libraries.length === 1 ? '1 library' : a.libraries.length + ' libraries'}</span>`);
+  if (a.hours) out.push(`<span class="badge badge-gray">${escHtml(_famHoursText(a.hours))}</span>`);
+  return out;
+}
+
+function _famHourOptions(sel) {
+  sel = sel % 24;   // 24:00 (Jellyfin's end of day) is midnight
+  let o = '';
+  for (let h = 0; h < 24; h += 0.5) o += `<option value="${h}"${h === sel ? ' selected' : ''}>${escHtml(_famTime(h))}</option>`;
+  return o;
+}
+
+function _famAccessPanel(p) {
+  const a = p.access;
+  const libs = fam.data.libraries || [];
+  const kid = !!p.kids_level;
+  const some = !!a.libraries;
+  const chosen = new Set(a.libraries || []);
+  const hours = a.hours && !a.hours.custom ? a.hours : null;
+  const libList = some ? `<div class="fam-libs">${libs.map(l => `
+      <label class="fam-check"><input type="checkbox" data-lib="${escHtml(l.id)}"${chosen.has(l.id) ? ' checked' : ''}
+        onchange="famSetLibrary(${p.id})"> ${escHtml(l.name)}</label>`).join('')}</div>` : '';
+  return `<div class="fam-access" id="fam-access-${p.id}">
+    <div class="fam-access-item">
+      <label class="fam-check"><input type="checkbox"${a.can_record ? ' checked' : ''}${kid ? ' disabled' : ''}
+        onchange="famSetAccess(${p.id}, {can_record: this.checked})"> <strong>Can record shows</strong></label>
+      <div class="fam-hint">${kid ? 'Kids can’t record.' : 'Schedule and cancel recordings in Live TV. Recordings are shared by everyone.'}</div>
+    </div>
+    <div class="fam-access-item">
+      <label class="fam-check"><input type="checkbox"${a.away ? ' checked' : ''}
+        onchange="famSetAccess(${p.id}, {away: this.checked})"> <strong>Can watch away from home</strong></label>
+      <div class="fam-hint">Off: only on your home network.</div>
+    </div>
+    <div class="fam-access-item">
+      <div class="fam-ctl-label">Libraries</div>
+      <select class="form-input fam-select" aria-label="Libraries ${escHtml(p.name)} sees" onchange="famSetLibraries(${p.id}, this.value)">
+        <option value="all"${some ? '' : ' selected'}>All libraries</option>
+        <option value="some"${some ? ' selected' : ''}>Only some</option>
+      </select>
+      ${libList}
+      <div class="fam-hint">${some ? 'New libraries stay hidden from them until you tick them.' : 'Including any you add later.'}</div>
+    </div>
+    <div class="fam-access-item">
+      <div class="fam-ctl-label">Watching hours</div>
+      <select class="form-input fam-select" aria-label="When ${escHtml(p.name)} can watch" onchange="famSetHoursMode(${p.id}, this.value)">
+        <option value="any"${a.hours ? '' : ' selected'}>Any time</option>
+        <option value="range"${hours ? ' selected' : ''}>Only between</option>
+        ${a.hours && a.hours.custom ? '<option value="custom" selected>Set in Jellyfin</option>' : ''}
+      </select>
+      ${hours ? `<div class="fam-hours">
+        <select class="form-input" aria-label="From" id="fam-from-${p.id}" onchange="famSetHours(${p.id})">${_famHourOptions(hours.start)}</select>
+        <span>and</span>
+        <select class="form-input" aria-label="Until" id="fam-to-${p.id}" onchange="famSetHours(${p.id})">${_famHourOptions(hours.end)}</select>
+      </div>` : ''}
+      <div class="fam-hint">${hours ? 'Every day, by the server’s clock. Outside these hours they can’t sign in or play.' : 'Like a bedtime: outside the hours they can’t sign in or play.'}</div>
+    </div>
+    <div class="fam-access-item fam-access-off">
+      ${p.disabled
+        ? `<button class="btn btn-primary btn-sm" onclick="famSetAccess(${p.id}, {disabled: false})">Turn ${escHtml(p.name)}’s account on</button>
+           <div class="fam-hint">Turned off: they can’t sign in or watch.</div>`
+        : `<button class="btn btn-secondary btn-sm fam-danger" onclick="famTurnOff(${p.id})">Turn account off</button>
+           <div class="fam-hint">They can’t sign in or watch until you turn it on. Nothing is deleted.</div>`}
+    </div>
+  </div>`;
+}
+
+function famToggleAccess(id) {
+  if (fam.open.has(id)) fam.open.delete(id); else fam.open.add(id);
+  famRenderPeople();
+}
+
+// Every change is answered with the person as Jellyfin has them afterwards.
+async function famSetAccess(id, change, done) {
+  const p = _famPerson(id);
+  try {
+    const fresh = await api(`/api/family/people/${id}/access`, { method: 'PUT', body: change });
+    if (p) Object.assign(p, { access: fresh.access, disabled: fresh.disabled });
+    toast(done || _famAccessToast(p ? p.name : 'They', change));
+  } catch (e) {
+    toast(e.message, 'error', 6000);
+  }
+  famRenderPeople();
+}
+
+function _famAccessToast(name, c) {
+  if ('can_record' in c) return c.can_record ? `${name} can record shows` : `${name} can’t record shows now`;
+  if ('away' in c) return c.away ? `${name} can watch away from home` : `${name} can watch only at home now`;
+  if ('disabled' in c) return c.disabled ? `${name}’s account is off` : `${name}’s account is on again`;
+  if ('libraries' in c) return c.libraries ? `${name} sees ${c.libraries.length === 1 ? 'one library' : c.libraries.length + ' libraries'}` : `${name} sees every library`;
+  if ('hours' in c) return c.hours ? `${name} can watch ${_famHoursText(c.hours).replace(' to ', ' until ')}` : `${name} can watch any time`;
+  return 'Saved';
+}
+
+function famSetLibraries(id, mode) {
+  const libs = fam.data.libraries || [];
+  if (mode === 'all') return famSetAccess(id, { libraries: null });
+  if (!libs.length) { toast('Jellyfin didn’t list its libraries. Try again in a moment.', 'error'); famRenderPeople(); return; }
+  // Start from everything ticked; untick what they shouldn't see.
+  famSetAccess(id, { libraries: libs.map(l => l.id) }, 'Untick the libraries they shouldn’t see');
+}
+
+function famSetLibrary(id) {
+  const boxes = [...document.querySelectorAll(`#fam-access-${id} input[data-lib]`)];
+  const ids = boxes.filter(b => b.checked).map(b => b.dataset.lib);
+  if (!ids.length) {
+    toast('Leave at least one library, or turn the account off instead', 'warning');
+    famRenderPeople();
+    return;
+  }
+  famSetAccess(id, { libraries: ids });
+}
+
+function famSetHoursMode(id, mode) {
+  if (mode === 'any') return famSetAccess(id, { hours: null });
+  if (mode === 'range') return famSetAccess(id, { hours: { start: 7, end: 20 } });
+  famRenderPeople();
+}
+
+function famSetHours(id) {
+  const start = parseFloat(document.getElementById(`fam-from-${id}`).value);
+  const end = parseFloat(document.getElementById(`fam-to-${id}`).value);
+  if (start === end) { toast('Pick two different times', 'warning'); return; }
+  famSetAccess(id, { hours: { start, end } });
+}
+
+function famTurnOff(id) {
+  const p = _famPerson(id);
+  if (!p || !confirm(`Turn ${p.name}’s account off? They can’t sign in or watch until you turn it on again. Nothing is deleted.`)) return;
+  famSetAccess(id, { disabled: true });
+}
+
+// ── Settings → People & sign-in (server-wide, read from Jellyfin) ────────
+
+async function famLoadServer() {
+  const el = document.getElementById('signin-settings');
+  if (!el) return;
+  try {
+    fam.server = await api('/api/family/server');
+  } catch (e) {
+    el.innerHTML = `<div class="fam-error">Couldn’t read Jellyfin’s settings: ${escHtml(e.message)}</div>`;
+    return;
+  }
+  famRenderServer();
+}
+
+function famRenderServer() {
+  const d = fam.server;
+  const el = document.getElementById('signin-settings');
+  const known = d.choices.some(c => c.bps === d.away_quality);
+  el.innerHTML = `
+    <div class="form-group">
+      <label class="fam-check"><input type="checkbox" id="signin-qc"${d.quick_connect ? ' checked' : ''}
+        onchange="famSaveServer({quick_connect: this.checked})"> <strong>TV sign-in codes</strong></label>
+      <div class="form-hint">A TV shows a 6-digit code; type it on People (or under Sign in a TV) instead of a password on the remote. Recommended on.</div>
+    </div>
+    <div class="form-group">
+      <div class="form-label">Quality away from home</div>
+      <select class="form-input" id="signin-away" style="max-width:260px" onchange="famSaveServer({away_quality: parseInt(this.value, 10)})">
+        ${known ? '' : `<option value="${d.away_quality}" selected>${(d.away_quality / 1e6).toFixed(1)} Mbps (set in Jellyfin)</option>`}
+        ${d.choices.map(c => `<option value="${c.bps}"${c.bps === d.away_quality ? ' selected' : ''}>${escHtml(c.name)}</option>`).join('')}
+      </select>
+      <div class="form-hint">For everyone watching outside your home network. Lower it if your home internet’s upload is slow and videos stall when family watch away. At home it doesn’t apply.</div>
+    </div>
+    <p class="fam-hint">What each person can do (record, watch away from home, libraries, watching hours) is on <a href="#people" class="fam-link" onclick="showPage('people');return false">People</a>, under More next to each person.</p>`;
+}
+
+async function famSaveServer(change) {
+  try {
+    fam.server = await api('/api/family/server', { method: 'PUT', body: change });
+    toast('quick_connect' in change
+      ? (change.quick_connect ? 'TV sign-in codes are on' : 'TV sign-in codes are off')
+      : 'Saved: quality away from home');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+  if (fam.server) famRenderServer();
+}
 
 async function _famUpdate(id, body, done) {
   try {

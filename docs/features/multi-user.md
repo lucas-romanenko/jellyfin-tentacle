@@ -95,6 +95,15 @@ Tentacle is built for one person running a home server for their family. Admins 
 - **Admin:** make someone an admin (both in Tentacle and in Jellyfin). The owner stays an admin.
 - **Sign in a TV:** on the TV, open Tentacle, choose *Use Quick Connect* and type the code it shows into Tentacle. Everyone can do this for their own TV (sidebar → *Sign in a TV*); admins can do it for anyone. If Quick Connect is off in Jellyfin, People offers to turn it on.
 - **New password:** gives someone a fresh password when they lost theirs.
+- **More** (next to each person who isn't an admin) holds the Jellyfin settings a household needs, read from Jellyfin every time so they never show a stale value, and saved there straight away:
+    - **Can record shows:** schedule and cancel Live TV recordings (shared by everyone). Jellyfin makes new accounts without it; people you invite get it, kids don't.
+    - **Can watch away from home:** off means only on your home network. Behind a reverse proxy, Jellyfin needs its *Known proxies* set (Dashboard → Networking) to tell home from away.
+    - **Libraries:** all (including ones added later) or only the ones you tick. Tentacle's Library then lists only what they can open.
+    - **Watching hours:** any time, or only between two times every day (it may run past midnight), by the server's clock. Outside them Jellyfin won't let them sign in or play.
+    - **Turn account off:** they can't sign in or watch until you turn it on again; nothing is deleted. *Turn on* also clears Jellyfin's count of wrong passwords.
+- The row shows what differs from the usual at a glance: *Home only*, the number of libraries, the watching hours, *Turned off*.
+
+**Settings → People & sign-in** has the two server-wide ones: **TV sign-in codes** (Jellyfin's Quick Connect, recommended on) and **Quality away from home** (a cap for everyone watching outside your home network, for a slow upload; no limit by default).
 - Each person's row shows which Tentacle TV app version their TV runs, and when a newer one is waiting.
 - **Removing someone:** delete their account in Jellyfin (Dashboard → Users). Jellyfin removes their playlists and signs them out everywhere; Tentacle forgets the rest (their home screen, playlist settings, requests, notifications, Live TV lists) the next time People is opened, or in the nightly sync.
 

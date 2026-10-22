@@ -17,7 +17,7 @@ DISCOVER = (ROOT / "tentacle-plugin" / "Inject" / "tentacle-discover.js").read_t
 LIVETV = (ROOT / "tentacle-plugin" / "Inject" / "tentacle-livetv.js").read_text(encoding="utf-8")
 
 # Numbers and fixed words only: ids, counts, a numeric status.
-SAFE_FIELDS = {"id", "episodes", "kids_channels"}
+SAFE_FIELDS = {"id", "episodes", "kids_channels", "bps", "away_quality"}
 
 
 class FamilyTextIsEscaped(unittest.TestCase):
@@ -27,7 +27,8 @@ class FamilyTextIsEscaped(unittest.TestCase):
             expr = m.group(1).strip()
             if expr.startswith(("escHtml(", "_fam", "chips.", "meta.", "kidsSel", "reqSel", "poster", "side",
                                 "note", "status", "take", "label", "levels.", "named.", "lists.", "rows.", "list.",
-                                "d.people", "row(", "jf}", "jf", "encodeURIComponent(")):
+                                "d.people", "row(", "jf}", "jf", "encodeURIComponent(", "libList",
+                                "fam.open.has(", "(d.away_quality / 1e6)")):
                 continue
             field = expr.split(".")[-1]
             if field in SAFE_FIELDS or expr in ("n", "i", "mins", "h", "d", "url"):
@@ -45,7 +46,10 @@ class FamilyTextIsEscaped(unittest.TestCase):
                          "d.tv_app.newest", "r.title", "r.requested_by", "p ? p.name : 'their'", "p ? p.name : 'Their'",
                          "r ? r.title : 'this'", "r ? r.requested_by : 'them'", "keys.length === 1 ? '' : 's'",
                          "n === 1 ? '' : 's'", "fromP.name", "home", "tv", "nfav(p.favourite_count || 0)", "names.join(', ')",
-                         "d.kids_channels === 1 ? 'one channel' : d.kids_channels + ' channels'", "name(d.home_from)", "d.kids_channels === 1 ? '' : 's'", "r.episodes === 1 ? '' : 's'"}
+                         "d.kids_channels === 1 ? 'one channel' : d.kids_channels + ' channels'", "name(d.home_from)", "d.kids_channels === 1 ? '' : 's'", "r.episodes === 1 ? '' : 's'",
+                         "a.libraries.length === 1 ? '1 library' : a.libraries.length + ' libraries'",
+                         "c.libraries.length === 1 ? 'one library' : c.libraries.length + ' libraries'",
+                         "p.is_admin || !p.access || !fam.open.has(p.id) ? '' : _famAccessPanel(p)"}
         self.assertEqual([], sorted(set(raw) - allowed_plain))
 
     def test_markup_builders_escape_names_and_titles(self):
