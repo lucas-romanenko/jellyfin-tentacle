@@ -82,6 +82,13 @@ VIEWER_CHECK_SECONDS = 2.0
 VIEWER_GONE_SECONDS = 4.0
 # An older answer says nothing about who is watching now.
 VIEWERS_FRESH_SECONDS = 15.0
+# After a title was closed for having no viewer, a request that carries on
+# reading it (a Range past byte 0, nothing of the title running) is refused
+# for this long unless Jellyfin shows a viewer again: ffmpeg answers a body
+# that ended early by asking for the rest at once (measured, ffmpeg 7.1:
+# "Stream ends prematurely", then `Range: bytes=<where it was>-`). A player
+# starting the title reads its start first (byte 0), which lifts it.
+GONE_REFUSE_SECONDS = 60.0
 # How long a Jellyfin item's VOD address is remembered (a relink rewrites it).
 ITEM_TITLES_SECONDS = 600.0
 _UA_DEFAULT = "TiviMate/4.7.0 (Linux; Android 12)"
@@ -306,6 +313,8 @@ _viewers: dict = {"titles": None, "at": 0.0}
 _jellyfin: dict = {"url": "", "key": ""}
 # Jellyfin item id -> (monotonic time, the VOD titles its media sources play)
 _item_titles: "dict[str, tuple]" = {}
+# title -> loop time it was closed for having no viewer (GONE_REFUSE_SECONDS)
+_gone: "dict[str, float]" = {}
 _pending_releases: "set[asyncio.Task]" = set()
 
 
@@ -468,6 +477,7 @@ def _enforce_viewers(titles: Optional[dict], now: float) -> int:
             pb.stop("nobody is watching it in Jellyfin any more (what still read it was Jellyfin's own "
                     "work for the title, such as a subtitle extraction)")
             _release(pb)
+            _gone[pb.title] = now
             n += 1
     return n
 
@@ -487,6 +497,25 @@ async def _watch_viewers():
         except Exception as e:   # the watch must outlive any one bad answer
             logger.error(f"[VOD] viewer check failed: {e}")
         await asyncio.sleep(VIEWER_CHECK_SECONDS)
+
+
+def _refuse_continuation(title: str, start: int) -> bool:
+    """Whether this request is Jellyfin's own work coming back for a title
+    that was closed for having no viewer: it carries on from past byte 0,
+    nothing of the title runs, and Jellyfin shows nobody watching it."""
+    gone = _gone.get(title)
+    if gone is None:
+        return False
+    loop = asyncio.get_running_loop()
+    if loop.time() - gone > GONE_REFUSE_SECONDS or start == 0:
+        del _gone[title]                # a player (re)starting the title reads its start first
+        return False
+    if any(pb.title == title and not pb.stopped.is_set() for pb in _playbacks.values()):
+        return False
+    viewers = _viewer_count(title)
+    if viewers:
+        del _gone[title]
+    return viewers == 0
 
 
 def _shared_playback(title: str, token: str) -> "Optional[_Playback]":
@@ -756,9 +785,13 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
     # person watches (Jellyfin's subtitle extraction next to a browser that
     # plays the file itself) joins the playback (_shared_playback).
     who = request.client.host if request.client else "unknown"
-    pb = await _playback_for(db, f"{kind}/{token_file}", owner, who)
     range_header = request.headers.get("range")
     start, end = _range_bounds(range_header)
+    if _refuse_continuation(f"{kind}/{token_file}", start):
+        logger.info(f"[VOD] {owner}: refused a pull from byte {start} of a title nobody watches any more "
+                    f"(Jellyfin's own work coming back for the rest, such as a subtitle extraction)")
+        raise HTTPException(503, "Nobody is watching this title any more")
+    pb = await _playback_for(db, f"{kind}/{token_file}", owner, who)
     headers = {"User-Agent": ua}
     if range_header:
         headers["Range"] = range_header
