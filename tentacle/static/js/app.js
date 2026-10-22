@@ -55,6 +55,8 @@ async function postLoginInit() {
   // Family: how this person's requests work, the plain-words banner, and
   // the admins' count of requests waiting (family.js).
   if (typeof famInit === 'function') famInit();
+  // Live updates: what changes elsewhere shows here within a second or two (live.js).
+  if (typeof liveStart === 'function') liveStart();
   // The page in the address, else Library
   showRouteFromHash();
   // Someone's first sign-in: what Tentacle is, in five short steps (welcome.js).
@@ -457,7 +459,7 @@ function stopAllPolling() {
   if (state._runNowTimer) { clearInterval(state._runNowTimer); state._runNowTimer = null; }
   for (const fn of ['stopActivityPolling', 'stopDownloadPolling', 'stopHealthPolling',
                     'stopYouTubePolling', 'stopLivePolling', 'stopFamilyPolling',
-                    'disconnectLibraryStream', 'stopLogStream']) {
+                    'stopLogStream', 'liveStop']) {
     if (typeof window[fn] === 'function') { try { window[fn](); } catch (_) {} }
   }
 }
@@ -539,9 +541,8 @@ function showPage(name, tab) {
   if (ADMIN_PAGES.has(name) && !(state.currentUser && state.currentUser.is_admin)) { name = 'library'; tab = null; }
   if (name === 'discover' && state.kidsProfile) { name = 'library'; tab = null; }
 
-  // Disconnect library SSE when leaving library page
+  // Stop the library page's download polling when leaving it
   if (state.currentPage === 'library' && name !== 'library') {
-    if (typeof disconnectLibraryStream === 'function') disconnectLibraryStream();
     if (typeof stopDownloadPolling === 'function') stopDownloadPolling();
   }
   // Stop health downloads polling when leaving health page
@@ -695,6 +696,7 @@ async function api(url, options = {}) {
   if (merged.body && typeof merged.body === 'object') {
     merged.body = JSON.stringify(merged.body);
   }
+  if (merged.method && merged.method !== 'GET' && typeof live !== 'undefined') live.lastWrite = Date.now();
   const r = await fetch(url, merged);
   if (r.status === 401) {
     if (!state.sessionExpired) {

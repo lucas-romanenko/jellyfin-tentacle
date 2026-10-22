@@ -102,21 +102,30 @@ async function loadPeople() {
 // Live while People is open: someone locked out, added or changed by another
 // admin shows within seconds. Never while a dialog is open or a control on
 // the page has the focus (redrawing would close a list being picked from).
+// Tentacle's own changes (another admin's) come at once through live.js;
+// the 8 s round is for what happens in Jellyfin (wrong passwords lock an
+// account, a TV signs in).
 function _famWatch() {
   if (fam.watch) return;
-  fam.watch = setInterval(async () => {
+  fam.watch = setInterval(() => {
     if (state.currentPage !== 'people') { clearInterval(fam.watch); fam.watch = null; return; }
-    const busy = document.hidden || document.querySelector('.modal-overlay[style*="flex"]')
-      || document.activeElement?.closest?.('#page-people select, #page-people input');
-    if (busy || fam.fetching) return;
-    fam.fetching = true;
-    try {
-      const d = await api('/api/family/people');
-      const sig = JSON.stringify(d);
-      if (sig !== fam.seen && state.currentPage === 'people') { fam.data = d; fam.seen = sig; famRenderPeople(); }
-    } catch (e) { /* the next round tries again */ }
-    fam.fetching = false;
+    if (!document.hidden) famRefreshPeople();
   }, 8000);
+}
+
+async function famRefreshPeople() {
+  const busy = document.querySelector('.modal-overlay[style*="flex"]')
+    || document.activeElement?.closest?.('#page-people select, #page-people input');
+  if (busy) return;   // the 8 s round tries again
+  if (fam.fetching) { fam.again = true; return; }
+  fam.fetching = true;
+  try {
+    const d = await api('/api/family/people');
+    const sig = JSON.stringify(d);
+    if (sig !== fam.seen && state.currentPage === 'people') { fam.data = d; fam.seen = sig; famRenderPeople(); }
+  } catch (e) { /* the next round tries again */ }
+  fam.fetching = false;
+  if (fam.again) { fam.again = false; famRefreshPeople(); }
 }
 
 function _famAvatar(p) {

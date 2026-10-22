@@ -124,6 +124,9 @@ def emit_library_event(event_type: str, data: dict):
     data: {tmdb_id, title, year, poster_path, source, source_tag, tags, in_library, media_type}
     """
     entry = {"event": event_type, **data}
+    # Open dashboards (Library): the same note through the live channel.
+    from services import live_updates
+    live_updates.publish("library", everyone=True, data={k: entry.get(k) for k in ("event", "tmdb_id", "media_type")})
     with _lib_lock:
         dead = []
         for q in _lib_subscribers:

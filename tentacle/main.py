@@ -865,8 +865,12 @@ async def lifespan(app: FastAPI):
     # while nobody watches or records; any stream open pre-empts it).
     from services import livetv_checker
     livetv_checker.start()
+    # Live updates: Radarr/Sonarr queue changes reach open screens (services/live_updates.py)
+    from services import live_updates
+    live_updates.start()
     logger.info("Tentacle ready")
     yield
+    live_updates.stop()
     livetv_checker.stop()
     scheduler.shutdown(wait=False)
     logger.info("Tentacle shutting down")
@@ -960,6 +964,8 @@ app.include_router(vod_router.router)
 # exception uvicorn would log as a crash (#285).
 logging.getLogger("uvicorn.error").addFilter(vod_router.EarlyRangeEndFilter())
 app.include_router(notifications_router.router)
+from routers import updates as updates_router  # noqa: E402
+app.include_router(updates_router.router)
 app.include_router(health_router.router)
 app.include_router(youtube_router.router)
 app.include_router(music_router.router)

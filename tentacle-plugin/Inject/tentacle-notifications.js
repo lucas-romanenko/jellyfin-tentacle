@@ -1,7 +1,18 @@
 /**
  * Tentacle Notifications — Toast notifications for download completions.
- * Polls /TentacleDiscover/Notifications every 15s and shows toast popups.
- * Per-user: only shows notifications for the current user's downloads.
+ * Reads /TentacleDiscover/Notifications when Tentacle says something changed
+ * (live, below) and every 60 s as a safety net, and shows toast popups.
+ * Per-user: only shows notifications for the current user's downloads (and,
+ * for an admin who follows them, other people's, marked "for Sam").
+ *
+ * Live: Tentacle tells the person's Jellyfin sessions through the plugin
+ * (POST /Tentacle/Notify): a RefreshProgress message with ItemId "tentacle"
+ * and the topics that changed ("requests", "activity", "notifications").
+ * This script hears it on Jellyfin web's own socket and passes it on as a
+ * window event "tentacle-changed" ({ topics: [...] }) for the Discover and
+ * Activity overlays and the navbar badge. After the socket comes back, or
+ * the tab comes back to the front, everything is read again (a message sent
+ * meanwhile was lost).
  */
 (function () {
   'use strict';
@@ -23,9 +34,14 @@
     TN.apiClient = window.ApiClient;
     TN.userId = TN.apiClient.getCurrentUserId();
 
-    // Start polling
+    // Read now, then live (watchSocket), with a slow poll as a safety net
     poll();
-    TN.pollInterval = setInterval(poll, 15000);
+    TN.pollInterval = setInterval(poll, 60000);
+    watchSocket();
+    setInterval(watchSocket, 2000);
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) changed(ALL_TOPICS, true);
+    });
 
     // Re-init on user switch
     document.addEventListener('viewshow', function () {
@@ -35,6 +51,47 @@
       }
     });
   }
+
+  // ── Live: Tentacle's changes on Jellyfin web's socket ───────────────
+  var ALL_TOPICS = ['requests', 'activity', 'notifications'];
+
+  // Jellyfin sends a browser's messages to one socket only (the newest tab's):
+  // the tab that hears one passes it to the others.
+  var relay = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('tentacle-changes') : null;
+  if (relay) {
+    relay.onmessage = function (e) { if (e.data && e.data.topics) changed(e.data.topics, true); };
+    if (relay.unref) relay.unref();
+  }
+
+  // Jellyfin web's own socket (a new object after each reconnect); we only listen.
+  function watchSocket() {
+    var ws = window.ApiClient && window.ApiClient._webSocket;
+    if (!ws || ws === TN.socket || typeof ws.addEventListener !== 'function') return;
+    var again = !!TN.socket;
+    TN.socket = ws;
+    ws.addEventListener('message', function (e) {
+      if (e.target !== TN.socket) return;
+      var topics = topicsOf(e.data);
+      if (topics) changed(topics, false);
+    });
+    if (again) changed(ALL_TOPICS, true);
+  }
+
+  // The topics of a Tentacle message, or null for any other message.
+  function topicsOf(raw) {
+    var msg;
+    try { msg = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (x) { return null; }
+    if (!msg || msg.MessageType !== 'RefreshProgress' || !msg.Data || msg.Data.ItemId !== 'tentacle') return null;
+    return String(msg.Data.Tentacle || '').split(',').filter(Boolean);
+  }
+
+  function changed(topics, relayed) {
+    if (!relayed && relay) { try { relay.postMessage({ topics: topics }); } catch (x) { } }
+    if (topics.indexOf('notifications') !== -1) poll();
+    try { window.dispatchEvent(new CustomEvent('tentacle-changed', { detail: { topics: topics } })); } catch (x) { }
+  }
+
+  TN.topicsOf = topicsOf;
 
   function poll() {
     if (!TN.apiClient || !TN.userId) return;
@@ -74,10 +131,11 @@
 
   // The heading says what the message is about. Older servers send no kind:
   // their messages are all "ready to watch".
+  // An admin's message about someone else's download says whose it is.
   function toastLabel(notif) {
     if (notif.kind === 'request') return 'Request';
     if (notif.kind === 'problem') return notif.title || 'Problem';
-    return 'Ready to Watch';
+    return notif.for ? 'Ready to Watch \u00b7 for ' + notif.for : 'Ready to Watch';
   }
 
   function showToast(notif, onDone) {

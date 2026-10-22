@@ -1026,6 +1026,8 @@ def tell_clients(db) -> bool:
     LibraryChanged with a "tentacle-livetv:<version>" marker and open guides
     read their channel list again. Favourites need nothing: Jellyfin tells
     the person's clients itself (UserDataChanged). Never raises."""
+    from services import live_updates
+    live_updates.publish("livetv", everyone=True)
     jf = jellyfin_for(db)
     if jf is None:
         return False

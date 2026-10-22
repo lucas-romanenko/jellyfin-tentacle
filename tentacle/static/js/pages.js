@@ -228,7 +228,6 @@ function renderCategoryChart() {
 }
 
 // ── LIBRARY PAGE ──────────────────────────────────────────────────────────
-let _libEventSource = null;
 let _libRefreshTimer = null;
 
 function _debouncedLibRefresh() {
@@ -245,58 +244,20 @@ function _debouncedLibRefresh() {
   }, 2000);
 }
 
-function connectLibraryStream() {
-  if (_libEventSource) return;
-  _libEventSource = new EventSource('/api/library/stream');
-
-  _libEventSource.addEventListener('movie_added', () => _debouncedLibRefresh());
-  _libEventSource.addEventListener('series_added', () => _debouncedLibRefresh());
-
-  _libEventSource.addEventListener('movie_removed', (e) => {
-    const data = JSON.parse(e.data);
-    const grid = document.getElementById('lib-grid');
-    if (!grid) return;
-    const card = grid.querySelector(`[data-tmdb-id="${data.tmdb_id}"]`);
-    if (card) {
-      card.classList.add('lib-card-exit');
-      card.addEventListener('animationend', () => card.remove());
-      pages.lib.items = pages.lib.items.filter(i => i.tmdb_id !== data.tmdb_id);
-      pages.lib.total = Math.max(0, pages.lib.total - 1);
-    }
-  });
-
-  _libEventSource.addEventListener('series_removed', (e) => {
-    const data = JSON.parse(e.data);
-    const grid = document.getElementById('lib-grid');
-    if (!grid) return;
-    const card = grid.querySelector(`[data-tmdb-id="${data.tmdb_id}"]`);
-    if (card) {
-      card.classList.add('lib-card-exit');
-      card.addEventListener('animationend', () => card.remove());
-      pages.lib.items = pages.lib.items.filter(i => i.tmdb_id !== data.tmdb_id);
-      pages.lib.total = Math.max(0, pages.lib.total - 1);
-    }
-  });
-
-  _libEventSource.onerror = () => {
-    _libEventSource.close();
-    _libEventSource = null;
-    // Reconnect after 5s if still on library page
-    setTimeout(() => {
-      if (state.currentPage === 'library' && !state.sessionExpired) connectLibraryStream();
-    }, 5000);
-  };
-}
-
-function disconnectLibraryStream() {
-  if (_libEventSource) {
-    _libEventSource.close();
-    _libEventSource = null;
+// A title left the library (live.js: the live channel's "library" notes).
+function libRemoveCard(tmdbId) {
+  const grid = document.getElementById('lib-grid');
+  if (!grid) return;
+  const card = grid.querySelector(`[data-tmdb-id="${CSS.escape(String(tmdbId))}"]`);
+  if (card) {
+    card.classList.add('lib-card-exit');
+    card.addEventListener('animationend', () => card.remove());
+    pages.lib.items = pages.lib.items.filter(i => i.tmdb_id !== tmdbId);
+    pages.lib.total = Math.max(0, pages.lib.total - 1);
   }
 }
 
 async function loadLibrary() {
-  connectLibraryStream();
   pages.lib.offset = 0;
   pages.lib.items = [];
   loadLibListPills();
@@ -1607,8 +1568,12 @@ function filterByTag(tag) {
 // replace an episode of the wrong show. Every opener takes a new number and
 // every await checks it.
 let _detailSeq = 0;
+// The Discover detail open now, for live.js to read again when its title's
+// state changes (asked, approved, downloading, declined); null for others.
+let _discoverDetailArgs = null;
 function _detailOpening() {
   _detailEpState = {};
+  _discoverDetailArgs = null;
   return ++_detailSeq;
 }
 
@@ -4880,7 +4845,8 @@ let _activityData = null;
 function startActivityPolling() {
   stopActivityPolling();
   _pollActivity();
-  _activityPollTimer = setInterval(_pollActivity, 3000);
+  // Live notes (live.js) redraw it as downloads move; this is the safety net.
+  _activityPollTimer = setInterval(_pollActivity, 30000);
 }
 
 // The tab polls every 3 s, but with a slow Radarr/Sonarr one answer can take a
@@ -5244,6 +5210,11 @@ function _activityCardOpen(e) {
   showDiscoverDetail(+tmdb, type, undefined, undefined, undefined, undefined, +tvdb);
 }
 
+// Whose it is, on an admin's Activity, when it's someone else's ("for Sam").
+function _actFor(item) {
+  return item && item.for ? `<span class="activity-requested-by">for ${escapeAttr(item.for)}</span>` : '';
+}
+
 function renderActivity(data) {
   const content = document.getElementById('activity-content');
   if (!content) return;
@@ -5282,7 +5253,7 @@ function renderActivity(data) {
       const etaLabel = dl.eta ? ' · ' + escapeAttr(dl.eta) : '';
       const sizeLabel = dl.size_remaining ? escapeAttr(dl.size_remaining) + ' left' : '';
       const qualityLabel = dl.quality ? escapeAttr(dl.quality) : '';
-      const reqByLabel = dl.requested_by ? `<span class="activity-requested-by">${escapeAttr(dl.requested_by)}</span>` : '';
+      const reqByLabel = _actFor(dl);
       const metaParts = [qualityLabel, sizeLabel].filter(Boolean).join(' · ');
       return `<div class="activity-card" data-morph-key="dl:${escapeAttr(String(dl.source || ''))}:${escapeAttr(String(dl.queue_id ?? dl.title ?? ''))}"${_actOpenAttrs(dl)}>
         <div class="activity-poster">${poster}</div>
@@ -5305,7 +5276,7 @@ function renderActivity(data) {
     html += searching.map(item => {
       const poster = _activityPoster(item.poster_path);
       const waited = _activityWaited(item.waiting_since);
-      const reqByLabel = item.requested_by ? `<span class="activity-requested-by">${escapeAttr(item.requested_by)}</span>` : '';
+      const reqByLabel = _actFor(item);
       const key = _actKey(item);
       const busy = _actBusy[key];
       const armed = !busy && (_actArmed[key] || 0) > Date.now();
@@ -5349,7 +5320,7 @@ function renderActivity(data) {
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)}${item.episode ? ' · ' + escapeAttr(item.episode) : ''}</div>
-          <div class="activity-meta">${item.year || ''} · Ready to watch</div>
+          <div class="activity-meta">${item.year || ''} · Ready to watch ${_actFor(item)}</div>
           ${hrs ? `<div class="activity-countdown" style="color:var(--green)">${hrs}</div>` : ''}
         </div>
       </div>`;
@@ -5364,7 +5335,7 @@ function renderActivity(data) {
         <div class="activity-poster">${_activityPoster(item.poster_path)}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)} · ${escapeAttr(item.episode)}</div>
-          <div class="activity-meta">${escapeAttr(item.episode_title || '')}</div>
+          <div class="activity-meta">${escapeAttr(item.episode_title || '')} ${_actFor(item)}</div>
           <div class="coming-day">${escapeAttr(_airDay(item.air_date_utc))}</div>
         </div>
       </div>`).join('');
@@ -5386,7 +5357,7 @@ function renderActivity(data) {
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)}</div>
-          <div class="activity-meta">${item.year || ''} · ${escapeAttr(item.release_date || '')}</div>
+          <div class="activity-meta">${item.year || ''} · ${escapeAttr(item.release_date || '')} ${_actFor(item)}</div>
           ${daysUntil ? `<div class="activity-countdown">${escapeAttr(daysUntil)}</div>` : ''}
         </div>
       </div>`;
@@ -5698,11 +5669,14 @@ function renderDiscoverGrid(items) {
   }).join('');
 }
 
-async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, inLibrary, tvdbId) {
+async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, inLibrary, tvdbId, refresh) {
   const seq = _detailOpening();
-  showModal('modal-media-detail');
-  document.getElementById('detail-title').textContent = 'Loading...';
-  document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
+  _discoverDetailArgs = [tmdbId, mediaType, title, year, posterPath, inLibrary, tvdbId];
+  if (!refresh) {
+    showModal('modal-media-detail');
+    document.getElementById('detail-title').textContent = 'Loading...';
+    document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
+  }
 
   const isTvdbOnly = !tmdbId && tvdbId;
   try {
@@ -6365,7 +6339,33 @@ async function loadNotificationState() {
     const enabled = data.notifications_enabled !== false;
     checkbox.checked = enabled;
     updateNotifSlider(enabled);
+    // Admins: other people's downloads (absent for everyone else).
+    const row = document.getElementById('notif-others-row');
+    if (row) row.style.display = 'show_others_downloads' in data ? 'flex' : 'none';
+    if ('show_others_downloads' in data) {
+      document.getElementById('notif-others-checkbox').checked = data.show_others_downloads;
+      _slider('notif-others-slider', data.show_others_downloads);
+    }
   } catch { checkbox.checked = true; updateNotifSlider(true); }
+}
+
+function _slider(id, on) {
+  const slider = document.getElementById(id);
+  const track = slider?.previousElementSibling;
+  if (slider) slider.style.transform = on ? 'translateX(18px)' : 'translateX(0)';
+  if (track) track.style.background = on ? 'var(--accent)' : 'var(--bg3)';
+}
+
+async function toggleOthersDownloads(checked) {
+  _slider('notif-others-slider', checked);
+  try {
+    await api('/api/notifications/others', { method: 'PUT', body: { show: checked } });
+    toast(checked ? 'Your Activity shows everyone’s downloads' : 'Your Activity shows only your own downloads');
+  } catch (e) {
+    _slider('notif-others-slider', !checked);
+    document.getElementById('notif-others-checkbox').checked = !checked;
+    toast(e.message, 'error');
+  }
 }
 
 function updateNotifSlider(enabled) {
@@ -7043,7 +7043,7 @@ function renderHealthLog() {
     loadJellyfinPage, loadAutoPlaylists, toggleAutoPlaylist, dismissAutoPlaylistBanner,
     showAddTagRule, editTagRule, deleteTagRule, saveTagRule, onContentSourceChange, toggleAdvancedFilters,
     addRuleCondition, updateCondOps, onCollectionNameInput, syncSmartLists, refreshTags, syncPlaylistsToJellyfin, resyncAllPlaylists, setPlaylistSort,
-    pushHomeConfig, setHomeScope, resetHomeToDefault, defaultHomeFromMine, defaultHomeSuggested, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, saveRowShapeByKey, toggleNotificationsFromCheckbox, saveMergeContinueWatching, toggleCard, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
+    pushHomeConfig, setHomeScope, resetHomeToDefault, defaultHomeFromMine, defaultHomeSuggested, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, saveRowShapeByKey, toggleNotificationsFromCheckbox, toggleOthersDownloads, saveMergeContinueWatching, toggleCard, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
     showAddHomeRow, hideAddHomeRow, confirmAddHomeRow, removeHomeRow, removeHomeRowByKey,
     reorderHomeRows, rowKey,
     // Library

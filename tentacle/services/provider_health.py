@@ -390,7 +390,11 @@ def _load_fresh(db) -> dict:
 
 
 def _save_state(db, state: dict) -> None:
+    before = get_setting(db, SETTING_KEY, "")
     set_setting(db, SETTING_KEY, json.dumps(state))
+    if json.dumps(state) != before:
+        from services import live_updates
+        live_updates.publish("health", admins=True)
 
 
 def forget(db, provider_id: int) -> None:

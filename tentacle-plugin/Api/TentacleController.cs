@@ -156,6 +156,68 @@ public class TentacleController : ControllerBase
     }
 
     /// <summary>
+    /// Tells these people's Jellyfin clients (Jellyfin Web's Tentacle scripts, the Tentacle
+    /// TV app) that their requests, activity or notifications changed, so an open screen reads
+    /// them again at once instead of at its next poll. Called by the Tentacle server (API key).
+    /// The message is a RefreshProgress whose ItemId is "tentacle" (no item has that id, so
+    /// Jellyfin's own pages ignore it) and whose "Tentacle" field lists the topics. Not a
+    /// LibraryChanged: older TV apps reload Home on every one of those.
+    /// </summary>
+    /// <param name="userIds">Jellyfin user ids, comma separated (dashes optional).</param>
+    /// <param name="topics">"requests", "activity", "notifications", comma separated.</param>
+    [HttpPost("Notify")]
+    [Authorize(Policy = "RequiresElevation")]
+    public async Task<ActionResult> Notify([FromQuery] string? userIds = null, [FromQuery] string? topics = null)
+    {
+        var ids = (userIds ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(s => Guid.TryParse(s, out var g) ? g : Guid.Empty)
+            .Where(g => g != Guid.Empty)
+            .Distinct()
+            .ToList();
+        var known = new HashSet<string>(StringComparer.Ordinal) { "requests", "activity", "notifications" };
+        var what = string.Join(",", (topics ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(known.Contains)
+            .Distinct());
+        if (ids.Count == 0 || what.Length == 0)
+        {
+            return BadRequest(new { error = "userIds and topics are required" });
+        }
+
+        var connected = _sessionManager.Sessions
+            .Where(s => s.UserId != Guid.Empty)
+            .Select(s => s.UserId)
+            .ToHashSet();
+        ids = ids.Where(connected.Contains).ToList();
+        if (ids.Count == 0)
+        {
+            return Ok(new { told = 0 });
+        }
+
+        try
+        {
+            await _sessionManager.SendMessageToUserSessions(
+                ids,
+                SessionMessageType.RefreshProgress,
+                () => new Dictionary<string, string>
+                {
+                    ["ItemId"] = "tentacle",
+                    ["Progress"] = "0",
+                    ["Tentacle"] = what,
+                },
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to tell clients about Tentacle changes");
+            return Ok(new { told = 0 });
+        }
+
+        return Ok(new { told = ids.Count });
+    }
+
+    /// <summary>
     /// The home version in a LibraryChanged message: one CollectionFolders entry
     /// "tentacle-home:&lt;user id, no dashes, or *&gt;:&lt;version&gt;". It rides in a field
     /// every client already parses as a list of strings (the Jellyfin SDK drops unknown

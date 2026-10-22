@@ -1978,7 +1978,16 @@
     });
   }
 
+  // Whose it is, for an admin looking at someone else's ("for Sam"). A server
+  // that says so (for_names) sends "for" only there; an older one sends
+  // requested_by on every item an admin sees.
+  function forLabel(item, tag) {
+    var who = MD.forNames ? item['for'] : item.requested_by;
+    return who ? '<' + tag + ' class="md-act-requested-by"' + (tag === 'div' ? ' style="margin-top:2px"' : '') + '>for ' + esc(who) + '</' + tag + '>' : '';
+  }
+
   function renderActivityContent(data) {
+    MD.forNames = !!(data && data.for_names);
     var content = document.getElementById('mdActContent');
     if (!content) return;
 
@@ -2048,7 +2057,7 @@
                 '<span class="md-act-status-badge md-act-badge-' + statusClass + '">' + statusLabel + '</span>' +
                 (qualityLabel ? '<span>' + qualityLabel + '</span>' : '') +
                 (sizeLabel ? '<span>' + sizeLabel + '</span>' : '') +
-                (dl.requested_by ? '<span class="md-act-requested-by">' + esc(dl.requested_by) + '</span>' : '') +
+                forLabel(dl, 'span') +
               '</div>' +
               '<div class="md-act-progress-row">' +
                 '<div class="md-act-progress-bar"><div class="md-act-progress-fill md-act-fill-' + statusClass + '" style="width:' + progressPct + '%"></div></div>' +
@@ -2082,7 +2091,7 @@
               (item.check
                 ? '<div class="md-act-upcoming-date md-act-check md-act-check-' + escAttr(item.check.state) + '" title="' + escAttr(item.check.summary) + '">' + esc(item.check.short) + '</div>'
                 : '<div class="md-act-upcoming-date">Looking for a release</div>') +
-              (item.requested_by ? '<div class="md-act-requested-by" style="margin-top:2px">' + esc(item.requested_by) + '</div>' : '') +
+              forLabel(item, 'div') +
             '</div>' +
           '</div>';
         }).join('') +
@@ -2108,6 +2117,7 @@
               '<div class="md-act-upcoming-title">' + esc(item.title) + '</div>' +
               epLabel +
               '<div class="md-act-upcoming-date">Ready to watch</div>' +
+              forLabel(item, 'div') +
             '</div>' +
           '</div>';
         }).join('') +
@@ -2132,6 +2142,7 @@
               '<div class="md-act-upcoming-title">' + esc(item.title) + '</div>' +
               '<div class="md-act-upcoming-type">' + esc(item.episode) + '</div>' +
               '<div class="md-act-upcoming-date">' + esc(item.episode_title || '') + '</div>' +
+              forLabel(item, 'div') +
             '</div>' +
           '</div>';
         }).join('') +
@@ -2168,7 +2179,7 @@
               '<div class="md-act-upcoming-title">' + esc(item.title) + '</div>' +
               releaseLabel +
               '<div class="md-act-upcoming-date">' + esc(item.release_date || '') + '</div>' +
-              (item.requested_by ? '<div class="md-act-requested-by" style="margin-top:2px">' + esc(item.requested_by) + '</div>' : '') +
+              forLabel(item, 'div') +
             '</div>' +
           '</div>';
         }).join('') +
@@ -2377,6 +2388,29 @@
     }
   }
 
+
+  // ── Live: Tentacle says requests or downloads changed ────────────────
+  // tentacle-notifications.js hears it on Jellyfin's socket (an approval, a
+  // decline, a download that started, finished or was removed) and sends
+  // "tentacle-changed": the navbar badge and an open Activity follow at once.
+  var _live = { busy: false, again: false };
+  function refreshActivityNow() {
+    if (MD.enabled === false || !window.ApiClient || !window.ApiClient.getCurrentUserId()) return;
+    if (_live.busy) { _live.again = true; return; }
+    _live.busy = true;
+    apiGet('TentacleDiscover/Activity?userId=' + window.ApiClient.getCurrentUserId()).then(function (data) {
+      MD.activityData = data;
+      window.dispatchEvent(new CustomEvent('tentacle-activity-count', { detail: activityCount(data) }));
+      if (ACT.active) renderActivityContent(data);
+    }).catch(function () {}).then(function () {
+      _live.busy = false;
+      if (_live.again) { _live.again = false; refreshActivityNow(); }
+    });
+  }
+  window.addEventListener('tentacle-changed', function (e) {
+    var topics = (e && e.detail && e.detail.topics) || [];
+    if (topics.indexOf('activity') !== -1 || topics.indexOf('requests') !== -1) refreshActivityNow();
+  });
 
   // ── Public API ──────────────────────────────────────────────────────
   window.TentacleDiscover = {

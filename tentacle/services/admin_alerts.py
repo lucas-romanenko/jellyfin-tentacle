@@ -30,8 +30,9 @@ def _admins(db: Session) -> list:
 
 
 def _tell_admins(db: Session, title: str, message: str, push: bool) -> None:
-    from services import pushover
+    from services import live_updates, pushover
     from services.approvals import _link
+    live_updates.publish("health", admins=True)
     for admin in _admins(db):
         try:
             create_notification(db, admin.id, 0, "movie", title, message, kind="problem", force=True)

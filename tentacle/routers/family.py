@@ -9,7 +9,7 @@ import logging
 from typing import List, Optional
 
 import requests
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -21,6 +21,19 @@ from services import welcome
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _people_changed(request: Request):
+    """After a change an admin made to someone (only when it went through):
+    every admin's open People page, and that person's own open Tentacle
+    (request mode, kids profile, Live TV)."""
+    yield
+    from services import live_updates
+    live_updates.publish("people", admins=True)
+    uid = request.path_params.get("user_id")
+    if uid is not None:
+        live_updates.publish("me", user_ids=[int(uid)])
+        live_updates.publish("home", user_ids=[int(uid)])
 
 
 def _refusal(e: F.FamilyError) -> HTTPException:
@@ -138,7 +151,7 @@ class InviteBody(BaseModel):
     channels: Optional[str] = None   # "none" | "kids" | a person's id
 
 
-@router.post("/api/family/invite")
+@router.post("/api/family/invite", dependencies=[Depends(_people_changed)])
 def invite(body: InviteBody, admin: TentacleUser = Depends(require_admin), db: Session = Depends(get_db)):
     try:
         return F.invite(db, admin, body.name, kids_level=body.kids_level or None,
@@ -173,7 +186,7 @@ class PersonBody(BaseModel):
     location: Optional[str] = None   # a place's slug; "" = the household's
 
 
-@router.put("/api/family/people/{user_id}")
+@router.put("/api/family/people/{user_id}", dependencies=[Depends(_people_changed)])
 def update_person(user_id: int, body: PersonBody, admin: TentacleUser = Depends(require_admin),
                   db: Session = Depends(get_db)):
     row = _row(db, user_id)
@@ -211,7 +224,7 @@ class AccessBody(BaseModel):
     disabled: Optional[bool] = None
 
 
-@router.put("/api/family/people/{user_id}/access")
+@router.put("/api/family/people/{user_id}/access", dependencies=[Depends(_people_changed)])
 def update_access(user_id: int, body: AccessBody, admin: TentacleUser = Depends(require_admin),
                   db: Session = Depends(get_db)):
     """What someone may do in Jellyfin; answers with the person as Jellyfin
@@ -282,7 +295,7 @@ class DefaultsBody(BaseModel):
     kids: Optional[dict] = None   # {"home": "kids" | "default" | id, "channels": "kids" | "none"}
 
 
-@router.put("/api/family/defaults", dependencies=[Depends(require_admin)])
+@router.put("/api/family/defaults", dependencies=[Depends(require_admin), Depends(_people_changed)])
 def save_defaults(body: DefaultsBody, db: Session = Depends(get_db)):
     try:
         return F.save_defaults(db, body.home_from, body.channels_from, body.kids)
@@ -302,7 +315,7 @@ class KidsChannelsBody(BaseModel):
     keys: List[str] = []
 
 
-@router.put("/api/family/kids-channels", dependencies=[Depends(require_admin)])
+@router.put("/api/family/kids-channels", dependencies=[Depends(require_admin), Depends(_people_changed)])
 def save_kids_channels(body: KidsChannelsBody, db: Session = Depends(get_db)):
     if len(body.keys) > 5000:
         raise HTTPException(400, "Too many channels")
