@@ -10,6 +10,11 @@ a short MPEG-TS stream that says so: "Nothing on right now", the event and
 when it starts. It plays on every client (Jellyfin Web, the TV app, phones)
 because it is just a channel picture; Jellyfin needs nothing new.
 
+The same picture, with its own title, tells a viewer when the provider
+doesn't send a channel ("Not coming through") or when someone else holds the
+provider's connections ("Connection in use"), instead of a spinner and a
+playback error.
+
 Only viewers get it. A recording of such a channel is still refused (503,
 Jellyfin retries a minute later) so a recording never saves the slate.
 
@@ -72,6 +77,20 @@ def early(event, now: Optional[datetime] = None, tz=None) -> Optional[tuple]:
     return (event.get("title") or "The event", "starts " + _when(event["start"], now, tz))
 
 
+def not_coming_through() -> tuple:
+    """The slate when the provider doesn't deliver a channel (refused, no
+    data): the viewer is told it's the provider, not their screen."""
+    return ("Not coming through", "Your provider isn't sending this channel",
+            "Try again in a minute or pick another channel")
+
+
+def connection_in_use(limit: int = 1) -> tuple:
+    """The slate when the provider's connections are all taken by others."""
+    first = ("Someone else is using your provider connection" if limit <= 1
+             else f"All {limit} provider connections are in use")
+    return ("Connection in use", first, "Try again when someone stops watching")
+
+
 def unavailable(event, channel_name: str) -> tuple:
     """The slate's two lines when the provider served its placeholder."""
     if isinstance(event, dict) and event.get("title"):
@@ -95,7 +114,9 @@ async def _render(lines: tuple) -> Optional[bytes]:
         logger.warning("[LiveTV] No ffmpeg or font for the 'Nothing on right now' picture")
         return None
     with tempfile.TemporaryDirectory(prefix="tentacle-slate-") as d:
-        texts = [(TITLE, 60, -90, "white"), (lines[0][:70], 40, 10, "0xDDE3EA"), (lines[1][:70], 34, 70, "0x9AA4AF")]
+        # (line, line) under "Nothing on right now", or (title, line, line)
+        title, lines = (lines[0], lines[1:]) if len(lines) == 3 else (TITLE, lines)
+        texts = [(title, 60, -90, "white"), (lines[0][:70], 40, 10, "0xDDE3EA"), (lines[1][:70], 34, 70, "0x9AA4AF")]
         draws = []
         for i, (text, size, dy, color) in enumerate(texts):
             if not text:
@@ -128,7 +149,8 @@ async def _render(lines: tuple) -> Optional[bytes]:
 
 
 async def picture(lines: tuple) -> Optional[bytes]:
-    """The slate for these two lines (MPEG-TS, SECONDS long), made once per text."""
+    """The slate for these two lines, or a title and two lines (MPEG-TS,
+    SECONDS long), made once per text."""
     global _lock
     if _lock is None:
         _lock = asyncio.Lock()

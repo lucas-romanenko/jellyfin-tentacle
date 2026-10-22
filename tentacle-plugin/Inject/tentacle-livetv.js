@@ -909,55 +909,158 @@
 
   // ── Playback ──────────────────────────────────────────────────────
 
-  function playChannel(channelId) {
-    // Try playbackManager first (global in Jellyfin web)
-    var pm = (typeof playbackManager !== 'undefined') ? playbackManager : null;
-    if (pm) {
-      try {
-        pm.play({
-          ids: [channelId],
-          serverId: window.ApiClient.serverId()
-        }).catch(function (err) {
-          console.error('[Tentacle LiveTV] playbackManager.play() failed, trying sendPlayCommand', err);
-          playViaSession(channelId);
-        });
-        return;
-      } catch (err) {
-        console.error('[Tentacle LiveTV] playbackManager.play() threw', err);
+  // Play in this tab. Jellyfin Web 10.11 keeps its playbackManager inside its
+  // bundle (no global), so the guide used to ask the server to play
+  // (sendPlayCommand). The server sends that to the browser's newest
+  // websocket: with two Jellyfin tabs open it started the channel in the
+  // other tab, a hidden player (sound with no picture) that held the
+  // provider connection while the clicked tab played too, and a Stop from
+  // the server reached the wrong tab. Instead we hand Jellyfin Web's own
+  // message handler (serverNotifications, bound to the ApiClient through
+  // the global Events) the same Play message, locally: its playbackManager
+  // plays here, stopping whatever this tab played first.
+  function localPlayer() {
+    var a = window.ApiClient, ev = window.Events;
+    var handlers = a && a._callbacks && a._callbacks.message;
+    if (!ev || typeof ev.trigger !== 'function' || !handlers || !handlers.length) return null;
+    return {
+      play: function (opts) {
+        opts = opts || {};
+        var data = { ItemIds: opts.ids || [], PlayCommand: 'PlayNow' };
+        if (opts.startPositionTicks) data.StartPositionTicks = opts.startPositionTicks;
+        if (opts.mediaSourceId) data.MediaSourceId = opts.mediaSourceId;
+        if (opts.audioStreamIndex != null) data.AudioStreamIndex = opts.audioStreamIndex;
+        if (opts.subtitleStreamIndex != null) data.SubtitleStreamIndex = opts.subtitleStreamIndex;
+        if (opts.startIndex != null) data.StartIndex = opts.startIndex;
+        try {
+          leftPlayerAt = 0;
+          ev.trigger(a, 'message', [{ MessageType: 'Play', Data: data }]);
+          return Promise.resolve();
+        } catch (err) {
+          return Promise.reject(err);
+        }
       }
-    }
-
-    // Fallback: send play command via session API
-    playViaSession(channelId);
+    };
   }
 
-  function playViaSession(channelId) {
-    var a = window.ApiClient;
-    if (!a) return;
+  // The other Tentacle pages (details, search) look for a global
+  // playbackManager and otherwise go through the server too: give them this.
+  if (typeof window.playbackManager === 'undefined') {
+    window.playbackManager = {
+      play: function (opts) {
+        var p = localPlayer();
+        return p ? p.play(opts) : Promise.reject(new Error('Jellyfin Web is not ready to play'));
+      }
+    };
+  }
 
-    if (typeof a.sendPlayCommand === 'function') {
-      var deviceId = a.deviceId();
-      a.getSessions({ DeviceId: deviceId }).then(function (sessions) {
-        if (sessions && sessions.length > 0) {
-          return a.sendPlayCommand(sessions[0].Id, {
-            ItemIds: [channelId],
-            PlayCommand: 'PlayNow'
-          });
-        }
-        throw new Error('No session');
-      }).catch(function (err) {
-        console.error('[Tentacle LiveTV] sendPlayCommand failed, trying URL navigation', err);
+  function playChannel(channelId) {
+    var p = localPlayer();
+    if (p) {
+      p.play({ ids: [channelId] }).catch(function (err) {
+        console.error('[Tentacle LiveTV] play failed, opening the channel page', err);
         navigateToPlay(channelId);
       });
-    } else {
-      navigateToPlay(channelId);
+      return;
     }
+    // Not signed in yet / not Jellyfin Web: the channel's page (play from
+    // there). Never the server's play command, which may play elsewhere.
+    navigateToPlay(channelId);
   }
 
   function navigateToPlay(channelId) {
-    // Last resort: navigate to the item which triggers Jellyfin's native playback
     location.hash = '#/details?id=' + channelId;
   }
+
+  // ── A live player left running after the player was closed ────────
+  //
+  // Jellyfin Web retries a live channel that fails (copy → video
+  // transcode → audio transcode). A retry still on its way when the viewer
+  // goes Back (or the error the closing player throws, which starts one)
+  // plays after the player page has gone: sound with no picture in this
+  // tab, holding the provider connection. Jellyfin Web only stops a video
+  // when its player page closes, so live TV that keeps playing off that
+  // page after it closed (not picture-in-picture) is stopped here, the way
+  // a remote Stop does, and taken off the page if it keeps going. A play
+  // that is starting (it plays a moment before its page opens) is left
+  // alone: only a video whose time runs on for STRAY_MS off the page counts.
+  var STRAY_MS = 1500;
+  var leftPlayerAt = 0, strayTimer = null, strayStopped = 0;
+
+  function onPlayerPage() { return /^#\/video\b/.test(location.hash); }
+
+  function liveHlsLoadedRecently() {
+    if (!window.performance || !performance.getEntriesByType) return false;
+    var list = performance.getEntriesByType('resource');
+    for (var i = list.length - 1; i >= 0; i--) {
+      var n = list[i].name || '';
+      if (/\/(master|main|live)\.m3u8/i.test(n)) {
+        return /\/live\.m3u8|[?&]LiveStreamId=/i.test(n) && performance.now() - list[i].startTime < 120000;
+      }
+    }
+    return false;
+  }
+
+  function strayVideos(now) {
+    var out = [];
+    if (!leftPlayerAt || onPlayerPage()) return out;
+    document.querySelectorAll('video').forEach(function (v) {
+      if (v.paused || v.ended || v === document.pictureInPictureElement) {
+        v.__tgOff = null;
+        return;
+      }
+      if (!v.__tgOff) v.__tgOff = { at: now, t: v.currentTime };
+      if (now - v.__tgOff.at >= STRAY_MS && v.currentTime - v.__tgOff.t >= 0.5) out.push(v);
+    });
+    return out.length && liveHlsLoadedRecently() ? out : [];
+  }
+
+  function checkStrayPlayer() {
+    strayTimer = null;
+    var stray = strayVideos(Date.now());
+    if (stray.length) {
+      if (!strayStopped) {
+        strayStopped = Date.now();
+        console.warn('[Tentacle LiveTV] live TV still playing after the player closed: stopping it');
+        var a = window.ApiClient, ev = window.Events;
+        try {
+          if (ev && a) ev.trigger(a, 'message', [{ MessageType: 'Playstate', Data: { Command: 'Stop' } }]);
+        } catch (e) { /* taken off below */ }
+      } else if (Date.now() - strayStopped >= 500) {
+        stray.forEach(function (v) {
+          try { v.pause(); v.removeAttribute('src'); v.load(); } catch (e) { /* gone */ }
+        });
+        strayStopped = 0;
+      }
+    } else {
+      strayStopped = 0;
+    }
+    // watched for two minutes after the page closed (a 'playing' starts it again)
+    if (leftPlayerAt && !onPlayerPage() && Date.now() - leftPlayerAt < 120000) {
+      strayTimer = setTimeout(checkStrayPlayer, 250);
+    }
+  }
+
+  // Jellyfin Web opens its player page with pushState (no hashchange):
+  // watch the route instead
+  var wasOnPlayerPage = onPlayerPage();
+  function watchPlayerPage(e) {
+    var on = onPlayerPage();
+    if (on) {
+      leftPlayerAt = 0;
+    } else if (wasOnPlayerPage) {
+      leftPlayerAt = Date.now();
+    }
+    wasOnPlayerPage = on;
+    if (leftPlayerAt && !strayTimer && (e && e.type === 'playing' || Date.now() - leftPlayerAt < 120000)) {
+      strayTimer = setTimeout(checkStrayPlayer, 250);
+    }
+  }
+  window.addEventListener('popstate', watchPlayerPage);
+  window.addEventListener('hashchange', watchPlayerPage);
+  setInterval(watchPlayerPage, 500);
+  // media events don't bubble: listen in the capture phase
+  document.addEventListener('playing', watchPlayerPage, true);
 
   // ── Navigation listeners ───────────────────────────────────────────
 

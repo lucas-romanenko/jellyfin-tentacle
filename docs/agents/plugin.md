@@ -25,7 +25,8 @@ HomeScreen/                             HomeScreenManager (per-user home config 
 Playlists/, Tasks/                      PlaylistManager, SmartListConfig, PlaylistRefreshTask
 Services/                               LibraryDeleteHandler (Jellyfin ItemRemoved → server, 2 s debounce), MdbListCacheService,
                                         VodNoVideoCopyFilter (Tentacle VOD as HLS: re-encode the video, never copy it),
-                                        PublicUsersFilter (/Users/Public is empty outside Jellyfin's local network)
+                                        PublicUsersFilter (/Users/Public is empty outside Jellyfin's local network),
+                                        OneLiveStreamPerDeviceFilter (a device opening a channel closes its previous live stream first)
 Inject/                                 the injected tentacle-*.js/.css and the logo (embedded resources)
 Web/                                    per-user settings page
 Assets/                                 rating source icons (served by AssetsController, file names sanitized)
@@ -120,6 +121,30 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   users without video transcoding permission (their remux is all they can
   play) are untouched. Turning off the user policy "Allow video playback that
   requires conversion without re-encoding" does not stop the copy.
+- **One Live TV stream per device** (`OneLiveStreamPerDeviceFilter`, a
+  global async MVC action filter): before `PlaybackInfo` or
+  `LiveStreams/Open` opens a Live TV channel for a device (the
+  `Jellyfin-DeviceId` claim of the caller's token), it kills that device's
+  transcodes of the live streams it opened before and closes those streams
+  (through `ISessionManager.CloseLiveStreamIfNeededAsync`, so a later stop
+  report doesn't close them twice); after Jellyfin answers it remembers the
+  new `LiveStreamId`. A request naming a `liveStreamId` (Jellyfin Web's
+  retry with other settings) reuses its stream and closes nothing. Why:
+  Jellyfin opens the new stream first and closes the old one only when the
+  client reports the old play stopped; on a one-connection IPTV account the
+  overlap makes the provider cut the new channel, and a player that never
+  reports (still retrying, another tab) kept the old one open. Devices are
+  separate (two people, or one on two devices, keep a stream each); tabs of
+  one browser share a device id, the newest channel wins.
+- **The guide plays in its own tab** (`tentacle-livetv.js`): Jellyfin Web
+  10.11 has no global `playbackManager`, and `sendPlayCommand` makes the
+  server send Play to the browser's newest websocket, which may be another
+  tab (a hidden player with sound). The guide triggers Jellyfin Web's own
+  websocket message handler locally instead (`Events.trigger(ApiClient,
+  'message', [{MessageType: 'Play', ...}])`) and sets that as
+  `window.playbackManager` for the other Tentacle pages. It also stops a
+  live video still playing off `#/video` (not picture-in-picture): a
+  local Playstate Stop, then pause and drop its source.
 - **Home sections**: when Tentacle's home is on, the server turns
   Jellyfin's own home sections off per user (see server.md).
 - **Logo**: served at `/Tentacle/logo.png`; CSS in `tentacle-home.css`

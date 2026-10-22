@@ -195,6 +195,78 @@ class PlaceholderAtOpen(_Db):
                 await livetv.stream_proxy(8, db=self.db)
 
 
+class ProviderDoesNotDeliver(_Db):
+    """Lucas, 22 Oct 2026: "if a stream cannot play from the provider we tell
+    them that". A viewer whose channel the provider refuses (or sends nothing
+    for) used to get a spinner and "playback error"; now the player says it's
+    the provider, or that someone else holds the connection."""
+
+    def setUp(self):
+        super().setUp()
+        import models.database as mdb
+        self.db.add(mdb.LiveChannel(id=9, provider_id=1, enabled=True, stream_url=PANEL, name="PBS Kids"))
+        self.db.commit()
+
+    async def refused(self, *a, **kw):
+        raise HTTPException(502, "Failed to connect to stream: the provider answered 403")
+
+    async def test_a_viewer_is_told_it_is_the_provider(self):
+        with patch.object(livetv, "_stream_proxy_inner", self.refused):
+            response = await livetv.stream_proxy(9, db=self.db)
+            self.assertEqual("provider not delivering", response.headers["X-Tentacle-Reason"])
+            self.assertEqual(SLATE * 3, await self.body(response))
+        self.assertEqual([S.not_coming_through()], self.pictures)
+        self.assertEqual("Not coming through", self.pictures[0][0])
+        self.assertEqual(0, self.slots.active, "the slot is free again")
+
+    async def test_while_another_stream_of_the_account_runs_it_says_in_use(self):
+        held = await self.slots.acquire_lease(0, 0, "live", "channel:8", provider_id=1)
+        self.addCleanup(self.slots.release_lease, held)
+        with patch.object(livetv, "_stream_proxy_inner", self.refused):
+            response = await livetv.stream_proxy(9, db=self.db)
+            self.assertEqual("connection in use", response.headers["X-Tentacle-Reason"])
+            await self.body(response)
+        self.assertEqual("Connection in use", self.pictures[0][0])
+
+    async def test_a_recording_is_refused_as_before(self):
+        self.recording = {9}
+        with patch.object(livetv, "_stream_proxy_inner", self.refused):
+            with self.assertRaises(HTTPException) as cm:
+                await livetv.stream_proxy(9, db=self.db)
+        self.assertEqual(502, cm.exception.status_code)
+        self.assertEqual([], self.pictures)
+
+    async def test_other_failures_are_not_blamed_on_the_provider(self):
+        async def blocked(*a, **kw):
+            raise HTTPException(502, "Stream URL points to a non-public host")
+        with patch.object(livetv, "_stream_proxy_inner", blocked):
+            with self.assertRaises(HTTPException):
+                await livetv.stream_proxy(9, db=self.db)
+        self.assertEqual([], self.pictures)
+
+    async def test_at_capacity_a_viewer_is_told_the_connections_are_in_use(self):
+        from models.database import set_setting
+        set_setting(self.db, "livetv_max_concurrent_streams", "1")
+        self.db.commit()
+        held = await self.slots.acquire_lease(0, 0, "live", "channel:8", provider_id=1)
+        self.addCleanup(self.slots.release_lease, held)
+        with patch.object(livetv, "_SLOT_WAIT_SECONDS", 0.01):
+            response = await livetv.stream_proxy(9, db=self.db)
+            self.assertEqual("connection in use", response.headers["X-Tentacle-Reason"])
+            await self.body(response)
+        self.assertEqual([S.connection_in_use(1)], self.pictures)
+        self.assertEqual(1, self.slots.refused, "still counted as a refusal")
+
+
+class ProviderLines(unittest.TestCase):
+    def test_three_lines_short_enough_for_the_picture(self):
+        for lines in (S.not_coming_through(), S.connection_in_use(1), S.connection_in_use(3)):
+            self.assertEqual(3, len(lines))
+            self.assertTrue(all(len(x) <= 50 for x in lines), lines)
+        self.assertIn("Someone else", S.connection_in_use(1)[1])
+        self.assertIn("All 3", S.connection_in_use(3)[1])
+
+
 class _Enough(Exception):
     pass
 

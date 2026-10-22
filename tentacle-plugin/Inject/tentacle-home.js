@@ -688,8 +688,8 @@
   }
 
   // Tune in the way the Live TV and Favorites pages do (tentacle-livetv.js:
-  // Jellyfin Web 10.11 has no global playbackManager, so it plays through this
-  // browser's own session)
+  // Jellyfin Web 10.11 has no global playbackManager, so it plays in this tab
+  // through Jellyfin Web's own message handler)
   function playLive(channelId) {
     if (window.TentacleLiveTV && typeof window.TentacleLiveTV.playChannel === 'function') {
       window.TentacleLiveTV.playChannel(channelId);

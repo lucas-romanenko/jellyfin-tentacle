@@ -572,7 +572,8 @@ class RouteGivesRecordingsTheSlot(unittest.TestCase):
             with mock.patch.object(livetv, "_stream_proxy_inner", fake_inner), \
                     mock.patch.object(livetv, "is_safe_url", lambda *a, **k: True), \
                     mock.patch.object(livetv, "lan_origin_guard", lambda *a, **k: (lambda url: True)), \
-                    mock.patch.object(livetv, "_recording_stream_ids_from_jellyfin", lookup):
+                    mock.patch.object(livetv, "_recording_stream_ids_from_jellyfin", lookup), \
+                    mock.patch("services.livetv_slate.picture", mock.AsyncMock(return_value=None)):
                 r = await livetv.stream_proxy(self.rec.id, self.db)
                 self.assertEqual(b"X", await r.body_iterator.__anext__())
                 self.assertEqual("live", livetv._stream_slots.lease_for(f"channel:{self.rec.id}").kind,
