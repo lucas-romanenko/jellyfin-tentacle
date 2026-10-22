@@ -208,6 +208,25 @@ class TestOwnerlessCleanup(_Base):
             {"id": "pl-ghost2", "name": "Toronto Maple Leafs1", "entries": 0}])
         self.assertEqual(["pl-ghost2"], deleted)
 
+    def test_a_deleted_users_playlist_is_deleted_whatever_its_name(self):
+        n, deleted = self.run_cleanup([
+            {"id": "pl-ethan", "name": "Road Trip", "entries": 12, "ownerGone": True,
+             "openAccess": False, "shares": 0}])
+        self.assertEqual((1, ["pl-ethan"]), (n, deleted))
+
+    def test_a_deleted_users_shared_or_public_playlist_is_kept(self):
+        # Jellyfin keeps those too: a shared one passes to the person it was shared with.
+        _, deleted = self.run_cleanup([
+            {"id": "pl-open", "name": "Family", "entries": 3, "ownerGone": True, "openAccess": True, "shares": 0},
+            {"id": "pl-shared", "name": "Mum", "entries": 3, "ownerGone": True, "openAccess": False, "shares": 1}])
+        self.assertEqual([], deleted)
+
+    def test_a_deleted_users_playlist_goes_even_with_no_managed_names(self):
+        fake = FakeJf([{"id": "pl-ethan", "name": "Road Trip", "entries": 2, "ownerGone": True}])
+        with mock.patch.object(sl, "_managed_playlist_names", return_value=set()):
+            self.assertEqual(1, sl._cleanup_ownerless_playlists_locked(self.db, fake))
+        self.assertEqual(["pl-ethan"], fake.deleted)
+
     def test_plugin_without_the_route_changes_nothing(self):
         n, deleted = self.run_cleanup(None)
         self.assertEqual((0, []), (n, deleted))

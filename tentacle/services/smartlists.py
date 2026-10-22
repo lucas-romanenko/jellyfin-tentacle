@@ -2523,7 +2523,8 @@ def _is_managed_name_variant(name: str, managed: set) -> bool:
 
 
 def _cleanup_ownerless_playlists_locked(db: Session, jf) -> int:
-    """Delete EMPTY playlists that have no owner and carry a managed name (#120).
+    """Delete EMPTY playlists that have no owner and carry a managed name (#120),
+    and the private, unshared playlists of people deleted in Jellyfin.
 
     Jellyfin can leave one behind — an interrupted create, where the folder got
     a "1" suffix because the name was taken, and no owner was ever written.
@@ -2532,6 +2533,11 @@ def _cleanup_ownerless_playlists_locked(db: Session, jf) -> int:
     and leaves anything other users can see alone. Jellyfin's API never says
     who owns a playlist, so the plugin reports these. Only an empty one is
     removed — nothing is lost — and only under a name Tentacle manages.
+
+    Deleting a user in Jellyfin removes their private, unshared playlists from
+    the library but leaves the folders, and the next scan brings them back
+    owned by nobody who exists (the plugin says `ownerGone`). Those are what
+    Jellyfin meant to delete, so they go whatever their name or entries.
     """
     try:
         ownerless = jf.get_ownerless_playlists()
@@ -2541,18 +2547,27 @@ def _cleanup_ownerless_playlists_locked(db: Session, jf) -> int:
     if not ownerless:
         return 0
     managed = _managed_playlist_names(db)
-    if not managed:
-        return 0
     deleted = 0
     for pl in ownerless:
         name, pid = pl.get("name") or "", pl.get("id")
-        if not pid or (pl.get("entries") or 0) != 0 or not _is_managed_name_variant(name, managed):
+        if not pid:
+            continue
+        if pl.get("ownerGone"):
+            # A deleted person's playlist the library scan brought back:
+            # Jellyfin's user delete meant to remove it (it removes only
+            # private, unshared ones too) but left the folder behind.
+            if pl.get("openAccess") or (pl.get("shares") or 0):
+                continue
+            what = "playlist of a deleted user"
+        elif (pl.get("entries") or 0) == 0 and _is_managed_name_variant(name, managed):
+            what = "empty ownerless playlist"
+        else:
             continue
         if jf.delete_item(pid):
             deleted += 1
-            logger.info(f"[SmartLists] Deleted empty ownerless playlist '{name}' ({pid})")
+            logger.info(f"[SmartLists] Deleted {what} '{name}' ({pid})")
         else:
-            logger.warning(f"[SmartLists] Failed to delete empty ownerless playlist '{name}' ({pid})")
+            logger.warning(f"[SmartLists] Failed to delete {what} '{name}' ({pid})")
     return deleted
 
 
