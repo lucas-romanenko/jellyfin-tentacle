@@ -45,7 +45,16 @@ from sqlalchemy.orm import Session
 
 from models.database import TentacleUser
 from services import livetv_lineups as L
-from services.family import LOCKOUT_AFTER, FamilyError, _jf_error, dashed, jellyfin
+from services import family as _family
+from services.family import LOCKOUT_AFTER, FamilyError, _jf_error, dashed
+
+
+def jellyfin(db):
+    """services.family.jellyfin, looked up when called. Bound at import, a
+    test that first imported this module while family.jellyfin was mocked
+    left every later test in that process talking to its fake Jellyfin."""
+    return _family.jellyfin(db)
+
 
 logger = logging.getLogger(__name__)
 
