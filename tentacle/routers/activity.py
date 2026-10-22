@@ -1196,6 +1196,14 @@ def _after_arr_change(title: Optional["ArrTitle"] = None) -> None:
         bust_arr_ids_cache()
     except Exception:
         pass
+    # Open Activity screens: a title removed, a search stopped or a release
+    # picked. Every tab (its requester's request row may be gone already);
+    # the Jellyfin clients of its requester, if any is left, and the admins.
+    from services import live_updates
+    live_updates.publish("activity", everyone=True)
+    owners = live_updates.owners_of([{"media_type": title.media_type, "tmdb_id": title.tmdb_id}]) \
+        if title is not None and live_updates.active() else ()
+    live_updates.tell_clients("activity", user_ids=owners, admins=True)
 
 
 def _ep_label(ep: dict) -> str:

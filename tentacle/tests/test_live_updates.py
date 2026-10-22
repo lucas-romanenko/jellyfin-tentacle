@@ -345,6 +345,21 @@ class OthersDownloads(unittest.TestCase):
         self.assertEqual(403, c.put("/api/notifications/others", json={"show": True}).status_code)
 
 
+class ActivityActions(unittest.TestCase):
+    def test_removing_or_stopping_a_title_reaches_every_open_activity(self):
+        from routers import activity
+        LU.reset()
+        self.addCleanup(LU.reset)
+        title = activity.ArrTitle(media_type="movie", tmdb_id=5)
+        with mock.patch.object(activity, "invalidate_wanted_cache"), \
+                mock.patch("services.arr_insight.forget"), \
+                mock.patch("routers.discover.bust_arr_ids_cache"), \
+                mock.patch.object(LU, "publish") as pub, mock.patch.object(LU, "tell_clients") as tell:
+            activity._after_arr_change(title)
+        pub.assert_called_once_with("activity", everyone=True)
+        tell.assert_called_once_with("activity", user_ids=(), admins=True)
+
+
 class ActivityWatch(unittest.TestCase):
     """Radarr/Sonarr say nothing when a download starts or moves on: Tentacle
     reads their queues and tells who it concerns."""
