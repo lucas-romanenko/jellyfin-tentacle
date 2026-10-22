@@ -80,6 +80,13 @@ class Places(unittest.TestCase):
         self.assertIn("MASSACHUSETTS", words)
         self.assertNotIn("DETROIT", words)
 
+    def test_a_border_stations_call_sign_is_its_city(self):
+        self.assertEqual({"US", "BUFFALO"}, N.region_words("US: PBS 17 (WNED) ᴿᴬᵂ"))
+        self.assertIn("BUFFALO", N.region_words("US: CW 23 HD (WNLO-TV)"))
+        self.assertIn("DETROIT", N.region_words("US: ABC 7 (WXYZ)"))
+        self.assertIn("SEATTLE", N.region_words("US: ABC 4 (KOMO)"))
+        self.assertNotIn("SEATTLE", N.region_words("US: KING OF THE HILL"))
+
     def test_a_city_named_west_is_no_west_feed(self):
         self.assertNotIn("WEST", N.region_words("US: ABC 25 (WPBF) West Palm Beach HD"))
         self.assertNotIn("WEST", N.region_words("US: ABC 5 WEST DES MOINES IA (WOI)"))
@@ -161,6 +168,32 @@ class Variants(Case):
         # PBS: not "Springfield, MA ... DETROIT" (the Detroit is another city's tag)
         self.assertEqual(41, chosen[self.net(40)])
         self.assertEqual(50, chosen[self.net(50)])   # Discovery's East feed
+
+    def test_toronto_has_buffalos_station_of_every_us_network(self):
+        # Named by call sign alone, the Buffalo stations still win; without
+        # one, the nearest market there is (PBS: Binghamton).
+        for cid, name in ((43, "US: PBS 17 (WNED) ᴿᴬᵂ"), (35, "US: ABC 4 (KOMO) SEATTLE"),
+                          (36, "US: ABC 7 HD (WKBW)"), (37, "US: FOX 11 (KTTV) LOS ANGELES"),
+                          (38, "US: FOX 29 (WUTV)"), (72, "US: CW 11 (WPIX) NEW YORK"), (73, "US: CW 23 (WNLO)")):
+            self.db.add(mdb.LiveChannel(id=cid, provider_id=1, name=name, stream_id=str(100 + cid),
+                                        stream_url=f"http://192.0.2.10/live/{cid}.ts", group_title="US| LOCALS",
+                                        enabled=True, sort_order=cid))
+        self.db.commit()
+        L.pool(self.db)
+        chosen = C.chosen_variants(self.db)
+        self.assertEqual(43, chosen[self.net(41)])   # PBS: WNED
+        self.assertEqual(36, chosen[self.net(35)])   # ABC: WKBW
+        self.assertEqual(38, chosen[self.net(37)])   # FOX: WUTV
+        self.assertEqual(73, chosen[self.net(72)])   # CW: WNLO
+        self.assertEqual(30, chosen[self.net(30)])   # NBC: WGRZ
+        self.assertEqual(71, chosen[self.net(70)])   # CBS: WIVB
+        got = C.place_variants(self.db, ["vancouver"])["vancouver"]
+        self.assertEqual(42, got[self.net(41)])      # Vancouver: Seattle's
+        self.assertEqual(35, got[self.net(35)])
+        self.db.query(mdb.LiveChannel).filter(mdb.LiveChannel.id == 43).update({"enabled": False})
+        self.db.commit()
+        L.pool(self.db)
+        self.assertEqual(41, C.chosen_variants(self.db)[self.net(41)])
 
     def test_vancouver_gets_its_local_stations_and_seattle_for_us_networks(self):
         L.pool(self.db)
