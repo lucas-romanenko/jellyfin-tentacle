@@ -485,7 +485,10 @@ movies/series, then Sonarr/Radarr text-lookup titles TMDB lacks (TheTVDB).
 
 ## Provider health (`services/provider_health.py`)
 
-- Hourly (job `provider_health`, plus once 2 min after start), per provider
+- Hourly (job `provider_health`, plus once 2 min after start unless the
+  newest `checked_at` is under an hour old: then that start checks nothing,
+  logs "start-up check skipped", and the hourly run starts an hour after the
+  last check, `next_due`; "Check now" always runs), per provider
   that is `active` or has `live_tv_enabled`: the API login (Xtream
   `player_api.php`: status, `auth`, account `status`, `exp_date`; M3U URL:
   the first 64 KB must be `#EXTM3U`; M3U file: none), then a 64 KB Range GET
