@@ -444,6 +444,22 @@ class Sync(DbCase):
         self.assertEqual(1, changed.call_count, "only a change of the limit syncs")
         self.assertLessEqual(T.LIMIT_DELAY_SECONDS, 5)
 
+    def test_a_new_limit_sets_the_count_without_a_whole_sync(self):
+        # A whole sync after a tuner save ran ~40 s on production (Jellyfin
+        # refreshing its guide); a second change waited behind it.
+        self.sync()
+        p = self.db.query(mdb.Provider).one()
+        p.live_max_streams = 7
+        self.db.commit()
+        refreshes = self.jf.refreshes
+        with mock.patch.object(T, "SessionLocal", self.Session), mock.patch.object(T, "sync") as whole:
+            self.assertEqual(7, T.follow_stream_limit("test"))
+            self.assertIsNone(T.follow_stream_limit("test"), "nothing to change")
+        whole.assert_not_called()
+        self.assertEqual([(LINEUP, 7, "Tentacle · Live TV")],
+                         [(t["Url"], t["TunerCount"], t["FriendlyName"]) for t in self.jf.tuners])
+        self.assertEqual(refreshes, self.jf.refreshes)
+
     def test_moves_everyone_off_the_old_hdhomerun_tuner(self):
         self.jf.add_hdhr()
         self.jf.favs[ANN] = {self.hdhr_id("c2")}

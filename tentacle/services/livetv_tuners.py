@@ -724,7 +724,7 @@ def sync(db, refresh: bool = False) -> dict:
         if count and tuner.get("TunerCount") != count:
             fixed["TunerCount"] = count
             done["tuner_count"] = count
-            logger.info(f"[LiveTV] Jellyfin tuner '{TUNER_NAME}': {tuner.get('TunerCount')} → {count} "
+            logger.info(f"[LiveTV] Jellyfin tuner '{tuner.get('FriendlyName')}': {tuner.get('TunerCount')} → {count} "
                         f"streams at once (Tentacle's limit)")
         if fixed:
             jf.post("/LiveTv/TunerHosts", {**tuner, **fixed})
@@ -862,10 +862,53 @@ def schedule_sync(reason: str, refresh: bool = False, delay: Optional[float] = N
         t.start()
 
 
+_count_timer = {"timer": None}
+
+
 def stream_limit_changed(reason: str) -> None:
     """A provider's "Streams at once" (or the default) changed: Jellyfin's
-    tuner count follows within seconds, not at the hourly check."""
-    schedule_sync(reason, delay=LIMIT_DELAY_SECONDS)
+    tuner count follows within seconds, not at the hourly check. On its own,
+    not as a whole sync: a sync after a tuner save runs ~40 s while Jellyfin
+    refreshes its guide, and a second change waited behind it."""
+    if not _enabled:
+        return
+    with _pending_lock:
+        if _count_timer["timer"] is not None:
+            _count_timer["timer"].cancel()
+        t = threading.Timer(LIMIT_DELAY_SECONDS, follow_stream_limit, kwargs={"reason": reason})
+        t.daemon = True
+        _count_timer["timer"] = t
+        t.start()
+
+
+_count_lock = threading.Lock()
+
+
+def follow_stream_limit(reason: str = "") -> Optional[int]:
+    """Set the lineup tuner's TunerCount to Tentacle's limit when it differs
+    (the rest of the tuner kept). Returns the count set, None when nothing
+    changed; never raises."""
+    with _count_lock:
+        db = SessionLocal()
+        try:
+            jf = jellyfin_for(db)
+            url = get_setting(db, ALL_TUNER_URL_KEY, "") or ""
+            if jf is None or not url:
+                return None
+            cfg = jf.get("/System/Configuration/livetv") or {}
+            tuner = next((t for t in cfg.get("TunerHosts") or [] if is_tentacle_tuner(t) and t.get("Url") == url), None)
+            count = tuner_count(db)
+            if tuner is None or not count or tuner.get("TunerCount") == count:
+                return None
+            jf.post("/LiveTv/TunerHosts", {**tuner, "TunerCount": count})
+            logger.info(f"[LiveTV] Jellyfin tuner '{tuner.get('FriendlyName')}': {tuner.get('TunerCount')} → {count} "
+                        f"streams at once (Tentacle's limit{', ' + reason if reason else ''})")
+            return count
+        except Exception:
+            logger.warning("[LiveTV] Could not set the Jellyfin tuner's count", exc_info=True)
+            return None
+        finally:
+            db.close()
 
 
 def enable() -> None:
