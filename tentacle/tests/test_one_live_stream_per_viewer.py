@@ -55,8 +55,9 @@ class LeftoverPlayerStopped(unittest.TestCase):
         self.assertIn("v === document.pictureInPictureElement", self.src)
 
     def test_only_live_tv(self):
-        # a theme video or other video is left alone: only after a live playlist
+        # a theme video or other video is left alone: hls.js (blob:) after a live playlist
         self.assertIn("live\\.m3u8|[?&]LiveStreamId=", self.src)
+        self.assertIn("!/^blob:/.test(v.currentSrc || '')", self.src)
 
     def test_stopped_like_a_remote_stop_then_taken_off(self):
         self.assertIn("MessageType: 'Playstate', Data: { Command: 'Stop' }", self.src)
@@ -90,30 +91,46 @@ class OneStreamPerDevice(unittest.TestCase):
     def test_only_when_playback_info_opens_the_stream(self):
         # GET PlaybackInfo and a POST without AutoOpenLiveStream open nothing
         self.assertNotIn('("MediaInfo", "GetPlaybackInfo")', self.src)
-        body = self.src[self.src.index("private bool OpensChannel"):]
+        body = self.src[self.src.index("private Guid OpenedChannel"):]
+        self.assertIn('if (actionName == "GetPostedPlaybackInfo")', body)
         self.assertIn('GetProperty("AutoOpenLiveStream")', body)
-        self.assertRegex(body, r"if \(!autoOpen\)\s*\{\s*return false;")
+        self.assertRegex(body, r"if \(!autoOpen\)\s*\{\s*return Guid\.Empty;")
 
     def test_by_the_callers_device(self):
         self.assertIn('DeviceIdClaim = "Jellyfin-DeviceId"', self.src)
 
     def test_a_retry_on_its_own_stream_closes_nothing(self):
-        body = self.src[self.src.index("private bool OpensChannel"):]
-        self.assertRegex(body, r"if \(!string\.IsNullOrEmpty\(liveStreamId\)\)\s*\{\s*return false;")
+        body = self.src[self.src.index("private Guid OpenedChannel"):]
+        self.assertRegex(body, r"if \(!string\.IsNullOrEmpty\(liveStreamId\)\)\s*\{\s*return Guid\.Empty;")
+
+    def test_the_same_channel_again_closes_nothing(self):
+        # the TV app asks afresh (no liveStreamId) for an audio or subtitle change
+        body = self.src[self.src.index("private async Task CloseStreamsOf"):]
+        self.assertRegex(body, r"if \(opened\.ChannelId == channelId\)\s*\{[^}]*continue;")
+
+    def test_api_key_callers_are_not_one_device(self):
+        self.assertIn("string.Equals(deviceId, _appHost.SystemId, StringComparison.OrdinalIgnoreCase)", self.src)
 
     def test_closes_before_jellyfin_opens_and_remembers_after(self):
         body = self.src[self.src.index("public async Task OnActionExecutionAsync"):]
-        close, run, keep = (body.index(s) for s in ("await CloseStreamsOf(deviceId)", "var executed = await next()", "Remember(deviceId"))
+        close, run, keep = (body.index(s) for s in ("await CloseStreamsOf(deviceId, channelId)",
+                                                     "var executed = await next()", "Remember(deviceId"))
         self.assertLess(close, run)
         self.assertLess(run, keep)
 
-    def test_stops_the_transcode_and_closes_the_stream_once(self):
+    def test_stops_its_own_transcode_and_gives_up_its_share_once(self):
         body = self.src[self.src.index("private async Task CloseStreamsOf"):]
-        self.assertIn("_transcodeManager.KillTranscodingJobs(deviceId, playSessionId", body)
-        self.assertIn("_sessionManager.CloseLiveStreamIfNeededAsync(liveStreamId, playSessionId)", body)
-        # straight away only if the session manager didn't (no double close)
-        self.assertRegex(body, r"if \(_mediaSourceManager\.GetLiveStreamInfo\(liveStreamId\) is not null\)\s*\{\s*"
-                               r"await _mediaSourceManager\.CloseLiveStream\(liveStreamId\)")
+        # by play session only: an empty one would match every transcode of the device
+        self.assertRegex(body, r"if \(!string\.IsNullOrEmpty\(opened\.PlaySessionId\)\)\s*\{\s*"
+                               r"await _transcodeManager\.KillTranscodingJobs\(deviceId, opened\.PlaySessionId")
+        self.assertIn("_sessionManager.CloseLiveStreamIfNeededAsync(liveStreamId, opened.PlaySessionId)", body)
+        # straight away only if the session manager didn't take this device's share
+        self.assertIn("var consumers = stream.ConsumerCount;", body)
+        self.assertIn("stream.ConsumerCount == consumers", body)
+
+    def test_live_streams_open_keeps_its_play_session(self):
+        self.assertIn('args.TryGetValue("playSessionId", out var ps)', self.src)
+        self.assertIn("opened.Add((live.MediaSource.LiveStreamId, playSessionId));", self.src)
 
     def test_never_fails_a_play(self):
         self.assertIn('"[Tentacle] Could not close live stream {LiveStream}"', self.src)

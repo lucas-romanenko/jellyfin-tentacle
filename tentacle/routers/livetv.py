@@ -4505,7 +4505,11 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
         # The provider didn't deliver: the viewer is told so on the player
         # (not a spinner, then "playback error"). While another stream of
         # this provider runs here, its refusal is most likely the account's
-        # connection limit.
+        # connection limit. Asked afresh whether it's a recording ("Record
+        # now" may be younger than the cached answer): a recording keeps the
+        # refusal, so Jellyfin retries it instead of recording the slate.
+        if channel_id in await _recording_channel_ids(db, force=True):
+            raise
         from services import livetv_slate
         others = _stream_slots.provider_active(ch.provider_id if ch else None)
         lines, reason = ((livetv_slate.connection_in_use(provider_limit or limit), "connection in use") if others

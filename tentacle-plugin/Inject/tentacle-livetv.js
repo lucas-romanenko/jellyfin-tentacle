@@ -949,7 +949,11 @@
     window.playbackManager = {
       play: function (opts) {
         var p = localPlayer();
-        return p ? p.play(opts) : Promise.reject(new Error('Jellyfin Web is not ready to play'));
+        if (p) return p.play(opts);
+        // not ready to play: the item's page, as these pages did without a player
+        var ids = (opts && opts.ids) || [];
+        if (ids.length) navigateToPlay(ids[0]);
+        return Promise.resolve();
       }
     };
   }
@@ -1005,7 +1009,8 @@
     var out = [];
     if (!leftPlayerAt || onPlayerPage()) return out;
     document.querySelectorAll('video').forEach(function (v) {
-      if (v.paused || v.ended || v === document.pictureInPictureElement) {
+      // live TV plays through hls.js (a blob: source); a theme video doesn't
+      if (v.paused || v.ended || v === document.pictureInPictureElement || !/^blob:/.test(v.currentSrc || '')) {
         v.__tgOff = null;
         return;
       }

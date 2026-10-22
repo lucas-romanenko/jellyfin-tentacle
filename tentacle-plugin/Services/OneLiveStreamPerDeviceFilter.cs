@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Controller.MediaEncoding;
@@ -36,9 +37,13 @@ namespace Jellyfin.Plugin.Tentacle.Services;
 /// streams; after Jellyfin answered, it remembers the live stream the
 /// answer opened. A request that names a live stream it already has (a
 /// retry with other settings, a seek) reuses that stream and closes
-/// nothing. Devices are separate: two people, or one person on two
-/// devices, each keep their own stream. Tabs of one browser share a device
-/// id: the newest channel wins.
+/// nothing, and so does a request for the channel the device already has
+/// (the TV app asks afresh, without the stream's id, for an audio track or
+/// subtitle change). A stream other devices share is only given up by this
+/// one (its consumer count goes down once). API-key callers without a
+/// device id are left alone. Devices are separate: two people, or one
+/// person on two devices, each keep their own stream. Tabs of one browser
+/// share a device id: the newest channel wins.
 /// </summary>
 public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
 {
@@ -56,10 +61,11 @@ public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
     private readonly IMediaSourceManager _mediaSourceManager;
     private readonly ISessionManager _sessionManager;
     private readonly ITranscodeManager _transcodeManager;
+    private readonly IServerApplicationHost _appHost;
     private readonly ILogger<OneLiveStreamPerDeviceFilter> _logger;
 
-    // device id → the live streams Jellyfin opened for it (live stream id → play session id)
-    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, string>> _streams =
+    // device id → the live streams Jellyfin opened for it, by live stream id
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, Opened>> _streams =
         new(StringComparer.OrdinalIgnoreCase);
 
     // One channel open at a time per device (a double click opens two otherwise)
@@ -70,26 +76,40 @@ public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
         IMediaSourceManager mediaSourceManager,
         ISessionManager sessionManager,
         ITranscodeManager transcodeManager,
+        IServerApplicationHost appHost,
         ILogger<OneLiveStreamPerDeviceFilter> logger)
     {
         _libraryManager = libraryManager;
         _mediaSourceManager = mediaSourceManager;
         _sessionManager = sessionManager;
         _transcodeManager = transcodeManager;
+        _appHost = appHost;
         _logger = logger;
     }
+
+    // A live stream a device opened: its play session and its channel
+    private sealed record Opened(string PlaySessionId, Guid ChannelId);
 
     /// <inheritdoc />
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
         string? deviceId = null;
+        var channelId = Guid.Empty;
+        var playSessionId = string.Empty;
         try
         {
             if (context.ActionDescriptor is ControllerActionDescriptor action
-                && Actions.Contains((action.ControllerName, action.ActionName))
-                && OpensChannel(context.ActionArguments))
+                && Actions.Contains((action.ControllerName, action.ActionName)))
             {
-                deviceId = context.HttpContext.User.FindFirst(DeviceIdClaim)?.Value;
+                channelId = OpenedChannel(action.ActionName, context.ActionArguments, out playSessionId);
+                deviceId = channelId == Guid.Empty ? null : context.HttpContext.User.FindFirst(DeviceIdClaim)?.Value;
+
+                // An API key without a device id gets the server's own id:
+                // all such callers would be one "device"
+                if (string.Equals(deviceId, _appHost.SystemId, StringComparison.OrdinalIgnoreCase))
+                {
+                    deviceId = null;
+                }
             }
         }
         catch (Exception ex)
@@ -107,9 +127,9 @@ public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
         await gate.WaitAsync().ConfigureAwait(false);
         try
         {
-            await CloseStreamsOf(deviceId).ConfigureAwait(false);
+            await CloseStreamsOf(deviceId, channelId).ConfigureAwait(false);
             var executed = await next().ConfigureAwait(false);
-            Remember(deviceId, executed);
+            Remember(deviceId, channelId, playSessionId, executed);
         }
         finally
         {
@@ -117,11 +137,12 @@ public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
         }
     }
 
-    // Whether the request opens a Live TV channel's stream: the item is a
-    // channel, PlaybackInfo is asked to open it, and the request doesn't name
-    // a live stream it already has.
-    private bool OpensChannel(IDictionary<string, object?> args)
+    // The channel the request opens a stream of, or Guid.Empty: the item is
+    // a channel, PlaybackInfo is asked to open it (AutoOpenLiveStream), and
+    // the request doesn't name a live stream it already has.
+    private Guid OpenedChannel(string actionName, IDictionary<string, object?> args, out string playSessionId)
     {
+        playSessionId = string.Empty;
         var body = args.TryGetValue("playbackInfoDto", out var b) ? b
             : args.TryGetValue("openLiveStreamDto", out var o) ? o : null;
 
@@ -133,23 +154,25 @@ public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
 
         if (!string.IsNullOrEmpty(liveStreamId))
         {
-            return false;
+            return Guid.Empty;
         }
 
-        // PlaybackInfo opens a stream only when asked to (AutoOpenLiveStream,
-        // query or body): one that only asks about the channel closes nothing
-        if (args.ContainsKey("playbackInfoDto") || args.ContainsKey("autoOpenLiveStream"))
+        if (actionName == "GetPostedPlaybackInfo")
         {
-            var autoOpen = args.TryGetValue("autoOpenLiveStream", out var a) && a is true;
-            if (!autoOpen && body is not null && body.GetType().GetProperty("AutoOpenLiveStream")?.GetValue(body) is true)
-            {
-                autoOpen = true;
-            }
-
+            // only asked about the channel: nothing opens
+            var autoOpen = (args.TryGetValue("autoOpenLiveStream", out var a) && a is true)
+                || body?.GetType().GetProperty("AutoOpenLiveStream")?.GetValue(body) is true;
             if (!autoOpen)
             {
-                return false;
+                return Guid.Empty;
             }
+        }
+        else
+        {
+            // LiveStreams/Open names its play session (PlaybackInfo's comes with the answer)
+            playSessionId = (args.TryGetValue("playSessionId", out var ps) ? ps as string : null)
+                ?? body?.GetType().GetProperty("PlaySessionId")?.GetValue(body) as string
+                ?? string.Empty;
         }
 
         Guid itemId = Guid.Empty;
@@ -162,20 +185,28 @@ public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
             itemId = fromBody;
         }
 
-        return itemId != Guid.Empty && _libraryManager.GetItemById(itemId) is LiveTvChannel;
+        return itemId != Guid.Empty && _libraryManager.GetItemById(itemId) is LiveTvChannel ? itemId : Guid.Empty;
     }
 
-    private async Task CloseStreamsOf(string deviceId)
+    private async Task CloseStreamsOf(string deviceId, Guid channelId)
     {
         if (!_streams.TryGetValue(deviceId, out var open) || open.IsEmpty)
         {
             return;
         }
 
-        foreach (var (liveStreamId, playSessionId) in open.ToArray())
+        foreach (var (liveStreamId, opened) in open.ToArray())
         {
+            // The same channel again (the TV app asks afresh for an audio
+            // track or subtitle change): Jellyfin shares the open stream
+            if (opened.ChannelId == channelId)
+            {
+                continue;
+            }
+
             open.TryRemove(liveStreamId, out _);
-            if (_mediaSourceManager.GetLiveStreamInfo(liveStreamId) is null)
+            var stream = _mediaSourceManager.GetLiveStreamInfo(liveStreamId);
+            if (stream is null)
             {
                 continue; // already closed (the player stopped)
             }
@@ -186,13 +217,22 @@ public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
                     "[Tentacle] Device {Device} opens another channel: closing its previous live stream {LiveStream}",
                     deviceId,
                     liveStreamId);
-                await _transcodeManager.KillTranscodingJobs(deviceId, playSessionId, _ => true).ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(opened.PlaySessionId))
+                {
+                    await _transcodeManager.KillTranscodingJobs(deviceId, opened.PlaySessionId, _ => true).ConfigureAwait(false);
+                }
 
-                // Through the session manager when a player reported this
-                // stream (it then won't close it a second time on its stop);
-                // else straight away.
-                await _sessionManager.CloseLiveStreamIfNeededAsync(liveStreamId, playSessionId).ConfigureAwait(false);
-                if (_mediaSourceManager.GetLiveStreamInfo(liveStreamId) is not null)
+                // This device's share of the stream, once: through the session
+                // manager when a player reported it (it then won't close it a
+                // second time on its stop), else straight away. A stream
+                // others share stays open for them.
+                var consumers = stream.ConsumerCount;
+                if (!string.IsNullOrEmpty(opened.PlaySessionId))
+                {
+                    await _sessionManager.CloseLiveStreamIfNeededAsync(liveStreamId, opened.PlaySessionId).ConfigureAwait(false);
+                }
+
+                if (_mediaSourceManager.GetLiveStreamInfo(liveStreamId) is not null && stream.ConsumerCount == consumers)
                 {
                     await _mediaSourceManager.CloseLiveStream(liveStreamId).ConfigureAwait(false);
                 }
@@ -204,7 +244,7 @@ public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
         }
     }
 
-    private void Remember(string deviceId, ActionExecutedContext executed)
+    private void Remember(string deviceId, Guid channelId, string playSessionId, ActionExecutedContext executed)
     {
         if (executed.Result is not ObjectResult { Value: { } value })
         {
@@ -225,7 +265,7 @@ public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
 
                 break;
             case LiveStreamResponse live when !string.IsNullOrEmpty(live.MediaSource?.LiveStreamId):
-                opened.Add((live.MediaSource.LiveStreamId, string.Empty));
+                opened.Add((live.MediaSource.LiveStreamId, playSessionId));
                 break;
         }
 
@@ -234,10 +274,11 @@ public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
             return;
         }
 
-        var open = _streams.GetOrAdd(deviceId, _ => new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase));
-        foreach (var (liveStreamId, playSessionId) in opened)
+        var open = _streams.GetOrAdd(deviceId, _ => new ConcurrentDictionary<string, Opened>(StringComparer.OrdinalIgnoreCase));
+        foreach (var (liveStreamId, session) in opened)
         {
-            open[liveStreamId] = playSessionId;
+            // a stream the device already had (the same channel again) keeps its first play session
+            open.TryAdd(liveStreamId, new Opened(session, channelId));
         }
     }
 }
