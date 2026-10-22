@@ -765,6 +765,17 @@ User docs: `docs/features/live-tv.md`.
   anything was delivered (`nothing_on`). Header `X-Tentacle-Reason: nothing
   on right now`. Recordings keep the 503 (Jellyfin retries). Without ffmpeg
   the open goes on as before.
+  The same picture with its own title tells a viewer what went wrong
+  instead of a spinner and "playback error": **Not coming through** ("Your
+  provider isn't sending this channel / Try again in a minute or pick
+  another channel") when the open fails on the provider (the 502
+  `_PROVIDER_FAILED`: refused, timed out, no data), and **Connection in
+  use** ("Someone else is using your provider connection", or "All N
+  provider connections are in use") when the ceiling refuses a viewer, or
+  the provider refuses while another stream of that provider runs here
+  (most likely the account's own limit). Headers `X-Tentacle-Reason:
+  provider not delivering` / `connection in use`. Recordings keep the
+  refusal.
 - Stream format: Xtream channels open as continuous MPEG-TS (`.ts`) by
   default, HLS only when the account's `allowed_output_formats` lacks ts or
   the channel's ts open is refused outright (then remembered per channel

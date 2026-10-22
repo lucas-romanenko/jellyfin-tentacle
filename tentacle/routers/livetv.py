@@ -602,6 +602,11 @@ async def tuner_refusal_handler(request, exc: "_TunerRefusal") -> Response:
     })
 
 
+# The start of the 502 detail a channel open fails with when the provider
+# didn't deliver (refused, timed out, no data)
+_PROVIDER_FAILED = "Failed to connect to stream"
+
+
 class _PlaceholderRefusal(_TunerRefusal):
     """The 503 a channel open answers when the provider served a placeholder."""
 
@@ -629,19 +634,21 @@ def _channel_event(ch):
     return _event_for(ch.name, ch.group_title)
 
 
-async def _nothing_on_response(channel_id: int, lines: tuple) -> "StreamingResponse | None":
-    """A viewer's answer when a channel has nothing on: a short stream that
-    says so (services/livetv_slate.py), or None when it can't be made."""
+async def _nothing_on_response(channel_id: int, lines: tuple,
+                               reason: str = "nothing on right now") -> "StreamingResponse | None":
+    """A viewer's answer when a channel has nothing on (or can't be had): a
+    short stream that says so (services/livetv_slate.py), or None when it
+    can't be made."""
     from services import livetv_slate
     data = await livetv_slate.picture(lines)
     if not data:
         return None
-    logger.info(f"[LiveTV] Channel {channel_id}: nothing on right now ({' '.join(lines).strip()}) "
+    logger.info(f"[LiveTV] Channel {channel_id}: {reason} ({' '.join(lines).strip()}) "
                 f"-- the viewer is told so")
     return StreamingResponse(livetv_slate.paced(data), media_type="video/mp2t", headers={
         "Connection": "close",
         "Cache-Control": "no-cache, no-store",
-        "X-Tentacle-Reason": "nothing on right now",
+        "X-Tentacle-Reason": reason,
     })
 
 
@@ -4400,6 +4407,13 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
         logger.error(f"[LiveTV] At capacity ({where} streams) — REFUSED {kind} '{name}' (channel {channel_id}). "
                      f"If this was a recording it is lost. Raise the provider's \"Streams at once\" on its "
                      f"card (Sources) if its account can carry more.")
+        if kind == "live":
+            # A viewer is told, on the player, that the connections are taken
+            from services import livetv_slate
+            slate = await _nothing_on_response(channel_id, livetv_slate.connection_in_use(shown),
+                                               "connection in use")
+            if slate is not None:
+                return slate
         raise _TunerRefusal(f"Too many concurrent live streams (limit {shown})")
     sem = _stream_slots
     # Ownership of the release is handed to the streaming generator on the
@@ -4481,6 +4495,26 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
     except _PlaceholderRefusal:
         _release_sem()
         slate = await _nothing_on_response(channel_id, _placeholder_lines(ch)) if lease.kind == "live" else None
+        if slate is None:
+            raise
+        return slate
+    except HTTPException as e:
+        _release_sem()
+        if lease.kind != "live" or e.status_code != 502 or not str(e.detail).startswith(_PROVIDER_FAILED):
+            raise
+        # The provider didn't deliver: the viewer is told so on the player
+        # (not a spinner, then "playback error"). While another stream of
+        # this provider runs here, its refusal is most likely the account's
+        # connection limit. Asked afresh whether it's a recording ("Record
+        # now" may be younger than the cached answer): a recording keeps the
+        # refusal, so Jellyfin retries it instead of recording the slate.
+        if channel_id in await _recording_channel_ids(db, force=True):
+            raise
+        from services import livetv_slate
+        others = _stream_slots.provider_active(ch.provider_id if ch else None)
+        lines, reason = ((livetv_slate.connection_in_use(provider_limit or limit), "connection in use") if others
+                         else (livetv_slate.not_coming_through(), "provider not delivering"))
+        slate = await _nothing_on_response(channel_id, lines, reason)
         if slate is None:
             raise
         return slate
@@ -4633,7 +4667,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                            if isinstance(e, httpx.HTTPStatusError) else type(e).__name__)
                     if isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (401, 403):
                         _tell_provider_health(channel_id, False, e.response.status_code)
-                    raise HTTPException(502, f"Failed to connect to stream: {why}")
+                    raise HTTPException(502, f"{_PROVIDER_FAILED}: {why}")
                 if (not open_reresolved and open_url != stream_url and rival_delivering is not None
                         and isinstance(e, httpx.HTTPStatusError)
                         and e.response.status_code in _REFUSAL_STATUS

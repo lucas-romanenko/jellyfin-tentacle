@@ -52,6 +52,11 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         // file (Tentacle closes a pull nobody watches; Jellyfin would keep the part)
         serviceCollection.AddSingleton<IHostedService, VodSubtitleExtractionPatch>();
 
+        // One Live TV stream per device: opening a channel closes the one it
+        // had open (one-connection IPTV accounts, Jellyfin Web's retries)
+        serviceCollection.AddSingleton<OneLiveStreamPerDeviceFilter>();
+        serviceCollection.Configure<MvcOptions>(options => options.Filters.AddService<OneLiveStreamPerDeviceFilter>());
+
         // Names on the login screen only at home (Jellyfin's /Users/Public)
         serviceCollection.AddSingleton<PublicUsersFilter>();
         serviceCollection.Configure<MvcOptions>(options => options.Filters.AddService<PublicUsersFilter>());
