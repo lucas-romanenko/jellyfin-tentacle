@@ -136,6 +136,9 @@ def _set_favourites(db, user: TentacleUser, keys: list, on: bool) -> int:
         raise HTTPException(502, "Jellyfin didn't take the change")
     except requests.RequestException:
         raise HTTPException(502, "Jellyfin can't be reached")
+    if changed:
+        from services import live_updates
+        live_updates.publish("mychannels", user_ids=[user.id])
     return changed
 
 

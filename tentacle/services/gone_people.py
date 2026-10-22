@@ -54,6 +54,10 @@ def forget_gone(db: Session, jf_users: list) -> list:
         except Exception as e:
             db.rollback()
             logger.warning(f"[People] Could not forget {row.display_name} ({row.jellyfin_user_id}): {e}")
+    if names:
+        from services import live_updates
+        live_updates.changed("people", admins=True)
+        live_updates.changed("requests", admins=True, clients=True)
     return names
 
 

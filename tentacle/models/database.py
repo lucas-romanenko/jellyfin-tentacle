@@ -586,6 +586,9 @@ class TentacleUser(Base):
     # When they finished (or skipped) the welcome shown at their first
     # sign-in; None = not yet. People from before the welcome count as welcomed.
     welcomed_at = Column(DateTime, nullable=True)
+    # Admins: other people's downloads in their Activity and messages ("for
+    # Sam"). Off = only their own (and what nobody in Tentacle asked for).
+    show_others_downloads = Column(Boolean, default=True)
 
 
 # ─── Notifications ───────────────────────────────────────────────────────────
@@ -605,6 +608,9 @@ class Notification(Base):
     # "download" (ready to watch), "request" (asked for / approved / declined)
     # or "problem" (admins only: services/admin_alerts.py).
     kind = Column(String, nullable=True, default="download")
+    # Whose download it is, when the message went to an admin about someone
+    # else's ("for Sam"); None = the reader's own.
+    for_user_id = Column(Integer, nullable=True)
 
     user = relationship("TentacleUser", backref="notifications")
 
@@ -1132,7 +1138,7 @@ def log_deletion(db, kind: str, name: str, media_type: str = None,
 def create_notification(db, user_id: int, tmdb_id: int, media_type: str,
                         title: str, message: str, poster_path: str = None,
                         jellyfin_item_id: str = None, kind: str = "download",
-                        force: bool = False):
+                        force: bool = False, for_user_id: int = None):
     """Create a notification for a user if they have notifications enabled.
     `force`: an admin's request or problem message, which their own
     "download notifications" switch doesn't turn off."""
@@ -1142,11 +1148,38 @@ def create_notification(db, user_id: int, tmdb_id: int, media_type: str,
     notif = Notification(
         user_id=user_id, tmdb_id=tmdb_id, media_type=media_type,
         title=title, message=message, poster_path=poster_path,
-        jellyfin_item_id=jellyfin_item_id, kind=kind,
+        jellyfin_item_id=jellyfin_item_id, kind=kind, for_user_id=for_user_id,
     )
     db.add(notif)
     db.commit()
+    from services import live_updates
+    live_updates.changed("notifications", user_ids=[user_id], clients=True)
     return notif
+
+
+def sees_others_downloads(user) -> bool:
+    """An admin who wants other people's downloads in their Activity (the
+    default). Never anyone else."""
+    return bool(user is not None and user.is_admin and user.show_others_downloads is not False)
+
+
+def tell_admins_ready(db, requester_id: int, tmdb_id: int, media_type: str, title: str,
+                      message: str, poster_path: str = None, jellyfin_item_id: str = None,
+                      already: set = ()) -> None:
+    """Someone's download is ready: the admins who follow other people's
+    downloads get the message too, marked whose it is. Never raises."""
+    try:
+        admins = db.query(TentacleUser).filter(TentacleUser.is_admin == True,  # noqa: E712
+                                               TentacleUser.id != requester_id).all()
+        for admin in admins:
+            if admin.id in already or not sees_others_downloads(admin):
+                continue
+            create_notification(db, admin.id, tmdb_id, media_type, title, message,
+                                poster_path=poster_path, jellyfin_item_id=jellyfin_item_id,
+                                for_user_id=requester_id)
+    except Exception:
+        db.rollback()
+        logger.warning("Could not tell the admins about a download", exc_info=True)
 
 
 # Settings whose readers parse or compare the stored value and need one: an

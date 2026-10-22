@@ -119,6 +119,12 @@ Tentacle is built for one person running a home server for their family. Admins 
 
 When someone whose requests need approval asks for a movie, show or album (in Tentacle, in Jellyfin's Discover or on the TV), nothing downloads yet: they see "Sent to (admin) to approve", and every admin gets a message in Jellyfin (and on their phone with Pushover). Admins answer at **Requests**: *Approve* sends it to Radarr, Sonarr or Lidarr as if that person had asked (their Downloads playlist and "ready to watch" message work as usual), *Decline* takes an optional reason. The person gets a message either way and sees their requests in Discover → Activity, where they can take one back while it waits. Admins' own requests go straight through.
 
+Everything about a request shows up on open screens within a second or two, without a reload: the admins' Requests list and badge when someone asks, the person's Activity badge, their requests and Discover's "Asked" / "Declined" when an admin answers, download progress and "ready to watch" (in Tentacle, in Jellyfin's Tentacle pages and messages, and on the TV app).
+
+### Other people's downloads (admins)
+
+Admins see everyone's downloads in their Activity, each marked who it's for ("for Sam"), and get the "ready to watch" message for them too. To see only your own, turn off **Show other people's downloads in my Activity** under My Home Screen → Download notifications. Requests waiting for your answer stay in Requests either way. Everyone else only ever sees their own.
+
 ## Problems go to the admin
 
 Every 10 minutes Tentacle checks what can break for the household: an IPTV provider failing, Radarr or Sonarr unreachable, a disk nearly full, downloads stuck, Live TV not set up in Jellyfin, Jellyfin down. Admins get one message when a problem starts and one when it's over. The family never sees error details, only a plain line where it matters, such as "Live TV is unavailable right now. (admin) knows." (Tentacle's pages, Jellyfin's Live TV page and the TV app).

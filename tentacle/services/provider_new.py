@@ -79,9 +79,14 @@ def note_created(db: Session, rows: Iterable, first_setup: bool) -> None:
     if first_setup:
         return
     now = _now()
+    marked = False
     for row in rows:
         if review_of(row) is None:
             row.review_state, row.first_seen_at = NEW, now
+            marked = True
+    if marked:
+        from services import live_updates
+        live_updates.after_commit(db, "groups", admins=True)
 
 
 # ── One-time start: what the old notice said was new ────────────────────────

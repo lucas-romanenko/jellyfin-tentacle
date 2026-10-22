@@ -57,6 +57,15 @@ Gotchas:
   (Tentacle, after every Live TV setup run) clears nothing and sends every
   connected user an empty LibraryChanged with `tentacle-livetv:<v>` in
   `CollectionFolders`; open guides read their channel list again.
+- **Requests, activity, notifications changed**: `POST
+  /Tentacle/Notify?userIds=<ids>&topics=<requests,activity,notifications>`
+  (Tentacle, services/live_updates.py) sends those users' sessions a
+  `RefreshProgress` message with Data `{"ItemId": "tentacle", "Progress":
+  "0", "Tentacle": "<topics>"}` (only to users with a session). Not a
+  LibraryChanged: TV builds up to 1.25 reload Home on every one; no item
+  has the id "tentacle", so Jellyfin's own pages ignore it. Jellyfin Web's
+  tentacle-notifications.js and the TV app read again at once. An older
+  plugin answers 404 and the clients keep polling.
 - `POST /Tentacle/Playlists/PruneDead` with `"Async": true` answers 202
   `{runId}` at once and prunes in the background (one prune at a time); the
   server polls `GET .../PruneDead/{runId}` (running / done with the summary /
@@ -74,6 +83,7 @@ Gotchas:
 | POST | `/Tentacle/Deletions/{mediaType}/{tmdbId}/Confirm` | admin | ConfirmDeletion |  |
 | GET | `/Tentacle/HomeConfig` | admin | GetHomeConfig |  |
 | GET | `/Tentacle/MdbList/Ratings` | user | GetRatings |  |
+| POST | `/Tentacle/Notify` | admin | Notify |  |
 | GET | `/Tentacle/Playlists/Ownerless` | admin | GetOwnerlessPlaylists |  |
 | POST | `/Tentacle/Playlists/PruneDead` | admin | PruneDeadPlaylistEntries |  |
 | GET | `/Tentacle/Playlists/PruneDead/{runId}` | admin | GetPruneRun |  |

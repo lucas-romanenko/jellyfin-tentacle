@@ -35,6 +35,15 @@ MAX_PENDING_PER_USER = 50
 _decide_lock = threading.Lock()
 
 
+def _live(owner_id: int, activity: bool = False) -> None:
+    """Open screens: the admins' Requests and badge, the person's own
+    requests and Discover labels (and Activity once Radarr/Sonarr have it)."""
+    from services import live_updates
+    live_updates.changed("requests", user_ids=[owner_id], admins=True, clients=True)
+    if activity:
+        live_updates.changed("activity", user_ids=[owner_id], admins=True, clients=True)
+
+
 def needs_approval(user: Optional[TentacleUser]) -> bool:
     """Whether this person's requests wait for an admin."""
     if user is None or user.is_admin:
@@ -134,6 +143,8 @@ def hold(db: Session, user: TentacleUser, kind: str, payload: dict, *,
     for row in new:
         logger.info(f"[Requests] {user.display_name} asked for {row.kind} '{row.title}' (waiting for an admin)")
         _tell_admins_new(db, user, row)
+    if new:
+        _live(user.id)
     return _held_response(db, max(1, len(ids)))
 
 
@@ -263,6 +274,7 @@ def approve(db: Session, request_id: int, admin: TentacleUser) -> dict:
             row.status, row.note = "failed", e.message[:300]
             row.decided_by, row.decided_at = admin.display_name, datetime.utcnow()
             db.commit()
+            _live(row.user_id)
             return {"ok": False, "status": row.status, "detail": e.message}
         if row.kind == "album":
             ok = outcome.get("status") == "requested"
@@ -275,6 +287,14 @@ def approve(db: Session, request_id: int, admin: TentacleUser) -> dict:
             row.status = "failed"
             row.note = (outcome.get("detail") or outcome.get("error") or "Radarr/Sonarr didn't take it")[:300]
         db.commit()
+    if ok:
+        # What was just added shows as searching at once, not after the cache's minutes.
+        try:
+            from routers.activity import invalidate_wanted_cache
+            invalidate_wanted_cache()
+        except Exception:
+            pass
+    _live(row.user_id, activity=ok)
     if ok:
         logger.info(f"[Requests] {admin.display_name} approved '{row.title}' for user {row.user_id}")
         _tell_owner(db, row, f"{admin.display_name} said yes. It's downloading now; "
@@ -293,6 +313,7 @@ def decline(db: Session, request_id: int, admin: TentacleUser, note: str = "") -
         row.note = (note or "").strip()[:300] or None
         row.decided_by, row.decided_at = admin.display_name, datetime.utcnow()
         db.commit()
+    _live(row.user_id)
     logger.info(f"[Requests] {admin.display_name} declined '{row.title}' for user {row.user_id}")
     msg = f"{admin.display_name} said no this time."
     if row.note:
@@ -309,6 +330,7 @@ def cancel(db: Session, request_id: int, user: TentacleUser) -> bool:
         return False
     db.delete(row)
     db.commit()
+    _live(user.id)
     return True
 
 

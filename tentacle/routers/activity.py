@@ -996,9 +996,11 @@ def get_activity(request: Request, db: Session = Depends(get_db),
         TentacleUser, DownloadRequest.user_id == TentacleUser.id
     ).all()
     requester_map: dict[tuple, str] = {}
+    requester_ids: dict[tuple, int] = {}
     user_requests: set[tuple] = set()
     for dr, display_name in all_requests:
         requester_map[(dr.media_type, dr.tmdb_id)] = display_name
+        requester_ids[(dr.media_type, dr.tmdb_id)] = dr.user_id
         if user and dr.user_id == user.id:
             user_requests.add((dr.media_type, dr.tmdb_id))
 
@@ -1029,6 +1031,17 @@ def get_activity(request: Request, db: Session = Depends(get_db),
                  and not (x.get("media_type") == "movie" and x.get("tmdb_id") in have_movie_file)]
 
     is_admin = user and user.is_admin
+    from models.database import sees_others_downloads
+
+    if is_admin and not sees_others_downloads(user):
+        # An admin who turned other people's downloads off: their own, and
+        # what nobody in Tentacle asked for (added in Radarr/Sonarr directly).
+        def theirs(item: dict) -> bool:
+            return requester_ids.get(req_key(item), user.id) == user.id
+        downloads = [d for d in downloads if theirs(d)]
+        unreleased = [u for u in unreleased if theirs(u)]
+        searching = [x for x in searching if theirs(x)]
+        recently_downloaded = [r for r in recently_downloaded if theirs(r)]
 
     if not is_admin and user:
         # Non-admin: only show items they requested — picked from the whole
@@ -1052,15 +1065,13 @@ def get_activity(request: Request, db: Session = Depends(get_db),
         recently_downloaded = [r for r in recently_downloaded if req_key(r) in user_requests]
 
     if is_admin:
-        # Admin: attach requester name to each item
-        for d in downloads:
-            d["requested_by"] = requester_map.get(req_key(d))
-        for u in unreleased:
-            u["requested_by"] = requester_map.get(req_key(u))
-        for x in searching:
-            x["requested_by"] = requester_map.get(req_key(x))
-        for r in recently_downloaded:
-            r["requested_by"] = requester_map.get(req_key(r))
+        # Admin: attach requester name to each item, and "for": whose it is
+        # when it's someone else's ("for Sam"; absent on their own).
+        for item in (*downloads, *unreleased, *searching, *recently_downloaded):
+            item["requested_by"] = requester_map.get(req_key(item))
+            owner = requester_ids.get(req_key(item))
+            if owner is not None and owner != user.id:
+                item["for"] = requester_map.get(req_key(item))
 
     # Why each title is still searching (the last release check, if any), what
     # in Radarr/Sonarr is stopping downloads, and the week ahead.
@@ -1077,9 +1088,16 @@ def get_activity(request: Request, db: Session = Depends(get_db),
         problems = []
     try:
         unreleased_series = {u.get("tmdb_id") for u in unreleased if u.get("media_type") == "series"}
+        sees_all = sees_others_downloads(user)
         coming_up = [dict(c) for c in arr_insight.coming_up(db)
                      if c.get("tmdb_id") not in unreleased_series
-                     and (is_admin or req_key(c) in user_requests)]
+                     and ((is_admin and (sees_all or requester_ids.get(req_key(c), user.id) == user.id))
+                          or req_key(c) in user_requests)]
+        if is_admin:
+            for c in coming_up:
+                owner = requester_ids.get(req_key(c))
+                if owner is not None and owner != user.id:
+                    c["for"] = requester_map.get(req_key(c))
         _enrich_posters(db, coming_up)
     except Exception as e:
         logger.debug(f"Activity: calendar failed: {e}")
@@ -1087,8 +1105,11 @@ def get_activity(request: Request, db: Session = Depends(get_db),
 
     if downloads:
         logger.info(f"Activity: {len(downloads)} download(s) in queue")
+    # for_names: items carry "for" (whose it is) only when it's someone else's;
+    # clients from before it show requested_by instead.
     return {"downloads": downloads, "searching": searching, "unreleased": unreleased,
-            "recently_downloaded": recently_downloaded, "problems": problems, "coming_up": coming_up}
+            "recently_downloaded": recently_downloaded, "problems": problems, "coming_up": coming_up,
+            "for_names": True}
 
 
 # ── Actions on requested titles: search again / remove ────────────────────

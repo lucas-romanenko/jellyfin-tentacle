@@ -231,6 +231,7 @@ provider names, URLs or logins).
 | PUT | `/api/my/channels/favourites` | user | my_livetv.py:set_my_favourites |
 | GET | `/api/notifications` | user | notifications.py:get_notifications |
 | POST | `/api/notifications/dismiss-all` | user | notifications.py:dismiss_all |
+| PUT | `/api/notifications/others` | user (admins only, 403 otherwise) | notifications.py:show_others_downloads (`{"show": bool}`: other people's downloads in my Activity and messages) |
 | POST | `/api/notifications/toggle` | user | notifications.py:toggle_notifications |
 | POST | `/api/notifications/{notification_id}/dismiss` | user | notifications.py:dismiss_notification |
 | GET | `/api/providers` | admin | providers.py:list_providers |
@@ -337,6 +338,7 @@ provider names, URLs or logins).
 | POST | `/api/tags/rules` | user | tags.py:create_rule |
 | DELETE | `/api/tags/rules/{rule_id}` | user | tags.py:delete_rule |
 | PUT | `/api/tags/rules/{rule_id}` | user | tags.py:update_rule |
+| GET | `/api/updates` | user | updates.py:updates (server-sent events: the dashboard's live channel, services/live_updates.py) |
 | GET | `/api/vod/{kind}/{token_file}` | none | vod.py:vod_stream |
 | GET | `/api/widget/status` | none | widget.py:widget_status |
 | GET | `/api/youtube/channels` | admin | youtube.py:list_channels |

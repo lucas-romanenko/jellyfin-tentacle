@@ -11,6 +11,13 @@ from models.database import get_db
 from routers.auth import require_admin
 from services import provider_new as N
 
+def _groups_changed():
+    """After a change that went through: every admin's open New list and badges."""
+    yield
+    from services import live_updates
+    live_updates.publish("groups", admins=True)
+
+
 router = APIRouter(dependencies=[Depends(require_admin)])
 
 MAX_IDS = 5000
@@ -61,7 +68,7 @@ def new_group_channels(body: GroupIds, db: Session = Depends(get_db)):
     return N.channels_of(db, _limit(body.group_ids))
 
 
-@router.post("/api/live/new-groups/add")
+@router.post("/api/live/new-groups/add", dependencies=[Depends(_groups_changed)])
 def new_groups_add(body: AddBody, db: Session = Depends(get_db)):
     """Add the picked channels to the household's channels; the groups are
     reviewed (unpicked channels stay out)."""
@@ -70,12 +77,12 @@ def new_groups_add(body: AddBody, db: Session = Depends(get_db)):
     return N.add_to_pool(db, _limit(body.group_ids), _limit(body.channel_ids))
 
 
-@router.post("/api/live/new-groups/dismiss")
+@router.post("/api/live/new-groups/dismiss", dependencies=[Depends(_groups_changed)])
 def new_groups_dismiss(body: GroupIds, db: Session = Depends(get_db)):
     return {"dismissed": N.dismiss(db, _limit(body.group_ids))}
 
 
-@router.post("/api/live/new-groups/restore")
+@router.post("/api/live/new-groups/restore", dependencies=[Depends(_groups_changed)])
 def new_groups_restore(body: GroupIds, db: Session = Depends(get_db)):
     return {"restored": N.restore(db, _limit(body.group_ids))}
 
@@ -85,17 +92,17 @@ def new_categories(dismissed: bool = False, db: Session = Depends(get_db)):
     return N.vod_overview(db, dismissed=dismissed)
 
 
-@router.post("/api/new-from-provider/categories/add")
+@router.post("/api/new-from-provider/categories/add", dependencies=[Depends(_groups_changed)])
 def new_categories_add(body: CategoryIds, db: Session = Depends(get_db)):
     """Add to the library: the categories sync with tonight's VOD sync."""
     return {"added": N.vod_decide(db, _limit(body.category_ids), add=True)}
 
 
-@router.post("/api/new-from-provider/categories/dismiss")
+@router.post("/api/new-from-provider/categories/dismiss", dependencies=[Depends(_groups_changed)])
 def new_categories_dismiss(body: CategoryIds, db: Session = Depends(get_db)):
     return {"dismissed": N.vod_decide(db, _limit(body.category_ids), add=False)}
 
 
-@router.post("/api/new-from-provider/categories/restore")
+@router.post("/api/new-from-provider/categories/restore", dependencies=[Depends(_groups_changed)])
 def new_categories_restore(body: CategoryIds, db: Session = Depends(get_db)):
     return {"restored": N.vod_restore(db, _limit(body.category_ids))}

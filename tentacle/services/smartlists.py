@@ -94,10 +94,15 @@ def bump_home_version(user_id: int = None) -> int:
             top = max([_home_version_floor, *_home_versions.values()])
             _home_version_floor = _next_home_version(top)
             _home_versions.clear()
-            return _home_version_floor
-        version = _next_home_version(max(_home_versions.get(user_id, 0), _home_version_floor))
-        _home_versions[user_id] = version
-        return version
+            version = _home_version_floor
+        else:
+            version = _next_home_version(max(_home_versions.get(user_id, 0), _home_version_floor))
+            _home_versions[user_id] = version
+    # Open dashboards showing this home (My Home Screen) read it again.
+    from services import live_updates
+    live_updates.publish("home", user_ids=[user_id] if user_id is not None else (), everyone=user_id is None,
+                         data={"version": version})
+    return version
 
 
 PRESERVED_FIELDS = ["LastRefreshed", "DateCreated", "ItemCount", "Order"]
