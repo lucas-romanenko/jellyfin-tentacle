@@ -33,7 +33,7 @@ import logging
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import requests
@@ -58,6 +58,9 @@ MAX_MOVIE_CANDIDATES = 3
 MAX_CHANNEL_CANDIDATES = 2
 M3U_HEAD_BYTES = 65536
 DEFAULT_UA = "TiviMate/4.7.0 (Linux; Android 12)"
+# A start (about 25 deploys a day) checks again only when the last check is
+# this old: each check is a real connection on every provider and address.
+MIN_GAP_SECONDS = 3600
 # "Not right now": the account is over its connection limit or rate-limited.
 # No verdict either way; the state stays as it was.
 BUSY_STATUSES = {429, 509}
@@ -654,6 +657,26 @@ def run_provider_health() -> bool:
         db.close()
         _run_lock.release()
     return True
+
+
+def last_checked(db):
+    """When the last check that reached a verdict ran (the newest checked_at),
+    or None. A run that stood aside or found every provider busy doesn't
+    count: it checked nothing, the backups included."""
+    times = [_parse(e.get("checked_at")) for e in load_state(db).values() if isinstance(e, dict)]
+    times = [t for t in times if t is not None and t.tzinfo is not None]
+    return max(times) if times else None
+
+
+def next_due(db, now=None):
+    """When the next check is due if the last one is under MIN_GAP_SECONDS
+    old, else None (check shortly after the start). A restart then neither
+    checks again nor moves the hourly run later than an hour after the last."""
+    last = last_checked(db)
+    now = now or _now()
+    if last is None or now - last >= timedelta(seconds=MIN_GAP_SECONDS):
+        return None
+    return last + timedelta(seconds=MIN_GAP_SECONDS)
 
 
 def check_now(db):

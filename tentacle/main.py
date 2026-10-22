@@ -730,18 +730,25 @@ def setup_scheduler(db):
     # Provider health: log in to each provider and open one test stream every
     # hour; a confirmed failure shows on the dashboard and goes to Pushover
     # (services/provider_health.py). Once shortly after start, so the state is
-    # fresh after a restart.
-    from services.provider_health import run_provider_health
+    # fresh after a restart, unless the last check is under an hour old: then
+    # the hourly run comes an hour after that one ("Check now" still runs).
+    from services.provider_health import run_provider_health, next_due, MIN_GAP_SECONDS
+    due = next_due(db)
     scheduler.add_job(
         run_provider_health,
-        IntervalTrigger(hours=1),
+        IntervalTrigger(hours=1, start_date=due) if due else IntervalTrigger(hours=1),
         id="provider_health",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
     )
-    schedule_once(run_provider_health, 120, "provider_health_first")
-    logger.info("Provider health check scheduled: hourly")
+    if due is None:
+        schedule_once(run_provider_health, 120, "provider_health_first")
+        logger.info("Provider health check scheduled: hourly")
+    else:
+        last = due - timedelta(seconds=MIN_GAP_SECONDS)
+        logger.info(f"Provider health check scheduled: hourly; start-up check skipped "
+                    f"(last check {last.strftime('%H:%M')}), next at {due.strftime('%H:%M')}")
 
     # YouTube source: check enabled channels for new uploads and live streams.
     # The job checks the youtube_enabled setting itself, so the schedule can
