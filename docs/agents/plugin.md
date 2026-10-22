@@ -85,6 +85,26 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   No socket: the list is re-read every 10 s; back to the tab: at once.
   A first page load can open the guide before Jellyfin web knows the user
   (`getCurrentUserId()` empty); `learnUser()` fills it in later.
+- **Favorites tab** (`tentacle-favorites.js`): replaces Jellyfin's home
+  tab 1 with home-style rows (home's `.mh-row`/`.mh-card` markup and CSS):
+  Movies, Shows, Live TV, YouTube, Recordings, then Seasons, Episodes,
+  Collections, Playlists, Artists, Albums, Songs, Videos, Books, Photos;
+  empty rows are not drawn. Three reads, each drawn as it arrives: every
+  favourite (`Users/{id}/Items?Filters=IsFavorite&Recursive=true`, paged,
+  channels excluded), the favourite channels (`LiveTv/Channels?IsFavorite=true
+  &AddCurrentProgram=true`, lineup order, re-read every minute for what's on),
+  and which favourites are recordings (`LiveTv/Recordings/Folders`, then the
+  favourites under each). YouTube = videos tagged `yt:<slug>` (never the bare
+  `youtube` tag: TMDB puts that keyword on ordinary films) and channels tagged
+  `tentacle-youtube-<id>`. All with the person's own token, so kids' limits
+  and BlockedTags are Jellyfin's. Live updates: listens on
+  `ApiClient._webSocket` in every tab and relays on
+  `BroadcastChannel('tentacle-favorites')` (also hears the guide's
+  `tentacle-livetv` relay); a UserDataChanged of this person with an
+  IsFavorite re-reads after 150 ms, LibraryChanged after 1.5 s; rows are
+  redrawn only when their cards changed (scroll kept). No socket: every 10 s.
+  Measured (Jellyfin 10.11.8, a real install): first row 0.2-0.3 s after the tab opens, 0.9 s
+  on a full reload; a star changed in Tentacle shows in 1.3 s in two tabs.
 - **Libraries list**: a fixed element on `<body>` (the pill's
   backdrop-filter breaks `position: fixed` inside it), so it must be given a
   top/left on every width, phones included, or it opens far below the

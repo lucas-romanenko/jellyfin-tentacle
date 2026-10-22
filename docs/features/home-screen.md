@@ -67,6 +67,15 @@ Click the remove button on any row to take it off your home screen. The underlyi
 
 Each row can have a limit on how many items it displays. This is useful for large playlists where you only want to show a curated subset on the home screen.
 
+## Favorites
+
+Jellyfin's **Favorites** tab (the heart in the top bar) shows your favourites in rows like the home screen, each scrolling sideways: **Movies**, **Shows**, **Live TV**, **YouTube**, **Recordings**, then episodes, collections, playlists, music and anything else you have favourited. Rows with nothing in them are left out.
+
+- **Live TV** cards show the channel's logo and number, what's on now with how far in it is, and play the channel when you click them. Channels come in the guide's order.
+- **YouTube** holds the videos and YouTube live channels you favourited (only the YouTube channels you follow).
+- Kids see only what their profile allows, like everywhere else in Jellyfin.
+- Favourite or unfavourite something anywhere (Tentacle's My Channels, the guide's star, a details page, another device) and the open Favorites page shows it within a second or two, no reload. On a computer, the heart on a card (when you point at it) takes it off the list.
+
 ## How It Works Internally
 
 Your home screen configuration is stored as a JSON file at `/data/home-configs/{jellyfin_user_id}.json`. The Tentacle plugin fetches this config via API and renders the home screen accordingly.
