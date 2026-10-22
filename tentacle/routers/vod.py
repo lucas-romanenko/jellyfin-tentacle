@@ -29,7 +29,10 @@ extraction reads the whole file, for minutes after the player stopped. So a
 title's requests share one playback (one connection, time-shared) unless
 Jellyfin says more people are watching it than there are playbacks, and a
 playback is closed a few seconds after the last Jellyfin session playing it
-stopped (`_watch_viewers`).
+stopped (`_watch_viewers`). Within a playback the viewer's own requests
+come first: a client Jellyfin lists as the session's address (a browser or
+TV playing the file itself) takes the connection back whenever it wants
+data, and Jellyfin's work for the title reads while the player does not.
 """
 import asyncio
 import logging
@@ -156,12 +159,20 @@ class _Reader:
     subtitle extraction next to it, a second transcode, the range a seek
     left. Only the playback's `holder` has a provider connection (`resp`);
     the others wait, parked, for their turn."""
-    __slots__ = ("turn", "resp", "since")
+    __slots__ = ("turn", "resp", "since", "client", "last_chunk", "waiting")
 
-    def __init__(self):
+    def __init__(self, client: str = ""):
         self.turn = asyncio.Event()
         self.resp = None
         self.since = 0.0
+        self.client = client
+        # When it last passed bytes on (loop time): a holder whose player
+        # stopped reading (paused, buffer full) passes nothing.
+        self.last_chunk = 0.0
+        # Asking for the connection right now (opening, or parked and its
+        # player wants bytes) -- as opposed to parked while its player is
+        # not reading, which wants nothing.
+        self.waiting = True
 
 
 class _Playback:
@@ -252,14 +263,15 @@ class _Playback:
 
     def hand_on(self, reader: "_Reader") -> None:
         """`reader` is done (finished, or its player left): the request
-        that has waited longest gets the connection."""
+        that has waited longest gets the connection, one that is asking for
+        it before one whose player is not reading."""
         if reader in self.waiters:
             self.waiters.remove(reader)
         if self.holder is reader:
             self.holder = None
             self.upstream = None
             if self.waiters and not self.stopped.is_set():
-                self.take(self.waiters[0])
+                self.take(next((r for r in self.waiters if r.waiting), self.waiters[0]))
 
     def stop(self, why: str = "a recording or live stream needed its connection slot"):
         """Called by the broker when a recording or viewer takes the slot,
@@ -286,8 +298,9 @@ class _Playback:
 _playbacks: "dict[str, _Playback]" = {}
 _sweeper: "asyncio.Task | None" = None
 _viewer_watch: "asyncio.Task | None" = None
-# What Jellyfin said last: {"titles": {title: sessions playing it} or None
-# (unknown: no Jellyfin connection, an error), "at": loop time}.
+# What Jellyfin said last: {"titles": {title: [the address of each session
+# playing it]} or None (unknown: no Jellyfin connection, an error), "at":
+# loop time}.
 _viewers: dict = {"titles": None, "at": 0.0}
 # The Jellyfin server to ask, from the settings when a playback starts.
 _jellyfin: dict = {"url": "", "key": ""}
@@ -352,10 +365,16 @@ def _ensure_sweeper():
         _viewer_watch = asyncio.get_running_loop().create_task(_watch_viewers())
 
 
+def _address(endpoint) -> str:
+    """A session's RemoteEndPoint as a request's client address."""
+    text = str(endpoint or "").strip()
+    return text[7:] if text.lower().startswith("::ffff:") else text
+
+
 def _jellyfin_watched_titles(url: str, key: str) -> Optional[dict]:
-    """{title: how many Jellyfin sessions are playing it} for the Tentacle
-    VOD titles being played now; None when Jellyfin can't say (not set up,
-    not answering). Blocking: run in a worker thread."""
+    """{title: [the address of each Jellyfin session playing it]} for the
+    Tentacle VOD titles being played now; None when Jellyfin can't say (not
+    set up, not answering). Blocking: run in a worker thread."""
     if not url or not key:
         return None
     import requests
@@ -363,8 +382,9 @@ def _jellyfin_watched_titles(url: str, key: str) -> Optional[dict]:
     try:
         r = requests.get(f"{url}/Sessions", params={"activeWithinSeconds": 960}, headers=headers, timeout=5)
         r.raise_for_status()
-        ids = [str(s["NowPlayingItem"]["Id"]) for s in r.json()
-               if isinstance(s, dict) and (s.get("NowPlayingItem") or {}).get("Id")]
+        playing = [(str(s["NowPlayingItem"]["Id"]), _address(s.get("RemoteEndPoint"))) for s in r.json()
+                   if isinstance(s, dict) and (s.get("NowPlayingItem") or {}).get("Id")]
+        ids = [i for i, _ in playing]
         now = time.monotonic()
         missing = sorted({i for i in ids if i not in _item_titles
                           or now - _item_titles[i][0] > ITEM_TITLES_SECONDS})
@@ -380,24 +400,55 @@ def _jellyfin_watched_titles(url: str, key: str) -> Optional[dict]:
                 _item_titles.clear()
             for i in missing:
                 _item_titles[i] = (now, found.get(i, frozenset()))
-        counts: dict = {}
-        for i in ids:
+        watched: dict = {}
+        for i, address in playing:
             for title in _item_titles.get(i, (0, frozenset()))[1]:
-                counts[title] = counts.get(title, 0) + 1
-        return counts
+                watched.setdefault(title, []).append(address)
+        return watched
     except Exception as e:
         # The error type only: a requests error's text can carry the address.
         logger.info(f"[VOD] Jellyfin sessions unknown ({type(e).__name__}): playbacks are left running")
         return None
 
 
-def _viewer_count(title: str) -> Optional[int]:
-    """How many Jellyfin sessions are playing `title`, per the last fresh
-    answer; None when unknown."""
+def _fresh_viewers() -> Optional[dict]:
     titles, at = _viewers["titles"], _viewers["at"]
     if titles is None or asyncio.get_running_loop().time() - at > VIEWERS_FRESH_SECONDS:
         return None
-    return titles.get(title, 0)
+    return titles
+
+
+def _viewer_count(title: str) -> Optional[int]:
+    """How many Jellyfin sessions are playing `title`, per the last fresh
+    answer; None when unknown."""
+    titles = _fresh_viewers()
+    return None if titles is None else len(titles.get(title) or ())
+
+
+def _is_viewer(title: str, client: str) -> bool:
+    """Whether requests from `client` are the viewer's own: Jellyfin lists a
+    session playing `title` from that address (a browser or TV playing the
+    file itself). Jellyfin's ffmpeg comes from Jellyfin's address."""
+    titles = _fresh_viewers()
+    return bool(titles and client and client in (titles.get(title) or ()))
+
+
+def _next_turn(pb: "_Playback", holder: "_Reader", now: float) -> "Optional[_Reader]":
+    """Who the holder hands the connection to now, if anyone: a viewer that
+    wants data at once when the holder is Jellyfin's own work; otherwise the
+    longest waiting after a quantum -- but a viewer that keeps reading is
+    never timed out for Jellyfin's work (that reads while the player doesn't)."""
+    if not pb.waiters:
+        return None
+    holder_is_viewer = _is_viewer(pb.title, holder.client)
+    viewers = [r for r in pb.waiters if r.waiting and _is_viewer(pb.title, r.client)]
+    if viewers and not holder_is_viewer:
+        return viewers[0]
+    if now - holder.since < QUANTUM_SECONDS:
+        return None
+    if holder_is_viewer:
+        return viewers[0] if viewers else None
+    return pb.waiters[0]
 
 
 def _enforce_viewers(titles: Optional[dict], now: float) -> int:
@@ -654,17 +705,40 @@ async def _wait_turn(pb: _Playback, reader: _Reader) -> bool:
     A holder that keeps it past its quantum (a paused player blocks its body
     where it cannot notice) is parked from here. False once the playback was
     stopped."""
+    loop = asyncio.get_running_loop()
     while pb.holder is not reader:
         if pb.stopped.is_set():
             return False
         reader.turn.clear()
+        holder = pb.holder
+        me_viewer = _is_viewer(pb.title, reader.client)
+        holder_viewer = holder is not None and _is_viewer(pb.title, holder.client)
+        # Between a viewer and Jellyfin's work, the one waiting looks again
+        # soon: a viewer to take over from a holder that cannot hand over (its
+        # consumer stopped reading), Jellyfin's work to read while the viewer's
+        # player is not reading.
+        wait = PREEMPT_GRACE_SECONDS if holder is not None and me_viewer != holder_viewer \
+            else QUANTUM_SECONDS + PREEMPT_GRACE_SECONDS
         try:
-            await asyncio.wait_for(reader.turn.wait(), QUANTUM_SECONDS + PREEMPT_GRACE_SECONDS)
+            await asyncio.wait_for(reader.turn.wait(), wait)
         except asyncio.TimeoutError:
             async with pb.open_lock:
                 holder = pb.holder
-                if holder is not reader and not pb.stopped.is_set() and \
-                        (holder is None or asyncio.get_running_loop().time() - holder.since >= QUANTUM_SECONDS):
+                if holder is reader or pb.stopped.is_set():
+                    continue
+                now = loop.time()
+                if holder is None:
+                    pb.take(reader)
+                elif _is_viewer(pb.title, holder.client) and not _is_viewer(pb.title, reader.client):
+                    # The viewer's player has stopped reading for a while (or
+                    # was handed the connection and has not asked for it):
+                    # read meanwhile. Not while it is (re)opening its connection.
+                    idle = now - max(holder.last_chunk, holder.since) >= PREEMPT_GRACE_SECONDS
+                    if idle and (holder.resp is not None or not holder.waiting):
+                        pb.take(reader)
+                elif _is_viewer(pb.title, reader.client) and not _is_viewer(pb.title, holder.client):
+                    pb.take(reader)         # Jellyfin's work did not hand over: its consumer is stuck
+                elif now - holder.since >= QUANTUM_SECONDS:
                     pb.take(reader)
     return not pb.stopped.is_set()
 
@@ -696,7 +770,7 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
         except RuntimeError:            # no receive channel (a test, or an unusual server)
             return False
 
-    reader = _Reader()
+    reader = _Reader(who)
     pb.opening += 1
     try:
         async with pb.open_lock:
@@ -709,6 +783,7 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
                                           stopped=pb.stopped.is_set)
             reader.resp = resp
             reader.since = asyncio.get_running_loop().time()
+            reader.waiting = False
             pb.upstream = resp
     except BaseException:
         pb.opening -= 1
@@ -793,6 +868,7 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
                     return
                 if reader.resp is None:
                     # Parked (another request had the connection), or after a drop.
+                    reader.waiting = True
                     if not await _wait_turn(pb, reader):
                         return
                     if end is not None and start + sent > end:
@@ -818,7 +894,8 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
                                          f"(answered {again.status_code})")
                             return
                         reader.resp = again
-                        reader.since = loop.time()
+                        reader.since = reader.last_chunk = loop.time()
+                        reader.waiting = False
                         pb.upstream = again
                         opened_at, since_open = loop.time(), 0
                 resp = reader.resp
@@ -837,11 +914,15 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
                         since_open += len(chunk)
                         pb.touch()
                         yield chunk
-                        if pb.waiters and pb.holder is reader and loop.time() - reader.since >= QUANTUM_SECONDS:
+                        reader.last_chunk = loop.time()
+                        if pb.waiters and pb.holder is reader:
                             # Time-share: another request of this playback is
-                            # waiting; it gets the connection for a while.
-                            pb.take(pb.waiters[0])
-                            break
+                            # waiting; it gets the connection for a while (a
+                            # viewer at once, _next_turn).
+                            nxt = _next_turn(pb, reader, reader.last_chunk)
+                            if nxt is not None:
+                                pb.take(nxt)
+                                break
                     else:
                         if last is None or start + sent > last:
                             state["complete"] = True
