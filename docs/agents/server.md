@@ -112,8 +112,13 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   `live_user_lineups`/`live_user_channels`), `smartlists/<id>/`,
   `home-configs/<id>.json` and its backups, `family_defaults` naming them,
   and the token/home-version caches. Never the owner or `jellyfin_user_id`,
-  never on an empty list. Their Jellyfin playlists are Jellyfin's: its
-  `DELETE /Users/{id}` removes them (`RemovePlaylistsAsync`).
+  never on an empty list. Their Jellyfin playlists: `DELETE /Users/{id}`
+  removes private unshared ones from the library (`RemovePlaylistsAsync`)
+  but leaves their folders, and the next scan brings them back owned by a
+  user who doesn't exist; the plugin's `/Tentacle/Playlists/Ownerless` marks
+  those `ownerGone`, and the duplicate clean-up (`_cleanup_ownerless_playlists_locked`,
+  nightly after the scan) deletes the private unshared ones through the API
+  (which removes the folder).
 - Invite: `POST /Users/New {Name, Password}` with a readable password
   (`make_password`), the row is made at once (`invited_by`, `request_mode`),
   then `start_new_person` in the background: the defaults (`family_defaults`

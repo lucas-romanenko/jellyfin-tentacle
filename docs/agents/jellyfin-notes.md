@@ -53,6 +53,14 @@ The code wins where they differ.
   colons/hyphens normalized (new downloads can show "Alien (1979)" with no
   year until identified, so also try without a year).
 - **The `Tags` filter** (`/Items?Tags=`) does work server-side.
+- **Deleting a user** (`DELETE /Users/{id}`, 10.11): revokes their tokens,
+  then `RemovePlaylistsAsync` hands a shared playlist to the first share,
+  keeps an open-access one, and deletes the rest from the library with
+  `DeleteFileLocation = false`: the folder and its `playlist.xml` stay in
+  `data/playlists/`, and the next scan of the playlists folder resolves them
+  again, owned by the deleted user (nobody sees them, but their names stay
+  taken, so new playlists get "1" suffixes). `DELETE /Items/{id}` removes the
+  folder too. Tentacle deletes them (server.md "Gone people").
 - **Playlist items**: `POST /Playlists/{id}/Items?EntryIds=…` hits 414 on
   big lists: send `{"Ids": [...]}` as the body with `?UserId=`, in chunks of
   50; removals as EntryIds in chunks of 50.

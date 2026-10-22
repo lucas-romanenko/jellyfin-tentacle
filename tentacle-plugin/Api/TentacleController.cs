@@ -32,6 +32,7 @@ public class TentacleController : ControllerBase
     private readonly ISessionManager _sessionManager;
     private readonly ILibraryManager _libraryManager;
     private readonly IPlaylistManager _playlistManager;
+    private readonly IUserManager _userManager;
     private readonly IAuthorizationContext _authContext;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<TentacleController> _logger;
@@ -41,6 +42,7 @@ public class TentacleController : ControllerBase
         ISessionManager sessionManager,
         ILibraryManager libraryManager,
         IPlaylistManager playlistManager,
+        IUserManager userManager,
         IAuthorizationContext authContext,
         IHttpClientFactory httpClientFactory,
         ILogger<TentacleController> logger)
@@ -49,6 +51,7 @@ public class TentacleController : ControllerBase
         _sessionManager = sessionManager;
         _libraryManager = libraryManager;
         _playlistManager = playlistManager;
+        _userManager = userManager;
         _authContext = authContext;
         _httpClientFactory = httpClientFactory;
         _logger = logger;
@@ -507,11 +510,15 @@ public class TentacleController : ControllerBase
     }
 
     /// <summary>
-    /// Lists playlists with no owner (OwnerUserId empty), with their entry counts (#120).
+    /// Lists playlists with no owner (OwnerUserId empty), with their entry counts (#120),
+    /// and playlists whose owner is no longer a Jellyfin user (<c>ownerGone</c>).
     /// Jellyfin's own API never says who owns a playlist, and an ownerless one is
     /// hidden from — or, with open access, shown to — every user alike, so the
     /// Tentacle server cannot tell it apart from a shared playlist and its
-    /// duplicate clean-up leaves it alone. The server decides what to delete.
+    /// duplicate clean-up leaves it alone. Deleting a user removes their playlists
+    /// from the library but leaves the folders (RemovePlaylistsAsync,
+    /// DeleteFileLocation = false), so the next scan brings them back owned by
+    /// nobody who exists. The server decides what to delete.
     /// </summary>
     [HttpGet("Playlists/Ownerless")]
     [Authorize(Policy = "RequiresElevation")]
@@ -523,10 +530,11 @@ public class TentacleController : ControllerBase
                 Recursive = true,
             })
             .OfType<Playlist>()
-            .Where(p => p.OwnerUserId.Equals(Guid.Empty))
+            .Where(p => p.OwnerUserId.Equals(Guid.Empty) || _userManager.GetUserById(p.OwnerUserId) is null)
             .Select(p => new
             {
                 id = p.Id.ToString("N", CultureInfo.InvariantCulture),
+                ownerGone = !p.OwnerUserId.Equals(Guid.Empty),
                 name = p.Name,
                 entries = p.LinkedChildren.Length,
                 openAccess = p.OpenAccess,

@@ -106,7 +106,7 @@ Tentacle is built for one person running a home server for their family. Admins 
 
 **Settings → People & sign-in** has the two server-wide ones: **TV sign-in codes** (Jellyfin's Quick Connect, recommended on) and **Quality away from home** (a cap for everyone watching outside your home network, for a slow upload; no limit by default).
 - Each person's row shows which Tentacle TV app version their TV runs, and when a newer one is waiting.
-- **Removing someone:** delete their account in Jellyfin (Dashboard → Users). Jellyfin removes their playlists and signs them out everywhere; Tentacle forgets the rest (their home screen, playlist settings, requests, notifications, Live TV lists) the next time People is opened, or in the nightly sync.
+- **Removing someone:** delete their account in Jellyfin (Dashboard → Users). Jellyfin signs them out everywhere and removes their playlists (Tentacle deletes the copies a library scan brings back); Tentacle forgets the rest (their home screen, playlist settings, requests, notifications, Live TV lists) the next time People is opened, or in the nightly sync.
 
 ## Requests with approval
 
