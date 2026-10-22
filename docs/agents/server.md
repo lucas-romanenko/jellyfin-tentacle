@@ -510,6 +510,16 @@ movies/series, then Sonarr/Radarr text-lookup titles TMDB lacks (TheTVDB).
   straight to the known edge; a play is a dozen requests before the first
   picture. The plugin's `VodProbeOncePatch` stops Jellyfin re-probing a
   title it already knows (jellyfin-notes.md "Who reads a .strm").
+- Kept indexes: a player cannot start an MP4 before it has its whole
+  `moov` (2.5-8 MB on the provider measured, after the `ftyp` or at the very
+  end), and the provider's edge sends 1.5-6 MB/s: 1-3 s of every start.
+  `services/vod_index_cache.py` keeps it from the first play (a `Tap` on the
+  body: bytes 0 to the end of a moov at the head, or a body that starts at a
+  moov box) in `/data/cache/vod-index` (1 GB, oldest out, 7 days). A request
+  that starts inside the kept bytes gets them from disk while the rest is
+  opened from the provider at once (`open_rest`); ExoPlayer's jump to a
+  moov at the end opens no provider connection at all. A continuation whose
+  Content-Range names another size or start drops the entry (the file changed).
 - One person watching = one provider connection (`_watch_viewers`): while
   any playback runs, Jellyfin's `/Sessions` is asked every 2 s which items
   are playing, and each item's media source address names its title
