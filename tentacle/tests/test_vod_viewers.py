@@ -54,6 +54,8 @@ class _ViewersBase(_Base):
         vod = self.vod
         vod._viewer_watch = None
         vod._viewers.update(titles=None, at=0.0)
+        vod._gone.clear()
+        self.addCleanup(vod._gone.clear)
 
         def answer(url, key):
             self.asked += 1
@@ -75,7 +77,8 @@ class _ViewersBase(_Base):
         return False
 
     def _endless_run(self, scenario):
-        script = {self.upstream: [_endless(self.upstream)]}
+        # a fresh endless body for every open (a consumed response cannot be read again)
+        script = {self.upstream: [_endless(self.upstream) for _ in range(30)]}
 
         async def go():
             with mock.patch("httpx.AsyncClient", lambda **kw: _Client(script, self.log, **kw)), \
@@ -107,6 +110,74 @@ class ClosedWhenTheViewerHasGone(_ViewersBase):
         self.assertTrue(pb.stopped.is_set())
         self.assertEqual({}, self.vod._playbacks)
         self.assertEqual(0, self.livetv._stream_slots.active, "its connection slot is free")
+
+    async def _watch_then_stop(self):
+        """A playback the viewer watched, then left: returns once it was closed."""
+        self.watching = {self.title: ["10.0.0.9"]}
+        extraction = await self._open("172.19.0.1")
+        it = extraction.body_iterator.__aiter__()
+        await it.__anext__()
+        pb = next(iter(self.vod._playbacks.values()))
+        self.assertTrue(await self._until(lambda: pb.watched_at is not None))
+        self.watching = {}
+        self.assertTrue(await self._until(lambda: pb.stopped.is_set()))
+        await it.aclose()
+
+    def test_jellyfins_request_for_the_rest_after_the_close_is_refused(self):
+        """ffmpeg answers the early end by asking for the rest at once; that
+        would be a new playback nobody watches, reading the whole file."""
+        from fastapi import HTTPException
+
+        async def scenario():
+            await self._watch_then_stop()
+            before = len(self.log)
+            with self.assertRaises(HTTPException) as cm:
+                await self._open("172.19.0.1", "bytes=307872450-")
+            return cm.exception.status_code, len(self.log) - before
+        status, opened = self._endless_run(scenario)
+        self.assertEqual(503, status)
+        self.assertEqual(0, opened, "the provider was not asked")
+        self.assertEqual({}, self.vod._playbacks)
+        self.assertEqual(0, self.livetv._stream_slots.active)
+
+    def test_a_player_starting_the_title_again_is_not_refused(self):
+        """A player reads the start first (a probe, a browser, a transcode);
+        its seeks then join that playback."""
+        async def scenario():
+            await self._watch_then_stop()
+            again = await self._open("172.19.0.1", "bytes=0-")        # Jellyfin probes it for the new play
+            it = again.body_iterator.__aiter__()
+            await it.__anext__()
+            seek = await self._open("10.0.0.9", "bytes=900000000-")  # the browser's first seek
+            its = seek.body_iterator.__aiter__()
+            await its.__anext__()
+            await its.aclose()
+            await it.aclose()
+        self._endless_run(scenario)
+
+    def test_a_continuation_while_jellyfin_shows_a_viewer_again_is_allowed(self):
+        async def scenario():
+            await self._watch_then_stop()
+            self.watching = {self.title: ["10.0.0.9"]}
+            self.vod._viewers.update(titles=dict(self.watching), at=asyncio.get_running_loop().time())
+            resumed = await self._open("10.0.0.9", "bytes=500000-")
+            it = resumed.body_iterator.__aiter__()
+            await it.__anext__()
+            await it.aclose()
+        self._endless_run(scenario)
+
+    def test_the_refusal_ends(self):
+        from fastapi import HTTPException
+
+        async def scenario():
+            await self._watch_then_stop()
+            with mock.patch.object(self.vod, "GONE_REFUSE_SECONDS", 0.0):
+                await asyncio.sleep(0.01)
+                late = await self._open("172.19.0.1", "bytes=500000-")
+                it = late.body_iterator.__aiter__()
+                await it.__anext__()
+                await it.aclose()
+        self._endless_run(scenario)
 
     def test_a_viewer_who_paused_keeps_the_playback(self):
         """A paused session still lists the title it plays."""

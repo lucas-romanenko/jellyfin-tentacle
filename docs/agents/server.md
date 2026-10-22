@@ -473,7 +473,12 @@ movies/series, then Sonarr/Radarr text-lookup titles TMDB lacks (TheTVDB).
   Jellyfin transcode: every request is Jellyfin's) it is equal turns. A playback
   whose viewer has gone (stopped, next episode) for 4 s is closed and its
   slot freed: what still reads it is Jellyfin's own work (that extraction
-  reads the whole file, minutes after the stop). A playback no session has
+  reads the whole file, minutes after the stop). ffmpeg answers that early
+  end by asking for the rest at once (`Range: bytes=<where it was>-`), so
+  for `GONE_REFUSE_SECONDS` (60 s) a request for such a title that starts
+  past byte 0 while nothing of it runs is refused (503) unless Jellyfin
+  shows a viewer again (`_refuse_continuation`); a player (re)starting the
+  title reads byte 0 first, which lifts it. A playback no session has
   reported yet, and everything while Jellyfin can't say (not set up, an
   error), is left alone. The plugin keeps a cut extraction out of
   Jellyfin's subtitle cache (plugin.md).

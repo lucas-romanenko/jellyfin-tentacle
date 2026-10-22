@@ -89,7 +89,9 @@ The code wins where they differ.
   per media source id in `data/subtitles/xx/<id>/<index>.srt` for good,
   and judged only by the files being non-empty: an ffmpeg that saw its
   input end early exits 0 with part of the cues and is logged "extraction
-  completed". The web player waits for that request (no subtitles until
+  completed". After a body that ends short, ffmpeg (7.1) asks once for the
+  rest (`Range: bytes=<where it was>-`); an error answer ends it. The web
+  player waits for that request (no subtitles until
   the whole file was read). Embed delivery (direct play into a container
   that carries them, the TV app with SRT) extracts nothing. Every
   PlaybackInfo of a `.strm` probes it (a full metadata refresh with
