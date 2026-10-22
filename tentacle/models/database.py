@@ -576,6 +576,9 @@ class TentacleUser(Base):
     request_mode = Column(String, nullable=True, default="ask")
     invited_by = Column(String, nullable=True)   # the admin's name, for an account made in Tentacle
     invited_at = Column(DateTime, nullable=True)
+    # Where they watch Live TV from (services/livetv_locations.py, a place's
+    # slug: "vancouver"); None = the household's place. Set by an admin.
+    livetv_location = Column(String, nullable=True)
 
 
 # ─── Notifications ───────────────────────────────────────────────────────────

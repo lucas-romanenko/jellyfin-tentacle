@@ -14,6 +14,7 @@ channels never lose their place ("Sportsnet Pacific", "Bally Sports
 Ohio" carry different games), only their tags. Event channels (PPV slots)
 never fold: their names change with every event.
 """
+import functools
 import re
 import unicodedata
 from typing import Optional
@@ -456,22 +457,57 @@ def clean_name(name: str) -> str:
     return tidy_case(re.sub(r"\s+", " ", text))
 
 
-def region_words(name: str) -> set:
+# A US/Canadian state or province by its code, after a place ("BOSTON, MA").
+STATE_NAMES = {
+    "AL": "ALABAMA", "AK": "ALASKA", "AZ": "ARIZONA", "AR": "ARKANSAS", "CA": "CALIFORNIA", "CO": "COLORADO",
+    "CT": "CONNECTICUT", "DE": "DELAWARE", "FL": "FLORIDA", "GA": "GEORGIA", "HI": "HAWAII", "ID": "IDAHO",
+    "IL": "ILLINOIS", "IN": "INDIANA", "IA": "IOWA", "KS": "KANSAS", "KY": "KENTUCKY", "LA": "LOUISIANA",
+    "ME": "MAINE", "MD": "MARYLAND", "MA": "MASSACHUSETTS", "MI": "MICHIGAN", "MN": "MINNESOTA",
+    "MS": "MISSISSIPPI", "MO": "MISSOURI", "MT": "MONTANA", "NE": "NEBRASKA", "NV": "NEVADA",
+    "NH": "NEW HAMPSHIRE", "NJ": "NEW JERSEY", "NM": "NEW MEXICO", "NY": "NEW YORK", "NC": "NORTH CAROLINA",
+    "ND": "NORTH DAKOTA", "OH": "OHIO", "OK": "OKLAHOMA", "OR": "OREGON", "PA": "PENNSYLVANIA",
+    "RI": "RHODE ISLAND", "SC": "SOUTH CAROLINA", "SD": "SOUTH DAKOTA", "TN": "TENNESSEE", "TX": "TEXAS",
+    "UT": "UTAH", "VT": "VERMONT", "VA": "VIRGINIA", "WA": "WASHINGTON", "WV": "WEST VIRGINIA",
+    "WI": "WISCONSIN", "WY": "WYOMING", "ON": "ONTARIO", "QC": "QUEBEC", "BC": "BRITISH COLUMBIA",
+    "AB": "ALBERTA", "SK": "SASKATCHEWAN", "MB": "MANITOBA", "NS": "NOVA SCOTIA", "NB": "NEW BRUNSWICK",
+    "NL": "NEWFOUNDLAND", "PE": "PRINCE EDWARD ISLAND",
+}
+# "TV: ATLANTA, GA WABE PBS 30 A3 HD ATLANTA": a provider's local station, its
+# market first. The place after "A3 HD" is often another city altogether
+# ("TV: SPRINGFIELD, MA WGBY PBS 57 A3 HD DETROIT"): only the market counts.
+_MARKET_RE = re.compile(r"^\s*TV\s*:\s*([A-Z][A-Z .'-]*?)\s*,\s*([A-Z]{2})\b")
+_CITY_PLACES = {tuple(p.split()) for p in _CITIES}
+
+
+@functools.lru_cache(maxsize=50000)
+def region_words(name: str) -> frozenset:
     """Place / feed / country words in a channel name, for choosing the
-    variant nearest the admin ("TORONTO", "EAST", "CA")."""
+    variant nearest a place ("TORONTO", "EAST", "CA"); a state or province
+    code right after a city adds its name ("BOSTON, MA": "MASSACHUSETTS")."""
     text = _plain(name).upper()
     out = set()
     m = re.match(r"^\s*[|\[(]?\s*([A-Z]{2,3})(?:[ /-]([A-Z]{2}))?\s*[|\]):]", text)
     if m:
         out.add(m.group(1))
+    market = _MARKET_RE.match(text)
+    if market:
+        text = f"{market.group(1)} {market.group(2)}"
     toks = _tokens(text)
+    in_place = set()   # "WEST PALM BEACH" is a city, not a West feed
     for i in range(len(toks)):
         for p in _PLACES:
             if tuple(toks[i:i + len(p)]) == p:
                 out.add(" ".join(p))
-        if toks[i] in _FEEDS or toks[i] in _COUNTRIES:
-            out.add(toks[i])
-    return out
+                in_place.update(range(i, i + len(p)))
+                after = toks[i + len(p)] if i + len(p) < len(toks) else None
+                if p in _CITY_PLACES and after in STATE_NAMES:
+                    out.add(STATE_NAMES[after])
+    if not market:
+        for i, t in enumerate(toks):
+            # "WEST DES MOINES" is a city too
+            if (t in _FEEDS and i not in in_place and i + 1 not in in_place) or t in _COUNTRIES:
+                out.add(t)
+    return frozenset(out)
 
 
 # ── Country and language of a feed ──────────────────────────────────────────

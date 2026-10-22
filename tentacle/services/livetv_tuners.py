@@ -45,6 +45,7 @@ from models.database import (
     LiveUserLineup, SessionLocal, get_setting, log_activity, set_setting, tentacle_address,
 )
 from services import livetv_lineups as L
+from services import livetv_locations as P
 
 logger = logging.getLogger(__name__)
 
@@ -182,25 +183,42 @@ def kids_user_ids(db) -> set:
             db.query(TentacleUser).filter(TentacleUser.kids_level.isnot(None)).all()}
 
 
-def blocked_tags(policy_tags: list, kid: bool, tags_in_use: set) -> list:
+_KEEP = object()
+
+
+def _ours(tag) -> bool:
+    t = str(tag).lower()
+    return t.startswith(L.TAG_PREFIX) or t.startswith(P.NOT_LOCAL_PREFIX)
+
+
+def blocked_tags(policy_tags: list, kid: bool, tags_in_use: set, place_tag=_KEEP) -> list:
     """A person's BlockedTags: their own blocked tags kept; Tentacle's are the
-    per-person tuners of before still in Jellyfin, and for a kid every
-    channel that isn't a kids channel."""
-    keep = [t for t in (policy_tags or []) if not str(t).lower().startswith(L.TAG_PREFIX)]
+    per-person tuners of before still in Jellyfin, for a kid every channel
+    that isn't a kids channel, and `place_tag`: the tag of the channels for
+    other places than theirs (None: no such channels; default: the one they
+    have now is kept)."""
+    keep = [t for t in (policy_tags or []) if not _ours(t)]
     ours = {t for t in tags_in_use if t not in (L.ALL_TAG, L.KIDS_TAG)}
     if kid:
         ours.add(L.ALL_TAG)
+    if place_tag is _KEEP:
+        ours |= {t for t in (policy_tags or []) if str(t).lower().startswith(P.NOT_LOCAL_PREFIX)}
+    elif place_tag:
+        ours.add(place_tag)
     return keep + sorted(ours)
 
 
-def apply_policies(db, jf: Jellyfin, users: list, tags_in_use: set) -> int:
-    """Set everyone's blocked tags; returns how many policies changed."""
+def apply_policies(db, jf: Jellyfin, users: list, tags_in_use: set, place_tags: Optional[dict] = None) -> int:
+    """Set everyone's blocked tags; returns how many policies changed.
+    `place_tags`: user id -> their place's tag (or None); without it the
+    place tags they have stay."""
     kids = kids_user_ids(db)
     changed = 0
     for u in users:
         kid = L.norm_user_id(u["Id"]) in kids
+        ptag = place_tags.get(L.norm_user_id(u["Id"])) if place_tags is not None else _KEEP
         policy = u.get("Policy") or {}
-        want = blocked_tags(policy.get("BlockedTags") or [], kid, tags_in_use)
+        want = blocked_tags(policy.get("BlockedTags") or [], kid, tags_in_use, ptag)
         if list(policy.get("BlockedTags") or []) == want:
             continue
         # The policy as Jellyfin has it now, not as this sync read it (that can
@@ -210,7 +228,7 @@ def apply_policies(db, jf: Jellyfin, users: list, tags_in_use: set) -> int:
             fresh = (jf.get(f"/Users/{u['Id']}") or {}).get("Policy") or policy
         except requests.RequestException:
             fresh = policy
-        want = blocked_tags(fresh.get("BlockedTags") or [], kid, tags_in_use)
+        want = blocked_tags(fresh.get("BlockedTags") or [], kid, tags_in_use, ptag)
         if list(fresh.get("BlockedTags") or []) == want:
             u["Policy"] = fresh
             continue
@@ -238,15 +256,20 @@ def _items(jf: Jellyfin, admin_id: str, ids: list) -> list:
     return out
 
 
-def tag_channels(jf: Jellyfin, admin_id: str, item_ids: list, tag: str) -> int:
-    """Give every channel of a tuner its tag (once); returns how many."""
+def tag_channels(jf: Jellyfin, admin_id: str, item_ids: list, tag: str, places: Optional[dict] = None) -> int:
+    """Give every channel of a tuner its tag (once), and with `places` (item
+    id -> the places' tags it carries, services/livetv_lineups.place_tags)
+    exactly those; returns how many changed."""
     from services.jellyfin import _item_update_payload
     done = 0
     for item in _items(jf, admin_id, item_ids):
         tags = list(item.get("Tags") or [])
-        if tag in tags:
+        mine = sorted((places or {}).get(str(item["Id"]).replace("-", ""), ()))
+        have = sorted(t for t in tags if str(t).lower().startswith(P.NOT_LOCAL_PREFIX))
+        if tag in tags and (places is None or have == mine):
             continue
-        tags = [t for t in tags if not str(t).lower().startswith(L.TAG_PREFIX)] + [tag]
+        keep_places = have if places is None else mine
+        tags = [t for t in tags if not _ours(t)] + [tag] + keep_places
         jf.post(f"/Items/{item['Id']}", _item_update_payload(item, Tags=tags))
         done += 1
     return done
@@ -521,12 +544,66 @@ def _kids_keys(db) -> set:
     return set(family.kids_channels(db))
 
 
-def tag_lineup(jf: Jellyfin, admin_id: str, url: str, entries: list, kids: set) -> int:
-    """Every lineup channel's tag (kids channels -kids, the rest -all)."""
+def tag_lineup(jf: Jellyfin, admin_id: str, url: str, entries: list, kids: set,
+               places: Optional[dict] = None) -> int:
+    """Every lineup channel's tag (kids channels -kids, the rest -all), and
+    the places' tags (key -> tags, L.place_tags: a channel for one place is
+    hidden from people elsewhere)."""
     by_tag = {}
+    by_id = {}
     for item_id, key in L.item_ids_for(url, entries).items():
-        by_tag.setdefault(L.KIDS_TAG if key in kids else L.ALL_TAG, []).append(item_id)
-    return sum(tag_channels(jf, admin_id, ids, tag) for tag, ids in by_tag.items())
+        by_tag.setdefault(L.KIDS_TAG if L.base_key(key) in kids else L.ALL_TAG, []).append(item_id)
+        by_id[item_id] = (places or {}).get(key, set())
+    return sum(tag_channels(jf, admin_id, ids, tag, by_id) for tag, ids in by_tag.items())
+
+
+PLACE_KEYS_KEY = "livetv_place_keys"   # the places' entries the tuner carried (JSON list of keys)
+
+
+def _carried_place_keys(db) -> set:
+    try:
+        return {str(k) for k in json.loads(get_setting(db, PLACE_KEYS_KEY, "") or "[]")}
+    except ValueError:
+        return set()
+
+
+def place_moves(favs: set, mine: dict, gone: dict, entries: list, place: Optional[str]) -> list:
+    """Favourites someone at `place` has on another place's channel of a
+    network (or on its default where their place has its own): (from item
+    id, to item id) for each, to their place's channel of it. mine: item id
+    -> key of the lineup; gone: item id -> key of a place's channel the
+    lineup no longer carries."""
+    view = {L.base_key(e["key"]): e["key"] for e in L.view_for(entries, place)}
+    by_key = {k: i for i, k in mine.items()}
+    out = []
+    for fid in favs:
+        key = mine.get(fid) or gone.get(fid)
+        if key is None:
+            continue
+        want = view.get(L.base_key(key))
+        if want is None or want == key or want not in by_key:
+            continue
+        out.append((fid, by_key[want]))
+    return out
+
+
+def move_place_favourites(jf: Jellyfin, user_id: str, moves: list, favs: set, mine: dict) -> int:
+    """Star the place's channel, unstar the other (if Jellyfin still has it)."""
+    done = 0
+    for old, new in moves:
+        try:
+            if new not in favs:
+                set_favourite(jf, user_id, new, True)
+                favs.add(new)
+                done += 1
+            if old in mine:
+                set_favourite(jf, user_id, old, False)
+            favs.discard(old)
+        except requests.HTTPError as e:
+            if e.response is None or e.response.status_code != 404:
+                raise
+            logger.warning(f"[LiveTV] Favourite not moved to the person's place: channel {new} isn't in Jellyfin")
+    return done
 
 
 def sync(db, refresh: bool = False) -> dict:
@@ -534,11 +611,19 @@ def sync(db, refresh: bool = False) -> dict:
     docstring). Returns what it did."""
     jf = jellyfin_for(db)
     done = {"added": 0, "removed": 0, "tagged": 0, "policies": 0, "favourites": 0,
-            "schedules": 0, "refreshed": False, "backup": None}
+            "place_favourites": 0, "schedules": 0, "refreshed": False, "backup": None}
     if jf is None:
         return {**done, "skipped": "Jellyfin is not connected"}
     channels = L.pool(db)
-    entries = L.lineup(db, channels)
+    # Where everyone watches from: networks whose variant for a place isn't
+    # the default get a channel for that place, hidden from everyone else.
+    place_of = P.by_user(db)
+    home = P.household(db)
+    places_used = {p for p in set(place_of.values()) | {home} if p}
+    entries = L.lineup(db, channels, places=places_used)
+    tags_of_places = L.place_tags(entries, places_used)
+    place_keys = {e["key"] for e in entries if e.get("place")}
+    carried_places = _carried_place_keys(db)
     cfg = jf.get("/System/Configuration/livetv") or {}
     tuners = cfg.get("TunerHosts") or []
     olds = old_tuners(db, cfg)
@@ -576,6 +661,16 @@ def sync(db, refresh: bool = False) -> dict:
         in_jf = channel_ids(jf)
         sources.update({i: k for i, k in L.alias_item_ids_for(url, alias, keys).items() if i in in_jf})
     sources = {i: k for i, k in sources.items() if k in keys and i not in mine}
+    # Places' channels the tuner carried that it no longer does (nobody there
+    # any more, or the place's variant is the default now): favourites on
+    # them go to the person's own channel of the network.
+    gone_places = {}
+    for k in carried_places - place_keys:
+        path = L.stream_path_of_key(k)
+        if path:
+            gone_places[L.m3u_channel_item_id(url, L.tuner_base(url) + path)] = k
+    places_change = place_keys != carried_places
+    by_place = bool(place_keys or carried_places)
 
     moving = bool(personal or olds or sources or tuner is None)
     if moving:
@@ -583,7 +678,8 @@ def sync(db, refresh: bool = False) -> dict:
     # Favourites, read before anything moves (Jellyfin refuses a favourite on
     # a channel the person can't see, and the old channels go at the next
     # refresh).
-    pre_favs = {u["Id"]: favourite_ids(jf, u["Id"]) for u in people} if (personal or olds or sources) else {}
+    pre_favs = ({u["Id"]: favourite_ids(jf, u["Id"]) for u in people}
+                if (personal or olds or sources or by_place) else {})
     # One-off recordings too: the guide refresh below deletes those whose
     # channel left a tuner (a lineup channel with a new key does at once).
     pre_one_offs = scheduled_one_offs(jf) if sources else None
@@ -602,12 +698,12 @@ def sync(db, refresh: bool = False) -> dict:
 
     done["guide_added"] = ensure_guide(jf, cfg, base)
 
-    refreshing = bool(done["added"] or refresh or done["guide_added"] or sources)
+    refreshing = bool(done["added"] or refresh or done["guide_added"] or sources or places_change)
     if admin_id and tuner is not None and refreshing:
         # Before the refresh too: the plugin gives programmes the tag their
         # channel has while it builds them, so a channel made (or no longer)
         # a kids channel carries its new tag into this refresh's programmes.
-        done["tagged"] += tag_lineup(jf, admin_id, url, entries, kids)
+        done["tagged"] += tag_lineup(jf, admin_id, url, entries, kids, tags_of_places)
     # Kids see only the kids channels before anything else happens (a guide
     # refresh can take minutes).
     kids_ids = kids_user_ids(db)
@@ -621,8 +717,10 @@ def sync(db, refresh: bool = False) -> dict:
         wait_for_guide(jf)   # a refresh someone else started: tag what it creates
 
     if admin_id:
-        done["tagged"] += tag_lineup(jf, admin_id, url, entries, kids)
+        done["tagged"] += tag_lineup(jf, admin_id, url, entries, kids, tags_of_places)
     in_jf = bool(mine) and bool(admin_id) and bool(_items(jf, admin_id, list(mine)[:100]))
+    present = channel_ids(jf) if (in_jf and place_keys) else set()
+    places_ready = in_jf and all(i in present for i, k in mine.items() if k in place_keys)
     if mine and not in_jf:
         # Jellyfin hasn't made the channels yet: the next sync carries on.
         logger.warning("[LiveTV] The lineup's channels aren't in Jellyfin yet; trying again later")
@@ -632,7 +730,30 @@ def sync(db, refresh: bool = False) -> dict:
     # tuners of before: their favourites were read above.
     tags_in_use = {L.tag_for_tuner_url(t.get("Url") or "") for t in personal} | tags_on_channels(jf)
     tags_in_use.discard(None)
-    done["policies"] += apply_policies(db, jf, people, tags_in_use)
+    # Favourites follow each person's place (a new person starts with someone
+    # else's, an admin moved them): while they still see the channels of
+    # before, so before their blocked tags change.
+    done["place_favourites"] = 0
+    if by_place and places_ready:
+        for u in people:
+            favs = pre_favs.get(u["Id"])
+            if not favs:
+                continue
+            uid = L.norm_user_id(u["Id"])
+            moves = place_moves(favs, mine, gone_places, entries, place_of.get(uid) or home)
+            if moves:
+                done["place_favourites"] += move_place_favourites(jf, u["Id"], moves, set(favs), mine)
+    if places_ready or not place_keys:
+        ptags = {L.norm_user_id(u["Id"]): (P.not_local_tag(place_of.get(L.norm_user_id(u["Id"])) or home)
+                                          if place_keys and (place_of.get(L.norm_user_id(u["Id"])) or home)
+                                          else None) for u in people}
+    else:
+        ptags = None   # the places' channels aren't in Jellyfin yet: nobody's place changes
+    done["policies"] += apply_policies(db, jf, people, tags_in_use, ptags)
+    if places_ready or not place_keys:
+        if place_keys != carried_places:
+            set_setting(db, PLACE_KEYS_KEY, json.dumps(sorted(place_keys)))
+            db.commit()
 
     if in_jf:
         for u in people:
@@ -672,6 +793,12 @@ def sync(db, refresh: bool = False) -> dict:
         refresh_and_wait(db, jf)
         tags_in_use = tags_on_channels(jf)
         done["policies"] += apply_policies(db, jf, people, tags_in_use)
+    elif places_change and places_ready and done["refreshed"]:
+        # A place's channels are new to Jellyfin in this refresh and got their
+        # places' tags after it: one more refresh gives their programmes the
+        # tags (the plugin copies a channel's), so programme lists ("On now",
+        # search) count only one's own place. Who sees what is right already.
+        refresh_and_wait(db, jf)
     return done
 
 

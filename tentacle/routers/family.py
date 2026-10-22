@@ -79,7 +79,8 @@ def people(db: Session = Depends(get_db)):
     out = []
     pool = L.pool(db)
     lineup = L.lineup(db, pool)
-    from routers.my_livetv import _favourites
+    from routers.my_livetv import _favourites, my_lineup
+    from services import livetv_locations
     for row in db.query(TentacleUser).order_by(TentacleUser.display_name).all():
         jf_user = by_id.get(row.jellyfin_user_id)
         if jf_user is None:
@@ -96,8 +97,9 @@ def people(db: Session = Depends(get_db)):
         p["access"] = PA.access_of(jf_user.get("Policy") or {})
         p["last_active"] = jf_user.get("LastActivityDate")
         p["image_tag"] = jf_user.get("PrimaryImageTag")
-        # Favourite channels (one lineup for everyone); None when Jellyfin can't say.
-        favs = None if row.kids_level else _favourites(db, row.jellyfin_user_id, lineup)
+        # Favourite channels (one lineup for everyone, with their place's
+        # channels); None when Jellyfin can't say.
+        favs = None if row.kids_level else _favourites(db, row.jellyfin_user_id, my_lineup(db, row, lineup))
         p["favourite_count"] = len(favs) if favs is not None else None
         out.append(p)
     kids_keys = F.kids_channels(db)
@@ -107,7 +109,11 @@ def people(db: Session = Depends(get_db)):
         "defaults": F.defaults(db),
         "kids_levels": [{"id": k, **v} for k, v in F.KIDS_LEVELS.items()],
         "kids_channels": len(kids_keys),
-        "pool_channels": len(lineup),
+        "pool_channels": len(L.view_for(lineup, None)),
+        # Where people watch Live TV from: the places to choose from, and the
+        # household's (the first admin's), which an invite starts with.
+        "locations": livetv_locations.choices(db),
+        "household_location": livetv_locations.public(livetv_locations.household(db)),
         "kids_channel_names": [names[k] for k in kids_keys[:6] if k in names],
         "libraries": PA.libraries(db),
         "quick_connect": F.quick_connect_enabled(db),
@@ -121,13 +127,14 @@ class InviteBody(BaseModel):
     name: str
     kids_level: Optional[str] = None
     request_mode: Optional[str] = None
+    location: Optional[str] = None   # a place's slug (services/livetv_locations.py); none: the household's
 
 
 @router.post("/api/family/invite")
 def invite(body: InviteBody, admin: TentacleUser = Depends(require_admin), db: Session = Depends(get_db)):
     try:
         return F.invite(db, admin, body.name, kids_level=body.kids_level or None,
-                        request_mode=body.request_mode or None)
+                        request_mode=body.request_mode or None, location=body.location or None)
     except F.FamilyError as e:
         raise _refusal(e)
 
@@ -138,6 +145,7 @@ class PersonBody(BaseModel):
     set_kids: bool = False
     request_mode: Optional[str] = None
     on_sign_in: Optional[bool] = None
+    location: Optional[str] = None   # a place's slug; "" = the household's
 
 
 @router.put("/api/family/people/{user_id}")
@@ -157,6 +165,8 @@ def update_person(user_id: int, body: PersonBody, admin: TentacleUser = Depends(
             logger.info(f"[Family] {admin.display_name} set {row.display_name}'s requests to {body.request_mode}")
         if body.on_sign_in is not None:
             F.set_on_sign_in(db, row, body.on_sign_in)
+        if body.location is not None:
+            F.set_location(db, row, body.location)
     except F.FamilyError as e:
         raise _refusal(e)
     out = F.person(db, row)

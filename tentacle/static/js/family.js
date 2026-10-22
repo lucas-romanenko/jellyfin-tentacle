@@ -143,6 +143,8 @@ function famRenderPeople() {
             <option value="ask"${p.request_mode === 'ask' ? ' selected' : ''}>Ask me first</option>
             <option value="direct"${p.request_mode === 'direct' ? ' selected' : ''}>Straight away</option>
           </select>`;
+    const places = _famPlaceOptions(p.location ? p.location.slug : '');
+    const placeSel = places && `<select class="form-input fam-select" aria-label="Where ${escHtml(p.name)} watches Live TV from" onchange="famSetLocation(${p.id}, this.value)">${places}</select>`;
     const adminLocked = p.is_owner || p.jellyfin_user_id === me || p.kids_level;
     const adminTitle = p.is_owner ? 'The owner stays an admin' : p.jellyfin_user_id === me ? 'You can’t change your own' : p.kids_level ? 'A kid can’t be an admin' : '';
     return `<div class="fam-person">
@@ -156,6 +158,7 @@ function famRenderPeople() {
       <div class="fam-controls">
         <label class="fam-ctl"><span class="fam-ctl-label">Age limit</span>${kidsSel}</label>
         <label class="fam-ctl"><span class="fam-ctl-label">Their requests</span>${reqSel}</label>
+        ${placeSel ? `<label class="fam-ctl"><span class="fam-ctl-label">Live TV from</span>${placeSel}</label>` : ''}
         <label class="fam-ctl fam-ctl-admin" title="${escHtml(adminTitle)}"><span class="fam-ctl-label">Admin</span>
           <input type="checkbox"${p.is_admin ? ' checked' : ''}${adminLocked ? ' disabled' : ''} onchange="famToggleAdmin(${p.id}, this.checked)"></label>
         <label class="fam-ctl fam-ctl-admin" title="Shown on the sign-in screen at home, to pick instead of typing a name"><span class="fam-ctl-label">On sign-in screen</span>
@@ -389,6 +392,25 @@ async function famSaveServer(change) {
   if (fam.server) famRenderServer();
 }
 
+// Where someone watches Live TV from: the places the provider's channels
+// name, by country ("" when there are none, e.g. a server outside North America).
+function _famPlaceOptions(current) {
+  const byCountry = {};
+  (fam.data?.locations || []).forEach(l => { (byCountry[l.country_name] = byCountry[l.country_name] || []).push(l); });
+  return Object.entries(byCountry).map(([country, ls]) =>
+    `<optgroup label="${escHtml(country)}">${ls.map(l =>
+      `<option value="${escHtml(l.slug)}"${l.slug === current ? ' selected' : ''}>${escHtml(l.label)}</option>`).join('')}</optgroup>`).join('');
+}
+
+function famSetLocation(id, slug) {
+  const p = _famPerson(id);
+  const place = (fam.data?.locations || []).find(l => l.slug === slug);
+  const where = place ? place.city : 'there';
+  _famUpdate(id, { location: slug },
+    p && p.is_owner ? `Live TV is from ${where} now for you and everyone without their own place`
+      : `${p ? p.name : 'They'} get${p ? 's' : ''} ${where}’s local channels now`);
+}
+
 async function _famUpdate(id, body, done) {
   try {
     await api(`/api/family/people/${id}`, { method: 'PUT', body });
@@ -494,6 +516,10 @@ function famShowInvite() {
     _famInviteHint(kid);
   };
   sel.onchange();
+  const home = fam.data?.household_location;
+  const places = _famPlaceOptions(home ? home.slug : '');
+  document.getElementById('invite-location').innerHTML = places;
+  document.getElementById('invite-location-group').style.display = places ? '' : 'none';
   document.querySelector('input[name="invite-requests"][value="ask"]').checked = true;
   document.getElementById('invite-go').disabled = false;
   showModal('modal-invite');
@@ -510,6 +536,7 @@ async function famInvite() {
       name,
       kids_level: document.getElementById('invite-kids').value || null,
       request_mode: document.querySelector('input[name="invite-requests"]:checked').value,
+      location: document.getElementById('invite-location').value || null,
     } });
   } catch (e) {
     toast(e.message, 'error', 6000);

@@ -83,14 +83,18 @@ def _inputs_fingerprint(db: Session, rows) -> str:
     h.update(",".join(str(c) for c, st in sorted(_check_states(db).items()) if st == "broken").encode())
     # The household and the rules choose the defaults too: a new region,
     # language or rule set chooses them again.
+    from services import livetv_locations
     h.update(f"\x1f{_CHOICE_RULES}\x1f{get_setting(db, 'livetv_region', '') or ''}"
-             f"\x1f{get_setting(db, 'livetv_language', 'en') or ''}".encode("utf-8", "replace"))
+             f"\x1f{get_setting(db, 'livetv_language', 'en') or ''}"
+             f"\x1f{livetv_locations.household(db) or ''}".encode("utf-8", "replace"))
     return h.hexdigest()
 
 
 # Bumped when _choose_defaults() weighs variants differently, so every
-# network chooses its default again once (2: country and language first).
-_CHOICE_RULES = "2"
+# network chooses its default again once (2: country and language first;
+# 3: the household's place before a working stream, the market of a
+# "TV: CITY, ST ..." name only).
+_CHOICE_RULES = "3"
 
 
 def ensure_fresh(db: Session) -> bool:
@@ -397,67 +401,124 @@ def _guide_id(override, by_name, tvg) -> Optional[str]:
     return (override or "").strip() or by_name or (tvg or "").strip() or None
 
 
+def _place(db: Session, slug: Optional[str] = None) -> tuple:
+    """(country, word -> (tier, nearness)) of a place (services/
+    livetv_locations.py); without a slug the household's: its place, else
+    the words of the region setting / time zone, nearest first."""
+    from services import livetv_locations as P
+    p = P.get(slug) if slug else P.get(P.household(db))
+    if p is not None:
+        return p["country"], p["tiers"]
+    country, places = _region(db)
+    return country, {w: (2, -i) for i, w in enumerate(places)}
+
+
+def _place_rank(words, tiers: dict, country: Optional[str] = None) -> tuple:
+    """How near a variant is to a place, by the place words in its name:
+    (4 its city / 3 its province or state / 2 nearby or its time zone feed
+    / 0 none, nearness). `country`: the variant's own ("US:"); a word counts
+    only for a variant of its country, and not when the name names another
+    state ("PORTLAND MAINE" isn't Portland, Oregon)."""
+    states = {w for w in words if w in _STATE_WORDS}
+    best = (0, 0)
+    for w in words:
+        t = tiers.get(w)
+        if t is None:
+            continue
+        wc, ws = (t[2], t[3]) if len(t) > 3 else (None, None)
+        if wc and country and wc != country:
+            continue
+        if ws and states and ws not in states and ws != w:
+            continue
+        if t[:2] > best:
+            best = t[:2]
+    return best
+
+
+_STATE_WORDS = set(livetv_names.STATE_NAMES.values())
+
+
+class _Scorer:
+    """Ranks a network's variants for a place: one not found broken, then
+    one in the household's country and language (never a foreign-language
+    feed while there is another), then the place (its city, its province
+    or state, then nearby cities nearest first, then its time zone feed),
+    then one that works, one with a guide of the household's, the place's
+    country, one people already have in their lists, quality."""
+
+    def __init__(self, db: Session):
+        self.in_lists = Counter()
+        for (key,) in db.query(LiveUserChannel.channel_key).all():
+            if key and key[0] == "c" and key[1:].isdigit():
+                self.in_lists[int(key[1:])] += 1
+        self.states = _check_states(db)
+        self.home = _household(db)
+        with_guide = guide_facts(db)["with_guide"]
+        self.guide_of = {}   # channel id -> its guide id, when that has programmes
+        for cid, override, by_name, tvg in db.query(LiveChannel.id, LiveChannel.epg_id_override,
+                                                    LiveChannel.epg_name_match, LiveChannel.epg_channel_id):
+            gid = _guide_id(override, by_name, tvg)
+            if gid and gid in with_guide:
+                self.guide_of[cid] = gid
+
+    def network(self, cids: list, by_id: dict) -> "_NetworkScore":
+        return _NetworkScore(self, cids, by_id)
+
+
+class _NetworkScore:
+    def __init__(self, scorer: _Scorer, cids: list, by_id: dict):
+        self.s = scorer
+        self.by_id = by_id
+        self.on = [c for c in cids if by_id[c].enabled] or list(cids)
+        self.feeds = {c: (livetv_names.feed_country(by_id[c].name, by_id[c].group_title),
+                          _feed_language(by_id[c].name, by_id[c].group_title)) for c in self.on}
+        self.by_language = _language_matters(list(self.feeds.values()), scorer.home[1])
+
+    def guided(self, cid) -> int:
+        # A guide counts when it is the household's (not "TLC.rs").
+        gid = self.s.guide_of.get(cid)
+        if gid is None:
+            return 0
+        fc, fl = self.feeds[cid]
+        return 1 if _home_rank(livetv_names.guide_country(gid) or fc, fl if self.by_language else None,
+                               self.s.home) >= 2 else 0
+
+    def score(self, cid, country, tiers, lists: bool = True) -> tuple:
+        name = self.by_id[cid].name
+        words = livetv_names.region_words(name)
+        st = self.s.states.get(cid)
+        fc, fl = self.feeds[cid]
+        tier, near = _place_rank(words, tiers, fc)
+        return (
+            0 if st == "broken" else 1,
+            # Foreign last, then another country of the language; the
+            # household's and unmarked ones alike (the place tells them apart).
+            min(_home_rank(fc, fl if self.by_language else None, self.s.home), 2),
+            tier,
+            near,
+            1 if st == "works" else 0,
+            self.guided(cid),
+            1 if country and (country in words or fc == country) else 0,
+            self.s.in_lists[cid] if lists else 0,
+            _quality(name),
+            -(self.by_id[cid].sort_order or 0),
+            -cid,
+        )
+
+    def best(self, country, tiers, lists: bool = True) -> int:
+        return max(self.on, key=lambda c: self.score(c, country, tiers, lists))
+
+
 def _choose_defaults(db: Session, nets: dict, members: dict, by_id: dict) -> None:
-    """Each network's default variant (data.auto_channel_id): among switched-on
-    channels, one not found broken, then one in the household's country and
-    language (never a foreign-language feed while there is another), then
-    one that works, then one people already have in their lists (they keep
-    watching what they watched), then the admin's region, then one with a
-    guide of the household's, then the admin's country, then quality; else
-    the first."""
+    """Each network's default variant (auto_channel_id): the best for the
+    household's place (_Scorer), among switched-on channels; else the first."""
     if not members:
         return
-    in_lists = Counter()
-    for (key,) in db.query(LiveUserChannel.channel_key).all():
-        if key and key[0] == "c" and key[1:].isdigit():
-            in_lists[int(key[1:])] += 1
-    states = _check_states(db)
-    country, places = _region(db)
-    home = _household(db)
-    with_guide = guide_facts(db)["with_guide"]
-    guide_of = {}   # channel id -> its guide id, when that has programmes
-    for cid, override, by_name, tvg in db.query(LiveChannel.id, LiveChannel.epg_id_override,
-                                                LiveChannel.epg_name_match, LiveChannel.epg_channel_id):
-        gid = _guide_id(override, by_name, tvg)
-        if gid and gid in with_guide:
-            guide_of[cid] = gid
+    scorer = _Scorer(db)
+    country, tiers = _place(db)
     for nid, cids in members.items():
         n = nets[nid]
-        on = [c for c in cids if by_id[c].enabled] or cids
-        feeds = {c: (livetv_names.feed_country(by_id[c].name, by_id[c].group_title),
-                     _feed_language(by_id[c].name, by_id[c].group_title)) for c in on}
-        by_language = _language_matters(list(feeds.values()), home[1])
-
-        def guided(cid):
-            # A guide counts when it is the household's (not "TLC.rs").
-            gid = guide_of.get(cid)
-            if gid is None:
-                return 0
-            fc, fl = feeds[cid]
-            return 1 if _home_rank(livetv_names.guide_country(gid) or fc, fl if by_language else None, home) >= 2 else 0
-
-        def score(cid):
-            name = by_id[cid].name
-            words = livetv_names.region_words(name)
-            st = states.get(cid)
-            fc, fl = feeds[cid]
-            return (
-                0 if st == "broken" else 1,
-                # Foreign last, then another country of the language; the
-                # household's and unmarked ones alike (the places and the
-                # admin's country below tell them apart).
-                min(_home_rank(fc, fl if by_language else None, home), 2),
-                1 if st == "works" else 0,
-                in_lists[cid],
-                # The nearest place named first: Toronto, then Buffalo, then Detroit.
-                max((len(places) - i for i, p in enumerate(places) if p in words), default=0),
-                guided(cid),
-                1 if country and country in words else 0,
-                _quality(name),
-                -(by_id[cid].sort_order or 0),
-                -cid,
-            )
-        best = max(on, key=score)
+        best = scorer.network(cids, by_id).best(country, tiers)
         if n.auto_channel_id != best:
             n.auto_channel_id = best
 
@@ -595,6 +656,24 @@ def variant_guides(db: Session) -> dict:
         gid = guides.get(nid)
         if gid and gid != own.get(info["variant"]):
             out[info["variant"]] = gid
+    # The variants people elsewhere watch (place_entries) under their own numbers.
+    try:
+        from services import livetv_locations
+        wanted = place_variants(db, livetv_locations.in_use(db), nets)
+    except Exception as e:   # the guide must never fail on a place
+        logger.warning(f"[LiveTV] Guides of places' variants left out: {e}")
+        wanted = {}
+    if any(wanted.values()):
+        cids = sorted({c for m in wanted.values() for c in m.values()})
+        mine = {}
+        for i in range(0, len(cids), 500):
+            for r in (db.query(LiveChannel.id, LiveChannel.epg_id_override, LiveChannel.epg_name_match,
+                               LiveChannel.epg_channel_id).filter(LiveChannel.id.in_(cids[i:i + 500])).all()):
+                mine[r.id] = _guide_id(r.epg_id_override, r.epg_name_match, r.epg_channel_id)
+        for (nid, slug), gid in _place_guides(db, nets, wanted).items():
+            cid = wanted[slug][nid]
+            if gid and gid != mine.get(cid):
+                out[cid] = gid
     return out
 
 
@@ -605,6 +684,144 @@ def network_channel(db: Session, nid: int) -> Optional[int]:
     if n is None or n.merged_into is not None or n.excluded:
         return None
     return chosen_variants(db).get(nid)
+
+
+# ── Variants for each person's place ────────────────────────────────────────
+
+def _member_rows(db: Session, ids: list) -> dict:
+    out = {}
+    ids = sorted(set(ids))
+    for i in range(0, len(ids), 500):
+        for ch in db.query(LiveChannel).filter(LiveChannel.id.in_(ids[i:i + 500])).all():
+            out[ch.id] = ch
+    return out
+
+
+def place_variant(score: "_NetworkScore", default: int, country, tiers) -> Optional[int]:
+    """A network's variant for a place when it isn't the default: the best
+    for the place (_Scorer, without what people have in their lists) if it
+    names the place (its city, province or state, a nearby city or its time
+    zone feed) nearer than the default does. None: the default it is."""
+    if not tiers or default not in score.on:
+        return None
+    best = score.best(country, tiers, lists=False)
+    if best == default:
+        return None
+    def rank(cid):
+        return _place_rank(livetv_names.region_words(score.by_id[cid].name), tiers, score.feeds[cid][0])
+    got = rank(best)
+    if got[0] == 0 or rank(default) >= got:
+        return None
+    if score.score(best, country, tiers, lists=False)[:2] < score.score(default, country, tiers, lists=False)[:2]:
+        return None   # never a broken or foreign one over the default
+    if got[0] <= 2 and score.guided(default) and not score.guided(best):
+        return None   # a nearby city or time zone feed only with a guide (a local station always)
+    return best
+
+
+def place_variants(db: Session, slugs, nets: Optional[dict] = None) -> dict:
+    """place slug -> {network id: the channel id people there watch}, for the
+    networks whose variant for the place isn't the default (networks in the
+    pool). The household's place has none: its variants are the defaults."""
+    from services import livetv_locations as P
+    home = P.household(db)
+    slugs = sorted({s for s in slugs or () if s and s != home and P.get(s)})
+    if not slugs:
+        return {}
+    ensure_fresh(db)
+    if nets is None:
+        nets = {nid: i for nid, i in _network_members(db).items()
+                if not i["network"].excluded and i["variant"] is not None}
+    by_id = _member_rows(db, [c for i in nets.values() for c in i["members"]])
+    scorer = _Scorer(db)
+    scores = {nid: scorer.network(i["members"], by_id) for nid, i in nets.items() if i["members"]}
+    out = {}
+    for slug in slugs:
+        country, tiers = _place(db, slug)
+        mine = {}
+        for nid, sc in scores.items():
+            v = place_variant(sc, nets[nid]["variant"], country, tiers)
+            if v is not None:
+                mine[nid] = v
+        out[slug] = mine
+    return out
+
+
+def place_channel(db: Session, nid: int, slug: str) -> Optional[int]:
+    """The LiveChannel id /api/live/net/<nid>/at/<slug> streams: the place's
+    variant, else the network's (None: not in the pool)."""
+    cid = network_channel(db, nid)
+    if cid is None:
+        return None
+    return place_variants(db, [slug]).get(slug, {}).get(nid, cid)
+
+
+def _place_word(name: str, group: Optional[str], tiers: dict) -> Optional[str]:
+    """The place word a variant is named after, nearest first ("SEATTLE")."""
+    country = livetv_names.feed_country(name, group)
+    words = livetv_names.region_words(name)
+    got = [w for w in words if w in tiers and _place_rank({w} | (words & _STATE_WORDS), tiers, country) > (0, 0)]
+    return max(got, key=lambda w: tiers[w][:2]) if got else None
+
+
+def place_entries(db: Session, entries: list, slugs) -> list:
+    """The lineup's entries for people elsewhere: for each network of
+    `entries` (the lineup, numbered) whose variant for a place in `slugs`
+    isn't the default, an entry "n<id>@<place>" with that variant: streamed
+    at /api/live/net/<id>/at/<place> (one stable Jellyfin channel per
+    network and place, whichever variant it streams), the default's number,
+    the variant's guide, and the name "CTV · Vancouver"."""
+    from services import livetv_locations as P
+    by_key = {e["key"]: e for e in entries if e["key"][:1] == "n" and e["key"][1:].isdigit()}
+    if not by_key:
+        return []
+    nets = {nid: i for nid, i in _network_members(db).items()
+            if f"n{nid}" in by_key and i["variant"] is not None}
+    wanted = place_variants(db, slugs, nets)
+    if not any(wanted.values()):
+        return []
+    from routers.livetv import _unique_numbers
+    enabled = (db.query(LiveChannel).filter(LiveChannel.enabled == True)  # noqa: E712
+               .order_by(LiveChannel.sort_order, LiveChannel.channel_number, LiveChannel.name).all())
+    numbers = {ch.id: str(n) for ch, n in _unique_numbers(db, enabled)}
+    chans = {ch.id: ch for ch in enabled}
+    guides = _place_guides(db, nets, wanted)
+    with_guide = guide_facts(db)["with_guide"]
+    try:
+        from services import livetv_checker
+        checks = livetv_checker.results(db, networks={})
+    except Exception:
+        checks = None
+    out = []
+    for slug in sorted(wanted):
+        _, tiers = _place(db, slug)
+        for nid, cid in wanted[slug].items():
+            base, ch = by_key[f"n{nid}"], chans.get(cid)
+            if ch is None or cid not in numbers:
+                continue
+            word = _place_word(ch.name, ch.group_title, tiers)
+            where = P.title(word) if word else P.get(slug)["city"]
+            gid = guides.get((nid, slug)) or ch.guide_epg_id
+            e = {**base,
+                 "key": f"n{nid}@{slug}", "base": base["key"], "place": slug,
+                 "name": f"{base['name']} · {where}",
+                 "logo_url": ch.logo_url or base.get("logo_url"),
+                 "xmltv_id": numbers[cid], "stream_path": f"/api/live/net/{nid}/at/{slug}",
+                 "has_guide": bool(gid and gid in with_guide),
+                 "variant_name": (ch.custom_name or "").strip() or livetv_names.clean_name(ch.name),
+                 "provider_name": ch.name, "channel_id": cid}
+            if checks is not None:
+                e["check"] = checks.get(f"c{cid}") or {"state": "unchecked", "at": None}
+            out.append(e)
+    return out
+
+
+def _place_guides(db: Session, nets: dict, wanted: dict) -> dict:
+    """(network id, place) -> the guide id a place's variant shows (its own,
+    or a sibling's when its own is for another country: network_guides)."""
+    extra = {(nid, slug): {"variant": cid, "all": nets[nid]["all"]}
+             for slug, m in wanted.items() for nid, cid in m.items() if nid in nets}
+    return network_guides(db, extra) if extra else {}
 
 
 # ── Aliases ─────────────────────────────────────────────────────────────────
@@ -986,8 +1203,7 @@ def _mark_main(db: Session, entries: list, channels_by_id: dict) -> None:
     in several places (a sign it is a real, known channel). Per type the best
     MAIN_PER_TYPE: the admin's country first (its variant, e.g. "CA EN:"),
     then a guide, a working stream, the admin's region, more variants."""
-    country, places = _region(db)
-    place_rank = {p: len(places) - i for i, p in enumerate(places)}
+    country, tiers = _place(db)
     english = (get_setting(db, "livetv_language", "en") or "en").strip().lower().startswith("en")
     cands = []
     for pos, e in enumerate(entries):
@@ -1011,7 +1227,7 @@ def _mark_main(db: Session, entries: list, channels_by_id: dict) -> None:
             1 if country and country in words else 0,
             1 if e.get("has_guide") else 0,
             1 if (e.get("check") or {}).get("state") == "works" else 0,
-            max((place_rank.get(w, 0) for w in words), default=0),
+            _place_rank(words, tiers, livetv_names.feed_country(pname, group)),
             min(e.get("variants", 1), 5),
             -pos,
         )

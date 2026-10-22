@@ -626,6 +626,33 @@ User docs: `docs/features/live-tv.md`.
   streams are under the tuner's own address, not the request's;
   `livetv_lineups` computes every Jellyfin channel id itself; stored keys
   are read through `livetv_catalog.aliases()` (`c123` folded into `n7`).
+- **Places** (`services/livetv_locations.py`): an admin sets where each
+  person watches from (`tentacle_users.livetv_location`, a place's slug;
+  None = the household's = the first admin's, else setting
+  `livetv_location`, else the place `livetv_region` / TZ names first; the
+  invite form and People). A place's words, nearest first: the city, its
+  province/state and its cities by distance, nearby cities over the border
+  within 700 km (Toronto → Buffalo for US networks), its time zone feed
+  (East/West), each tiered 4/3/2 with its country and state (`US: ...
+  VICTORIA` is Texas, `PORTLAND MAINE` not Oregon). The choices are the
+  places the provider's names mention. For every place in use other than
+  the household's, a network whose best variant there (`place_variants`:
+  the same `_Scorer` as the default, without people's lists) names the
+  place nearer than the default does gets an extra lineup entry
+  `n<id>@<place>` ("CTV · Vancouver"), right after the network's, with its
+  number, the variant's guide number (guide fixed like `network_guides`),
+  streamed at `/api/live/net/<id>/at/<place>` (one Jellyfin channel per
+  network and place, whichever variant). A nearby city or feed only with a
+  guide when the default has one; never broken or foreign over the
+  default. Hiding: `L.place_tags()` gives a place's entry
+  `tentacle-notlocal-<p>` for every other place in use and a network's
+  default the tags of the places that have their own; everyone blocks
+  their own place's tag (no place entries: none). The sync reads everyone's
+  favourites before the refresh and moves those on another place's entry
+  (or the default where theirs exists, or a place entry that is gone) to
+  their place's, before their blocked tags change (`place_moves`); the
+  place keys carried are kept in `livetv_place_keys`. `L.view_for()` is
+  My channels' view; quick picks star `n<id>` as the person's own entry.
 - The sync (`livetv_tuners.sync`, one at a time, debounced 15 s by
   `schedule_sync`, started on pool changes (`_pool_changed`), kids changes,
   new people, Tentacle's guide refreshes, at start-up + hourly): adds the
@@ -680,15 +707,17 @@ User docs: `docs/features/live-tv.md`.
   not foreign (country from the name's or group's code, "CA EN:"/"CA FR:" or
   `_FRENCH` for language; `livetv_language`, default en; CA and US are
   neighbours; language decides only when another variant isn't foreign),
-  works, in people's lists, region from `livetv_region` or the server's TZ,
-  has a guide of the household's, quality). The network's guide
+  the household's place (city, province, nearby by distance, feed; the
+  place's words, see Places; a "TV: CITY, ST ... A3 HD OTHER CITY" name
+  counts only its market), works, has a guide of the household's, the
+  place's country, in people's lists, quality). The network's guide
   (`network_guides`, served under the variant's number in the XMLTV) is the
   variant's own unless that one is foreign to the stream (country from the
   id's ending, "TLC.rs") and a sibling, switched on or not, has a fitting
   guide with programmes; an `epg_id_override` on the variant always wins,
   and a network without a guide borrows none. Folding runs over every
   channel when a fingerprint of the list (plus guide ids, broken checks,
-  `livetv_region`/`livetv_language` and `_CHOICE_RULES`) changes; the admin's split/merge
+  `livetv_region`/`livetv_language`, the household's place and `_CHOICE_RULES`) changes; the admin's split/merge
   pin channels (`live_channel_catalog.pinned`) and dissolved networks are
   never refolded. A key that stops being a pool key leaves
   `live_key_aliases` (old -> new; `aliases()` cached) and schedules a tuner
