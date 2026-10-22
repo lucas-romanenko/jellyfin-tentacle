@@ -32,7 +32,8 @@ var localStorage = { getItem: function () { return null; }, setItem: function ()
 %s
 var T = window.TentacleLiveTV.internals;
 var out = (function () { %s })();
-process.stdout.write(JSON.stringify(out));
+// the guide keeps a timer running (it watches the route): exit once written
+process.stdout.write(JSON.stringify(out), function () { process.exit(0); });
 """
 
 
