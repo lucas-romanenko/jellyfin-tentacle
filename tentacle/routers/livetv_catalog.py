@@ -143,6 +143,26 @@ def catalog_set_types(body: TypesBody, db: Session = Depends(get_db)):
     return {"success": True, "types": types}
 
 
+@router.get("/api/live/catalog/logos")
+def catalog_logos(key: str, db: Session = Depends(get_db)):
+    """Logos to pick from for a channel ("c<id>") or network ("n<id>")."""
+    return _run(C.logo_choices, db, key)
+
+
+class LogoBody(BaseModel):
+    key: str                   # "c<id>" or "n<id>"
+    url: Optional[str] = None  # None / "": the automatic logo again
+
+
+@router.put("/api/live/catalog/logo")
+def catalog_set_logo(body: LogoBody, db: Session = Depends(get_db)):
+    """The admin's logo: Jellyfin's channel image follows at the Live TV
+    sync a few seconds later (services/livetv_tuners.py), then open clients."""
+    url = _run(C.set_logo, db, body.key, body.url)
+    _changed("a channel's logo changed")
+    return {"success": True, "custom_logo_url": url}
+
+
 # ── The network stream ──────────────────────────────────────────────────────
 
 def _variant(db: Session, nid: int) -> int:

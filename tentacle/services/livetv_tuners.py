@@ -42,7 +42,8 @@ from typing import Optional
 import requests
 
 from models.database import (
-    LiveUserLineup, SessionLocal, get_setting, log_activity, set_setting, tentacle_address,
+    LiveChannel, LiveNetwork, LiveUserLineup, SessionLocal, get_setting, log_activity, set_setting,
+    tentacle_address,
 )
 from services import livetv_lineups as L
 from services import livetv_locations as P
@@ -577,6 +578,47 @@ def tag_lineup(jf: Jellyfin, admin_id: str, url: str, entries: list, kids: set,
 PLACE_KEYS_KEY = "livetv_place_keys"   # the places' entries the tuner carried (JSON list of keys)
 
 
+LOGOS_KEY = "livetv_lineup_logos"          # key -> the logo the tuner last gave Jellyfin (JSON)
+SEPARATORS_KEY = "livetv_hidden_separators"  # switched-on separator rows the tuner leaves out (JSON list)
+
+
+def _json_setting(db, key: str, default):
+    try:
+        value = json.loads(get_setting(db, key, "") or "null")
+    except ValueError:
+        value = None
+    return default if value is None else value
+
+
+def stale_logos(db, entries: list) -> set:
+    """Lineup keys whose logo changed since the tuner last gave it to
+    Jellyfin. Jellyfin sets a channel's image from the M3U's tvg-logo only
+    while the channel has none (GuideManager), so a new logo needs the old
+    image removed before the guide refresh. Before the first record: the
+    channels and networks with the admin's own logo."""
+    known = _json_setting(db, LOGOS_KEY, None)
+    if not isinstance(known, dict):
+        mine = {f"c{i}" for (i,) in db.query(LiveChannel.id).filter(LiveChannel.custom_logo_url.isnot(None))}
+        mine |= {f"n{i}" for (i,) in db.query(LiveNetwork.id).filter(LiveNetwork.custom_logo_url.isnot(None))}
+        return {e["key"] for e in entries if L.base_key(e["key"]) in mine}
+    from services.livetv_catalog import _logo_base
+    # Compared without the query: panels change their cache busters.
+    return {e["key"] for e in entries
+            if e["key"] in known and _logo_base(known[e["key"]] or "") != _logo_base(e.get("logo_url") or "")}
+
+
+def drop_images(jf: "Jellyfin", item_ids: list) -> int:
+    """Remove the channels' images; the next guide refresh sets the M3U's."""
+    done = 0
+    for item_id in item_ids:
+        try:
+            jf.delete(f"/Items/{item_id}/Images/Primary")
+            done += 1
+        except requests.RequestException as e:   # not in Jellyfin yet: it gets the new one
+            logger.info(f"[LiveTV] Couldn't remove channel image {item_id}: {e}")
+    return done
+
+
 def _carried_place_keys(db) -> set:
     try:
         return {str(k) for k in json.loads(get_setting(db, PLACE_KEYS_KEY, "") or "[]")}
@@ -731,7 +773,19 @@ def sync(db, refresh: bool = False) -> dict:
 
     done["guide_added"] = ensure_guide(jf, cfg, base)
 
-    refreshing = bool(done["added"] or refresh or done["guide_added"] or sources or places_change)
+    # Separator rows newly left out of the tuner (switched on before, or a
+    # server from before they were): one refresh takes them out of Jellyfin.
+    from routers.livetv import _hidden_separators
+    hidden = sorted(f"c{i}" for i in _hidden_separators(db))
+    new_hidden = bool(set(hidden) - set(_json_setting(db, SEPARATORS_KEY, [])))
+    # A channel whose logo changed (the admin's, the provider's): its image
+    # in Jellyfin goes, the refresh gives it the new one.
+    relogo = stale_logos(db, entries) if tuner is not None else set()
+    if relogo:
+        done["logos"] = drop_images(jf, [i for i, k in mine.items() if k in relogo])
+
+    refreshing = bool(done["added"] or refresh or done["guide_added"] or sources or places_change
+                      or new_hidden or relogo)
     if admin_id and tuner is not None and refreshing:
         # Before the refresh too: the plugin gives programmes the tag their
         # channel has while it builds them, so a channel made (or no longer)
@@ -746,7 +800,14 @@ def sync(db, refresh: bool = False) -> dict:
     if refreshing:
         refresh_and_wait(db, jf)
         done["refreshed"] = True
-    else:
+    if done["refreshed"] or tuner is None:
+        logos = {e["key"]: e.get("logo_url") or "" for e in entries}
+        if logos != _json_setting(db, LOGOS_KEY, None):
+            set_setting(db, LOGOS_KEY, json.dumps(logos, sort_keys=True))
+        if hidden != _json_setting(db, SEPARATORS_KEY, []):
+            set_setting(db, SEPARATORS_KEY, json.dumps(hidden))
+        db.commit()
+    if not refreshing:
         wait_for_guide(jf)   # a refresh someone else started: tag what it creates
 
     if admin_id:

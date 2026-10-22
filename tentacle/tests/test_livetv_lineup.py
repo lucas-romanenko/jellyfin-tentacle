@@ -125,6 +125,21 @@ class Lineups(DbCase):
         self.db.commit()
         self.assertEqual(["c2", "c3", "c4", "c1"], [c["key"] for c in L.pool(self.db)])
 
+    def test_separator_rows_are_no_channels(self):
+        p = self.db.query(mdb.Provider).one()
+        self.db.add(mdb.LiveChannel(provider_id=p.id, name="##### BLUE SPORT ᴿᴬᵂ #####", stream_id="777",
+                                    stream_url="http://192.0.2.10/live/77.ts", enabled=True, sort_order=2))
+        self.db.commit()
+        self.assertEqual([("c1", 1), ("c2", 2), ("c3", 3), ("c4", 4)],
+                         [(c["key"], c["number"]) for c in L.lineup(self.db)])
+
+    def test_the_admins_logo_wins(self):
+        self.db.query(mdb.LiveChannel).filter(mdb.LiveChannel.id == 2).update(
+            {"custom_logo_url": "https://logos.example/s.png"})
+        self.db.commit()
+        self.assertEqual(["http://img/1.png", "https://logos.example/s.png"],
+                         [c["logo_url"] for c in L.pool(self.db)[:2]])
+
     def test_a_channel_switched_off_leaves_the_lineup(self):
         self.db.query(mdb.LiveChannel).filter(mdb.LiveChannel.id == 2).update({"enabled": False})
         self.db.commit()
@@ -243,7 +258,7 @@ class FakeJellyfin:
         db = self.db_factory()
         try:
             pool = L.pool(db)
-            want = {}
+            want, logos = {}, {}
             for t in self.tuners:
                 if t["Type"] == "hdhomerun":
                     for c in pool:
@@ -252,7 +267,9 @@ class FakeJellyfin:
                 m = L.USER_TUNER_RE.search(t["Url"])   # as the tuner routes serve them
                 entries = L.legacy_lineup(db, m.group(1), pool) if m else L.lineup(db, pool)
                 for e in entries:
-                    want[L.m3u_channel_item_id(t["Url"], L.tuner_base(t["Url"]) + e["stream_path"])] = (e["name"], t["Url"])
+                    i = L.m3u_channel_item_id(t["Url"], L.tuner_base(t["Url"]) + e["stream_path"])
+                    want[i] = (e["name"], t["Url"])
+                    logos[i] = e.get("logo_url")
         finally:
             db.close()
         for i in list(self.channels):
@@ -260,7 +277,10 @@ class FakeJellyfin:
                 del self.channels[i]
         for i, (name, tuner) in want.items():
             tag = L.tag_for_tuner_url(tuner)    # the plugin, at creation
-            self.channels.setdefault(i, {"Id": i, "Name": name, "Tags": [tag] if tag else [], "tuner": tuner})
+            ch = self.channels.setdefault(i, {"Id": i, "Name": name, "Tags": [tag] if tag else [], "tuner": tuner})
+            ch["Name"] = name                    # GuideManager renames a channel
+            if not ch.get("Image") and logos.get(i):
+                ch["Image"] = logos[i]           # ... but sets its image only while it has none
         # The plugin copies the channel's tag onto its programmes as they are built
         self.programme_tags = {i: list(c["Tags"]) for i, c in self.channels.items()}
         # Jellyfin's RefreshTimers: a one-off whose programme left the guide goes
@@ -344,6 +364,13 @@ class FakeJellyfin:
             self.timers = [t for t in self.timers if t["Id"] != path.split("/")[-1]]
         elif path.startswith("/UserFavoriteItems/"):
             self.favs[p["userId"]].discard(path.split("/")[2])
+        elif path.startswith("/Items/") and path.endswith("/Images/Primary"):
+            ch = self.channels.get(path.split("/")[2])
+            if ch is None:
+                r = requests.Response()
+                r.status_code = 404
+                raise requests.HTTPError(response=r)
+            ch.pop("Image", None)
         else:
             raise AssertionError(path)
 
@@ -398,6 +425,61 @@ class Sync(DbCase):
         again = self.sync()
         self.assertEqual((0, 0, False), (again["added"], again["removed"], again["refreshed"]))
         self.assertEqual(1, len(self.jf.listings))
+
+    def logos(self):
+        return {k: self.jf.channels[i].get("Image") for k, i in self.ids().items() if i in self.jf.channels}
+
+    def test_separator_rows_switched_on_before_leave_jellyfin(self):
+        # "####### SPORTSNET PPV #######" switched on before #158 (or with its
+        # group) sat in the guide as a channel: the first sync of a server
+        # that hides them refreshes Jellyfin once, real channels keep their ids.
+        self.sync()
+        ids = self.ids()
+        p = self.db.query(mdb.Provider).one()
+        self.db.add(mdb.LiveChannel(provider_id=p.id, name="####### SPORTSNET PPV #######", stream_id="555",
+                                    stream_url="http://192.0.2.10/live/55.ts", enabled=True, sort_order=2))
+        self.db.commit()
+        sep = L.m3u_channel_item_id(LINEUP, BASE + "/api/live/stream/6")
+        self.jf.channels[sep] = {"Id": sep, "Name": "####### SPORTSNET PPV #######", "Tags": [L.ALL_TAG],
+                                 "tuner": LINEUP}   # what an older server put there
+        self.jf.favs[ANN].add(ids["c2"])
+        done = self.sync()
+        self.assertTrue(done["refreshed"])
+        self.assertNotIn(sep, self.jf.channels)
+        self.assertEqual(ids, self.ids())
+        self.assertEqual({ids["c2"]}, self.jf.favourites(ANN))
+        self.assertFalse(self.sync()["refreshed"])     # once
+        # The admin named it: a channel of theirs.
+        self.db.query(mdb.LiveChannel).filter(mdb.LiveChannel.id == 6).update({"custom_name": "Sportsnet PPV"})
+        self.db.commit()
+        self.assertIn("c6", [c["key"] for c in L.pool(self.db)])
+
+    def test_a_new_logo_replaces_jellyfins_channel_image(self):
+        # Jellyfin sets a channel's image from tvg-logo only while it has none.
+        self.sync()
+        self.assertEqual("http://img/2.png", self.logos()["c2"])
+        from services import livetv_catalog as C
+        C.set_logo(self.db, "c2", "https://logos.example/ctv.png")
+        done = self.sync(refresh=True)
+        self.assertEqual(1, done["logos"])
+        self.assertEqual("https://logos.example/ctv.png", self.logos()["c2"])
+        self.assertEqual("http://img/1.png", self.logos()["c1"])     # the others untouched
+        self.assertNotIn("logos", self.sync(refresh=True))
+        # The provider's logo again; a provider's new cache buster is no change.
+        C.set_logo(self.db, "c2", "")
+        self.db.query(mdb.LiveChannel).filter(mdb.LiveChannel.id == 1).update({"logo_url": "http://img/1.png?v=2"})
+        self.db.commit()
+        self.assertEqual(1, self.sync(refresh=True)["logos"])
+        self.assertEqual("http://img/2.png", self.logos()["c2"])
+
+    def test_a_logo_set_before_the_first_record_still_reaches_jellyfin(self):
+        self.sync()
+        mdb.set_setting(self.db, T.LOGOS_KEY, "")   # a server from before
+        self.db.query(mdb.LiveChannel).filter(mdb.LiveChannel.id == 3).update(
+            {"custom_logo_url": "https://logos.example/k.png"})
+        self.db.commit()
+        self.assertEqual(1, self.sync(refresh=True)["logos"])
+        self.assertEqual("https://logos.example/k.png", self.logos()["c3"])
 
     def test_read_at_native_frame_rate_is_switched_off_once(self):
         # A lineup tuner made by v1.13 or earlier carried it over from the old tuner:

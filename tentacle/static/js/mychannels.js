@@ -527,9 +527,38 @@ function _poolRow(e) {
     </div>${pool.open === e.key ? _poolDetail(e, net) : ''}`;
 }
 
+// Name and logo: a channel's own name (blank: the provider's) or a network's
+// (blank: the automatic one), and a logo picked from the provider's, the
+// other versions', the same guide's or similar channels', or a web address.
+function _poolNameLogo(e) {
+  if (e.key[0] !== 'n' && e.key[0] !== 'c') return '';   // YouTube: its own name and picture
+  return `<h4>Name and logo people see</h4>
+    <div class="pool-namelogo">
+      <input class="form-input pool-name-input" maxlength="64" value="${escHtml(e.name)}" aria-label="Name people see for ${escHtml(e.name)}">
+      <button class="btn btn-primary btn-sm" data-act="name">Save name</button>
+    </div>
+    <div class="pool-logos" aria-live="polite"><span class="muted">Looking for logos…</span></div>
+    <div class="pool-namelogo">
+      <input class="form-input pool-logo-url" type="url" placeholder="Or a logo’s web address (https://…)" aria-label="Logo web address">
+      <button class="btn btn-secondary btn-sm" data-act="logo-url">Use this logo</button>
+      <button class="btn btn-secondary btn-sm" data-act="logo-auto">Automatic logo</button>
+    </div>`;
+}
+
+async function _poolLoadLogos(key) {
+  let d;
+  try { d = await api(`/api/live/catalog/logos?key=${encodeURIComponent(key)}`); } catch (err) { d = null; }
+  const el = [...document.querySelectorAll('.pool-detail')].find(x => x.dataset.key === key)?.querySelector('.pool-logos');
+  if (!el) return;
+  const e = pool.entries.find(x => x.key === key) || {};
+  if (!d || !d.choices.length) { el.innerHTML = '<span class="muted">No other logos found: paste a web address below.</span>'; return; }
+  el.innerHTML = d.choices.map(c => `<button class="pool-logo${c.url === e.logo_url ? ' on' : ''}" data-act="logo" data-url="${escHtml(c.url)}" title="Use this logo"${c.url === e.logo_url ? ' aria-current="true"' : ''}>${_mychLogo({ logo_url: c.url })}<span>${escHtml(c.label)}</span></button>`).join('');
+}
+
 function _poolDetail(e, net) {
   const types = new Set(e.types || []);
   let html = `<div class="pool-detail" data-key="${escHtml(e.key)}">
+    ${_poolNameLogo(e)}
     <h4>Types (people&rsquo;s quick picks)</h4>
     <div class="pool-typepick">${pool.types.map(t =>
       `<label><input type="checkbox" value="${escHtml(t)}"${types.has(t) ? ' checked' : ''}> ${escHtml(MYCH_TYPE_LABEL[t] || t)}</label>`).join('')}</div>
@@ -545,7 +574,6 @@ function _poolDetail(e, net) {
     <div style="display:flex;gap:6px;flex-wrap:wrap">
       <button class="btn btn-secondary btn-sm" data-act="split">Split ticked ones off</button>
       <button class="btn btn-secondary btn-sm" data-act="dissolve">Undo this fold</button>
-      <button class="btn btn-secondary btn-sm" data-act="rename">Rename</button>
     </div>`;
   }
   return html + '</div>';
@@ -568,6 +596,7 @@ function poolRender() {
   const shown = rows.slice(0, pool.limit);
   el.innerHTML = shown.map(_poolRow).join('') + (rows.length > shown.length
     ? `<button class="mych-more" data-act="more">Show all ${rows.length}</button>` : '');
+  if (pool.open && /^[cn]\d+$/.test(pool.open) && shown.some(e => e.key === pool.open)) _poolLoadLogos(pool.open);
 }
 
 function _poolMergeBtn() {
@@ -636,10 +665,20 @@ function _poolOnClick(ev) {
   } else if (act === 'dissolve') {
     if (!confirm(`Show every version of ${e.name} as a channel of its own again?`)) return;
     _poolDo(() => api(`/api/live/catalog/networks/${id}/split`, { method: 'POST', body: {} }), 'Fold undone');
-  } else if (act === 'rename') {
-    const name = prompt(`Name people see for ${e.name} (blank: the automatic name):`, e.name);
-    if (name === null) return;
-    _poolDo(() => api(`/api/live/catalog/networks/${id}`, { method: 'PUT', body: { name: name.trim() } }), 'Renamed');
+  } else if ((act === 'name' || act.startsWith('logo')) && key[0] !== 'n' && key[0] !== 'c') {
+    return;
+  } else if (act === 'name') {
+    const name = (holder.querySelector('.pool-name-input')?.value || '').trim();
+    const ok = name ? `Renamed to “${name}”. Open guides follow once Jellyfin has refreshed.` : 'The automatic name again';
+    _poolDo(() => key[0] === 'n'
+      ? api(`/api/live/catalog/networks/${id}`, { method: 'PUT', body: { name } })
+      : api(`/api/live/channels/${id}`, { method: 'PUT', body: { custom_name: name } }), ok);
+  } else if (act === 'logo' || act === 'logo-url' || act === 'logo-auto') {
+    const url = act === 'logo' ? btn.dataset.url
+      : act === 'logo-url' ? (holder.querySelector('.pool-logo-url')?.value || '').trim() : '';
+    if (act === 'logo-url' && !url) { toast('Paste the logo’s web address first', 'warning'); return; }
+    _poolDo(() => api('/api/live/catalog/logo', { method: 'PUT', body: { key, url } }),
+      url ? 'Logo changed. Open guides follow once Jellyfin has refreshed.' : 'The automatic logo again');
   }
 }
 

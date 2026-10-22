@@ -348,5 +348,85 @@ class NetworkStream(CatalogCase):
         self.assertEqual(404, e.exception.status_code)
 
 
+class Logos(CatalogCase):
+    def setUp(self):
+        super().setUp()
+        self.pool()   # folded
+
+    def logo(self, cid, url):
+        self.db.query(mdb.LiveChannel).filter(mdb.LiveChannel.id == cid).update({"logo_url": url})
+        self.db.commit()
+
+    def test_a_network_shows_the_logo_most_versions_share(self):
+        # The provider gave the Buffalo version (the variant) another
+        # channel's logo ("CTV Calary News" had RMC WOW's): outvoted.
+        self.logo(1, "http://l/nbc.png?ver=1")
+        self.logo(2, "http://l/nbc.png?ver=2")
+        self.logo(3, "http://l/rmc-wow.jpg")
+        nid = self.nid_of(1)
+        self.assertEqual(3, self.pool()[f"n{nid}"]["channel_id"])
+        self.assertEqual("http://l/nbc.png?ver=1", self.pool()[f"n{nid}"]["logo_url"])
+        # A tie: the variant's own (TSN 1, two versions).
+        self.logo(6, "http://l/tsn-a.png")
+        self.logo(7, "http://l/tsn-b.png")
+        tsn = self.pool()[f"n{self.nid_of(6)}"]
+        self.assertEqual(f"http://l/tsn-{'a' if tsn['channel_id'] == 6 else 'b'}.png", tsn["logo_url"])
+
+    def test_the_admins_logo_wins(self):
+        self.logo(1, "http://l/nbc.png")
+        nid = self.nid_of(1)
+        C.set_logo(self.db, f"n{nid}", "https://logos.example/nbc.svg")
+        C.set_logo(self.db, "c12", "https://logos.example/cnn.png")
+        pool = self.pool()
+        self.assertEqual("https://logos.example/nbc.svg", pool[f"n{nid}"]["logo_url"])
+        self.assertEqual("https://logos.example/cnn.png", pool["c12"]["logo_url"])
+        C.set_logo(self.db, "c12", "")
+        self.assertIsNone(self.pool()["c12"]["logo_url"])
+        self.assertIsNone(self.db.get(mdb.LiveChannel, 12).custom_logo_url)
+
+    def test_only_web_addresses(self):
+        for bad in ("javascript:alert(1)", "ftp://x/y.png", "https://x/a b.png", "https://x/" + "a" * 600):
+            with self.assertRaises(C.CatalogError, msg=bad):
+                C.set_logo(self.db, "c12", bad)
+        with self.assertRaises(C.CatalogError):
+            C.set_logo(self.db, "c999", "https://x/y.png")
+        with self.assertRaises(C.CatalogError):
+            C.set_logo(self.db, "y1", "https://x/y.png")
+
+    def test_choices_the_provider_the_versions_the_guide_and_similar_names(self):
+        self.logo(1, "http://l/nbc.png?ver=1")
+        self.logo(2, "http://l/nbc.png?ver=2")    # the same picture: offered once
+        self.logo(3, "http://l/rmc-wow.jpg")
+        self.logo(4, "http://l/nbc-sports.png")
+        nid = self.nid_of(1)
+        urls = [c["url"] for c in C.logo_choices(self.db, f"n{nid}")["choices"]]
+        self.assertEqual("http://l/nbc.png?ver=1", urls[0])
+        self.assertIn("http://l/rmc-wow.jpg", urls)
+        self.assertIn("http://l/nbc-sports.png", urls)     # "NBC Sports Boston": a similar name
+        self.assertEqual(len(urls), len({u.split("?")[0] for u in urls}))
+        # A single channel: its own, the same guide's, similar names.
+        self.db.add(mdb.LiveChannel(id=30, provider_id=1, name="CA: CNN INTERNATIONAL", stream_id="130",
+                                    stream_url="x", logo_url="http://l/cnn-i.png"))
+        self.db.add(mdb.LiveChannel(id=31, provider_id=1, name="UK: SOMETHING ELSE", stream_id="131",
+                                    stream_url="y", logo_url="http://l/cnn.png", epg_channel_id="cnn.ca"))
+        self.db.query(mdb.LiveChannel).filter(mdb.LiveChannel.id == 12).update(
+            {"logo_url": "http://l/rmc-wow.jpg", "epg_channel_id": "cnn.ca"})
+        self.db.commit()
+        got = C.logo_choices(self.db, "c12")
+        self.assertEqual(["http://l/rmc-wow.jpg", "http://l/cnn.png", "http://l/cnn-i.png"],
+                         [c["url"] for c in got["choices"]])
+        self.assertIsNone(got["custom_logo_url"])
+
+    def test_the_route_tells_the_tuner(self):
+        from routers import livetv_catalog as R
+        r = R.catalog_set_logo(R.LogoBody(key="c12", url="https://logos.example/cnn.png"), db=self.db)
+        self.assertEqual("https://logos.example/cnn.png", r["custom_logo_url"])
+        self.sync.assert_called()
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as e:
+            R.catalog_set_logo(R.LogoBody(key="c12", url="file:///etc/passwd"), db=self.db)
+        self.assertEqual(400, e.exception.status_code)
+
+
 if __name__ == "__main__":
     unittest.main()
