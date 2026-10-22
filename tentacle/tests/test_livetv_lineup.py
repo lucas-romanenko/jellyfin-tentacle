@@ -415,6 +415,35 @@ class Sync(DbCase):
         self.assertFalse(self.sync().get("native_rate_off"))
         self.assertTrue(self.jf.tuners[0]["ReadAtNativeFramerate"])
 
+    def test_the_tuner_count_is_tentacles_stream_limit(self):
+        # Jellyfin refuses a channel once TunerCount of the tuner's streams
+        # play: at 6 with the provider's "Streams at once" at 8, a 7th viewer
+        # was turned away. The hand-set 8 is kept; a new limit follows.
+        p = self.db.query(mdb.Provider).one()
+        p.live_max_streams = 8
+        self.db.commit()
+        self.sync()
+        self.assertEqual(8, self.jf.tuners[0]["TunerCount"])
+        self.assertNotIn("tuner_count", self.sync())
+        self.jf.tuners[0]["TunerCount"] = 6             # by hand in Jellyfin, or a tuner of before
+        self.assertEqual(8, self.sync()["tuner_count"])
+        self.assertEqual(8, self.jf.tuners[0]["TunerCount"])
+        self.db.add(mdb.Provider(name="Q", server_url="http://192.0.2.20", username="u", password="p",
+                                 live_tv_enabled=True, live_max_streams=2))
+        p.live_max_streams = 5
+        self.db.commit()
+        self.assertEqual(7, self.sync()["tuner_count"])
+        self.assertEqual([(LINEUP, 7, "Tentacle · Live TV")],
+                         [(t["Url"], t["TunerCount"], t["FriendlyName"]) for t in self.jf.tuners])
+
+    def test_a_new_streams_at_once_reaches_jellyfin_within_seconds(self):
+        from routers import providers as rp
+        with mock.patch.object(T, "stream_limit_changed") as changed:
+            rp.update_provider(self.db.query(mdb.Provider).one().id, rp.ProviderUpdate(live_max_streams=8), self.db)
+            rp.update_provider(self.db.query(mdb.Provider).one().id, rp.ProviderUpdate(name="P2"), self.db)
+        self.assertEqual(1, changed.call_count, "only a change of the limit syncs")
+        self.assertLessEqual(T.LIMIT_DELAY_SECONDS, 5)
+
     def test_moves_everyone_off_the_old_hdhomerun_tuner(self):
         self.jf.add_hdhr()
         self.jf.favs[ANN] = {self.hdhr_id("c2")}

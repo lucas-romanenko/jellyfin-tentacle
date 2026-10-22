@@ -162,6 +162,8 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
         body.settings["tmdb_bearer_token"] = ""
     from routers.vod import vod_enabled
     vod_before = vod_enabled(db)
+    from services import livetv_tuners
+    count_before = livetv_tuners.tuner_count(db)
     changed = False
     for key, value in body.settings.items():
         # A secret sent back exactly as the masked listing showed it is unchanged
@@ -220,6 +222,11 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
     if changed:
         from services.smartlists import _notify_jellyfin_plugin
         _notify_jellyfin_plugin(db)
+
+    # The default "Streams at once" (or the HDHomeRun tuner count): Jellyfin's
+    # tuner count follows (services/livetv_tuners.py).
+    if livetv_tuners.tuner_count(db) != count_before:
+        livetv_tuners.stream_limit_changed("streams at once changed")
 
     # If the sync schedule changed, reschedule the job live (no restart needed).
     if "sync_schedule" in body.settings:

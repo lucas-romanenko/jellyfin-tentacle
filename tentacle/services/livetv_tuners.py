@@ -536,6 +536,18 @@ def _tuner_body(name: str, url: str, count: int, template: Optional[dict]) -> di
     return body
 
 
+def tuner_count(db) -> int:
+    """Streams at once Jellyfin allows on the lineup's tuner: Tentacle's
+    overall stream limit (every provider's "Streams at once" together), as
+    the HDHomeRun device reports it. 0 when it can't be read (left as is)."""
+    try:
+        from routers.livetv import _hdhr_tuner_count
+        return _hdhr_tuner_count(db)
+    except Exception:
+        logger.warning("[LiveTV] Could not work out the tuner count", exc_info=True)
+        return 0
+
+
 def _scheduled_channel_ids(jf: Jellyfin) -> set:
     ids = set()
     for path, params in (("/LiveTv/SeriesTimers", {}), ("/LiveTv/Timers", {"isScheduled": "true"})):
@@ -689,26 +701,33 @@ def sync(db, refresh: bool = False) -> dict:
     # channel left a tuner (a lineup channel with a new key does at once).
     pre_one_offs = scheduled_one_offs(jf) if sources else None
 
+    count = tuner_count(db)
     if tuner is None:
-        count = 0
-        try:
-            from routers.livetv import _hdhr_tuner_count
-            count = _hdhr_tuner_count(db)
-        except Exception:
-            count = 0
         template = olds[0] if olds else (personal[0] if personal else None)
         jf.post("/LiveTv/TunerHosts", _tuner_body(TUNER_NAME, url, count, template))
         done["added"] += 1
         logger.info(f"[LiveTV] Added Jellyfin tuner '{TUNER_NAME}'")
 
-    elif not get_setting(db, NATIVE_RATE_KEY, ""):
-        if tuner.get("ReadAtNativeFramerate"):
-            jf.post("/LiveTv/TunerHosts", {**tuner, "ReadAtNativeFramerate": False})
-            done["native_rate_off"] = True
-            logger.info(f"[LiveTV] Switched off 'Read at native frame rate' on Jellyfin tuner "
-                        f"'{TUNER_NAME}': channels start in about a second instead of several")
-        set_setting(db, NATIVE_RATE_KEY, datetime.utcnow().isoformat())
-        db.commit()
+    else:
+        fixed = {}
+        if not get_setting(db, NATIVE_RATE_KEY, ""):
+            if tuner.get("ReadAtNativeFramerate"):
+                fixed["ReadAtNativeFramerate"] = False
+                done["native_rate_off"] = True
+                logger.info(f"[LiveTV] Switched off 'Read at native frame rate' on Jellyfin tuner "
+                            f"'{TUNER_NAME}': channels start in about a second instead of several")
+            set_setting(db, NATIVE_RATE_KEY, datetime.utcnow().isoformat())
+            db.commit()
+        # Jellyfin refuses a channel once this many of the tuner's streams
+        # play: below Tentacle's own limit, a 7th viewer was turned away
+        # while the provider carried 8 (hand-set to 8 on 2026-10-22).
+        if count and tuner.get("TunerCount") != count:
+            fixed["TunerCount"] = count
+            done["tuner_count"] = count
+            logger.info(f"[LiveTV] Jellyfin tuner '{TUNER_NAME}': {tuner.get('TunerCount')} → {count} "
+                        f"streams at once (Tentacle's limit)")
+        if fixed:
+            jf.post("/LiveTv/TunerHosts", {**tuner, **fixed})
 
     done["guide_added"] = ensure_guide(jf, cfg, base)
 
@@ -825,6 +844,7 @@ _enabled = False
 _pending = {"timer": None, "refresh": False, "reasons": []}
 _pending_lock = threading.Lock()
 DEBOUNCE_SECONDS = 15
+LIMIT_DELAY_SECONDS = 2
 
 
 def schedule_sync(reason: str, refresh: bool = False, delay: Optional[float] = None) -> None:
@@ -840,6 +860,12 @@ def schedule_sync(reason: str, refresh: bool = False, delay: Optional[float] = N
         t.daemon = True
         _pending["timer"] = t
         t.start()
+
+
+def stream_limit_changed(reason: str) -> None:
+    """A provider's "Streams at once" (or the default) changed: Jellyfin's
+    tuner count follows within seconds, not at the hourly check."""
+    schedule_sync(reason, delay=LIMIT_DELAY_SECONDS)
 
 
 def enable() -> None:
