@@ -62,14 +62,19 @@ _POLL_SECONDS = 5
 
 # Settings a Tentacle tuner takes from the HDHomeRun tuner it replaces, so
 # playback behaves as it did (the admin may have tuned them in Jellyfin).
+# Never "Read at native frame rate": it makes Jellyfin's ffmpeg read a channel
+# no faster than it plays, so the first HLS segment of a live channel took
+# 3-11 s instead of well under one (providers send their buffer at once).
 _CARRIED_TUNER_SETTINGS = (
     "AllowHWTranscoding", "AllowFmp4TranscodingContainer", "AllowStreamSharing",
-    "FallbackMaxStreamingBitrate", "EnableStreamLooping", "IgnoreDts", "ReadAtNativeFramerate",
+    "FallbackMaxStreamingBitrate", "EnableStreamLooping", "IgnoreDts",
 )
+# Set once the lineup tuner's "Read at native frame rate" was switched off
+# (a tuner made by v1.13 or earlier carried it over); later the admin's call.
+NATIVE_RATE_KEY = "livetv_tuner_native_rate_off"
 _NEW_TUNER_DEFAULTS = {
     "AllowHWTranscoding": True, "AllowFmp4TranscodingContainer": False, "AllowStreamSharing": True,
     "FallbackMaxStreamingBitrate": 30000000, "EnableStreamLooping": False, "IgnoreDts": True,
-    "ReadAtNativeFramerate": False,
 }
 
 
@@ -525,7 +530,7 @@ status = {"running": False, "last_at": None, "last_ok": None, "last_message": ""
 
 def _tuner_body(name: str, url: str, count: int, template: Optional[dict]) -> dict:
     body = {"Type": "m3u", "Url": url, "FriendlyName": name, "TunerCount": count,
-            "ImportFavoritesOnly": False, "Source": "", "UserAgent": ""}
+            "ImportFavoritesOnly": False, "Source": "", "UserAgent": "", "ReadAtNativeFramerate": False}
     for k in _CARRIED_TUNER_SETTINGS:
         body[k] = (template or {}).get(k, _NEW_TUNER_DEFAULTS[k])
     return body
@@ -695,6 +700,15 @@ def sync(db, refresh: bool = False) -> dict:
         jf.post("/LiveTv/TunerHosts", _tuner_body(TUNER_NAME, url, count, template))
         done["added"] += 1
         logger.info(f"[LiveTV] Added Jellyfin tuner '{TUNER_NAME}'")
+
+    elif not get_setting(db, NATIVE_RATE_KEY, ""):
+        if tuner.get("ReadAtNativeFramerate"):
+            jf.post("/LiveTv/TunerHosts", {**tuner, "ReadAtNativeFramerate": False})
+            done["native_rate_off"] = True
+            logger.info(f"[LiveTV] Switched off 'Read at native frame rate' on Jellyfin tuner "
+                        f"'{TUNER_NAME}': channels start in about a second instead of several")
+        set_setting(db, NATIVE_RATE_KEY, datetime.utcnow().isoformat())
+        db.commit()
 
     done["guide_added"] = ensure_guide(jf, cfg, base)
 

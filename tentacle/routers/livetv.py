@@ -469,6 +469,11 @@ _RAW_MARK_EVERY = 5.0
 # A connection that delivered this long is a stream that works (#335): it
 # ends a raw re-dial's outage, and tells provider health (#652).
 _HEALTHY_AFTER = 10.0
+# A raw stream goes out in ~128 KB pieces (fewer, larger writes for every
+# client), but not its start: the provider's opening burst is passed on as it
+# comes until this much has gone out, so Jellyfin's tuner, probe and ffmpeg
+# begin at once (a 2 Mbit/s channel took half a second to fill one piece).
+_FAST_START_BYTES = 2 * 1024 * 1024
 # For a recording, a 404/410 counts toward _MAX_RERESOLVE only after this long
 # of unbroken 404/410 (a panel blip is seconds); viewers keep the 3-try rule.
 _GONE_GRACE = 180.0
@@ -604,6 +609,40 @@ class _PlaceholderRefusal(_TunerRefusal):
 async def _refuse_placeholder(channel_id: int, segment: str):
     await _note_placeholder(channel_id, segment)
     raise _PlaceholderRefusal(f"Channel unavailable: the provider served a placeholder ({segment})")
+
+
+def _placeholder_lines(ch) -> tuple:
+    from services import livetv_slate
+    return livetv_slate.unavailable(_channel_event(ch), ch.guide_name if ch is not None else "")
+
+
+async def _placeholder_picture(ch) -> "bytes | None":
+    from services import livetv_slate
+    return await livetv_slate.picture(_placeholder_lines(ch))
+
+
+def _channel_event(ch):
+    """livetv_events' reading of the channel's name (cached), None for most channels."""
+    if ch is None:
+        return None
+    from services.livetv_catalog import _event_for
+    return _event_for(ch.name, ch.group_title)
+
+
+async def _nothing_on_response(channel_id: int, lines: tuple) -> "StreamingResponse | None":
+    """A viewer's answer when a channel has nothing on: a short stream that
+    says so (services/livetv_slate.py), or None when it can't be made."""
+    from services import livetv_slate
+    data = await livetv_slate.picture(lines)
+    if not data:
+        return None
+    logger.info(f"[LiveTV] Channel {channel_id}: nothing on right now ({' '.join(lines).strip()}) "
+                f"-- the viewer is told so")
+    return StreamingResponse(livetv_slate.paced(data), media_type="video/mp2t", headers={
+        "Connection": "close",
+        "Cache-Control": "no-cache, no-store",
+        "X-Tentacle-Reason": "nothing on right now",
+    })
 
 
 def _media_segments(playlist_text: str, base_url: str) -> list:
@@ -4333,6 +4372,14 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
     if protect_decides and not certain:
         logger.warning(f"[LiveTV] Recording protection: Jellyfin did not say in time what is being "
                        f"recorded — channel {channel_id} is opened as a {kind} and no viewer is stopped for it")
+    if kind == "live":
+        # An event that starts later: the provider would answer slowly with its
+        # placeholder. Say so at once, without a connection.
+        from services import livetv_slate
+        lines = livetv_slate.early(_channel_event(ch))
+        slate = await _nothing_on_response(channel_id, lines) if lines else None
+        if slate is not None:
+            return slate
     try:
         lease = await _stream_slots.acquire_lease(limit, _SLOT_WAIT_SECONDS, kind, f"channel:{channel_id}",
                                                   stream_key=guide_number(ch, _offsets(db)) if ch else None,
@@ -4400,7 +4447,8 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
                                              is_recording=lambda: lease.kind == "recording",
                                              rival_delivering=lambda: _rival_delivering(lease),
                                              refresh_recordings=_refresh_recordings_bounded,
-                                             fallback_url=fallback_url)
+                                             fallback_url=fallback_url,
+                                             nothing_on=lambda: _placeholder_picture(ch))
         if lease.preempted:
             # A recording took this slot while the open was still in flight
             # (there was no pump yet to stop). Going on would run one more
@@ -4430,6 +4478,12 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
         if not pending.done():
             pending.set_result(shared)
         return _SubscriberResponse(shared, q)
+    except _PlaceholderRefusal:
+        _release_sem()
+        slate = await _nothing_on_response(channel_id, _placeholder_lines(ch)) if lease.kind == "live" else None
+        if slate is None:
+            raise
+        return slate
     except BaseException:
         _release_sem()
         raise
@@ -4438,7 +4492,7 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
 async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str, _release_sem,
                               guard=None, failure_budget: float = _DEFAULT_RECONNECT_BUDGET,
                               is_recording=None, rival_delivering=None, refresh_recordings=None,
-                              fallback_url=None):
+                              fallback_url=None, nothing_on=None):
     """Inner stream proxy logic. `_release_sem()` is called when the concurrency
     slot can be freed: immediately on early-exit paths, or by the streaming
     generator's `finally` once the long-lived stream ends.
@@ -4464,7 +4518,12 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
 
     `fallback_url`, when given, is opened instead if `stream_url` is refused
     with a status that will not fix itself (a panel that does not serve the
-    channel as .ts: see _live_open_urls); the stream then runs on it."""
+    channel as .ts: see _live_open_urls); the stream then runs on it.
+
+    `nothing_on`, when given, makes the "Nothing on right now" picture
+    (bytes, or None): a viewer's raw stream that meets the provider's
+    placeholder before it delivered anything plays it and ends, instead of
+    waiting the placeholder out."""
     guard = guard or is_safe_url
 
     def _budget_spent(waited: float, extra: float = 0.0) -> bool:
@@ -4690,6 +4749,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             dropped_at = None   # while re-dialling: when the data stopped
             redialled = False   # this connection came from a re-dial, not yet delivering
             splicer = _ReplaySplicer(channel_id, health)   # #368: a re-dial's replay goes out once
+            sent_bytes = 0      # batching starts after _FAST_START_BYTES: the first picture waits for nothing
             try:
                 while True:
                     opened_at = loop.time()
@@ -4747,11 +4807,12 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                 failing_since, slept, backoff, backoff_cap = None, 0.0, 1.0, _BACKOFF_CAP
                                 denied_at = None
                             pending += splicer.feed(piece, loop.time())
-                            if len(pending) >= 131072:
+                            if len(pending) >= (131072 if sent_bytes >= _FAST_START_BYTES else 188):
                                 cut = len(pending) - (len(pending) % 188) if align else len(pending)
                                 out, pending = pending[:cut], pending[cut:]
                                 if align:
                                     splicer.sent(out)
+                                sent_bytes += len(out)
                                 yield out
                     except httpx.HTTPError as e:
                         reason = str(e) or type(e).__name__
@@ -4811,6 +4872,16 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             reason = str(e)
                             backoff_cap = _REFUSAL_BACKOFF_CAP
                             await _note_placeholder(channel_id, e.segment)
+                            if (sent_bytes == 0 and nothing_on is not None
+                                    and not (is_recording is not None and is_recording())):
+                                from services import livetv_slate
+                                data = await nothing_on()
+                                if data:
+                                    logger.info(f"[LiveTV] Channel {channel_id}: nothing on right now "
+                                                f"-- the viewer is told so")
+                                    async for piece in livetv_slate.paced(data):
+                                        yield piece
+                                    return
                             continue
                         except HTTPException as e:
                             logger.error(f"[LiveTV] Raw stream for channel {channel_id} cannot be "

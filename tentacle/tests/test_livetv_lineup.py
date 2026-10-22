@@ -301,7 +301,10 @@ class FakeJellyfin:
     def post(self, path, body=None, **p):
         self.calls.append(("POST", path, body))
         if path == "/LiveTv/TunerHosts":
-            self.tuners.append({**body, "Id": f"t{len(self.tuners)}"})
+            if body.get("Id"):     # Jellyfin saves a tuner with an id in its place
+                self.tuners = [dict(body) if t["Id"] == body["Id"] else t for t in self.tuners]
+            else:
+                self.tuners.append({**body, "Id": f"t{len(self.tuners)}"})
             return {}
         if path == "/LiveTv/ListingProviders":
             self.listings.append(body)
@@ -396,6 +399,22 @@ class Sync(DbCase):
         self.assertEqual((0, 0, False), (again["added"], again["removed"], again["refreshed"]))
         self.assertEqual(1, len(self.jf.listings))
 
+    def test_read_at_native_frame_rate_is_switched_off_once(self):
+        # A lineup tuner made by v1.13 or earlier carried it over from the old tuner:
+        # live channels then took 3-11 s to their first HLS segment.
+        self.sync()
+        self.jf.tuners[0]["ReadAtNativeFramerate"] = True
+        mdb.set_setting(self.db, T.NATIVE_RATE_KEY, "")
+        self.db.commit()
+        done = self.sync()
+        self.assertTrue(done.get("native_rate_off"))
+        self.assertEqual([(LINEUP, False)], [(t["Url"], t["ReadAtNativeFramerate"]) for t in self.jf.tuners])
+        self.assertEqual("Tentacle · Live TV", self.jf.tuners[0]["FriendlyName"])   # the rest kept
+        # Switched back on in Jellyfin afterwards: the admin's call, left alone.
+        self.jf.tuners[0]["ReadAtNativeFramerate"] = True
+        self.assertFalse(self.sync().get("native_rate_off"))
+        self.assertTrue(self.jf.tuners[0]["ReadAtNativeFramerate"])
+
     def test_moves_everyone_off_the_old_hdhomerun_tuner(self):
         self.jf.add_hdhr()
         self.jf.favs[ANN] = {self.hdhr_id("c2")}
@@ -403,7 +422,8 @@ class Sync(DbCase):
                                "RecordAnyTime": True, "KeepUpTo": 3})
         done = self.sync()
         self.assertEqual([LINEUP], [t["Url"] for t in self.jf.tuners])
-        self.assertTrue(self.jf.tuners[0]["ReadAtNativeFramerate"])   # the old tuner's settings
+        self.assertTrue(self.jf.tuners[0]["AllowHWTranscoding"])        # the old tuner's settings,
+        self.assertFalse(self.jf.tuners[0]["ReadAtNativeFramerate"])    # but channels start fast
         self.assertEqual({self.ids()["c2"]}, self.jf.favourites(ANN))
         self.assertEqual([self.ids()["c2"]], [s["ChannelId"] for s in self.jf.series])
         self.assertEqual(3, self.jf.series[0]["KeepUpTo"])

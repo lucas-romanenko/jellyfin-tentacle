@@ -108,6 +108,19 @@ same tags hide non-kids channels from kids on one lineup.
   `POST /Users/New` fail (DbUpdateConcurrencyException, 500): do it later.
 - Favourite (`POST /UserFavoriteItems/{id}?userId=`) on a channel the user
   can't see: 404.
+- **How long a live channel takes to start (measured 21 Oct 2026, 10.11.8,
+  Jellyfin Web).** PlaybackInfo with AutoOpenLiveStream opens the tuner
+  stream (SharedHttpStream: Tentacle + the provider's redirect, 0.5-0.9 s),
+  then `LiveStreamHelper.AddMediaInfoWithProbe`: cached per channel in
+  `/cache/mediainfo` (key = the open token, so per channel item and stream
+  URL), else a fixed **3 s sleep** and ffprobe (~0.1 s on a provider that
+  sends its buffer at once). Then ffmpeg remuxes to HLS (`-hls_time 3`); the
+  tuner's **Read at native frame rate** adds `-re`, so the first segment
+  needs 3 s of real time and more (11 s on a 60 fps channel with odd audio
+  timestamps). Before: 4.9-6.8 s, 15.9 s on Sportsnet One. Tentacle switches
+  `-re` off on its tuner (once) and the plugin drops the 3 s sleep for
+  Tentacle's channels (`LiveTvProbePatch`): about 1.5 s. The M3U channel
+  list is cached per tuner (`BaseTunerHost`), read once after a restart.
 - **Many M3U tuners make the guide refresh quadratic (measured Oct 2026,
   10.11.8).** `BaseTunerHost.GetChannels` builds every M3U tuner's channel
   list and de-duplicates them against each other with a list scan, and
