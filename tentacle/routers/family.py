@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from models.database import TentacleUser, get_db
 from routers.auth import get_user_from_request, require_admin
 from services import admin_alerts, approvals, family as F, gone_people, livetv_lineups as L, person_access as PA, tv_app
+from services import welcome
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -68,6 +69,8 @@ def people(db: Session = Depends(get_db)):
         raise HTTPException(502, "Jellyfin can't be reached right now.")
     _ensure_rows(db, jf_users)
     gone_people.forget_gone(db, jf_users)
+    # Accounts made in Jellyfin's dashboard lock after wrong passwords too.
+    PA.ensure_lockout(db, jf_users)
     by_id = {L.norm_user_id(u["Id"]): u for u in jf_users if u.get("Id")}
     try:
         devices = (jf.get("/Devices") or {}).get("Items") or []
@@ -106,7 +109,7 @@ def people(db: Session = Depends(get_db)):
     names = {c["key"]: c["name"] for c in pool}
     return {
         "people": out,
-        "defaults": F.defaults(db),
+        "defaults": {**F.defaults(db), "kids": F.kids_defaults(db)},
         "kids_levels": [{"id": k, **v} for k, v in F.KIDS_LEVELS.items()],
         "kids_channels": len(kids_keys),
         "pool_channels": len(L.view_for(lineup, None)),
@@ -128,13 +131,35 @@ class InviteBody(BaseModel):
     kids_level: Optional[str] = None
     request_mode: Optional[str] = None
     location: Optional[str] = None   # a place's slug (services/livetv_locations.py); none: the household's
+    password: Optional[str] = None   # none: one made from the name
+    live_tv: bool = True
+    # What they start with; none: the household's (New people / New kids start with).
+    home: Optional[str] = None       # "default" | "kids" | a person's id
+    channels: Optional[str] = None   # "none" | "kids" | a person's id
 
 
 @router.post("/api/family/invite")
 def invite(body: InviteBody, admin: TentacleUser = Depends(require_admin), db: Session = Depends(get_db)):
     try:
         return F.invite(db, admin, body.name, kids_level=body.kids_level or None,
-                        request_mode=body.request_mode or None, location=body.location or None)
+                        request_mode=body.request_mode or None, location=body.location or None,
+                        password=body.password or None, live_tv=body.live_tv,
+                        home=body.home or None, channels=body.channels or None)
+    except F.FamilyError as e:
+        raise _refusal(e)
+
+
+class AddressesBody(BaseModel):
+    tentacle: Optional[str] = None
+    jellyfin: Optional[str] = None
+
+
+@router.put("/api/family/addresses", dependencies=[Depends(require_admin)])
+def save_addresses(body: AddressesBody, db: Session = Depends(get_db)):
+    """Add someone's one question: the addresses family open Tentacle and
+    Jellyfin at (asked once)."""
+    try:
+        return F.save_addresses(db, body.tentacle, body.jellyfin)
     except F.FamilyError as e:
         raise _refusal(e)
 
@@ -180,6 +205,7 @@ class AccessBody(BaseModel):
     # null = any time, else {"start": h, "end": h} in half hours.
     can_record: Optional[bool] = None
     away: Optional[bool] = None
+    live_tv: Optional[bool] = None
     libraries: Optional[List[str]] = None
     hours: Optional[dict] = None
     disabled: Optional[bool] = None
@@ -192,7 +218,7 @@ def update_access(user_id: int, body: AccessBody, admin: TentacleUser = Depends(
     has them afterwards."""
     row = _row(db, user_id)
     change = body.model_dump(exclude_unset=True)
-    for k in ("can_record", "away", "disabled"):
+    for k in ("can_record", "away", "disabled", "live_tv"):
         if k in change and change[k] is None:
             raise HTTPException(400, f"{k} needs true or false.")
     if len(change.get("libraries") or []) > 500:
@@ -253,12 +279,13 @@ def sign_in_tv_for(user_id: int, body: CodeBody, admin: TentacleUser = Depends(r
 class DefaultsBody(BaseModel):
     home_from: Optional[int] = None
     channels_from: Optional[int] = None
+    kids: Optional[dict] = None   # {"home": "kids" | "default" | id, "channels": "kids" | "none"}
 
 
 @router.put("/api/family/defaults", dependencies=[Depends(require_admin)])
 def save_defaults(body: DefaultsBody, db: Session = Depends(get_db)):
     try:
-        return F.save_defaults(db, body.home_from, body.channels_from)
+        return F.save_defaults(db, body.home_from, body.channels_from, body.kids)
     except F.FamilyError as e:
         raise _refusal(e)
 
@@ -316,6 +343,34 @@ def me(user: TentacleUser = Depends(get_user_from_request), db: Session = Depend
         "messages": admin_alerts.family_messages(db),
         "tv_app_address": F.addresses(db)["tv_app"],
     }
+
+
+@router.get("/api/welcome")
+def welcome_state(user: TentacleUser = Depends(get_user_from_request), db: Session = Depends(get_db)):
+    """The first-sign-in welcome: whether to show it, and what it says."""
+    return welcome.state(db, user)
+
+
+@router.post("/api/welcome/done")
+def welcome_done(user: TentacleUser = Depends(get_user_from_request), db: Session = Depends(get_db)):
+    welcome.done(db, user)
+    return {"ok": True}
+
+
+class MyPasswordBody(BaseModel):
+    current: str = ""
+    new: str
+
+
+@router.post("/api/me/pw")
+def change_my_password(body: MyPasswordBody, user: TentacleUser = Depends(get_user_from_request),
+                       db: Session = Depends(get_db)):
+    """Pick your own password (the welcome's first step)."""
+    try:
+        welcome.change_password(db, user, body.current, body.new)
+    except welcome.PasswordError as e:
+        raise HTTPException(e.status, e.message)
+    return {"ok": True}
 
 
 @router.get("/api/family/status")

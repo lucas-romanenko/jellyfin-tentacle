@@ -57,9 +57,9 @@ class Pure(unittest.TestCase):
                           "AccessSchedules": [{"DayOfWeek": "Everyday", "StartHour": 7, "EndHour": 20.5}],
                           "IsDisabled": True})
         self.assertEqual({"can_record": False, "away": False, "libraries": ["ab", "c"],
-                          "hours": {"start": 7.0, "end": 20.5}, "disabled": True}, a)
+                          "hours": {"start": 7.0, "end": 20.5}, "disabled": True, "live_tv": True}, a)
         self.assertEqual({"can_record": False, "away": True, "libraries": None, "hours": None,
-                          "disabled": False}, PA.access_of({}))
+                          "disabled": False, "live_tv": True}, PA.access_of({}))
 
     def test_an_evening_past_midnight_is_two_ranges_and_reads_back_as_one(self):
         s = PA.schedules_for({"start": 16, "end": 1}, ANN)

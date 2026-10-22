@@ -299,14 +299,16 @@ class Invites(Case):
         with mock.patch("services.family.start_new_person") as start:
             out = F.invite(self.db, self.admin, "  Grandma Rose ")
         pw = self.jf.passwords["d" * 32]
-        self.assertRegex(pw, r"^[a-z]+-[a-z]+-\d\d$")
+        self.assertRegex(pw, r"^grandmarose\d{5}!$")
+        card = dict(out["invite"])
+        self.assertIn(pw, card.pop("message"))
         self.assertEqual({"name": "Grandma Rose", "password": pw, "jellyfin_address": "http://jf.lan:8096",
                           "tentacle_address": "http://tentacle.lan:8888",
-                          "tv_app_address": "http://tentacle.lan:8888/tv"}, out["invite"])
+                          "tv_app_address": "http://tentacle.lan:8888/tv"}, card)
         row = self.db.query(mdb.TentacleUser).filter(mdb.TentacleUser.jellyfin_user_id == "d" * 32).one()
         self.assertEqual(("Grandma Rose", False, "ask", "Lucas"),
                          (row.display_name, row.is_admin, row.request_mode, row.invited_by))
-        start.assert_called_once_with(row.id)
+        start.assert_called_once_with(row.id, None, None)
 
     def test_invite_a_kid(self):
         with mock.patch("services.family.start_new_person"):
@@ -331,7 +333,7 @@ class Invites(Case):
             F.new_password(self.db, self.admin)
 
     def test_passwords_differ(self):
-        self.assertGreater(len({F.make_password() for _ in range(50)}), 40)
+        self.assertGreater(len({F.make_password("Cam") for _ in range(50)}), 40)
 
     def test_tv_code_signs_the_tv_in_as_that_person(self):
         self.assertEqual({"ok": True, "name": "Ann"}, F.tv_sign_in(self.db, self.ann, " 123 456 "))

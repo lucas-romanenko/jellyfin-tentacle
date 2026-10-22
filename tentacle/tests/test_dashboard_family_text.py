@@ -49,7 +49,11 @@ class FamilyTextIsEscaped(unittest.TestCase):
                          "d.kids_channels === 1 ? 'one channel' : d.kids_channels + ' channels'", "name(d.home_from)", "d.kids_channels === 1 ? '' : 's'", "r.episodes === 1 ? '' : 's'",
                          "a.libraries.length === 1 ? '1 library' : a.libraries.length + ' libraries'",
                          "c.libraries.length === 1 ? 'one library' : c.libraries.length + ' libraries'",
-                         "p.is_admin || !p.access || !fam.open.has(p.id) ? '' : _famAccessPanel(p)"}
+                         "p.is_admin || !p.access || !fam.open.has(p.id) ? '' : _famAccessPanel(p)",
+                         # Add someone: the suggested password (letters and digits only) and
+                         # texts set with textContent.
+                         "base", "String(n[0] % 100000).padStart(5, '0')", "home.join(' and ')",
+                         "nfav(p.favourite_count)"}
         self.assertEqual([], sorted(set(raw) - allowed_plain))
 
     def test_markup_builders_escape_names_and_titles(self):

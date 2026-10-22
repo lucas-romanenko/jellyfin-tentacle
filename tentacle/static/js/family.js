@@ -94,7 +94,29 @@ async function loadPeople() {
     el.innerHTML = `<div class="fam-error">Couldn't load your household: ${escHtml(e.message)}</div>`;
     return;
   }
+  fam.seen = JSON.stringify(fam.data);
   famRenderPeople();
+  _famWatch();
+}
+
+// Live while People is open: someone locked out, added or changed by another
+// admin shows within seconds. Never while a dialog is open or a control on
+// the page has the focus (redrawing would close a list being picked from).
+function _famWatch() {
+  if (fam.watch) return;
+  fam.watch = setInterval(async () => {
+    if (state.currentPage !== 'people') { clearInterval(fam.watch); fam.watch = null; return; }
+    const busy = document.hidden || document.querySelector('.modal-overlay[style*="flex"]')
+      || document.activeElement?.closest?.('#page-people select, #page-people input');
+    if (busy || fam.fetching) return;
+    fam.fetching = true;
+    try {
+      const d = await api('/api/family/people');
+      const sig = JSON.stringify(d);
+      if (sig !== fam.seen && state.currentPage === 'people') { fam.data = d; fam.seen = sig; famRenderPeople(); }
+    } catch (e) { /* the next round tries again */ }
+    fam.fetching = false;
+  }, 8000);
 }
 
 function _famAvatar(p) {
@@ -124,7 +146,8 @@ function famRenderPeople() {
     if (p.is_owner) chips.push('<span class="badge badge-accent">Owner</span>');
     else if (p.is_admin) chips.push('<span class="badge badge-green">Admin</span>');
     if (p.kids_level) chips.push(`<span class="badge badge-pink">${escHtml(FAM_LEVEL_NAMES[p.kids_level] || 'Kid')}</span>`);
-    if (p.disabled) chips.push('<span class="badge badge-gray">Turned off</span>');
+    if (p.locked) chips.push('<span class="badge badge-red" title="Jellyfin locks an account after 5 wrong passwords in a row">Locked: wrong passwords</span>');
+    else if (p.disabled) chips.push('<span class="badge badge-gray">Turned off</span>');
     chips.push(..._famLimitChips(p));
     const meta = [_famTv(p, d.tv_app && d.tv_app.newest)];
     if (p.last_active) meta.push(`<span class="fam-meta-item">Active ${escHtml(_famAgo(p.last_active))}</span>`);
@@ -164,7 +187,9 @@ function famRenderPeople() {
         <label class="fam-ctl fam-ctl-admin" title="Shown on the sign-in screen at home, to pick instead of typing a name"><span class="fam-ctl-label">On sign-in screen</span>
           <input type="checkbox"${p.on_sign_in ? ' checked' : ''} onchange="famSetOnSignIn(${p.id}, this.checked)"></label>
         <div class="fam-actions">
-          ${p.disabled && !p.is_admin
+          ${p.locked && !p.is_admin
+            ? `<button class="btn btn-primary btn-sm" onclick="famUnlock(${p.id})">Unlock</button>`
+            : p.disabled && !p.is_admin
             ? `<button class="btn btn-primary btn-sm" onclick="famSetAccess(${p.id}, {disabled: false})">Turn on</button>`
             : `<button class="btn btn-secondary btn-sm" onclick="famShowTvCode(${p.id})">Sign in a TV</button>`}
           ${p.is_admin ? '' : `<button class="btn btn-secondary btn-sm" onclick="famNewPassword(${p.id})">New password</button>`}
@@ -185,6 +210,15 @@ function famRenderPeople() {
   const nfav = n => `${n} favourite${n === 1 ? '' : 's'}`;
   chan.innerHTML = '<option value="">No favourites yet (they star their own)</option>' +
     lists.map(p => `<option value="${p.id}"${d.defaults.channels_from === p.id ? ' selected' : ''}>${escHtml(p.name)}’s favourites (${nfav(p.favourite_count || 0)})</option>`).join('');
+  const kd = d.defaults.kids || { home: 'kids', channels: 'kids' };
+  const kidsHome = document.getElementById('fam-kids-home');
+  if (kidsHome) {
+    kidsHome.innerHTML = '<option value="kids">Ready-made kids home</option>' +
+      '<option value="default">The default home (My Home Screen)</option>' +
+      d.people.filter(p => p.kids_level).map(p => `<option value="${p.id}">The same as ${escHtml(p.name)}</option>`).join('');
+    kidsHome.value = String(kd.home);
+    document.getElementById('fam-kids-channels').value = kd.channels;
+  }
   const names = d.kids_channel_names || [];
   document.getElementById('fam-kids-summary').textContent = d.kids_channels
     ? `Kids see ${d.kids_channels === 1 ? 'one channel' : d.kids_channels + ' channels'} in Live TV: ${names.join(', ')}${d.kids_channels > names.length ? ' and more' : ''}.`
@@ -243,6 +277,11 @@ function _famAccessPanel(p) {
       <div class="fam-hint">${kid ? 'Kids can’t record.' : 'Schedule and cancel recordings in Live TV. Recordings are shared by everyone.'}</div>
     </div>
     <div class="fam-access-item">
+      <label class="fam-check"><input type="checkbox"${p.live_tv ? ' checked' : ''}
+        onchange="famSetAccess(${p.id}, {live_tv: this.checked})"> <strong>Live TV</strong></label>
+      <div class="fam-hint">${kid ? 'Only the kids channels you picked.' : 'The guide and every channel; they star their favourites.'}</div>
+    </div>
+    <div class="fam-access-item">
       <label class="fam-check"><input type="checkbox"${a.away ? ' checked' : ''}
         onchange="famSetAccess(${p.id}, {away: this.checked})"> <strong>Can watch away from home</strong></label>
       <div class="fam-hint">Off: only on your home network.</div>
@@ -271,7 +310,10 @@ function _famAccessPanel(p) {
       <div class="fam-hint">${hours ? 'Every day, by the server’s clock. Outside these hours they can’t sign in or play.' : 'Like a bedtime: outside the hours they can’t sign in or play.'}</div>
     </div>
     <div class="fam-access-item fam-access-off">
-      ${p.disabled
+      ${p.locked
+        ? `<button class="btn btn-primary btn-sm" onclick="famUnlock(${p.id})">Unlock ${escHtml(p.name)}</button>
+           <div class="fam-hint">Locked after 5 wrong passwords in a row. Unlocking lets them sign in again.</div>`
+        : p.disabled
         ? `<button class="btn btn-primary btn-sm" onclick="famSetAccess(${p.id}, {disabled: false})">Turn ${escHtml(p.name)}’s account on</button>
            <div class="fam-hint">Turned off: they can’t sign in or watch.</div>`
         : `<button class="btn btn-secondary btn-sm fam-danger" onclick="famTurnOff(${p.id})">Turn account off</button>
@@ -290,7 +332,7 @@ async function famSetAccess(id, change, done) {
   const p = _famPerson(id);
   try {
     const fresh = await api(`/api/family/people/${id}/access`, { method: 'PUT', body: change });
-    if (p) Object.assign(p, { access: fresh.access, disabled: fresh.disabled });
+    if (p) Object.assign(p, { access: fresh.access, disabled: fresh.disabled, locked: fresh.locked, live_tv: fresh.live_tv });
     toast(done || _famAccessToast(p ? p.name : 'They', change));
   } catch (e) {
     toast(e.message, 'error', 6000);
@@ -299,6 +341,7 @@ async function famSetAccess(id, change, done) {
 }
 
 function _famAccessToast(name, c) {
+  if ('live_tv' in c) return c.live_tv ? `${name} has Live TV` : `${name} has no Live TV now`;
   if ('can_record' in c) return c.can_record ? `${name} can record shows` : `${name} can’t record shows now`;
   if ('away' in c) return c.away ? `${name} can watch away from home` : `${name} can watch only at home now`;
   if ('disabled' in c) return c.disabled ? `${name}’s account is off` : `${name}’s account is on again`;
@@ -337,6 +380,11 @@ function famSetHours(id) {
   const end = parseFloat(document.getElementById(`fam-to-${id}`).value);
   if (start === end) { toast('Pick two different times', 'warning'); return; }
   famSetAccess(id, { hours: { start, end } });
+}
+
+function famUnlock(id) {
+  const p = _famPerson(id);
+  famSetAccess(id, { disabled: false }, `${p ? p.name : 'They'} can sign in again`);
 }
 
 function famTurnOff(id) {
@@ -456,8 +504,11 @@ async function famToggleAdmin(id, isAdmin) {
 async function famSaveDefaults() {
   const v = id => { const x = document.getElementById(id).value; return x ? parseInt(x, 10) : null; };
   try {
+    const kidsHome = document.getElementById('fam-kids-home').value || 'kids';
     fam.data.defaults = await api('/api/family/defaults', { method: 'PUT',
-      body: { home_from: v('fam-default-home'), channels_from: v('fam-default-channels') } });
+      body: { home_from: v('fam-default-home'), channels_from: v('fam-default-channels'),
+        kids: { home: /^\d+$/.test(kidsHome) ? parseInt(kidsHome, 10) : kidsHome,
+          channels: document.getElementById('fam-kids-channels').value } } });
     toast('Saved: new people start like that');
   } catch (e) {
     toast(e.message, 'error');
@@ -483,100 +534,211 @@ async function famCopy(text) {
   }
 }
 
-// ── Invite ───────────────────────────────────────────────────────────────
+// ── Add someone (Roadmap 1e): who · what they get · the message ─────────
 
-// What a new person starts with: home screen, and their own Live TV channels
-// (the starting channels chosen on this page, else every channel; kids the
-// kids channels).
-function _famInviteHint(kid) {
-  const d = fam.data?.defaults || {};
-  const name = id => (_famPerson(id) || {}).name;
-  const home = d.home_from && name(d.home_from)
-    ? `They start with the same home screen as ${name(d.home_from)}.` : 'They start with the default home.';
-  const fromP = d.channels_from && _famPerson(d.channels_from);
-  const n = fam.data?.pool_channels || 0;
-  const tv = kid ? 'Live TV: the kids channels.'
-    : fromP ? `Live TV: all ${n} channels, starting with ${fromP.name}’s favourites; they star their own under My Channels.`
-    : `Live TV: all ${n} channels and no favourites yet, as you haven’t chosen whose to start with; they star their own under My Channels.`;
-  document.getElementById('invite-defaults-hint').textContent = `${home} ${tv}`;
+// The password Tentacle suggests: their name in lowercase, five random
+// digits and "!" (Cam → cam12457!), the shape services/family.py makes.
+function famSuggestPassword(name) {
+  const base = String(name || '').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase()
+    .replace(/[^a-z0-9]/g, '').slice(0, 16) || 'tv';
+  const n = new Uint32Array(1);
+  crypto.getRandomValues(n);
+  return `${base}${String(n[0] % 100000).padStart(5, '0')}!`;
+}
+
+function _famIsKid() {
+  return document.querySelector('input[name="invite-who"]:checked').value === 'kid';
+}
+
+function famNameTyped() {
+  if (fam.pwEdited) return;
+  const name = document.getElementById('invite-name').value.trim();
+  document.getElementById('invite-password').value = name ? famSuggestPassword(name) : '';
+}
+
+function famNewSuggestion() {
+  fam.pwEdited = false;
+  const name = document.getElementById('invite-name').value.trim();
+  document.getElementById('invite-password').value = famSuggestPassword(name);
+}
+
+function famWhoChanged() {
+  document.getElementById('invite-kids-group').style.display = _famIsKid() ? '' : 'none';
+}
+
+function famAddStep(n) {
+  document.getElementById('invite-step-1').style.display = n === 1 ? '' : 'none';
+  document.getElementById('invite-step-2').style.display = n === 2 ? '' : 'none';
+  document.getElementById('invite-step-card').style.display = n === 3 ? '' : 'none';
+  document.querySelectorAll('#invite-steps li').forEach(li => {
+    const k = parseInt(li.dataset.step, 10);
+    li.classList.toggle('active', k === n);
+    li.classList.toggle('done', k < n);
+  });
+  if (n === 1) setTimeout(() => document.getElementById('invite-name').focus(), 50);
 }
 
 function famShowInvite() {
-  document.getElementById('invite-title').textContent = 'Invite someone';
-  document.getElementById('invite-step-form').style.display = '';
-  document.getElementById('invite-step-card').style.display = 'none';
+  fam.pwEdited = false;
+  fam.invited = null;
+  document.getElementById('invite-title').textContent = 'Add someone';
+  document.getElementById('invite-steps').style.display = '';
   document.getElementById('invite-name').value = '';
+  document.getElementById('invite-password').value = '';
+  document.querySelector('input[name="invite-who"][value="adult"]').checked = true;
+  const levels = fam.data?.kids_levels || [];
   const sel = document.getElementById('invite-kids');
-  sel.innerHTML = '<option value="">No limit (a grown-up)</option>' +
-    (fam.data?.kids_levels || []).map(l => `<option value="${escHtml(l.id)}">${escHtml(l.name)} (${escHtml(l.allows)})</option>`).join('');
-  sel.onchange = () => {
-    const kid = !!sel.value;
-    document.getElementById('invite-direct-row').style.display = kid ? 'none' : '';
-    if (kid) document.querySelector('input[name="invite-requests"][value="ask"]').checked = true;
-    _famInviteHint(kid);
-  };
-  sel.onchange();
+  sel.innerHTML = levels.map(l => `<option value="${escHtml(l.id)}"${l.id === 'kids' ? ' selected' : ''}>${escHtml(l.name)} (${escHtml(l.allows)})</option>`).join('');
+  famWhoChanged();
   const home = fam.data?.household_location;
   const places = _famPlaceOptions(home ? home.slug : '');
   document.getElementById('invite-location').innerHTML = places;
   document.getElementById('invite-location-group').style.display = places ? '' : 'none';
-  document.querySelector('input[name="invite-requests"][value="ask"]').checked = true;
   document.getElementById('invite-go').disabled = false;
+  famAddStep(1);
   showModal('modal-invite');
-  setTimeout(() => document.getElementById('invite-name').focus(), 50);
+}
+
+function famAddNext() {
+  const name = document.getElementById('invite-name').value.trim();
+  if (!name) { toast('Type their name first', 'warning'); document.getElementById('invite-name').focus(); return; }
+  const pw = document.getElementById('invite-password');
+  if (!pw.value.trim()) pw.value = famSuggestPassword(name);
+  if (pw.value.trim().length < 4) { toast('Use a password of at least 4 characters', 'warning'); pw.focus(); return; }
+  _famFillWhatTheyGet();
+  famAddStep(2);
+}
+
+// Step 2, filled for a grown-up or a kid from the household's defaults.
+function _famFillWhatTheyGet() {
+  const kid = _famIsKid();
+  const d = fam.data || {};
+  const defs = d.defaults || {};
+  const kd = defs.kids || { home: 'kids', channels: 'kids' };
+  const named = (d.people || []).filter(p => !p.kids_level);
+  const kidsNamed = (d.people || []).filter(p => p.kids_level);
+  const same = list => list.map(p => `<option value="${p.id}">The same as ${escHtml(p.name)}</option>`).join('');
+  const home = document.getElementById('invite-home');
+  home.innerHTML = (kid ? '<option value="kids">Ready-made kids home</option>' : '') +
+    '<option value="default">The default home (My Home Screen)</option>' + same(kid ? kidsNamed : named);
+  home.value = String(kid ? kd.home : (defs.home_from || 'default'));
+  if (!home.value) home.value = kid ? 'kids' : 'default';
+  home.onchange = _famHomeHint;
+  _famHomeHint();
+  const ch = document.getElementById('invite-channels');
+  const nfav = n => `${n} favourite${n === 1 ? '' : 's'}`;
+  ch.innerHTML = kid
+    ? '<option value="kids">The kids channels</option><option value="none">None yet (they star their own)</option>'
+    : '<option value="none">None yet (they star their own)</option>' +
+      named.filter(p => p.favourite_count).map(p => `<option value="${p.id}">${escHtml(p.name)}’s favourites (${nfav(p.favourite_count)})</option>`).join('');
+  ch.value = String(kid ? kd.channels : (defs.channels_from || 'none'));
+  if (!ch.value) ch.value = kid ? 'kids' : 'none';
+  document.getElementById('invite-livetv').checked = true;
+  document.getElementById('invite-requests-group').style.display = kid ? 'none' : '';
+  document.querySelector('input[name="invite-requests"][value="ask"]').checked = true;
+  famLiveTvChanged();
+  _famAsk();
+}
+
+function _famHomeHint() {
+  const v = document.getElementById('invite-home').value;
+  document.getElementById('invite-home-hint').textContent = v === 'kids'
+    ? 'Continue Watching, Kids Movies and Kids Shows: cartoons and family films, only what their age limit allows.'
+    : v === 'default' ? 'The home you set under My Home Screen → Default for everyone. They can change theirs.'
+    : 'The same rows as that person’s home. They can change theirs.';
+}
+
+function famLiveTvChanged() {
+  const on = document.getElementById('invite-livetv').checked;
+  const kid = _famIsKid();
+  const d = fam.data || {};
+  const n = kid ? d.kids_channels || 0 : d.pool_channels || 0;
+  document.getElementById('invite-channels-group').style.display = on && n ? '' : 'none';
+  document.getElementById('invite-livetv-hint').textContent = !on ? 'No Live TV for them. You can turn it on later under More.'
+    : kid ? (n ? `The ${n} kids channel${n === 1 ? '' : 's'} you picked, nothing else.` : 'No kids channels picked yet, so no Live TV until you choose some (Kids channels, below the list).')
+    : `All ${n} channel${n === 1 ? '' : 's'}; they star their favourites.`;
+}
+
+// Asked once: the addresses the message gives, while they don't all work
+// away from home. Filled with what Tentacle knows (this browser's address
+// for Tentacle when it knows none a browser can open).
+function _famAsk() {
+  const a = fam.data?.addresses || {};
+  const box = document.getElementById('invite-ask');
+  box.style.display = a.ask ? '' : 'none';
+  if (!a.ask) return;
+  const t = a.tentacle || location.origin;
+  document.getElementById('invite-ask-tentacle').value = t;
+  document.getElementById('invite-ask-jellyfin').value = a.jellyfin || '';
+  document.getElementById('invite-ask-why').textContent = a.tentacle_away && a.jellyfin_away
+    ? 'Family open these to sign in and to watch.'
+    : 'These work only on your home network. If family can reach your server from the internet too (a domain or a tunnel), type those addresses instead. You can change them later in Settings → Services.';
+}
+
+async function _famSaveAsk() {
+  const a = fam.data?.addresses || {};
+  if (!a.ask) return true;
+  const t = document.getElementById('invite-ask-tentacle').value.trim();
+  const j = document.getElementById('invite-ask-jellyfin').value.trim();
+  try {
+    fam.data.addresses = await api('/api/family/addresses', { method: 'PUT',
+      body: { tentacle: t || null, jellyfin: j || null } });
+    return true;
+  } catch (e) {
+    toast(e.message, 'error', 6000);
+    return false;
+  }
 }
 
 async function famInvite() {
   const name = document.getElementById('invite-name').value.trim();
-  if (!name) { toast('Type their name first', 'warning'); return; }
+  if (!name) { famAddStep(1); toast('Type their name first', 'warning'); return; }
   const btn = document.getElementById('invite-go');
   btn.disabled = true;
+  if (!(await _famSaveAsk())) { btn.disabled = false; return; }
+  const kid = _famIsKid();
+  const liveTv = document.getElementById('invite-livetv').checked;
   try {
     fam.invited = await api('/api/family/invite', { method: 'POST', body: {
       name,
-      kids_level: document.getElementById('invite-kids').value || null,
-      request_mode: document.querySelector('input[name="invite-requests"]:checked').value,
+      password: document.getElementById('invite-password').value,
+      kids_level: kid ? document.getElementById('invite-kids').value : null,
+      request_mode: kid ? 'ask' : document.querySelector('input[name="invite-requests"]:checked').value,
       location: document.getElementById('invite-location').value || null,
+      live_tv: liveTv,
+      home: document.getElementById('invite-home').value,
+      channels: liveTv ? document.getElementById('invite-channels').value : 'none',
     } });
   } catch (e) {
     toast(e.message, 'error', 6000);
     btn.disabled = false;
     return;
   }
-  famRenderInviteCard(fam.invited.invite, `${fam.invited.user.name}’s account is ready. Give them this (it’s the only time the password is shown):`);
+  famRenderInviteCard(fam.invited.invite, `${fam.invited.user.name}’s account is ready. Send them this message: it says what Tentacle is, how to sign in and where to watch.`);
   loadPeople();
 }
 
 function famRenderInviteCard(card, lead) {
-  document.getElementById('invite-title').textContent = `Welcome, ${card.name}`;
-  document.getElementById('invite-step-form').style.display = 'none';
-  document.getElementById('invite-step-card').style.display = '';
+  document.getElementById('invite-title').textContent = fam.invited ? 'Add someone' : `${card.name}’s new password`;
+  document.getElementById('invite-steps').style.display = fam.invited ? '' : 'none';
+  famAddStep(3);
   document.getElementById('invite-card-lead').textContent = lead;
-  const row = (k, v) => `<div class="fam-card-row"><span>${escHtml(k)}</span><strong>${escHtml(v)}</strong></div>`;
-  document.getElementById('invite-card').innerHTML =
-    row('Name', card.name) + row('Password', card.password) +
-    (card.jellyfin_address ? row('Server', card.jellyfin_address) : '') +
-    `<div class="fam-card-steps"><strong>On the TV</strong><ol>
-      <li>Install <strong>Downloader</strong> from the TV’s app store, open it and type <strong>${escHtml(card.tv_app_address || '')}</strong>.</li>
-      <li>Open Tentacle, add the server above and pick your name.</li>
-      <li>Type the password, or choose Use Quick Connect and give the code to whoever set you up.</li>
-    </ol></div>`;
+  document.getElementById('invite-message').value = card.message || '';
+  document.getElementById('invite-card-note').textContent = 'This is the only time the password is shown. You can give them a new one under People.';
+  document.getElementById('invite-share').style.display = navigator.share ? '' : 'none';
   fam.lastCard = card;
 }
 
-function _famCardText(card) {
-  return [
-    `Your Tentacle account`,
-    `Name: ${card.name}`, `Password: ${card.password}`,
-    card.jellyfin_address ? `Server: ${card.jellyfin_address}` : '',
-    '', 'On the TV:',
-    `1. Install Downloader from the TV's app store, open it and type ${card.tv_app_address}`,
-    '2. Open Tentacle, add the server above and pick your name.',
-    '3. Type the password, or choose Use Quick Connect and give the code to whoever set you up.',
-  ].filter((l, i) => l !== '' || i > 3).join('\n');
-}
+function famCopyInvite() { if (fam.lastCard) famCopy(fam.lastCard.message || ''); }
 
-function famCopyInvite() { if (fam.lastCard) famCopy(_famCardText(fam.lastCard)); }
+async function famShareInvite() {
+  if (!fam.lastCard || !navigator.share) return;
+  try {
+    await navigator.share({ title: 'Your Tentacle account', text: fam.lastCard.message || '' });
+  } catch (e) {
+    if (e && e.name !== 'AbortError') famCopyInvite();
+  }
+}
 
 function famInviteTvCode() {
   const id = fam.invited?.user?.id;
@@ -589,7 +751,8 @@ async function famNewPassword(id) {
   if (!p || !confirm(`Give ${p.name} a new password? The old one stops working, and their TVs stay signed in.`)) return;
   try {
     const card = await api(`/api/family/people/${id}/password`, { method: 'POST' });
-    famRenderInviteCard(card, `${p.name}’s new password. Give them this:`);
+    fam.invited = null;
+    famRenderInviteCard(card, `${p.name}’s old password has stopped working. Send them this:`);
     showModal('modal-invite');
   } catch (e) {
     toast(e.message, 'error');

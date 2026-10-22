@@ -120,15 +120,42 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   owner, `/Tentacle/Playlists/Ownerless` marks it `ownerGone` and the nightly
   ownerless clean-up (`_cleanup_ownerless_playlists_locked`) deletes it when
   private and unshared.
-- Invite: `POST /Users/New {Name, Password}` with a readable password
-  (`make_password`), the row is made at once (`invited_by`, `request_mode`),
-  then `start_new_person` in the background: the defaults (`family_defaults`
-  setting: whose home screen and whose channels to copy (the starter
-  favourites, `family.copy_channels` copies the chosen person's Jellyfin
-  favourites; none chosen = no favourites, said on the invite screen);
-  `copy_home` copies the auto-playlist toggles, builds the playlists, then
-  maps the template's rows by playlist name and leaves out the template's
-  personal ones), else the usual new-user playlists.
+- Add someone (Roadmap 1e; the dashboard's three steps, one `POST
+  /api/family/invite`): `POST /Users/New {Name, Password}` with the admin's
+  password or `make_password(name)` (lowercase name, 5 digits, "!"; the
+  browser suggests the same shape), then one policy POST with
+  `person_access.new_person_policy` (shown, Live TV or not, recording for
+  grown-ups, lock after `LOCKOUT_AFTER` wrong passwords). The row is made at
+  once (`invited_by`, `request_mode`, `live_tv_off`, `welcomed_at` None),
+  then `start_new_person(id, home, channels)` in the background: what the
+  admin picked, else `starting_point` (grown-ups: `family_defaults`, whose
+  home and whose favourites to copy, `copy_home` / `copy_channels`; kids:
+  `family_kids_defaults`, default the kids setup in
+  `services/kids_start.py`: the kid's own genre rule playlists Kids Movies
+  (Animation or Family) and Kids Shows (+ Kids), native rules that Tentacle
+  fills by querying Jellyfin as the kid, so their age limit applies; home
+  Continue Watching + those two, Discover/Activity off; the kids channels
+  starred), else the usual new-user playlists. The answer carries
+  `invite.message` (`services/welcome.py:message`): Tentacle first, the
+  sign-in, Jellyfin's address, the TV app last.
+- Addresses (`family.addresses`): the "for your browser" ones
+  (`tentacle_public_url`, `jellyfin_public_url`, Settings → Services), else
+  the Tentacle address / `jellyfin_url` when a browser can open them (never
+  a Docker name); `ask` until Add someone has asked once
+  (`invite_addresses_asked`) while one works only at home.
+- Welcome (`services/welcome.py`): `TentacleUser.welcomed_at` None and not
+  the owner = shown at sign-in (people from before it came were marked
+  welcomed by the migration); `/api/welcome/done` ends it. Pick my own
+  password: the current one checked with `AuthenticateByName` (counts
+  towards the lock), then `/Users/Password` with the admin key.
+- Lock: `LoginAttemptsBeforeLockout` = 5 for every non-admin whose policy
+  still has Jellyfin's never (-1): on invite, on People load
+  (`person_access.ensure_lockout` with the `/Users` it read) and 90 s after
+  start. Locked = IsDisabled and `InvalidLoginAttemptCount` >= the limit;
+  Unlock = the access route's `disabled: false`, which zeroes the count.
+- Live TV per person (`live_tv` in the access route): EnableLiveTvAccess;
+  `live_tv_off` keeps the admin's choice for kids, whose access otherwise
+  follows the kids channels (`set_kids`, `set_kids_channels`).
 - Kids profile (`kids_level` young/kids/teens = Jellyfin scores 7/10/14):
   MaxParentalRating, BlockUnratedItems += Movie, Series, Trailer (not
   LiveTvProgram: Tentacle's guide has no ratings, it emptied a kid's guide);

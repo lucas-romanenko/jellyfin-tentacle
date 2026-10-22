@@ -14,9 +14,14 @@ server's admin actually changes per person live here, in plain words:
   every day on the server's clock. Jellyfin checks a range as
   start <= now <= end with no wrap past midnight, so an evening that runs
   past midnight is stored as two ranges (start-24 and 0-end).
+- **Live TV** = "Allow Live TV access" (EnableLiveTvAccess). A kid's also
+  follows the kids channels (none picked: no Live TV), so the admin's choice
+  is kept on the person too (TentacleUser.live_tv_off).
 - **Turned off** = "Disable this user" (IsDisabled). Jellyfin sets it itself
-  after too many wrong passwords; turning the account on clears that count,
-  or the next typo locks it again.
+  after LOCKOUT_AFTER wrong passwords in a row (LoginAttemptsBeforeLockout,
+  set for everyone but admins: Jellyfin's own default is never); People
+  shows that as Locked, and Unlock turns the account on, which clears the
+  count, or the next typo locks it again.
 
 Jellyfin is the one truth: nothing here is kept in Tentacle's database. The
 People page reads every person's policy from Jellyfin, and each change is
@@ -40,7 +45,7 @@ from sqlalchemy.orm import Session
 
 from models.database import TentacleUser
 from services import livetv_lineups as L
-from services.family import FamilyError, _jf_error, dashed, jellyfin
+from services.family import LOCKOUT_AFTER, FamilyError, _jf_error, dashed, jellyfin
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +93,7 @@ def access_of(policy: dict) -> dict:
         "libraries": None if all_libs else sorted(_norm(f) for f in p.get("EnabledFolders") or []),
         "hours": hours_of(p.get("AccessSchedules")),
         "disabled": bool(p.get("IsDisabled")),
+        "live_tv": p.get("EnableLiveTvAccess") is not False,
     }
 
 
@@ -125,6 +131,8 @@ def changed_policy(policy: dict, change: dict, user_id: str, library_ids=None) -
         p["EnableLiveTvManagement"] = bool(change["can_record"])
     if "away" in change:
         p["EnableRemoteAccess"] = bool(change["away"])
+    if "live_tv" in change:
+        p["EnableLiveTvAccess"] = bool(change["live_tv"])
     if "libraries" in change:
         libs = change["libraries"]
         if libs is None:
@@ -146,15 +154,65 @@ def changed_policy(policy: dict, change: dict, user_id: str, library_ids=None) -
     return p
 
 
-def new_person_policy(policy: dict, kid: bool) -> dict:
+def new_person_policy(policy: dict, kid: bool, live_tv: bool = True) -> dict:
     """The defaults a newly invited person starts with (pure): on the sign-in
-    screen, can record shows (not kids), can watch away from home, every
-    library, any time. Jellyfin's own defaults hide new accounts and leave
-    them unable to record."""
+    screen, Live TV (unless the admin said no), can record shows (not kids),
+    can watch away from home, every library, any time, locked after
+    LOCKOUT_AFTER wrong passwords. Jellyfin's own defaults hide new accounts,
+    leave them unable to record and never lock them."""
     p = dict(policy)
-    p.update({"IsHidden": False, "EnableLiveTvManagement": not kid, "EnableRemoteAccess": True,
-              "EnableAllFolders": True, "EnabledFolders": [], "AccessSchedules": [], "IsDisabled": False})
+    p.update({"IsHidden": False, "EnableLiveTvAccess": bool(live_tv), "EnableLiveTvManagement": not kid and bool(live_tv),
+              "EnableRemoteAccess": True, "EnableAllFolders": True, "EnabledFolders": [], "AccessSchedules": [],
+              "IsDisabled": False, "LoginAttemptsBeforeLockout": LOCKOUT_AFTER})
     return p
+
+
+def needs_lockout(policy: dict) -> bool:
+    """Whether a policy still has Jellyfin's "never lock" (pure); admins are left alone."""
+    p = policy or {}
+    limit = p.get("LoginAttemptsBeforeLockout")
+    return not p.get("IsAdministrator") and not (isinstance(limit, int) and limit > 0)
+
+
+def ensure_lockout(db: Session, jf_users: Optional[list] = None) -> int:
+    """Lock every non-admin account after LOCKOUT_AFTER wrong passwords,
+    including people made in Jellyfin's dashboard (Jellyfin's default is
+    never). Returns how many accounts changed; quiet when Jellyfin can't."""
+    try:
+        jf = jellyfin(db)
+        users = jf_users if jf_users is not None else (jf.get("/Users") or [])
+    except (FamilyError, requests.RequestException) as e:
+        logger.info(f"[People] Wrong-password lock not checked: {e}")
+        return 0
+    changed = 0
+    for u in users:
+        policy = u.get("Policy") or {}
+        if not u.get("Id") or not policy or not needs_lockout(policy):
+            continue
+        try:
+            jf.post(f"/Users/{dashed(u['Id'])}/Policy", {**policy, "LoginAttemptsBeforeLockout": LOCKOUT_AFTER})
+            policy["LoginAttemptsBeforeLockout"] = LOCKOUT_AFTER
+            changed += 1
+        except requests.RequestException as e:
+            logger.info(f"[People] Wrong-password lock for {u.get('Name')} not set: {e}")
+    if changed:
+        logger.info(f"[People] {changed} account(s) now lock after {LOCKOUT_AFTER} wrong passwords")
+    return changed
+
+
+def ensure_lockout_soon(delay: float = 90) -> None:
+    """ensure_lockout() in the background, once Jellyfin has had time to start."""
+    def _run():
+        time.sleep(delay)
+        from models.database import SessionLocal
+        db = SessionLocal()
+        try:
+            ensure_lockout(db)
+        except Exception as e:
+            logger.info(f"[People] Wrong-password lock not checked: {e}")
+        finally:
+            db.close()
+    threading.Thread(target=_run, daemon=True, name="people-lockout").start()
 
 
 def libraries(db: Session) -> list:
@@ -189,6 +247,13 @@ def set_access(db: Session, admin: TentacleUser, user: TentacleUser, change: dic
         raise FamilyError("You can't change your own account here.", 403)
     if change.get("can_record") and user.kids_level:
         raise FamilyError("Kids can't record shows. Take the age limit away first.")
+    if "live_tv" in change:
+        user.live_tv_off = not change["live_tv"]
+        db.commit()
+        if user.kids_level:
+            # A kid watches the kids channels: none picked, no Live TV.
+            from services.family import kids_channels
+            change = {**change, "live_tv": bool(change["live_tv"]) and bool(kids_channels(db))}
     lib_ids = None
     if change.get("libraries") is not None:
         lib_ids = [l["id"] for l in libraries(db)]
@@ -201,6 +266,9 @@ def set_access(db: Session, admin: TentacleUser, user: TentacleUser, change: dic
         except requests.RequestException as e:
             raise _jf_error(e, "save it")
     after = read_user(jf, user)
+    if "live_tv" in change:
+        from services import livetv_tuners
+        livetv_tuners.schedule_sync(f"Live TV for {user.display_name}")
     forget(user.jellyfin_user_id)
     from services.family import forget_visible
     forget_visible(user.jellyfin_user_id)

@@ -57,6 +57,8 @@ async function postLoginInit() {
   if (typeof famInit === 'function') famInit();
   // The page in the address, else Library
   showRouteFromHash();
+  // Someone's first sign-in: what Tentacle is, in five short steps (welcome.js).
+  if (typeof welcomeCheck === 'function') welcomeCheck();
 }
 
 // ── Radarr/Sonarr problems banner (admins) ────────────────────────────────
@@ -1358,7 +1360,7 @@ async function previewSync(providerId) {
 const SETTINGS_TEXT_FIELDS = [
   'tmdb_bearer_token', 'mdblist_api_key', 'radarr_url', 'radarr_api_key',
   'sonarr_url', 'sonarr_api_key',
-  'jellyfin_url', 'jellyfin_api_key', 'jellyfin_public_url',
+  'jellyfin_url', 'jellyfin_api_key', 'jellyfin_public_url', 'tentacle_public_url',
   'recently_added_days', 'tmdb_match_threshold',
   'trakt_client_id', 'logodev_api_key',
   'pushover_app_token', 'pushover_user_key',

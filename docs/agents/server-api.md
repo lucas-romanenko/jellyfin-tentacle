@@ -73,18 +73,22 @@ provider names, URLs or logins).
 | POST | `/api/duplicates/{dup_id}/resolve` | admin | duplicates.py:resolve_duplicate |
 | GET | `/api/family/kids-channels` | admin | family.py:kids_channels |
 | PUT | `/api/family/kids-channels` | admin | family.py:save_kids_channels |
-| POST | `/api/family/invite` | admin | family.py:invite (`{name, kids_level, request_mode, location}`; location = a place's slug, none = the household's) |
+| PUT | `/api/family/addresses` | admin | family.py:save_addresses (Add someone's one question: `{tentacle, jellyfin}` browser addresses; asked once) |
+| POST | `/api/family/invite` | admin | family.py:invite (`{name, kids_level, request_mode, location, password, live_tv, home, channels}`; location = a place's slug, none = the household's; password none = made from the name; home `default`/`kids`/a person's id, channels `none`/`kids`/a person's id, none = the household's; the answer's `invite.message` is the text to send) |
 | GET | `/api/family/me` | user | family.py:me |
 | GET | `/api/family/people` | admin | family.py:people (each person's `location`; `locations` to choose from, `household_location`) |
 | PUT | `/api/family/people/{user_id}` | admin | family.py:update_person (only the fields sent: `kids_level`+`set_kids`, `request_mode`, `on_sign_in`, `location` ("" = the household's; the first admin's is the household's)) |
 | PUT | `/api/family/people/{user_id}/access` | admin | family.py:update_access |
 | POST | `/api/family/people/{user_id}/password` | admin | family.py:reset_password |
 | POST | `/api/family/people/{user_id}/tv-code` | admin | family.py:sign_in_tv_for |
-| PUT | `/api/family/defaults` | admin | family.py:save_defaults |
+| PUT | `/api/family/defaults` | admin | family.py:save_defaults (`{home_from, channels_from, kids: {home, channels}}`) |
 | POST | `/api/family/quick-connect` | admin | family.py:turn_on_codes |
 | GET | `/api/family/server` | admin | family.py:server_settings |
 | PUT | `/api/family/server` | admin | family.py:save_server_settings |
 | GET | `/api/family/status` | user | family.py:status |
+| POST | `/api/me/pw` | user | family.py:change_my_password (`{current, new}`: the welcome's "pick my own"; current checked with Jellyfin) |
+| GET | `/api/welcome` | user | family.py:welcome_state (the first-sign-in welcome: `show`, names, addresses, home rows) |
+| POST | `/api/welcome/done` | user | family.py:welcome_done |
 | POST | `/api/family/tv-code` | user | family.py:sign_in_my_tv |
 | GET | `/api/health/arr-problems` | admin | health.py:arr_problems |
 | GET | `/api/health/deletions` | admin | health.py:get_deletions |
