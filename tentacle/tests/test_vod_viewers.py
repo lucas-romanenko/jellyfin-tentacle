@@ -49,7 +49,7 @@ class _ViewersBase(_Base):
         set_setting(self.db, "jellyfin_api_key", "k" * 32)
         self.db.commit()
         self.title = f"movie/{self.token_file}"
-        self.watching = {}            # what "Jellyfin" says: title -> sessions; None = can't say
+        self.watching = {}            # what "Jellyfin" says: title -> [session addresses]; None = can't say
         self.asked = 0
         vod = self.vod
         vod._viewer_watch = None
@@ -86,7 +86,7 @@ class _ViewersBase(_Base):
 
 class ClosedWhenTheViewerHasGone(_ViewersBase):
     def test_a_subtitle_extraction_still_reading_after_the_player_stopped_is_closed(self):
-        self.watching = {self.title: 1}
+        self.watching = {self.title: ["10.0.0.9"]}
 
         async def scenario():
             extraction = await self._open("172.19.0.1")
@@ -110,7 +110,7 @@ class ClosedWhenTheViewerHasGone(_ViewersBase):
 
     def test_a_viewer_who_paused_keeps_the_playback(self):
         """A paused session still lists the title it plays."""
-        self.watching = {self.title: 1}
+        self.watching = {self.title: ["10.0.0.9"]}
 
         async def scenario():
             playing = await self._open("10.0.0.9")
@@ -142,7 +142,7 @@ class ClosedWhenTheViewerHasGone(_ViewersBase):
         self.assertEqual(1, self._endless_run(scenario))
 
     def test_while_jellyfin_cannot_say_nothing_is_closed(self):
-        self.watching = {self.title: 1}
+        self.watching = {self.title: ["10.0.0.9"]}
 
         async def scenario():
             playing = await self._open("10.0.0.9")
@@ -206,7 +206,7 @@ class OnePersonOneConnection(_ViewersBase):
         from models.database import set_setting
         set_setting(self.db, "livetv_max_concurrent_streams", "2")
         self.db.commit()
-        self.watching = {self.title: 1}
+        self.watching = {self.title: ["10.0.0.9"]}
         a, b = self._run(self._browser_then_extraction)
         self.assertEqual(self.DATA, a)
         self.assertEqual(self.DATA, b)
@@ -229,7 +229,7 @@ class OnePersonOneConnection(_ViewersBase):
         from models.database import set_setting
         set_setting(self.db, "livetv_max_concurrent_streams", "2")
         self.db.commit()
-        self.watching = {self.title: 2}
+        self.watching = {self.title: ["10.0.0.9", "10.0.0.6"]}
         self._run(self._browser_then_extraction)
         self.assertEqual(2, len(self.vod._playbacks))
         self.assertEqual(2, self.livetv._stream_slots.active)
@@ -248,7 +248,7 @@ class OnePersonOneConnection(_ViewersBase):
         self.assertEqual(2, len(self.vod._playbacks))
 
     def test_a_head_from_the_other_client_is_answered_from_the_playback(self):
-        self.watching = {self.title: 1}
+        self.watching = {self.title: ["10.0.0.9"]}
 
         async def scenario():
             playing = await self._open("10.0.0.9")
@@ -263,6 +263,105 @@ class OnePersonOneConnection(_ViewersBase):
         head, opened = self._run(scenario)
         self.assertEqual(0, opened)
         self.assertEqual(200, head.status_code)
+
+
+class _PacedRangeFake(_RangeFake):
+    """A provider that takes its time (1 ms per 10 bytes), as a real one
+    does: a reader that holds the connection holds it for a while."""
+
+    async def send(self, request, stream=False):
+        resp = await super().send(request, stream)
+        inner = resp.stream
+
+        class _Paced(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                async for piece in inner:
+                    await asyncio.sleep(0.001)
+                    yield piece
+
+            async def aclose(self):
+                pass
+        resp.stream = _Paced()
+        return resp
+
+
+class TheViewerComesFirst(OnePersonOneConnection):
+    """Within one shared connection, the player's own requests (from the
+    address Jellyfin lists for the session) are never parked for Jellyfin's
+    work while they read; that work reads while the player does not. Shared
+    in equal turns, the web player stalled 18 s at the start of a film
+    while the subtitle extraction had its turns (production, 2026-10-22)."""
+
+    DATA = bytes(range(256)) * 16      # 4 KB: both readers span many quanta
+
+    def _run(self, scenario):
+        fake = _PacedRangeFake(self.DATA, self.log)
+        self.fake = fake
+
+        async def go():
+            with mock.patch("httpx.AsyncClient", fake), \
+                    mock.patch("routers.vod.lan_origin_guard", lambda *a, **k: (lambda u: True)), \
+                    mock.patch.object(self.vod, "QUANTUM_SECONDS", 0.02), \
+                    mock.patch.object(self.vod, "PREEMPT_GRACE_SECONDS", 0.02):
+                return await scenario()
+        return asyncio.run(go())
+
+    def test_a_reading_viewer_is_never_parked_for_the_extraction(self):
+        self.watching = {self.title: ["10.0.0.9"]}
+
+        async def scenario():
+            # its own range end, so its resumes can be told from the extraction's
+            browser = await self._open("10.0.0.9", "bytes=0-4094")
+            it = browser.body_iterator.__aiter__()
+            first = await it.__anext__()
+            self.assertTrue(await self._until(lambda: self.vod._viewers["titles"] is not None))
+            extraction = await self._open("172.19.0.1")
+            ex = asyncio.ensure_future(self._read(extraction))
+            rest = b""
+            async for c in it:                         # a player's pace: many quanta long
+                rest += c
+                await asyncio.sleep(0.002)
+            return first + rest, await ex
+        a, b = self._run(scenario)
+        self.assertEqual(self.DATA[:4095], a)
+        self.assertEqual(self.DATA, b)
+        browser_ranges = [rng for _, rng, _ in self.log if rng and rng.endswith("-4094") and rng != "bytes=0-4094"]
+        # the extraction's own open parks it once; it takes the connection back at the extraction's first chunk
+        self.assertLessEqual(len(browser_ranges), 1, browser_ranges)
+        self.assertEqual(1, self.fake.most_open)
+
+    def test_the_extraction_reads_while_the_viewer_pauses_and_hands_back_when_it_reads_again(self):
+        self.watching = {self.title: ["10.0.0.9"]}
+
+        async def scenario():
+            browser = await self._open("10.0.0.9")
+            it = browser.body_iterator.__aiter__()
+            head = await it.__anext__()
+            self.assertTrue(await self._until(lambda: self.vod._viewers["titles"] is not None))
+            extraction = await self._open("172.19.0.1")
+            ex = asyncio.ensure_future(self._read(extraction))
+            # the browser's buffer is full: it reads nothing while the extraction finishes
+            done = await asyncio.wait_for(ex, 5)
+            rest = b"".join([c async for c in it])     # and then the browser reads on
+            return head + rest, done
+        a, b = self._run(scenario)
+        self.assertEqual(self.DATA, a, "the viewer ended early or skipped bytes")
+        self.assertEqual(self.DATA, b, "the extraction did not get the idle connection")
+        self.assertEqual(1, self.fake.most_open)
+
+    def test_without_a_viewer_address_it_is_equal_turns_as_before(self):
+        """A Jellyfin transcode and the extraction both come from Jellyfin's
+        address: neither is the player's own, they share in turns."""
+        self.watching = {self.title: ["192.0.2.99"]}
+
+        async def scenario():
+            transcode = await self._open("172.19.0.1")
+            extraction = await self._open("172.19.0.1")
+            return await asyncio.gather(self._read(transcode), self._read(extraction))
+        a, b = self._run(scenario)
+        self.assertEqual((self.DATA, self.DATA), (a, b))
+        self.assertGreater(len(self.log), 2, "they took turns")
+        self.assertEqual(1, self.fake.most_open)
 
 
 class _Resp:
@@ -299,9 +398,11 @@ class AskingJellyfin(unittest.TestCase):
             return _Resp({"Items": [it for it in items if it["Id"] in ids]})
         return mock.patch("requests.get", get)
 
-    def test_sessions_are_counted_per_title_and_items_are_looked_up_once(self):
-        sessions = [{"NowPlayingItem": {"Id": "aa"}}, {"NowPlayingItem": {"Id": "aa"}},
-                    {"NowPlayingItem": {"Id": "bb"}}, {"NowPlayingItem": {"Id": "cc"}}, {"DeviceName": "idle"}]
+    def test_sessions_are_listed_per_title_and_items_are_looked_up_once(self):
+        sessions = [{"NowPlayingItem": {"Id": "aa"}, "RemoteEndPoint": "192.0.2.21"},
+                    {"NowPlayingItem": {"Id": "aa"}, "RemoteEndPoint": "::ffff:192.0.2.22"},
+                    {"NowPlayingItem": {"Id": "bb"}, "RemoteEndPoint": "192.0.2.23"},
+                    {"NowPlayingItem": {"Id": "cc"}, "RemoteEndPoint": "192.0.2.24"}, {"DeviceName": "idle"}]
         items = [{"Id": "aa", "MediaSources": [{"Path": self.movie}]},
                  {"Id": "bb", "MediaSources": [{"Path": self.episode}]},
                  {"Id": "cc", "MediaSources": [{"Path": "/media/Movies/Film (2020)/Film (2020).mkv"}]}]
@@ -310,7 +411,7 @@ class AskingJellyfin(unittest.TestCase):
             again = self.vod._jellyfin_watched_titles("http://jf:8096", "k")
         movie = f"movie/{self.movie.rsplit('/', 1)[1]}"
         episode = f"series/{self.episode.rsplit('/', 1)[1]}"
-        self.assertEqual({movie: 2, episode: 1}, got)
+        self.assertEqual({movie: ["192.0.2.21", "192.0.2.22"], episode: ["192.0.2.23"]}, got)
         self.assertEqual(got, again)
         self.assertEqual(["Sessions", "Items", "Sessions"], [c[0] for c in self.calls])
         self.assertEqual("aa,bb,cc", self.calls[1][1]["Ids"])

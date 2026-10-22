@@ -462,7 +462,15 @@ movies/series, then Sonarr/Radarr text-lookup titles TMDB lacks (TheTVDB).
   request from another client joins a running playback of its title while
   Jellyfin shows no more viewers of the title than there are playbacks
   (Jellyfin Web direct-plays an mkv from the browser's address while
-  Jellyfin's subtitle extraction reads it from Jellyfin's). A playback
+  Jellyfin's subtitle extraction reads it from Jellyfin's). Inside a
+  playback the viewer's own requests come first (`_next_turn`): a request
+  from an address Jellyfin lists for a session playing the title takes the
+  connection back at the holder's next chunk whenever it asks for bytes
+  (`_Reader.waiting`), is never timed out for Jellyfin's work while it
+  reads, and Jellyfin's work reads while the player has passed nothing for
+  `PREEMPT_GRACE_SECONDS` (paused, buffer full). Shared in equal turns, the
+  web player stalled 18 s at a film's start. Without a viewer address (a
+  Jellyfin transcode: every request is Jellyfin's) it is equal turns. A playback
   whose viewer has gone (stopped, next episode) for 4 s is closed and its
   slot freed: what still reads it is Jellyfin's own work (that extraction
   reads the whole file, minutes after the stop). A playback no session has
