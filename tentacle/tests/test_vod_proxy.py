@@ -94,6 +94,8 @@ class _Base(unittest.TestCase):
         # makes any later test that runs a sync wait for it (up to 4 hours).
         self.addCleanup(lambda: setattr(livetv, "_stream_slots", livetv._StreamSlots()))
         self.addCleanup(vod._playbacks.clear)
+        vod._targets.clear()
+        self.addCleanup(vod._targets.clear)
         self.db = _fresh_db()
         from models.database import Provider, set_setting
         from services import vod_tokens

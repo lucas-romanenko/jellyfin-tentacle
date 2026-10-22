@@ -51,6 +51,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         // Tentacle VOD subtitles are cached only when extracted from the whole
         // file (Tentacle closes a pull nobody watches; Jellyfin would keep the part)
         serviceCollection.AddSingleton<IHostedService, VodSubtitleExtractionPatch>();
+        serviceCollection.AddSingleton<IHostedService, VodProbeOncePatch>();
 
         // One Live TV stream per device: opening a channel closes the one it
         // had open (one-connection IPTV accounts, Jellyfin Web's retries)
