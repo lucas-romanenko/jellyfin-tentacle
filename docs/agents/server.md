@@ -486,6 +486,17 @@ movies/series, then Sonarr/Radarr text-lookup titles TMDB lacks (TheTVDB).
   playbacks (separate connections, counted by the lease broker), and so
   are different clients of a title when Jellyfin shows as many people
   watching it.
+- Fast starts: every VOD request goes through one pooled client
+  (`_client()`, keep-alive 5 s, redirects still followed by hand and
+  re-validated), and a title's redirect target (the edge server the
+  provider's panel URL 302s to) is remembered for `TARGET_SECONDS` (5 min,
+  `_targets`, keyed by the provider URL, so per title and account). A cached
+  target that answers anything but 200/206 or cannot be reached is
+  forgotten and the panel asked again in the same request. Measured (Oct
+  2026): 0.5-0.8 s to first bytes per request through the panel, 0.15 s
+  straight to the known edge; a play is a dozen requests before the first
+  picture. The plugin's `VodProbeOncePatch` stops Jellyfin re-probing a
+  title it already knows (jellyfin-notes.md "Who reads a .strm").
 - One person watching = one provider connection (`_watch_viewers`): while
   any playback runs, Jellyfin's `/Sessions` is asked every 2 s which items
   are playing, and each item's media source address names its title

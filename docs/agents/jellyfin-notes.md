@@ -95,7 +95,12 @@ The code wins where they differ.
   the whole file was read). Embed delivery (direct play into a container
   that carries them, the TV app with SRT) extracts nothing. Every
   PlaybackInfo of a `.strm` probes it (a full metadata refresh with
-  `EnableRemoteContentProbe`, a short read before the stream starts).
+  `EnableRemoteContentProbe`, a short read before the stream starts):
+  `MediaSourceManager.GetPlaybackMediaSources` checks the `.strm` path
+  alone, not whether the streams are known (they are saved by the first
+  probe). For a provider film that was ~3.4 s of range requests before
+  PlaybackInfo answered; the plugin (`VodProbeOncePatch`) passes
+  `allowMediaProbe=false` for a Tentacle VOD item that has a video stream.
   Trickplay, chapter images and the keyframe task skip shortcuts; a
   library scan does not probe them. Jellyfin Web in Chrome direct-plays a
   remote mkv itself: the browser fetches the .strm address from its own

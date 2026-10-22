@@ -95,6 +95,18 @@ VIEWERS_FRESH_SECONDS = 15.0
 GONE_REFUSE_SECONDS = 60.0
 # How long a Jellyfin item's VOD address is remembered (a relink rewrites it).
 ITEM_TITLES_SECONDS = 600.0
+# How long a title's redirect target (the provider's edge address its panel
+# URL redirects to) is reused before the panel is asked again. Every request
+# of a play (Jellyfin's probe, the player's open, each seek) used to pay the
+# panel's 302 plus a new edge's DNS and connect: 0.5-0.8 s to first bytes,
+# against 0.15 s straight to the edge (measured Oct 2026). A target that
+# fails (an expired token: 403/404, a refused or broken connection) is
+# forgotten and the panel asked again at once, so a short life is only a
+# bound on how stale it can get.
+TARGET_SECONDS = 300.0
+# Idle connections to the provider are kept this briefly: long enough for the
+# next range of the same play, short of a connection the provider might count.
+KEEPALIVE_SECONDS = 5.0
 _UA_DEFAULT = "TiviMate/4.7.0 (Linux; Android 12)"
 _RANGE_RE = re.compile(r"^bytes=(\d+)-(\d*)$")
 
@@ -320,6 +332,50 @@ _item_titles: "dict[str, tuple]" = {}
 # title -> loop time it was closed for having no viewer (GONE_REFUSE_SECONDS)
 _gone: "dict[str, float]" = {}
 _pending_releases: "set[asyncio.Task]" = set()
+# provider URL of a title -> (its redirect target, monotonic time it expires)
+_targets: "dict[str, tuple]" = {}
+# The one provider client (connection pool) VOD requests share: (event loop,
+# client factory, client). Per loop, because a client's connections belong to
+# the loop that opened them.
+_shared: dict = {"loop": None, "factory": None, "client": None}
+
+
+def _client() -> httpx.AsyncClient:
+    """The pooled client every VOD request uses (keep-alive to the provider,
+    no new client and TLS/DNS per seek). It never follows redirects itself:
+    _open does, re-validating each hop. Pooling adds no connection: a
+    playback still has at most one open (open_lock, settle), and a body cut
+    off mid-way closes its connection rather than returning it to the pool."""
+    loop = asyncio.get_running_loop()
+    factory = httpx.AsyncClient
+    if _shared["client"] is None or _shared["loop"] is not loop or _shared["factory"] is not factory:
+        _shared["client"] = factory(
+            follow_redirects=False,
+            timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
+            limits=httpx.Limits(max_connections=None, max_keepalive_connections=4,
+                                keepalive_expiry=KEEPALIVE_SECONDS))
+        _shared["loop"], _shared["factory"] = loop, factory
+    return _shared["client"]
+
+
+def _cached_target(url: str) -> Optional[str]:
+    hit = _targets.get(url)
+    if hit is None:
+        return None
+    if time.monotonic() >= hit[1]:
+        del _targets[url]
+        return None
+    return hit[0]
+
+
+def _remember_target(url: str, target: str) -> None:
+    if len(_targets) > 1000:
+        _targets.clear()
+    _targets[url] = (target, time.monotonic() + TARGET_SECONDS)
+
+
+def _forget_target(url: str) -> None:
+    _targets.pop(url, None)
 
 
 def _release(pb: _Playback):
@@ -327,12 +383,6 @@ def _release(pb: _Playback):
         del _playbacks[pb.token]
     livetv._stream_slots.release_lease(pb.lease)
     logger.info(f"[VOD] {pb.owner}: playback ended, slot released")
-
-
-def _close_later_client(client) -> None:
-    task = asyncio.get_running_loop().create_task(client.aclose())
-    _pending_releases.add(task)
-    task.add_done_callback(_pending_releases.discard)
 
 
 def _release_soon(pb: _Playback, generation: int) -> None:
@@ -605,12 +655,27 @@ def _range_start(range_header: Optional[str]) -> int:
 
 
 async def _open(client: httpx.AsyncClient, method: str, url: str, headers: dict, guard) -> httpx.Response:
-    """One request, redirects followed by hand and re-validated (services.ssrf)."""
+    """One request, redirects followed by hand and re-validated (services.ssrf).
+    The title's last redirect target is tried first (TARGET_SECONDS); one that
+    does not answer 200/206 is forgotten and the panel asked again, in the same
+    call (one connection at a time: the failed answer is closed first)."""
+    target = _cached_target(url)
+    if target is not None:
+        try:
+            resp = await client.send(client.build_request(method, target, headers=headers), stream=True)
+            if resp.status_code in (200, 206):
+                return resp
+            await resp.aclose()
+        except httpx.TransportError:
+            pass
+        _forget_target(url)
     current = url
     for _ in range(livetv._MAX_STREAM_REDIRECTS):
         req = client.build_request(method, current, headers=headers)
         resp = await client.send(req, stream=True)
         if resp.status_code not in (301, 302, 303, 307, 308):
+            if current != url and resp.status_code in (200, 206):
+                _remember_target(url, current)
             return resp
         location = resp.headers.get("location")
         await resp.aclose()
@@ -712,8 +777,7 @@ async def vod_head(kind: str, token_file: str, request: Request, db: Session = D
             slots._refuse_protected("vod", f"{owner} (HEAD)")
         except livetv.RecordingProtected:
             raise HTTPException(503, livetv.PROTECTED_REFUSAL_DETAIL)
-    client = httpx.AsyncClient(follow_redirects=False,
-                               timeout=httpx.Timeout(connect=10.0, read=20.0, write=10.0, pool=10.0))
+    client = _client()
     try:
         resp = await _open(client, "HEAD", url, {"User-Agent": ua}, guard)
         try:
@@ -726,8 +790,6 @@ async def vod_head(kind: str, token_file: str, request: Request, db: Session = D
         # The error type only: an httpx error's text can carry the request
         # URL, whose path holds the provider account.
         raise HTTPException(502, f"The provider did not answer: {type(e).__name__}")
-    finally:
-        await client.aclose()
 
 
 _SIZE_RE = re.compile(r"/(\d+)\s*$")
@@ -799,8 +861,8 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
     headers = {"User-Agent": ua}
     if range_header:
         headers["Range"] = range_header
-    client = httpx.AsyncClient(follow_redirects=False,
-                               timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0))
+    client = _client()
+
     async def player_left() -> bool:
         try:
             return await request.is_disconnected()
@@ -825,7 +887,6 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
     except BaseException:
         pb.opening -= 1
         pb.hand_on(reader)
-        await client.aclose()
         # The player has gone (or the provider refused for good): nothing is
         # streaming for this playback, so give the slot back now instead of
         # holding it for the idle window.
@@ -889,7 +950,6 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
         if reader.resp is not None:
             pb.close_upstream(reader.resp)
             reader.resp = None
-        _close_later_client(client)
         pb.hand_on(reader)
         # Replaced by a newer request (a seek), or the end of the range: the
         # player is still there and will ask again -- keep the slot for the
