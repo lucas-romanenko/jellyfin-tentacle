@@ -260,6 +260,33 @@ def rate_for_kids(db: Session, channel: YouTubeChannel, jf=None) -> int:
     return changed
 
 
+CLEANED_KEY = "youtube_follows_cleaned"
+
+
+def drop_old_playlists(db: Session) -> int:
+    """Once, after the migration (channels became their followers' only):
+    everyone else's playlist, home row and hero of each channel go, as when
+    they stop following it (routers/youtube._drop_for_people). Returns how
+    many people were tidied."""
+    from models.database import get_setting, set_setting
+    if get_setting(db, CLEANED_KEY, "") or get_setting(db, "youtube_follows_migrated", "") != "true":
+        return 0
+    from routers.youtube import _cleanup_for_people
+    follows = followers_by_channel(db)
+    people = db.query(TentacleUser).all()
+    tidied = set()
+    for ch in db.query(YouTubeChannel).all():
+        others = [u.id for u in people if norm(u.jellyfin_user_id) not in follows.get(ch.id, set())]
+        if others:
+            _cleanup_for_people(ch.title, ch.slug, others)
+            tidied.update(others)
+    set_setting(db, CLEANED_KEY, "true")
+    db.commit()
+    if tidied:
+        logger.info(f"[YouTube] Took the YouTube playlists of channels they don't follow away from {len(tidied)} people")
+    return len(tidied)
+
+
 def apply_everyone_soon(reason: str = "") -> None:
     """apply_everyone in the background, with its own session."""
     def _run():

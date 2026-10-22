@@ -129,6 +129,9 @@ class MyYouTube(Case):
             p = mock.patch.object(Y, target)
             p.start()
             self.addCleanup(p.stop)
+        p = mock.patch.object(follows, "apply_everyone_soon")
+        p.start()
+        self.addCleanup(p.stop)
         p = mock.patch.object(Y.client, "available", return_value=True)
         p.start()
         self.addCleanup(p.stop)
@@ -193,7 +196,8 @@ class MyYouTube(Case):
 
     def test_removal_deletes_its_follows_too(self):
         follows.follow(self.db, self.trader, ANN)
-        Y.remove_channel(self.db, self.trader)
+        with mock.patch.object(Y, "_cleanup_after_remove"):
+            Y.remove_channel(self.db, self.trader)
         self.assertEqual(0, self.db.query(mdb.YouTubeFollow).count())
         self.assertEqual(0, self.db.query(mdb.YouTubeChannel).count())
 
@@ -246,6 +250,17 @@ class Forgotten(Case):
             gone_people.forget_gone(self.db, self.jf.get("/Users"))
         self.assertEqual(0, self.db.query(mdb.YouTubeFollow).filter_by(jellyfin_user_id=ANN).count())
         self.assertEqual(["Shared"], [c.title for c in self.db.query(mdb.YouTubeChannel).all()])
+
+
+class OldPlaylists(Case):
+    def test_after_the_migration_everyone_elses_playlists_of_a_channel_go_once(self):
+        ch = _channel(self.db, "TraderTV Live", "tradertv-live")
+        follows.follow(self.db, ch, ADMIN)
+        mdb.set_setting(self.db, "youtube_follows_migrated", "true")
+        with mock.patch.object(Y, "_cleanup_for_people") as cleanup:
+            self.assertEqual(2, follows.drop_old_playlists(self.db))
+            cleanup.assert_called_once_with("TraderTV Live", "tradertv-live", sorted([self.ann.id, self.ben.id]))
+            self.assertEqual(0, follows.drop_old_playlists(self.db))
 
 
 class Migration(unittest.TestCase):
