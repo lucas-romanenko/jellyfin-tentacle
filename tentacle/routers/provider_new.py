@@ -42,11 +42,13 @@ def new_counts(db: Session = Depends(get_db)):
 
 
 @router.get("/api/live/new-groups")
-def new_groups(dismissed: bool = False, db: Session = Depends(get_db)):
-    """New Live TV groups (and the dismissed ones, asked for). Starts
+def new_groups(dismissed: bool = False, country: str = "", lang: str = "", db: Session = Depends(get_db)):
+    """New Live TV groups (and the dismissed ones, asked for), each with its
+    country, a clean title and whether it is probably for this household
+    (`country` / `lang`: the admin's browser locale, a hint). Starts
     reading the channels of new groups not read lately, in the background;
     `loading` says how far it is."""
-    out = N.live_overview(db, dismissed=dismissed)
+    out = N.live_overview(db, dismissed=dismissed, country=country[:8], lang=lang[:8])
     if not out["loading"]["running"] and N.needs_reading(db):
         N.read_new_in_background()
         out["loading"] = dict(N.loading, running=True)

@@ -324,9 +324,47 @@ user_id)` computes them every time from source tags, list subscriptions
 - `write_home_config()` checks the hero playlist still exists (else first
   available, or off) and remaps rows and hero by `display_name` when a sync
   recreated playlists with new ids (otherwise rows silently vanish).
+- **Default home** (`services/default_home.py`): one layout for everyone
+  without their own, stored in the `default_home` setting with playlist rows
+  keyed by ready-made playlist (`builtin:recently_added_movies`,
+  `source:<name>:movies`, `youtube:<id>`), since each person's playlist ids
+  differ. Unset = `suggested_default()` (Continue Watching, Next Up, recently
+  added movies/TV, the biggest sources; spotlight on recently added movies).
+  A person's file carries `follows_default: true` while it is the default;
+  `apply_default()` writes it with their own playlist ids (switching on the
+  ready-made playlists it needs). Any change on their own Home Screen drops
+  the flag (theirs now); `POST /home/reset-to-default` sets it again. Admins
+  edit the default with the same endpoints plus `?scope=default`; a save
+  rewrites every follower in the background (`apply_to_followers_soon`), so
+  it reaches clients through the home version like any edit. New people (no
+  file) get it on first read or `write_home_config`; the nightly sync
+  re-applies it (new sources). Once per install (`default_home_migrated`)
+  homes that are still the old starter (Jellyfin's sections as rows, never
+  changed) move to the default; anyone's own layout is never touched. Kids
+  get the same rows: the plugin only returns items they may open.
 - When a user has a Tentacle home, `disable_home_sections()`
   (`services/jellyfin.py`) turns Jellyfin's own home sections off for that
   user (DisplayPreferences), so rows don't appear twice.
+
+## Discover search (`routers/discover.py:search_discover`)
+
+The TV app searches on every keystroke, so `/api/discover/search` must
+answer fast (the plugin gives up after 15 s and the TV says "Tentacle is
+busy"). Order: enabled Live TV channels (local table, max 20), then TMDB
+movies/series, then Sonarr/Radarr text-lookup titles TMDB lacks (TheTVDB).
+
+- Radarr/Sonarr `lookup_by_term` asks the internet metadata services and can
+  take its whole 15 s. It runs on the shared `_search_executor("arr")`
+  threads and gets `SEARCH_ARR_WAIT` (2 s) from the request's start; later
+  answers fill the cache for the next request. Never wait on it longer.
+- Per query (lowercased, spaces collapsed) and type, the futures are kept
+  `SEARCH_CACHE_TTL` (5 min); a request for a query still running shares it.
+  A failed TMDB search is dropped from the cache. 1 character = channels
+  only; 2 = no *arr lookups (`SEARCH_MIN_CHARS`, `SEARCH_ARR_MIN_CHARS`).
+- "In Library" / "Requested" come from the Movie/Series tables and the
+  cached Jellyfin and *arr id maps; a stale map is used while it refreshes in
+  the background (`_search_jellyfin_ids`, `_search_arr_ids`), only a first
+  fetch ever is waited for (up to the same 2 s).
 
 ## Deleting things
 
@@ -546,8 +584,17 @@ User docs: `docs/features/live-tv.md`.
   Live TV → New from your provider, plus a card on the VOD providers tab):
   every group or category a refresh or the nightly discovery creates gets
   `review_state` "new" (not on a provider's first list, its setup), counted
-  on the sidebar's Sources badge. Step 1 ticks groups or dismisses them
-  ("dismissed" never comes back as new; Show dismissed lists them); step 2
+  on the sidebar's Sources badge. Each group name is read by
+  `services/livetv_groups.py` (country or language from the prefix, a clean
+  title, tags such as Raw / Gold / Backup, event groups; `CodeBook` learns a
+  provider's own codes from all its group names: "SR| SERBIA" is Serbia,
+  "AR|" Arabic, "LA|" Latin America). `household()` = places holding 5% of
+  the pool's channels + the admin's region (`livetv_region` / time zone) +
+  the browser's locale (`?country=&lang=`), and their languages: those new
+  groups are "Probably for you" on top, the rest folded by country, with
+  sample channels (`_samples`). Step 1 ticks groups or dismisses them, one,
+  a country, or everything not for you, with Undo ("dismissed" never comes
+  back as new; the Dismissed fold lists them); step 2
   shows the ticked groups' channels folded like the pool (Works / Guide,
   "No event" slots hidden) and adds the picked ones (`LiveChannel.enabled`,
   the group switched on); the groups become "reviewed". Their channels are

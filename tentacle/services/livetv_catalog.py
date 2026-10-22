@@ -66,10 +66,16 @@ def _channel_rows(db: Session):
             .order_by(LiveChannel.id).all())
 
 
+# Bumped when livetv_names folds names differently, so the next look refolds
+# ("AT&T: AMC" joined AMC in 2).
+FOLD_RULES = "2"
+
+
 def _inputs_fingerprint(db: Session, rows) -> str:
     """The channel list, plus what the default variants depend on: which
     guide ids have a guide and which channels the checker found broken."""
     h = hashlib.sha256(_fingerprint(rows).encode())
+    h.update(FOLD_RULES.encode())
     try:
         h.update("\x1f".join(sorted(guide_facts(db)["with_guide"])).encode("utf-8", "replace"))
     except Exception:

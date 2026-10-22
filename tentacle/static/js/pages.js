@@ -3424,19 +3424,104 @@ async function refreshTags() {
 // ── HOME SCREEN ──────────────────────────────────────────────────────────
 
 let homeRows = [];
+// Which home the page changes: 'mine', or for admins 'default', the home
+// everyone sees until they change their own (services/default_home.py).
+let homeScope = 'mine';
+let homeFollowsDefault = false;
+
+function homeUrl(path) {
+  return homeScope === 'default' ? `${path}${path.includes('?') ? '&' : '?'}scope=default` : path;
+}
+
+function setHomeScope(scope) {
+  homeScope = scope === 'default' && state.currentUser && state.currentUser.is_admin ? 'default' : 'mine';
+  for (const s of ['mine', 'default']) {
+    const b = document.getElementById(`home-scope-${s}`);
+    if (!b) continue;
+    b.classList.toggle('active', s === homeScope);
+    b.setAttribute('aria-checked', s === homeScope ? 'true' : 'false');
+  }
+  document.getElementById('jf-tab-home')?.classList.toggle('home-scope-default', homeScope === 'default');
+  hideAddHomeRow();
+  loadHomeScreen();
+}
+
+function renderHomeScopeNote(data) {
+  const note = document.getElementById('home-scope-note');
+  const actions = document.getElementById('home-scope-actions');
+  if (!note || !actions) return;
+  if (homeScope === 'default') {
+    const names = data.followers || [];
+    const who = names.length
+      ? `${names.length === 1 ? 'One person uses' : `${names.length} people use`} it now: ${names.join(', ')}.`
+      : 'Nobody uses it right now.';
+    note.textContent = `Everyone sees this home until they change their own, and new people start with it. Kids see only what their age limit allows. ${who}`;
+    actions.innerHTML = '<button class="btn btn-secondary btn-sm" onclick="defaultHomeFromMine()">Copy my home here</button>'
+      + (data.custom ? '<button class="btn btn-secondary btn-sm" onclick="defaultHomeSuggested()">Back to Tentacle’s suggestion</button>' : '');
+  } else if (homeFollowsDefault) {
+    note.textContent = 'You’re on the default home. Change anything below and it becomes your own.';
+    actions.innerHTML = '';
+  } else {
+    note.textContent = 'This is your own home.';
+    actions.innerHTML = '<button class="btn btn-secondary btn-sm" onclick="resetHomeToDefault()">Reset to default</button>';
+  }
+}
+
+// A change to your own rows or spotlight makes the home yours.
+function homeChangedByMe() {
+  if (homeScope === 'mine' && homeFollowsDefault) {
+    homeFollowsDefault = false;
+    renderHomeScopeNote({});
+  }
+}
+
+async function resetHomeToDefault() {
+  if (!confirm('Go back to the default home? Your own rows and spotlight are replaced by the default.')) return;
+  try {
+    await api('/api/smartlists/home/reset-to-default', { method: 'POST' });
+    toast('Your home is the default again');
+    loadHomeScreen();
+  } catch (e) {
+    toast('Could not reset: ' + e.message, 'error');
+  }
+}
+
+async function defaultHomeFromMine() {
+  if (!confirm('Make your home the default for everyone who hasn’t made their own? Your own lists and custom playlists are left out: nobody else has them.')) return;
+  try {
+    const r = await api('/api/smartlists/default-home/from-mine', { method: 'POST' });
+    toast(`Default home now has ${r.rows} rows — everyone on it sees them in a moment`);
+    loadHomeScreen();
+  } catch (e) {
+    toast('Could not copy your home: ' + e.message, 'error');
+  }
+}
+
+async function defaultHomeSuggested() {
+  if (!confirm('Go back to Tentacle’s suggested default home?')) return;
+  try {
+    await api('/api/smartlists/default-home/suggested', { method: 'POST' });
+    toast('Default home is Tentacle’s suggestion again');
+    loadHomeScreen();
+  } catch (e) {
+    toast('Could not change the default home: ' + e.message, 'error');
+  }
+}
 
 async function loadHomeScreen() {
   const listEl = document.getElementById('home-rows-list');
   const heroSelect = document.getElementById('home-hero-select');
 
   try {
-    const data = await api('/api/smartlists/home-config');
+    const data = await api(homeUrl('/api/smartlists/home-config'));
     const config = data.exists ? data.config : {};
+    homeFollowsDefault = data.follows_default === true;
+    renderHomeScopeNote(data);
     homeRows = (config.rows || []).sort((a, b) => a.order - b.order);
 
     // Populate hero dropdown from ALL available playlists, not just home rows
     try {
-      const allPlaylists = await api('/api/smartlists/all-playlists');
+      const allPlaylists = await api(homeUrl('/api/smartlists/all-playlists'));
       const playlists = (allPlaylists.playlists || []).sort((a, b) => a.name.localeCompare(b.name));
       heroSelect.innerHTML = '<option value="">-- disabled --</option>';
       for (const p of playlists) {
@@ -3487,7 +3572,7 @@ async function loadHomeScreen() {
     // Card focus previews: all / local_only / off (absent = local_only, androidtv#47)
 
     if (!homeRows.length) {
-      listEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text3);font-size:13px">No rows configured — the default Jellyfin home screen will be used.</div>';
+      listEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text3);font-size:13px">No rows yet — add one with + Add Row.</div>';
     } else {
       renderHomeRows();
     }
@@ -3653,7 +3738,7 @@ async function saveToolbarConfig() {
       method: 'POST',
       body: { buttons: toolbarButtons },
     });
-    if (r.success) pushHomeConfig();
+    if (r.success) pushHomeConfig(false);
     else toast(r.message || 'Failed to save toolbar', 'error');
   } catch (e) {
     toast('Failed to save toolbar config', 'error');
@@ -3670,7 +3755,8 @@ function renderHomeRows() {
   listEl.innerHTML = homeRows.map((row, i) => {
     const key = rowKey(row);
     const isBuiltin = row.type === 'builtin';
-    const badge = isBuiltin
+    // On Now is Tentacle's own row (favourite channels), not one of Jellyfin's
+    const badge = isBuiltin && row.section_id !== 'onnow'
       ? '<span style="font-size:9px;padding:2px 6px;border-radius:3px;background:var(--blue);color:#fff;white-space:nowrap">Jellyfin</span>'
       : '<span style="font-size:9px;padding:2px 6px;border-radius:3px;background:var(--purple);color:#fff;white-space:nowrap">Tentacle</span>';
     const maxItemsInput = isBuiltin ? '' : `
@@ -3716,7 +3802,7 @@ async function reorderHomeRows(fromIdx, toIdx) {
   for (let i = 0; i < homeRows.length; i++) homeRows[i].order = i + 1;
   renderHomeRows();
   try {
-    await api('/api/smartlists/reorder', {
+    await api(homeUrl('/api/smartlists/reorder'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ order: homeRows.map(r => rowKey(r)) }),
@@ -3730,7 +3816,7 @@ async function reorderHomeRows(fromIdx, toIdx) {
 async function updateHeroPick() {
   const heroSelect = document.getElementById('home-hero-select');
   try {
-    const r = await api('/api/smartlists/hero', {
+    const r = await api(homeUrl('/api/smartlists/hero'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ playlist_id: heroSelect.value }),
@@ -3751,7 +3837,7 @@ async function updateHeroSort() {
   const trailerAudio = document.getElementById('home-hero-trailer-audio')?.checked ?? false;
   const itemCount = parseInt(document.getElementById('home-hero-item-count')?.value) || 10;
   try {
-    const r = await api('/api/smartlists/hero-sort', {
+    const r = await api(homeUrl('/api/smartlists/hero-sort'), {
       method: 'POST',
       body: { sort_by: sortBy, sort_order: sortOrder, require_logo: requireLogo, require_trailer: requireTrailer, trailer_audio: trailerAudio, item_count: itemCount },
     });
@@ -3762,7 +3848,12 @@ async function updateHeroSort() {
   }
 }
 
-async function pushHomeConfig() {
+async function pushHomeConfig(layout = true) {
+  if (homeScope === 'default') {
+    toast('Saved — everyone on the default home sees it in a moment');
+    return;
+  }
+  if (layout) homeChangedByMe();
   try {
     const r = await api('/api/smartlists/notify', { method: 'POST' });
     if (r.notified) {
@@ -3778,7 +3869,7 @@ async function pushHomeConfig() {
 async function saveRowMaxItems(playlistId, val) {
   const v = Math.max(5, Math.min(100, parseInt(val) || 20));
   try {
-    await api('/api/smartlists/row-max-items', {
+    await api(homeUrl('/api/smartlists/row-max-items'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ playlist_id: playlistId, max_items: v }),
@@ -3794,13 +3885,14 @@ async function saveRowMaxItems(playlistId, val) {
 async function saveRowMaxItemsByKey(key, val) {
   const v = Math.max(5, Math.min(100, parseInt(val) || 20));
   try {
-    await api('/api/smartlists/row-max-items', {
+    await api(homeUrl('/api/smartlists/row-max-items'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ row_key: key, max_items: v }),
     });
     const row = homeRows.find(r => rowKey(r) === key);
     if (row) row.max_items = v;
+    homeChangedByMe();
     toast(`Row limit set to ${v}`);
   } catch (e) {
     toast('Failed to save: ' + e.message, 'error');
@@ -3809,13 +3901,14 @@ async function saveRowMaxItemsByKey(key, val) {
 
 async function saveRowShapeByKey(key, shape) {
   try {
-    const resp = await api('/api/smartlists/row-shape', {
+    const resp = await api(homeUrl('/api/smartlists/row-shape'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ row_key: key, shape }),
     });
     const row = homeRows.find(r => rowKey(r) === key);
     if (row) row.shape = shape;
+    homeChangedByMe();
     if (resp.notified === false) {
       // Saved, but clients that rely on the plugin broadcast (Android TV) won't see it.
       toast('Saved, but the Jellyfin plugin was not notified — ' + (resp.error || 'check the plugin is installed')
@@ -3837,8 +3930,8 @@ async function showAddHomeRow() {
 
   try {
     const [playlistData, builtinData] = await Promise.all([
-      api('/api/smartlists/available-playlists'),
-      api('/api/smartlists/builtin-sections'),
+      api(homeUrl('/api/smartlists/available-playlists')),
+      api(homeUrl('/api/smartlists/builtin-sections')),
     ]);
     const playlists = playlistData.playlists || [];
     const builtins = builtinData.sections || [];
@@ -3894,7 +3987,7 @@ async function confirmAddHomeRow() {
   }
 
   try {
-    const r = await api('/api/smartlists/add-row', {
+    const r = await api(homeUrl('/api/smartlists/add-row'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -3914,7 +4007,7 @@ async function confirmAddHomeRow() {
 
 async function removeHomeRow(playlistId) {
   try {
-    const r = await api('/api/smartlists/remove-row', {
+    const r = await api(homeUrl('/api/smartlists/remove-row'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ playlist_id: playlistId }),
@@ -3933,7 +4026,7 @@ async function removeHomeRow(playlistId) {
 
 async function removeHomeRowByKey(key) {
   try {
-    const r = await api('/api/smartlists/remove-row', {
+    const r = await api(homeUrl('/api/smartlists/remove-row'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ row_key: key }),
@@ -6298,7 +6391,8 @@ function updateMergeContinueSlider(enabled) {
 async function saveMergeContinueWatching(checked) {
   updateMergeContinueSlider(checked);
   try {
-    await api('/api/smartlists/merge-continue-watching', { method: 'POST', body: { enabled: checked } });
+    await api(homeUrl('/api/smartlists/merge-continue-watching'), { method: 'POST', body: { enabled: checked } });
+    homeChangedByMe();
     toast(checked ? 'Continue Watching & Next Up combined' : 'Continue Watching & Next Up separated', 'success');
   } catch (e) {
     updateMergeContinueSlider(!checked);
@@ -6949,7 +7043,7 @@ function renderHealthLog() {
     loadJellyfinPage, loadAutoPlaylists, toggleAutoPlaylist, dismissAutoPlaylistBanner,
     showAddTagRule, editTagRule, deleteTagRule, saveTagRule, onContentSourceChange, toggleAdvancedFilters,
     addRuleCondition, updateCondOps, onCollectionNameInput, syncSmartLists, refreshTags, syncPlaylistsToJellyfin, resyncAllPlaylists, setPlaylistSort,
-    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, saveRowShapeByKey, toggleNotificationsFromCheckbox, saveMergeContinueWatching, toggleCard, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
+    pushHomeConfig, setHomeScope, resetHomeToDefault, defaultHomeFromMine, defaultHomeSuggested, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, saveRowShapeByKey, toggleNotificationsFromCheckbox, saveMergeContinueWatching, toggleCard, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
     showAddHomeRow, hideAddHomeRow, confirmAddHomeRow, removeHomeRow, removeHomeRowByKey,
     reorderHomeRows, rowKey,
     // Library

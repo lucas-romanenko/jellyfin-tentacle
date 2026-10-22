@@ -1280,20 +1280,10 @@ def write_home_config(db: Session, user_id: int = None, dropped_ids: frozenset =
         # A user with no playlists and no config at all — a new household
         # member, a fresh install's owner — used to get nothing until the
         # nightly job or a settings change, so their home and toolbar were
-        # blank (#120). Give them the starter config the first plugin read
-        # would: their Jellyfin home sections as built-in rows, plus the
-        # default toolbar.
-        from routers.smartlists import _seed_home_config_from_jellyfin
+        # blank (#120). They start on the default home (services/default_home).
+        from services.default_home import apply_default
         user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
-        seeded = _seed_home_config_from_jellyfin(db, user) if user else {}
-        if not seeded:
-            logger.warning(f"No SmartLists for user {user_id} and no starter home config could be "
-                           f"built (Jellyfin unreachable?) — will retry on the next write")
-            return {}
-        bump_playlist_version()
-        logger.info(f"Wrote a starter home config for user {user_id} "
-                    f"({len(seeded.get('rows', []))} built-in rows) — no playlists yet")
-        return seeded
+        return apply_default(db, user, build=True) if user else {}
 
     # A user who has playlists but no home config yet — every user gets the
     # YouTube channel playlists, so a new household member has at least one —
@@ -1306,10 +1296,11 @@ def write_home_config(db: Session, user_id: int = None, dropped_ids: frozenset =
     # the user's old rows. (Users already given `rows: []` by the old code keep
     # it: that cannot be told apart from rows removed on purpose.)
     if user_id is not None and not _home_config_exists(db, user_id):
-        from routers.smartlists import _seed_home_config_from_jellyfin
+        from services.default_home import apply_default
         new_user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
         if new_user:
-            _seed_home_config_from_jellyfin(db, new_user)
+            # Writes the file, then comes back here for the rest
+            return apply_default(db, new_user, build=True)
 
     with home_config_lock:
         existing_config = get_home_config(db, user_id=user_id)
@@ -1471,6 +1462,8 @@ def write_home_config(db: Session, user_id: int = None, dropped_ids: frozenset =
                 config["merge_continue_watching"] = existing_config["merge_continue_watching"]
             if existing_config.get("card_previews"):
                 config["card_previews"] = existing_config["card_previews"]
+            if existing_config.get("follows_default") is True:
+                config["follows_default"] = True
 
         # Detect whether the generated config actually differs from what's on disk,
         # so we only bump the live-update version (and notify clients) on real
@@ -1494,11 +1487,17 @@ def write_home_config(db: Session, user_id: int = None, dropped_ids: frozenset =
         if config_changed:
             bump_playlist_version()
 
-    # If user has Tentacle home rows, disable Jellyfin's built-in home sections
-    # to prevent overlap between the two home screens. Snapshot the user's own
-    # Jellyfin configuration first so it can be restored if Tentacle home is
-    # ever removed.
-    if rows:
+    take_over_jellyfin_home(db, user_id, config)
+    return config
+
+
+
+def take_over_jellyfin_home(db: Session, user_id: int, config: dict) -> None:
+    """While a user has Tentacle home rows, Jellyfin's own home sections are
+    off for them (rows would show twice); the first time, what they had is
+    kept as `jellyfin_sections_snapshot`. An emptied Tentacle home gives
+    Jellyfin's sections back from it."""
+    if config.get("rows"):
         try:
             from services.jellyfin import JellyfinService
             jellyfin_url = get_setting(db, "jellyfin_url", "")
@@ -1533,8 +1532,6 @@ def write_home_config(db: Session, user_id: int = None, dropped_ids: frozenset =
                     jf.restore_home_sections(snapshot)
             except Exception as e:
                 logger.debug(f"Could not restore Jellyfin home sections: {e}")
-
-    return config
 
 
 def _home_config_exists(db: Session, user_id: int) -> bool:
