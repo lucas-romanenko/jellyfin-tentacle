@@ -41,6 +41,8 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         // Live TV per person: tags on channels and programmes, new users' blocked tags
         serviceCollection.AddSingleton<IHostedService, LiveTvIsolation>();
         serviceCollection.AddScoped<IEventConsumer<UserCreatedEventArgs>, LiveTvNewUser>();
+        // A deleted user's playlist folders Jellyfin leaves behind (a scan would bring them back for everyone)
+        serviceCollection.AddScoped<IEventConsumer<UserDeletedEventArgs>, DeletedUserPlaylists>();
 
         // Tentacle VOD served as HLS re-encodes its video instead of copying
         // it (a resumed play otherwise skips to the next episode, #17966)
