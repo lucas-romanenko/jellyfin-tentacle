@@ -837,6 +837,12 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Default home migration failed: {e}")
 
+        # Everyone but admins locks after a few wrong passwords (Jellyfin's
+        # default never does), once Jellyfin answers
+        if get_setting(db, "jellyfin_url"):
+            from services import person_access
+            person_access.ensure_lockout_soon()
+
         # Validate Jellyfin connection
         jf_url = get_setting(db, "jellyfin_url")
         jf_key = get_setting(db, "jellyfin_api_key")

@@ -579,6 +579,13 @@ class TentacleUser(Base):
     # Where they watch Live TV from (services/livetv_locations.py, a place's
     # slug: "vancouver"); None = the household's place. Set by an admin.
     livetv_location = Column(String, nullable=True)
+    # An admin took Live TV away from them (People). Jellyfin's
+    # EnableLiveTvAccess says it for grown-ups; a kid's follows the kids
+    # channels too, so the admin's choice is kept here.
+    live_tv_off = Column(Boolean, default=False)
+    # When they finished (or skipped) the welcome shown at their first
+    # sign-in; None = not yet. People from before the welcome count as welcomed.
+    welcomed_at = Column(DateTime, nullable=True)
 
 
 # ─── Notifications ───────────────────────────────────────────────────────────
@@ -1289,6 +1296,7 @@ def _migrate_columns():
     # user_id column and nothing else (#295).
     _migrate_home_row_order(cursor, conn)
     _migrate_auto_playlist_toggles(cursor, conn)
+    _migrate_welcomed(cursor, conn)
     for table, column, col_type in migrations:
         existing = _existing_columns(cursor, table)
         if not existing:
@@ -1630,6 +1638,17 @@ def seed_defaults(db):
 # as `youtube_base_url` (Settings → Services, "Tentacle's address"); the
 # others were filled in by older dashboards and the setup wizard.
 _OLD_ADDRESS_KEYS = ("vod_base_url", "hdhr_base_url", "external_url", "webhook_host", "sonarr_webhook_host")
+
+
+def _migrate_welcomed(cursor, conn):
+    """The first-sign-in welcome is for people who join from now on: everyone
+    already here counts as welcomed when the column arrives."""
+    existing = _existing_columns(cursor, "tentacle_users")
+    if not existing or "welcomed_at" in existing:
+        return
+    cursor.execute("ALTER TABLE tentacle_users ADD COLUMN welcomed_at DATETIME")
+    cursor.execute("UPDATE tentacle_users SET welcomed_at = CURRENT_TIMESTAMP")
+    conn.commit()
 
 
 def tentacle_address(db) -> str:

@@ -4,10 +4,11 @@ people start with, and signing a TV in with a code.
 Who it's for: an admin running a home server who gives accounts to family.
 Everything here is the admin's, except signing one's own TV in.
 
-- **Invite:** the admin types a name; Tentacle makes the Jellyfin account
-  with a readable password, starts the person on the household's defaults
-  (home screen like a chosen person, Live TV favourites like a chosen
-  person's) and gives back an invite card to pass on.
+- **Add someone** (Roadmap 1e, three steps on People): who (name, age
+  limit, place, a password made from the name that the admin may change),
+  what they get (Live TV, requests, the home screen and favourites they
+  start with: the household's defaults, or for kids the ready-made kids
+  setup) and a message to send them (services/welcome.py writes it).
 - **Kids profile:** one switch per person with an age level. It sets
   Jellyfin's own parental controls (MaxParentalRating, unrated items
   blocked), and Live TV becomes the household's kids channels only (the
@@ -23,6 +24,7 @@ import logging
 import re
 import secrets
 import threading
+import unicodedata
 from datetime import datetime
 from typing import Optional
 
@@ -54,6 +56,11 @@ POLICY_FIELDS = ("MaxParentalRating", "MaxParentalSubRating", "BlockUnratedItems
 
 KIDS_CHANNELS_KEY = "livetv_kids_channels"   # JSON list of channel keys (livetv_lineups.pool)
 DEFAULTS_KEY = "family_defaults"             # JSON {"home_from": user id, "channels_from": user id}
+# What new kids start with: {"home": "kids" | "default" | user id,
+# "channels": "kids" | "none"}. Until an admin picks, the ready-made kids
+# setup: the kids home (services/kids_start.py) and the kids channels starred.
+KIDS_DEFAULTS_KEY = "family_kids_defaults"
+KIDS_DEFAULTS = {"home": "kids", "channels": "kids"}
 
 NAME_RE = re.compile(r"^[\w\-'. @]{1,64}$", re.UNICODE)
 
@@ -88,20 +95,36 @@ def _jf_error(e: requests.RequestException, what: str) -> FamilyError:
 
 # ── Passwords ───────────────────────────────────────────────────────────────
 
-_WORDS = (
-    "apple", "maple", "river", "cloud", "tiger", "pearl", "otter", "cedar", "comet", "piano",
-    "lemon", "panda", "coral", "frost", "honey", "ivory", "jelly", "koala", "lilac", "mango",
-    "noble", "olive", "peach", "quilt", "robin", "sunny", "tulip", "umber", "violet", "willow",
-    "zebra", "amber", "basil", "candle", "daisy", "eagle", "fable", "grape", "harbor", "island",
-    "jungle", "kettle", "lantern", "meadow", "nectar", "orbit", "pepper", "rocket", "saddle", "timber",
-)
+# Jellyfin turns an account off after this many wrong passwords in a row
+# (its LoginAttemptsBeforeLockout); People shows it locked, with Unlock.
+# Admins are left as they are: a locked-out admin couldn't unlock anyone.
+LOCKOUT_AFTER = 5
+PASSWORD_MAX = 128
 
 
-def make_password() -> str:
-    """Easy to read out and type on a TV remote: two words and two digits
-    ("maple-otter-42"), about 21 bits; the account sits behind the admin's
-    Jellyfin, and the person can change it in Jellyfin."""
-    return f"{secrets.choice(_WORDS)}-{secrets.choice(_WORDS)}-{secrets.randbelow(90) + 10}"
+def password_base(name: str) -> str:
+    """The name part of a made-up password: lowercase letters and digits
+    ("Grandma Rose" → "grandmarose", "Zoë" → "zoe"); "tv" for a name with
+    none (another alphabet)."""
+    plain = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]", "", plain)[:16] or "tv"
+
+
+def make_password(name: str = "") -> str:
+    """Their name in lowercase, five random digits and "!" (Cam →
+    "cam12457!", Lucas's design): easy to read out and to type on a TV
+    remote. The admin can change it before the account is made, and the
+    person can pick their own at their first sign-in. The welcome.js
+    wizard makes the same shape in the browser."""
+    return f"{password_base(name)}{secrets.randbelow(100000):05d}!"
+
+
+def check_password(password: str) -> str:
+    if not isinstance(password, str) or len(password.strip()) < 4:
+        raise FamilyError("Use a password of at least 4 characters.")
+    if len(password) > PASSWORD_MAX:
+        raise FamilyError(f"Use a password of at most {PASSWORD_MAX} characters.")
+    return password
 
 
 # ── Defaults new people start with ──────────────────────────────────────────
@@ -115,12 +138,48 @@ def defaults(db: Session) -> dict:
             "channels_from": d.get("channels_from") if isinstance(d.get("channels_from"), int) else None}
 
 
-def save_defaults(db: Session, home_from: Optional[int], channels_from: Optional[int]) -> dict:
+def kids_defaults(db: Session) -> dict:
+    """What new kids start with (People → New kids start with)."""
+    try:
+        d = json.loads(get_setting(db, KIDS_DEFAULTS_KEY, "") or "{}")
+    except ValueError:
+        d = {}
+    home = d.get("home")
+    if not (home in ("kids", "default") or isinstance(home, int)):
+        home = KIDS_DEFAULTS["home"]
+    channels = d.get("channels") if d.get("channels") in ("kids", "none") else KIDS_DEFAULTS["channels"]
+    return {"home": home, "channels": channels}
+
+
+def save_defaults(db: Session, home_from: Optional[int], channels_from: Optional[int],
+                  kids: Optional[dict] = None) -> dict:
     for uid in (home_from, channels_from):
         if uid is not None and not db.query(TentacleUser).filter(TentacleUser.id == uid).first():
             raise FamilyError("That person isn't in Tentacle.", 404)
     set_setting(db, DEFAULTS_KEY, json.dumps({"home_from": home_from, "channels_from": channels_from}))
-    return defaults(db)
+    if kids is not None:
+        home = start_choice(db, kids.get("home"), kid=True)
+        channels = kids.get("channels")
+        if channels not in ("kids", "none"):
+            raise FamilyError("Pick the kids channels or none.")
+        set_setting(db, KIDS_DEFAULTS_KEY, json.dumps({"home": home, "channels": channels}))
+    return {**defaults(db), "kids": kids_defaults(db)}
+
+
+def start_choice(db: Session, value, kid: bool):
+    """A home screen to start someone on: "default" (the default home),
+    "kids" (the kids home, kids only) or a person's id (the same as theirs)."""
+    if value in ("default", "kids"):
+        if value == "kids" and not kid:
+            raise FamilyError("The kids home is for kids.")
+        return value
+    try:
+        uid = int(value)
+    except (TypeError, ValueError):
+        raise FamilyError("Pick a home screen to start with.")
+    if not db.query(TentacleUser).filter(TentacleUser.id == uid).first():
+        raise FamilyError("That person isn't in Tentacle.", 404)
+    return uid
 
 
 def copy_home(db: Session, template: TentacleUser, user: TentacleUser) -> int:
@@ -202,27 +261,48 @@ def copy_channels(db: Session, template: TentacleUser, user: TentacleUser) -> in
         return 0
 
 
-def start_new_person(user_id: int) -> None:
-    """In the background: the household's defaults, else the usual new-person
-    playlists (routers.auth._build_playlists_for_new_user)."""
+def starting_point(db: Session, user: TentacleUser, home=None, channels=None) -> dict:
+    """What someone starts with: {"home": "default" | "kids" | user id,
+    "channels": "none" | "kids" | user id}. The admin's choice in Add someone
+    when given, else the household's (kids: New kids start with)."""
+    if user.kids_level:
+        d = kids_defaults(db)
+        return {"home": d["home"] if home is None else home, "channels": d["channels"] if channels is None else channels}
+    d = defaults(db)
+    return {"home": (d["home_from"] or "default") if home is None else home,
+            "channels": (d["channels_from"] or "none") if channels is None else channels}
+
+
+def start_new_person(user_id: int, home=None, channels=None) -> None:
+    """In the background: the home screen and favourite channels they start
+    with (starting_point), else the usual new-person playlists
+    (routers.auth._build_playlists_for_new_user)."""
     def _run():
         from models.database import SessionLocal
-        from services import livetv_tuners
+        from services import kids_start, livetv_tuners
         db = SessionLocal()
         try:
             user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
             if user is None:
                 return
-            d = defaults(db)
-            home_t = db.query(TentacleUser).filter(TentacleUser.id == d["home_from"]).first() if d["home_from"] else None
-            chan_t = db.query(TentacleUser).filter(TentacleUser.id == d["channels_from"]).first() if d["channels_from"] else None
-            if chan_t is not None and chan_t.id != user.id and not user.kids_level:
-                n = copy_channels(db, chan_t, user)
-                logger.info(f"[Family] {user.display_name} starts with {chan_t.display_name}'s "
-                            f"{n} favourite channel(s)")
+            start = starting_point(db, user, home, channels)
+            if start["channels"] == "kids" and user.kids_level:
+                n = kids_start.star_kids_channels(db, user)
+                logger.info(f"[Family] {user.display_name} starts with the {n} kids channel(s) as favourites")
+            elif isinstance(start["channels"], int) and start["channels"] != user.id and not user.kids_level:
+                chan_t = db.query(TentacleUser).filter(TentacleUser.id == start["channels"]).first()
+                if chan_t is not None:
+                    n = copy_channels(db, chan_t, user)
+                    logger.info(f"[Family] {user.display_name} starts with {chan_t.display_name}'s "
+                                f"{n} favourite channel(s)")
             # Their blocked tags now (a kids profile), not at the hourly check.
             livetv_tuners.schedule_sync(f"{user.display_name} joined")
-            if home_t is not None and home_t.id != user.id:
+            home_t = (db.query(TentacleUser).filter(TentacleUser.id == start["home"]).first()
+                      if isinstance(start["home"], int) else None)
+            if start["home"] == "kids" and user.kids_level:
+                n = kids_start.kids_home(db, user)
+                logger.info(f"[Family] {user.display_name} starts with the kids home ({n} rows)")
+            elif home_t is not None and home_t.id != user.id:
                 n = copy_home(db, home_t, user)
                 logger.info(f"[Family] {user.display_name} starts with {home_t.display_name}'s home screen ({n} rows)")
             else:
@@ -238,22 +318,95 @@ def start_new_person(user_id: int) -> None:
 
 # ── Invites ─────────────────────────────────────────────────────────────────
 
+TENTACLE_PUBLIC_KEY = "tentacle_public_url"    # Tentacle's address for browsers (optional)
+JELLYFIN_PUBLIC_KEY = "jellyfin_public_url"     # Jellyfin's, for browsers (Settings → Services)
+ADDRESSES_ASKED_KEY = "invite_addresses_asked"  # "1" once Add someone asked about the addresses
+
+_LOCAL_SUFFIXES = (".lan", ".local", ".home", ".internal", ".localdomain", ".home.arpa", ".localhost")
+
+
+def _host(url: str) -> str:
+    from urllib.parse import urlparse
+    try:
+        return (urlparse(url or "").hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def reachable_away(url: str) -> bool:
+    """Whether an address could work away from home (pure): a name with a
+    dot that isn't a home-network one, or a public IP. http://192.168.1.10,
+    http://jellyfin:8096 and http://nas.lan are home-only."""
+    import ipaddress
+    host = _host(url)
+    if not host:
+        return False
+    try:
+        return ipaddress.ip_address(host).is_global
+    except ValueError:
+        pass
+    return "." in host and host != "localhost" and not host.endswith(_LOCAL_SUFFIXES)
+
+
+def opens_in_a_browser(url: str) -> bool:
+    """Whether a browser on the home network can open an address (pure): not
+    a Docker name like http://jellyfin:8096 or localhost, which only the
+    server itself reaches."""
+    import ipaddress
+    host = _host(url)
+    if not host or host == "localhost" or host.endswith(".localhost"):
+        return False
+    try:
+        return not ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return "." in host
+
+
 def addresses(db: Session) -> dict:
+    """Where people open Tentacle and Jellyfin in a browser, for the message
+    and the welcome: the "for your browser" addresses (Settings → Services),
+    else the ones Tentacle uses when a browser can open them. `*_away` says
+    whether it works away from home too; `ask` is true until the admin has
+    answered Add someone's one question about them (asked once)."""
     from models.database import tentacle_address
-    jf = (get_setting(db, "jellyfin_public_url", "") or "").strip().rstrip("/") \
-        or (get_setting(db, "jellyfin_url", "") or "").strip().rstrip("/")
-    tent = (get_setting(db, "external_url", "") or "").strip().rstrip("/") or tentacle_address(db)
-    return {"jellyfin": jf, "tentacle": tent, "tv_app": f"{tent}/tv" if tent else ""}
+    setting = lambda k: (get_setting(db, k, "") or "").strip().rstrip("/")
+    jf = setting(JELLYFIN_PUBLIC_KEY) or next(
+        (u for u in (setting("jellyfin_url"),) if opens_in_a_browser(u)), "")
+    tent = setting(TENTACLE_PUBLIC_KEY) or next(
+        (u for u in (setting("external_url"), tentacle_address(db)) if reachable_away(u)), "") or next(
+        (u for u in (setting("external_url"), tentacle_address(db)) if opens_in_a_browser(u)), "")
+    jf_away, tent_away = reachable_away(jf), reachable_away(tent)
+    return {"jellyfin": jf, "tentacle": tent, "tv_app": f"{tent}/tv" if tent else "",
+            "jellyfin_away": jf_away, "tentacle_away": tent_away,
+            "ask": not (jf and tent and jf_away and tent_away) and setting(ADDRESSES_ASKED_KEY) != "1"}
+
+
+def save_addresses(db: Session, tentacle: Optional[str], jellyfin: Optional[str]) -> dict:
+    """Add someone's one question, answered: the addresses family open (on
+    the internet, or at home only). Not asked again; Settings → Services
+    has them."""
+    for key, val in ((TENTACLE_PUBLIC_KEY, tentacle), (JELLYFIN_PUBLIC_KEY, jellyfin)):
+        if val is None:
+            continue
+        val = val.strip().rstrip("/")
+        if val and not re.fullmatch(r"https?://[^\s/]+(/[^\s]*)?", val, re.I):
+            raise FamilyError("Type the whole address, starting with https:// (or http://).")
+        if val:
+            set_setting(db, key, val)
+    set_setting(db, ADDRESSES_ASKED_KEY, "1")
+    return addresses(db)
 
 
 def invite_card(db: Session, name: str, password: Optional[str]) -> dict:
     a = addresses(db)
-    return {"name": name, "password": password, **{f"{k}_address": v for k, v in a.items()}}
+    return {"name": name, "password": password,
+            **{f"{k}_address": a[k] for k in ("jellyfin", "tentacle", "tv_app")}}
 
 
 def invite(db: Session, admin: TentacleUser, name: str, kids_level: Optional[str] = None,
-           request_mode: Optional[str] = None, location: Optional[str] = None) -> dict:
-    from services import livetv_locations
+           request_mode: Optional[str] = None, location: Optional[str] = None,
+           password: Optional[str] = None, live_tv: bool = True, home=None, channels=None) -> dict:
+    from services import livetv_locations, welcome
     name = (name or "").strip()
     if not NAME_RE.match(name):
         raise FamilyError("Use a name of letters, numbers, spaces, dots, dashes or apostrophes (up to 64).")
@@ -263,6 +416,18 @@ def invite(db: Session, admin: TentacleUser, name: str, kids_level: Optional[str
         raise FamilyError("Unknown request setting.")
     if location and not livetv_locations.get(location):
         raise FamilyError("Unknown place.")
+    password = check_password(password) if password else make_password(name)
+    if home is not None:
+        home = start_choice(db, home, kid=bool(kids_level))
+    if channels is not None and channels not in ("none", "kids"):
+        try:
+            channels = int(channels)
+        except (TypeError, ValueError):
+            raise FamilyError("Pick whose favourite channels they start with.")
+        if kids_level or not db.query(TentacleUser).filter(TentacleUser.id == channels).first():
+            raise FamilyError("Pick whose favourite channels they start with.")
+    if channels == "kids" and not kids_level:
+        channels = "none"
     jf = jellyfin(db)
     try:
         users = jf.get("/Users") or []
@@ -270,7 +435,6 @@ def invite(db: Session, admin: TentacleUser, name: str, kids_level: Optional[str
         raise _jf_error(e, "list its accounts")
     if any((u.get("Name") or "").lower() == name.lower() for u in users):
         raise FamilyError(f"Someone called {name} already has an account.", 409)
-    password = make_password()
     try:
         created = jf.post("/Users/New", {"Name": name, "Password": password}) or {}
     except requests.RequestException as e:
@@ -286,31 +450,35 @@ def invite(db: Session, admin: TentacleUser, name: str, kids_level: Optional[str
     try:
         policy = _policy(jf, _Uid(uid))
         if policy:
-            jf.post(f"/Users/{dashed(uid)}/Policy", new_person_policy(policy, bool(kids_level)))
+            jf.post(f"/Users/{dashed(uid)}/Policy", new_person_policy(policy, bool(kids_level), live_tv))
     except (requests.RequestException, FamilyError) as e:
         logger.warning(f"[Family] {name}'s starting settings weren't set in Jellyfin: {e}")
     row = db.query(TentacleUser).filter(TentacleUser.jellyfin_user_id == uid).first()
     if row is None:
         row = TentacleUser(jellyfin_user_id=uid, display_name=created.get("Name") or name, is_admin=False)
         db.add(row)
-    row.invited_by, row.invited_at = admin.display_name, datetime.utcnow()
-    row.request_mode = request_mode or "ask"
-    row.livetv_location = _own_place(db, location)
+    def _fill(r):
+        r.invited_by, r.invited_at = admin.display_name, datetime.utcnow()
+        r.request_mode = request_mode or "ask"
+        r.livetv_location = _own_place(db, location)
+        r.live_tv_off = not live_tv
+        r.welcomed_at = None
+    _fill(row)
     try:
         db.commit()
     except IntegrityError:   # the plugin made the row in between (a first plugin call)
         db.rollback()
         row = db.query(TentacleUser).filter(TentacleUser.jellyfin_user_id == uid).first()
-        row.invited_by, row.invited_at = admin.display_name, datetime.utcnow()
-        row.request_mode = request_mode or "ask"
-        row.livetv_location = _own_place(db, location)
+        _fill(row)
         db.commit()
     logger.info(f"[Family] {admin.display_name} invited {row.display_name}"
-                f"{' (kids: ' + kids_level + ')' if kids_level else ''}")
+                f"{' (kids: ' + kids_level + ')' if kids_level else ''}{'' if live_tv else ', no Live TV'}")
     if kids_level:
         set_kids(db, row, kids_level)
-    start_new_person(row.id)
-    return {"user": person(db, row, created), "invite": invite_card(db, row.display_name, password)}
+    start_new_person(row.id, home, channels)
+    card = invite_card(db, row.display_name, password)
+    card["message"] = welcome.message(db, admin, row, password)
+    return {"user": person(db, row, created), "invite": card}
 
 
 # ── Where someone watches from ──────────────────────────────────────────────
@@ -358,14 +526,25 @@ def new_password(db: Session, user: TentacleUser) -> dict:
     """A fresh password for someone who lost theirs (admins only; never an admin's)."""
     if user.is_admin:
         raise FamilyError("Admins change their own password in Jellyfin.", 403)
+    from services import welcome
     jf = jellyfin(db)
-    password = make_password()
+    password = make_password(user.display_name)
     try:
         jf.post("/Users/Password", {"NewPw": password, "ResetPassword": False}, userId=dashed(user.jellyfin_user_id))
     except requests.RequestException as e:
         raise _jf_error(e, "change the password")
     logger.info(f"[Family] New password for {user.display_name}")
-    return invite_card(db, user.display_name, password)
+    card = invite_card(db, user.display_name, password)
+    card["message"] = welcome.message(db, admin_of(db), user, password, new_password=True)
+    return card
+
+
+def admin_of(db: Session) -> Optional[TentacleUser]:
+    """The household's admin: the owner (Tentacle's own Jellyfin account),
+    else the first admin."""
+    owner = (get_setting(db, "jellyfin_user_id", "") or "").replace("-", "")
+    admins = db.query(TentacleUser).filter(TentacleUser.is_admin == True).order_by(TentacleUser.id).all()  # noqa: E712
+    return next((a for a in admins if a.jellyfin_user_id == owner), admins[0] if admins else None)
 
 
 # ── Kids profiles ───────────────────────────────────────────────────────────
@@ -463,7 +642,7 @@ def set_kids(db: Session, user: TentacleUser, level: Optional[str]) -> dict:
                 logger.info(f"[Family] Navbar for {user.display_name} not changed: {e}")
             user.kids_saved_policy = json.dumps(saved)
         keys = kids_channels(db)
-        new = kids_policy(policy, level, bool(keys))
+        new = kids_policy(policy, level, bool(keys) and not user.live_tv_off)
         try:
             jf.post(f"/Users/{dashed(uid)}/Policy", new)
         except requests.RequestException as e:
@@ -482,6 +661,8 @@ def set_kids(db: Session, user: TentacleUser, level: Optional[str]) -> dict:
             **policy, "MaxParentalRating": None, "MaxParentalSubRating": None,
             "BlockUnratedItems": [b for b in policy.get("BlockUnratedItems") or [] if b not in _KIDS_BLOCKED_BEFORE],
             "EnableLiveTvAccess": True}
+        if user.live_tv_off:
+            new["EnableLiveTvAccess"] = False
         try:
             jf.post(f"/Users/{dashed(uid)}/Policy", new)
         except requests.RequestException as e:
@@ -518,7 +699,7 @@ def set_kids_channels(db: Session, keys: list) -> dict:
             uid = L.norm_user_id(kid.jellyfin_user_id)
             try:
                 policy = _policy(jf, kid)
-                new = {**policy, "EnableLiveTvAccess": bool(ordered)}
+                new = {**policy, "EnableLiveTvAccess": bool(ordered) and not kid.live_tv_off}
                 if ordered:
                     new["BlockedTags"] = kids_blocked_tags(policy.get("BlockedTags"))
                 if new != policy:
@@ -662,7 +843,19 @@ def person(db: Session, user: TentacleUser, jf_user: Optional[dict] = None) -> d
         "on_sign_in": not policy.get("IsHidden", True) if jf_user else None,
         "has_image": bool(user.profile_image_tag),
         "location": _place_of(db, user),
+        # Jellyfin turned the account off after too many wrong passwords.
+        "locked": is_locked(policy),
+        "live_tv": not user.live_tv_off,
+        "welcomed": user.welcomed_at is not None,
     }
+
+
+def is_locked(policy: dict) -> bool:
+    """Off because of wrong passwords (Jellyfin's own lockout), not by an admin (pure)."""
+    p = policy or {}
+    limit = p.get("LoginAttemptsBeforeLockout")
+    return bool(p.get("IsDisabled")) and isinstance(limit, int) and limit > 0 \
+        and int(p.get("InvalidLoginAttemptCount") or 0) >= limit
 
 
 def _place_of(db: Session, user: TentacleUser) -> Optional[dict]:

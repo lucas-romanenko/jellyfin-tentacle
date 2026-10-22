@@ -1634,6 +1634,41 @@ label.pool-row:hover { background: var(--bg2); }
 .fam-card-row span { color: var(--text3); }
 .fam-card-row strong { font-family: 'DM Mono', monospace; font-weight: 500; overflow-wrap: anywhere; text-align: right; }
 .fam-card-steps { font-size: 13px; color: var(--text2); margin-top: 10px; line-height: 1.6; }
+/* The welcome at a first sign-in (welcome.js) */
+.welcome-box { max-width: 540px; }
+.welcome-box .modal-header { margin-bottom: 14px; align-items: flex-start; }
+.welcome-pips { flex: 1; margin: 0 12px 0 0; }
+.welcome-pips li { font-size: 0; gap: 0; padding-top: 0; }
+.welcome-title { font-size: 20px; margin-bottom: 10px; }
+.welcome-body { font-size: 14px; line-height: 1.6; color: var(--text2); }
+.welcome-body p { margin: 0 0 12px; }
+.welcome-body strong { color: var(--text); }
+.welcome-body a { color: var(--accent-text); font-weight: 500; overflow-wrap: anywhere; }
+.welcome-body .form-group { margin: 10px 0 0; }
+.welcome-picks { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; }
+.welcome-rows { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 12px; padding: 0; list-style: none; }
+.welcome-rows li { background: var(--bg3); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 13px; color: var(--text); }
+.welcome-where { border: 1px solid var(--border2); background: var(--bg2); border-radius: var(--radius-sm); padding: 12px 14px; margin-bottom: 12px; }
+.welcome-where .big { font-size: 16px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+/* Add someone: three steps (family.js) */
+.add-steps { display: flex; gap: 6px; list-style: none; padding: 0; margin: -6px 0 18px; counter-reset: none; }
+.add-steps li { flex: 1; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text3); padding-top: 8px; border-top: 3px solid var(--bg3); white-space: nowrap; min-width: 0; }
+.add-steps li span { width: 18px; height: 18px; border-radius: 50%; background: var(--bg3); color: var(--text2); font-size: 11px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.add-steps li.active { color: var(--text); border-top-color: var(--accent); font-weight: 600; }
+.add-steps li.active span { background: var(--accent); color: #fff; }
+.add-steps li.done { color: var(--text2); border-top-color: var(--green); }
+.add-steps li.done span { background: var(--green); color: #fff; }
+.add-seg { display: inline-flex; border: 1px solid var(--border2); border-radius: var(--radius-sm); overflow: hidden; }
+.add-seg label { display: flex; align-items: center; gap: 6px; padding: 7px 16px; font-size: 13px; cursor: pointer; }
+.add-seg label + label { border-left: 1px solid var(--border2); }
+.add-seg input { position: absolute; opacity: 0; pointer-events: none; }
+.add-seg label:has(input:checked) { background: var(--accent-dim, var(--bg3)); color: var(--accent-text, var(--text)); font-weight: 600; }
+.add-seg label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: -2px; }
+.add-pw { display: flex; gap: 8px; }
+.add-pw .form-input { flex: 1; min-width: 0; }
+.add-ask { border: 1px solid rgba(251,191,36,.3); background: var(--amber-dim); border-radius: var(--radius-sm); padding: 12px 14px; margin-top: 4px; }
+.add-ask .form-group { margin: 10px 0 0; }
+.add-message { width: 100%; font-size: 13px; line-height: 1.5; resize: vertical; white-space: pre-wrap; }
 .fam-card-steps ol, .fam-steps { padding-left: 20px; margin-top: 4px; }
 .fam-steps { font-size: 13px; color: var(--text2); line-height: 1.7; margin-bottom: 16px; }
 .fam-code { font-family: 'DM Mono', monospace; font-size: 22px; letter-spacing: .2em; text-align: center; }
@@ -2670,9 +2705,9 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <div class="card fam-head">
           <div class="fam-head-text">
             <div class="fam-title">Your household</div>
-            <p class="fam-sub">Everyone who watches on this server. Invite family, set an age limit for kids and choose whose requests you approve first.</p>
+            <p class="fam-sub">Everyone who watches on this server. Add family, set an age limit for kids and choose whose requests you approve first.</p>
           </div>
-          <button class="btn btn-primary" onclick="famShowInvite()">+ Invite someone</button>
+          <button class="btn btn-primary" onclick="famShowInvite()">+ Add someone</button>
         </div>
         <div id="fam-qc-warning" class="fam-note warn" style="display:none">
           <span>TV sign-in codes are off in Jellyfin, so a TV can only be signed in by typing a password.</span>
@@ -2682,8 +2717,8 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
         <div class="fam-grid">
           <div class="card fam-box">
-            <div class="card-title">New people start with</div>
-            <p class="fam-hint">Picked once, used for everyone you invite. They can change their own afterwards.</p>
+            <div class="card-title">New grown-ups start with</div>
+            <p class="fam-hint">Picked once, used for every grown-up you add. They can change their own afterwards.</p>
             <div class="form-group">
               <label class="form-label" for="fam-default-home">Home screen</label>
               <select class="form-input" id="fam-default-home" onchange="famSaveDefaults()"></select>
@@ -2691,6 +2726,21 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
             <div class="form-group" id="fam-default-channels-group">
               <label class="form-label" for="fam-default-channels">Live TV favourites</label>
               <select class="form-input" id="fam-default-channels" onchange="famSaveDefaults()"></select>
+            </div>
+          </div>
+          <div class="card fam-box">
+            <div class="card-title">New kids start with</div>
+            <p class="fam-hint">Ready-made: Continue Watching, Kids Movies and Kids Shows, with the kids channels as favourites, all within each kid’s age limit. Picked once, used for every kid you add.</p>
+            <div class="form-group">
+              <label class="form-label" for="fam-kids-home">Home screen</label>
+              <select class="form-input" id="fam-kids-home" onchange="famSaveDefaults()"></select>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="fam-kids-channels">Live TV favourites</label>
+              <select class="form-input" id="fam-kids-channels" onchange="famSaveDefaults()">
+                <option value="kids">The kids channels</option>
+                <option value="none">None yet (they star their own)</option>
+              </select>
             </div>
           </div>
           <div class="card fam-box" id="fam-kids-box">
@@ -3414,6 +3464,11 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                 <div id="settings-tentacle-address-vod" class="form-hint" style="display:none;color:var(--amber)"></div>
                 <div class="form-hint">Used everywhere Tentacle hands out its own address: YouTube and IPTV video files, the Live TV setup, and the Radarr, Sonarr and Lidarr webhooks (shown ready to copy under Sources). Saved with the Save button below.</div>
               </div>
+              <div class="form-group" style="margin-top:12px">
+                <div class="form-label">Tentacle address for your browser (optional)</div>
+                <input class="form-input" id="tentacle_public_url" placeholder="https://tentacle.example.com">
+                <div class="form-hint">Where family open Tentacle away from home, given in the message when you add someone. Leave empty if the address above already works on the internet.</div>
+              </div>
 
               <hr class="divider">
 
@@ -4135,20 +4190,35 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
 <!-- Invite someone (family.js) -->
 <div class="modal-overlay" id="modal-invite" style="display:none">
-  <div class="modal" style="max-width:480px">
+  <div class="modal" style="max-width:520px">
     <div class="modal-header">
-      <div class="modal-title" id="invite-title">Invite someone</div>
-      <button class="modal-close" onclick="closeModal('modal-invite')">✕</button>
+      <div class="modal-title" id="invite-title">Add someone</div>
+      <button class="modal-close" onclick="closeModal('modal-invite')" aria-label="Close">✕</button>
     </div>
-    <div id="invite-step-form">
+    <ol class="add-steps" id="invite-steps" aria-label="Steps">
+      <li data-step="1" class="active"><span>1</span> Who</li>
+      <li data-step="2"><span>2</span> What they get</li>
+      <li data-step="3"><span>3</span> The message</li>
+    </ol>
+
+    <!-- Step 1: who -->
+    <div id="invite-step-1">
       <div class="form-group">
         <label class="form-label" for="invite-name">Their name</label>
-        <input class="form-input" id="invite-name" maxlength="64" autocomplete="off" placeholder="For example Grandma or Mia" onkeydown="if(event.key==='Enter')famInvite()">
-        <div class="form-hint">This is the name they pick when they sign in.</div>
+        <input class="form-input" id="invite-name" maxlength="64" autocomplete="off" placeholder="For example Grandma or Mia" oninput="famNameTyped()" onkeydown="if(event.key==='Enter')famAddNext()">
+        <div class="form-hint">The name they sign in with.</div>
       </div>
       <div class="form-group">
+        <div class="form-label" id="invite-who-label">Grown-up or kid</div>
+        <div class="add-seg" role="radiogroup" aria-labelledby="invite-who-label">
+          <label><input type="radio" name="invite-who" value="adult" checked onchange="famWhoChanged()"> Grown-up</label>
+          <label><input type="radio" name="invite-who" value="kid" onchange="famWhoChanged()"> Kid</label>
+        </div>
+      </div>
+      <div class="form-group" id="invite-kids-group" style="display:none">
         <label class="form-label" for="invite-kids">Age limit</label>
         <select class="form-input" id="invite-kids"></select>
+        <div class="form-hint">Movies, shows and Live TV above it are hidden from them, in every app.</div>
       </div>
       <div class="form-group" id="invite-location-group">
         <label class="form-label" for="invite-location">Where they watch from</label>
@@ -4156,24 +4226,85 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <div class="form-hint">Their local channels (CTV, Global, CBC, NBC…) come from there.</div>
       </div>
       <div class="form-group">
-        <div class="form-label">When they ask for a movie or show</div>
-        <label class="fam-radio"><input type="radio" name="invite-requests" value="ask" checked> Ask me first</label>
-        <label class="fam-radio" id="invite-direct-row"><input type="radio" name="invite-requests" value="direct"> It downloads straight away</label>
+        <label class="form-label" for="invite-password">Password</label>
+        <div class="add-pw">
+          <input class="form-input mono" id="invite-password" maxlength="128" autocomplete="off" spellcheck="false" oninput="fam.pwEdited = true">
+          <button class="btn btn-secondary" type="button" onclick="famNewSuggestion()">Another</button>
+        </div>
+        <div class="form-hint">Made from their name, easy to type on a TV remote. Change it if you like; they can pick their own when they first sign in.</div>
       </div>
-      <div class="form-hint" id="invite-defaults-hint"></div>
       <div class="modal-footer">
         <button class="btn btn-secondary" onclick="closeModal('modal-invite')">Cancel</button>
+        <button class="btn btn-primary" onclick="famAddNext()">Next</button>
+      </div>
+    </div>
+
+    <!-- Step 2: what they get -->
+    <div id="invite-step-2" style="display:none">
+      <div class="form-group">
+        <label class="fam-check"><input type="checkbox" id="invite-livetv" checked onchange="famLiveTvChanged()"> <strong>Live TV</strong></label>
+        <div class="form-hint" id="invite-livetv-hint"></div>
+      </div>
+      <div class="form-group" id="invite-requests-group">
+        <div class="form-label">When they ask for a movie or show</div>
+        <label class="fam-radio"><input type="radio" name="invite-requests" value="ask" checked> Ask me first</label>
+        <label class="fam-radio"><input type="radio" name="invite-requests" value="direct"> It downloads straight away</label>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="invite-home">Home screen they start with</label>
+        <select class="form-input" id="invite-home"></select>
+        <div class="form-hint" id="invite-home-hint"></div>
+      </div>
+      <div class="form-group" id="invite-channels-group">
+        <label class="form-label" for="invite-channels">Favourite channels they start with</label>
+        <select class="form-input" id="invite-channels"></select>
+        <div class="form-hint">Their favourites come first in the guide. They can change them under My Channels.</div>
+      </div>
+      <div class="add-ask" id="invite-ask" style="display:none">
+        <div class="form-label">Check the addresses the message gives (asked once)</div>
+        <div class="form-hint" id="invite-ask-why"></div>
+        <div class="form-group">
+          <label class="form-label" for="invite-ask-tentacle">Tentacle</label>
+          <input class="form-input" id="invite-ask-tentacle" placeholder="https://tentacle.example.com">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="invite-ask-jellyfin">Jellyfin</label>
+          <input class="form-input" id="invite-ask-jellyfin" placeholder="https://jellyfin.example.com">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="famAddStep(1)">Back</button>
         <button class="btn btn-primary" id="invite-go" onclick="famInvite()">Create account</button>
       </div>
     </div>
+
+    <!-- Step 3: the message -->
     <div id="invite-step-card" style="display:none">
       <p class="fam-hint" id="invite-card-lead"></p>
-      <div class="fam-card" id="invite-card"></div>
+      <textarea class="form-input add-message" id="invite-message" readonly rows="14" aria-label="The message to send"></textarea>
+      <div class="fam-hint" id="invite-card-note"></div>
       <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="famCopyInvite()">Copy</button>
         <button class="btn btn-secondary" onclick="famInviteTvCode()">Sign in their TV</button>
+        <button class="btn btn-secondary" id="invite-share" onclick="famShareInvite()" style="display:none">Share</button>
+        <button class="btn btn-secondary" onclick="famCopyInvite()">Copy</button>
         <button class="btn btn-primary" onclick="closeModal('modal-invite')">Done</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- The welcome at someone's first sign-in (welcome.js) -->
+<div class="modal-overlay" id="modal-welcome" style="display:none">
+  <div class="modal welcome-box">
+    <div class="modal-header">
+      <ol class="add-steps welcome-pips" id="welcome-pips" aria-label="Steps"></ol>
+      <button class="modal-close" onclick="welcomeFinish()" aria-label="Skip the welcome">✕</button>
+    </div>
+    <div class="modal-title welcome-title" id="welcome-title"></div>
+    <div id="welcome-body" class="welcome-body"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" id="welcome-skip" onclick="welcomeSkip()">Skip</button>
+      <button class="btn btn-primary" id="welcome-next" onclick="welcomeNext()">Next</button>
     </div>
   </div>
 </div>
@@ -4558,7 +4689,8 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 <script src="/static/js/music.js?v=45"></script>
 <script src="/static/js/mychannels.js?v=46"></script>
 <script src="/static/js/newgroups.js?v=45"></script>
-<script src="/static/js/family.js?v=46"></script>
+<script src="/static/js/family.js?v=47"></script>
+<script src="/static/js/welcome.js?v=47"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {
