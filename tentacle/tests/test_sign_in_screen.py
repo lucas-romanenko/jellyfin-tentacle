@@ -312,6 +312,16 @@ class PluginLoginPage(unittest.TestCase):
         self.assertEqual(json.loads(colours(app, "LOGIN_COLORS").replace("'", '"')),
                          json.loads(colours(login, "COLORS").replace("'", '"')))
 
+    def test_every_login_page_is_dressed_not_just_the_first(self):
+        # Jellyfin keeps the earlier login page when it shows a new one (after
+        # signing out or a Quick Connect sign-in): two elements with id
+        # loginPage, and getElementById only ever finds the first.
+        login = (PLUGIN / "Inject" / "tentacle-login.js").read_text(encoding="utf-8")
+        scan = login[login.index("function scan()"):]
+        scan = scan[:scan.index("}") + 1]
+        self.assertIn("querySelectorAll('#loginPage')", scan)
+        self.assertNotIn("getElementById", scan)
+
     def test_the_login_styles_touch_only_the_login_page(self):
         css = (PLUGIN / "Inject" / "tentacle-login.css").read_text(encoding="utf-8")
         css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
