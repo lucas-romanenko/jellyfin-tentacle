@@ -3501,14 +3501,16 @@ def _run_epg_sync_background(provider_data: dict):
 
             # Insert into DB
             _set_sync_status(pid, {"phase": "epg", "status": "running", "progress": 90, "message": f"Saving {len(programs)} programs..."})
+            # One schedule per guide id: a feed that merges several guide
+            # sources under one id overlaps itself (services/xmltv.one_schedule).
+            from services.xmltv import one_schedule
+            programs, trimmed = one_schedule(programs)
+            if trimmed:
+                logger.info(f"[LiveTV] EPG: {trimmed} programme(s) left out or shortened "
+                            f"where the feed's schedules overlap")
             inserted = 0
-            seen_epg = set()
             batch = []
             for prog in programs:
-                key = (prog["channel_id"], prog["start"])
-                if key in seen_epg:
-                    continue
-                seen_epg.add(key)
                 batch.append(EPGProgram(
                     channel_id=prog["channel_id"],
                     title=prog["title"] or "",

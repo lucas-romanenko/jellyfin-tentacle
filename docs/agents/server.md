@@ -883,6 +883,12 @@ User docs: `docs/features/live-tv.md`.
   except an id another provider's channel uses as its guide that this sync
   doesn't store again: programmes are shared by guide id across providers
   (#516).
+- One schedule per guide id (`xmltv.one_schedule`, before the insert): a
+  provider's feed can merge several guide sources under one id (its
+  `MLBNetwork.us` came as four blocks that disagree), and Jellyfin drew
+  them on top of each other. The feed's first word on a time wins; a later
+  programme keeps the largest free stretch of its time when that is at
+  least half of it, else it is left out (the log says how many).
 - A tvg-id matches a feed id exactly first, else ignoring case when that
   names one feed id (never a guess between ids that differ only in case);
   the feed's spelling goes in `epg_name_match` and `epg_match` still says

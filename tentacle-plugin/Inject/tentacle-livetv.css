@@ -317,6 +317,10 @@ body.tentacle-livetv-active #tentacleLiveTvContainer {
 
 .tg-chan:hover { background: #1c1936; }
 
+/* the channel last watched from the guide (it comes back on it) */
+.tg-row.tg-last .tg-chan { background: #241f4a; box-shadow: inset 3px 0 0 var(--tg-accent); }
+.tg-row.tg-last .tg-chan:hover { background: #2a2456; }
+
 .tg-logo {
     flex: none;
     width: 64px;

@@ -146,6 +146,94 @@ class NamesShowExactly(unittest.TestCase):
         self.assertTrue(re.fullmatch(r"11:30\s?AM – 4:30\s?PM", got[1]), got[1])
 
 
+@unittest.skipUnless(HAVE_NODE, "node is not installed")
+class OverlappingProgrammesDrawSideBySide(unittest.TestCase):
+    def test_a_guide_that_overlaps_itself_draws_no_cell_on_another(self):
+        # Channel 19's merged guide: 16:30-19:30, 17:00-20:00, 18:00-20:00, 19:30-21:00
+        got = run("""
+          var H = 3600000, day = { start: 0, end: 24 * H };
+          return T.progsHtml([
+            { id: 'a', name: 'Live: MLB Baseball', s: 16.5 * H, e: 19.5 * H, ov: '' },
+            { id: 'b', name: 'Live: MLB Central', s: 17 * H, e: 20 * H, ov: '' },
+            { id: 'c', name: 'Live: MLB Central', s: 18 * H, e: 20 * H, ov: '' },
+            { id: 'd', name: 'Live: Intentional Talk', s: 19.5 * H, e: 21 * H, ov: '' }], day, 0);
+        """)
+        cells = [a for t, a in Page(got).elements if "data-s" in a]
+        spans = []
+        for a in cells:
+            left = int(re.search(r"left:(\d+)px", a["style"]).group(1))
+            width = int(re.search(r"width:(\d+)px", a["style"]).group(1))
+            spans.append((left, left + width))
+        for (l1, r1), (l2, r2) in zip(spans, spans[1:]):
+            self.assertLessEqual(r1, l2, spans)
+        # the later one shows the time left to it (19:30-20:00), the one with none left is not drawn
+        self.assertEqual(["a", "b", "d"], [a["data-id"] for a in cells])
+
+
+# A guide of 400 channels on a 1440 px screen: rows 66 px, 6.5 px a minute.
+PLACE = """
+  var H = 3600000, G = T.G, mid = new Date(); mid.setHours(0, 0, 0, 0); mid = mid.getTime();
+  G.userId = 'u1'; G.view = 'all'; G.m = { phone: false, ppm: 6.5, rowH: 66, chanW: 260, headH: 38 };
+  G.channels = []; for (var i = 0; i < 400; i++) G.channels.push({ id: 'c' + i, name: 'C' + i, number: '' + i, logo: '', fav: false });
+  G.rows = G.channels.slice(); G.days = [{ start: mid, end: mid + 24 * H }]; G.dayIndex = 0;
+  var sc = { scrollTop: 0, scrollLeft: 0, clientHeight: 900, querySelector: function () { return null; } };
+  G.container = { querySelector: function (q) { return q === '.tg-scroller' ? sc : null; } };
+"""
+
+
+@unittest.skipUnless(HAVE_NODE, "node is not installed")
+class KeepsYourPlace(unittest.TestCase):
+    def test_back_where_it_was_rows_and_time(self):
+        got = run(PLACE + """
+          sc.scrollTop = 300 * 66 + 20; sc.scrollLeft = Math.round((mid + 23 * H - G.days[0].start) / 60000 * 6.5);
+          T.keepPlace();
+          var p = G.place; sc.scrollTop = 0; sc.scrollLeft = 0;
+          T.restorePlace(p);
+          return [sc.scrollTop, sc.scrollLeft, p.view, p.day === mid, p.atNow];
+        """)
+        self.assertEqual([300 * 66 + 20, round(23 * 60 * 6.5), "all", True, False], got)
+
+    def test_rows_that_came_meanwhile_do_not_shift_it(self):
+        got = run(PLACE + """
+          sc.scrollTop = 300 * 66;
+          T.keepPlace();
+          var p = G.place;
+          G.rows = [{ id: 'new1' }, { id: 'new2' }].concat(G.rows);
+          T.restorePlace(p);
+          return Math.round(sc.scrollTop / 66);
+        """)
+        self.assertEqual(302, got)
+
+    def test_at_the_current_time_it_comes_back_to_the_current_time(self):
+        got = run(PLACE + """
+          var now = Date.now(), at = function (t) { return Math.max(0, Math.round((t - mid) / 60000 * 6.5 - 30 * 6.5)); };
+          sc.scrollLeft = at(now);
+          T.keepPlace();
+          var p = G.place; p.atNow = true; sc.scrollLeft = 0;
+          T.restorePlace(p);
+          return [Math.abs(sc.scrollLeft - at(Date.now())) <= 1];
+        """)
+        self.assertEqual([True], got)
+
+    def test_the_channel_watched_is_in_view(self):
+        got = run(PLACE + """
+          sc.scrollTop = 10 * 66;
+          G.lastId = 'c250';   // channel up from the one clicked ended here
+          T.keepPlace();
+          T.restorePlace(G.place);
+          var first = sc.scrollTop / 66, shown = (900 - 38) / 66;
+          var inView = 250 >= first && 251 <= first + shown;
+          G.lastId = 'c12'; sc.scrollTop = 10 * 66; T.keepPlace(); T.restorePlace(G.place);
+          return [inView, sc.scrollTop];
+        """)
+        # off screen: scrolled to it; already in view: the rows stay
+        self.assertEqual([True, 660], got)
+
+    def test_it_is_kept_when_the_guide_is_left(self):
+        self.assertIn("keepPlace();\n    G.active = false;", JS)
+        self.assertIn("applyView(place);", JS)
+
+
 class FastWithThousandsOfChannels(unittest.TestCase):
     def test_rows_are_virtualized_and_programmes_batched(self):
         self.assertIn("OVERSCAN", JS)
