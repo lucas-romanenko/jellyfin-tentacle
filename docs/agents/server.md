@@ -443,8 +443,12 @@ movies/series, then Sonarr/Radarr text-lookup titles TMDB lacks (TheTVDB).
   (`_strm_needs_rewrite`).
 - The relay: a drop or a body that ends cleanly short of its
   Content-Length/range ("Stream ends prematurely" in ffmpeg) is resumed
-  with Range from the byte reached; a connection that delivered 8 MB or
-  lasted 30 s resets the reconnect budget. One provider connection per
+  with Range from the byte reached (first try after ~0.5 s, doubling to
+  5 s, 6 tries); a connection that delivered 8 MB or lasted 30 s resets the
+  reconnect budget. Always, whatever the first answer said: the provider
+  answers a request from byte 0 with a 200 naming no Accept-Ranges yet
+  serves `bytes=N-` with a 206. Only a 206 starting at exactly that byte is
+  spliced in; anything else ends the body (the player asks again). One provider connection per
   playback (title + client address): Jellyfin's parallel requests for it
   (subtitle extraction, transcode restarts, seeks) share it. The newest
   request takes it (`_Playback.take`: the old one closed before the new one
@@ -802,7 +806,11 @@ User docs: `docs/features/live-tv.md`.
   (`_hdhr_tuner_count`). Jellyfin 10.11 enforces the count saved with its
   tuner: copied from TunerCount only when it discovers the device on the
   network; a tuner added by URL saves 0 (no limit; the field is hidden for
-  HDHomeRun). Jellyfin lists TunerCount tuners either way.
+  HDHomeRun). Jellyfin lists TunerCount tuners either way. The lineup's M3U
+  tuner gets the same number from the Live TV sync
+  (`livetv_tuners.tuner_count`), set again whenever it differs (a hand edit
+  in Jellyfin too) and within ~2 s of a change to a provider's "Streams at
+  once", the default, or a provider added/removed (`stream_limit_changed`).
 - Raw MPEG-TS streams re-dial from the channel URL when the provider drops
   them (`stream_generator()` in `_stream_proxy_inner`). Waited out like a
   509 (the viewer budget; no limit while a recording is attached): transport

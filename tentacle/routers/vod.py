@@ -66,6 +66,10 @@ RECONNECT_ATTEMPTS = 6          # per request, reset by a connection that lasts 
 # budget: the provider cuts every 5-20 s after 60-160 MB, so a film is dozens
 # of drops, each one a fresh start.
 PROGRESS_RESET_BYTES = 8 << 20
+# The first resume after a drop waits this long (then doubling, at most 5 s):
+# the provider closes a film's connection every few minutes when several
+# streams are open, and a player's buffer covers a second, not ten.
+RESUME_FIRST_DELAY = 0.5
 # While another request of the same playback waits, the holder keeps the one
 # provider connection this long, then hands it over (time-sharing). Well under
 # what ffmpeg and Jellyfin wait for data.
@@ -838,18 +842,23 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
     # range (`bytes=-500`) has no start until the provider names it, and a
     # provider that answers a Range request with 200 is sending byte 0 and
     # cannot be asked to resume from anywhere.
+    # Either way the byte a drop stopped at is known, so a drop is always
+    # resumed with a Range request; only a 206 that starts at exactly that
+    # byte is spliced in (a provider that ignores ranges ends the body
+    # instead of replaying bytes the player already has). The provider
+    # behind this answers a request from byte 0 with a 200 that names no
+    # Accept-Ranges, then serves `bytes=N-` with a 206: such a film used to
+    # "give up" at its first drop, every few minutes with several streams open.
     length = resp.headers.get("content-length", "")
     if status == 206:
         cr_start, cr_end = _content_range(resp.headers.get("content-range"))
         start = cr_start if cr_start is not None else start
         end = cr_end if cr_end is not None else end
-        resumable = True
         m = _SIZE_RE.search(resp.headers.get("content-range") or "")
         if m:
             pb.size = int(m.group(1))
     else:
         start, end = 0, None
-        resumable = not range_header and resp.headers.get("accept-ranges", "").lower() == "bytes"
         if length.isdigit():
             pb.size = int(length)
     pb.content_type = content_type
@@ -895,6 +904,7 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
         loop = asyncio.get_running_loop()
         opened_at = loop.time()
         since_open = 0
+        resumed_from = None
         try:
             while True:
                 if pb.stopped.is_set():
@@ -921,11 +931,17 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
                         except HTTPException as e:
                             logger.error(f"[VOD] {owner}: could not resume: {e.detail}")
                             return
-                        if again.status_code != 206:
+                        got = _content_range(again.headers.get("content-range"))[0]
+                        if again.status_code != 206 or got not in (None, start + sent):
                             pb.close_upstream(again)
+                            answer = again.status_code if again.status_code != 206 else f"206 from byte {got}"
                             logger.error(f"[VOD] {owner}: the provider would not resume from byte {start + sent} "
-                                         f"(answered {again.status_code})")
+                                         f"(answered {answer})")
                             return
+                        if resumed_from is not None:
+                            logger.info(f"[VOD] {owner}: resumed from byte {resumed_from} after the provider "
+                                        f"dropped the connection")
+                            resumed_from = None
                         reader.resp = again
                         reader.since = reader.last_chunk = loop.time()
                         reader.waiting = False
@@ -976,16 +992,17 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
                     pb.upstream = None
                 if since_open >= PROGRESS_RESET_BYTES or loop.time() - opened_at >= 30.0:
                     attempts = 0                # a connection that lasted or delivered resets the budget
-                if not resumable or attempts >= RECONNECT_ATTEMPTS:
+                if attempts >= RECONNECT_ATTEMPTS:
                     logger.error(f"[VOD] {owner}: stream lost after {sent} bytes, giving up: {reason}")
                     return
                 if end is not None and start + sent > end:
                     state["complete"] = True
                     return                  # the requested range was delivered in full
                 attempts += 1
-                delay = min(5.0, 2 ** (attempts - 1)) * (0.8 + random.random() * 0.4)
+                delay = min(5.0, RESUME_FIRST_DELAY * 2 ** (attempts - 1)) * (0.8 + random.random() * 0.4)
+                resumed_from = start + sent
                 logger.warning(f"[VOD] {owner}: upstream dropped after {sent} bytes; resuming from byte "
-                               f"{start + sent} in {delay:.0f}s: {reason}")
+                               f"{start + sent} in {delay:.1f}s: {reason}")
                 await asyncio.sleep(delay)
         finally:
             finish()
