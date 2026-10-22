@@ -634,7 +634,9 @@ User docs: `docs/features/live-tv.md`.
   province/state and its cities by distance, nearby cities over the border
   within 700 km (Toronto → Buffalo for US networks), its time zone feed
   (East/West), each tiered 4/3/2 with its country and state (`US: ...
-  VICTORIA` is Texas, `PORTLAND MAINE` not Oregon). The choices are the
+  VICTORIA` is Texas, `PORTLAND MAINE` not Oregon). A border station's
+  call sign names its city when the name doesn't (`US: PBS 17 (WNED)` is
+  Buffalo; `livetv_names._CALL_CITIES`: Buffalo, Detroit, Seattle). The choices are the
   places the provider's names mention. For every place in use other than
   the household's, a network whose best variant there (`place_variants`:
   the same `_Scorer` as the default, without people's lists) names the

@@ -41,7 +41,7 @@ A new person can have a short list of favourites in under a minute: tap **Sports
 
 Kids profiles see only the kids channels an admin picked, and can star them.
 
-**Local channels where you are.** An admin sets where each person watches from (People → *Live TV from*; the admin's own city by default). Someone in Vancouver sees "CTV · Vancouver", "Global · Vancouver", "NBC · Seattle" and the West feeds where the household's lineup has Toronto's, Buffalo's or the East feed, with the same numbers, their own guides and their own favourites; nobody sees another city's. Everything else is the same lineup for everyone.
+**Local channels where you are.** An admin sets where each person watches from (People → *Live TV from*; the admin's own city by default). Someone in Vancouver sees "CTV · Vancouver", "Global · Vancouver", "NBC · Seattle" and the West feeds where the household's lineup has Toronto's, Buffalo's or the East feed, with the same numbers, their own guides and their own favourites; nobody sees another city's. Everything else is the same lineup for everyone. Buffalo, Detroit and Seattle stations count as their city even when the provider names one by its call sign only ("PBS 17 (WNED)" is Buffalo's).
 
 On a phone, **My favourites** and **All channels** are two tabs under the quick picks.
 

@@ -477,18 +477,32 @@ STATE_NAMES = {
 # ("TV: SPRINGFIELD, MA WGBY PBS 57 A3 HD DETROIT"): only the market counts.
 _MARKET_RE = re.compile(r"^\s*TV\s*:\s*([A-Z][A-Z .'-]*?)\s*,\s*([A-Z]{2})\b")
 _CITY_PLACES = {tuple(p.split()) for p in _CITIES}
+# The US stations Canadians watch over the border, by call sign: a provider
+# often names one by its call sign alone ("US: PBS 17 (WNED)"), so the call
+# sign tells its city. Buffalo for Toronto, Detroit for Windsor, Seattle for
+# Vancouver (KING is a word: "US: NBC 5 (KING) SEATTLE" names its city).
+_CALL_CITIES = {
+    "WGRZ": "BUFFALO", "WIVB": "BUFFALO", "WKBW": "BUFFALO", "WUTV": "BUFFALO", "WNED": "BUFFALO",
+    "WNLO": "BUFFALO", "WNYO": "BUFFALO",
+    "WDIV": "DETROIT", "WWJ": "DETROIT", "WXYZ": "DETROIT", "WJBK": "DETROIT", "WTVS": "DETROIT",
+    "WKBD": "DETROIT", "WMYD": "DETROIT",
+    "KIRO": "SEATTLE", "KOMO": "SEATTLE", "KCPQ": "SEATTLE", "KCTS": "SEATTLE", "KSTW": "SEATTLE",
+    "KZJO": "SEATTLE",
+}
 
 
 @functools.lru_cache(maxsize=50000)
 def region_words(name: str) -> frozenset:
     """Place / feed / country words in a channel name, for choosing the
     variant nearest a place ("TORONTO", "EAST", "CA"); a state or province
-    code right after a city adds its name ("BOSTON, MA": "MASSACHUSETTS")."""
+    code right after a city adds its name ("BOSTON, MA": "MASSACHUSETTS"); a
+    border station's call sign its city ("(WNED)": "BUFFALO")."""
     text = _plain(name).upper()
     out = set()
     m = re.match(r"^\s*[|\[(]?\s*([A-Z]{2,3})(?:[ /-]([A-Z]{2}))?\s*[|\]):]", text)
     if m:
         out.add(m.group(1))
+    out.update(_CALL_CITIES[t] for t in _tokens(text) if t in _CALL_CITIES)
     market = _MARKET_RE.match(text)
     if market:
         text = f"{market.group(1)} {market.group(2)}"
