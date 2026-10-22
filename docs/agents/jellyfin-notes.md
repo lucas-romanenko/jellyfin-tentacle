@@ -80,6 +80,24 @@ The code wins where they differ.
   (query on PlaybackInfo and on the HLS URLs) re-encodes and the segments
   match the playlist; the plugin sets it for Tentacle VOD. The user policy
   EnablePlaybackRemuxing does not stop the copy.
+- **Who reads a .strm besides the player** (10.11.8, read in the source and
+  measured Oct 2026): an embedded text subtitle delivered External, Hls or
+  burnt in (Encode) is first extracted by `SubtitleEncoder` with one ffmpeg
+  over the WHOLE file (`-map 0:N … -c:s copy` per text track). It is not
+  cancelled with the request or the playback (the token is `None`; only a
+  30 min timeout), so it reads on after the player stopped; it is cached
+  per media source id in `data/subtitles/xx/<id>/<index>.srt` for good,
+  and judged only by the files being non-empty: an ffmpeg that saw its
+  input end early exits 0 with part of the cues and is logged "extraction
+  completed". The web player waits for that request (no subtitles until
+  the whole file was read). Embed delivery (direct play into a container
+  that carries them, the TV app with SRT) extracts nothing. Every
+  PlaybackInfo of a `.strm` probes it (a full metadata refresh with
+  `EnableRemoteContentProbe`, a short read before the stream starts).
+  Trickplay, chapter images and the keyframe task skip shortcuts; a
+  library scan does not probe them. Jellyfin Web in Chrome direct-plays a
+  remote mkv itself: the browser fetches the .strm address from its own
+  address while the extraction comes from Jellyfin's.
 - **API key**: Jellyfin → Dashboard → API Keys; Tentacle checks it at
   startup and logs a warning if it's invalid. Invalid key = no playlists.
 
