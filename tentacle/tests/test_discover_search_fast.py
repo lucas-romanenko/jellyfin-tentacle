@@ -122,6 +122,21 @@ class SearchTestBase(unittest.TestCase):
         return self.disc.search_discover(q=q, type=type_, db=self.db)["items"]
 
 
+class ChannelsFound(SearchTestBase):
+    def test_separator_rows_are_not_found_and_own_names_are(self):
+        import models.database as mdb
+        self.db.add(mdb.LiveChannel(provider_id=1, name="####### TSN PPV #######", stream_url="http://x/9",
+                                    enabled=True, sort_order=0))
+        self.db.add(mdb.LiveChannel(provider_id=1, name="CA EN: CTV CALARY NEWS", custom_name="CTV Calgary News",
+                                    stream_url="http://x/8", enabled=True, sort_order=5,
+                                    custom_logo_url="https://logos.example/ctv.png"))
+        self.db.commit()
+        self.assertEqual(["TSN 1", "TSN 2"], [i["title"] for i in self.search("tsn", "channels")])
+        got = self.search("calgary", "channels")
+        self.assertEqual([("CTV Calgary News", "https://logos.example/ctv.png")],
+                         [(i["title"], i["logo_url"]) for i in got])
+
+
 class SlowLookupsDoNotHoldTheAnswer(SearchTestBase):
     def test_a_hanging_radarr_lookup_costs_only_the_short_wait(self):
         self.radarr_gate.clear()

@@ -156,6 +156,8 @@ provider names, URLs or logins).
 | POST | `/api/live/catalog/merge` | admin | livetv_catalog.py:catalog_merge (`{keys: ["n1","c5"], name}`) |
 | PUT | `/api/live/catalog/channels/{channel_id}/enabled` | admin | livetv_catalog.py:catalog_tick (`{enabled}`) |
 | PUT | `/api/live/catalog/types` | admin | livetv_catalog.py:catalog_set_types (`{key, types}`; [] = automatic) |
+| GET | `/api/live/catalog/logos` | admin | livetv_catalog.py:catalog_logos (`?key=c5096`: logos to pick from: the provider's, other versions', same guide's, similar names') |
+| PUT | `/api/live/catalog/logo` | admin | livetv_catalog.py:catalog_set_logo (`{key, url}`; "" = automatic; http(s) only) |
 | GET, HEAD | `/api/live/net/{nid}` | none | livetv_catalog.py:network_stream (the network's chosen variant through stream_proxy) |
 | GET, HEAD | `/api/live/net/{nid}/at/{place}` | none | livetv_catalog.py:network_place_stream (the network's variant for a place, else its chosen one: the lineup's "CTV · Vancouver") |
 | GET | `/api/live/new-groups` | admin | provider_new.py:new_groups (new groups read: country, title, tags, `for_you`, samples; `?dismissed=true` also the dismissed; `?country=&lang=` the browser's locale; starts reading their channels in the background) |

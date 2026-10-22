@@ -191,6 +191,11 @@ same tags hide non-kids channels from kids on one lineup.
   HDHomeRun tuner: favourites read while they still see the old channels,
   then their BlockedTags change, then the favourites are set on the
   lineup's channels (the 404 above).
+- A guide refresh renames an existing channel to the M3U's name, but sets
+  its Primary image from `tvg-logo` only while it has none
+  (`GuideManager.GetChannelAsync`: `if (!item.HasImage(ImageType.Primary))`,
+  10.11 source). A new logo reaches Jellyfin only after
+  `DELETE /Items/{id}/Images/Primary` (admin key) and the next refresh.
 
 ## Radarr and Sonarr
 

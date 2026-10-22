@@ -902,6 +902,9 @@ class LiveChannel(Base):
 
     # Metadata
     logo_url = Column(String, nullable=True)
+    # The admin's own logo (a URL): channel syncs rewrite `logo_url` from the
+    # provider and never touch this, so it wins (a provider's wrong logo).
+    custom_logo_url = Column(String, nullable=True)
     group_title = Column(String, nullable=True)  # Category/group from provider
     epg_channel_id = Column(String, nullable=True)  # tvg-id for EPG matching
     # The admin's own guide id for the channel. Channel syncs never touch it,
@@ -937,6 +940,11 @@ class LiveChannel(Base):
     def guide_name(self) -> str:
         """The name Jellyfin's guide shows: the user's name, else the provider's."""
         return (self.custom_name or "").strip() or self.name
+
+    @property
+    def guide_logo(self):
+        """The logo people see: the admin's, else the provider's."""
+        return (self.custom_logo_url or "").strip() or self.logo_url or None
 
     @property
     def guide_epg_id(self):
@@ -1035,6 +1043,7 @@ class LiveNetwork(Base):
     excluded = Column(Boolean, default=False)    # the admin took it out of the pool
     dissolved = Column(Boolean, default=False)   # split up: never folded again
     types = Column(String, nullable=True)        # comma-separated, the admin's (NULL = automatic)
+    custom_logo_url = Column(String, nullable=True)  # the admin's logo (NULL = the variants')
 
 
 class LiveChannelCatalog(Base):

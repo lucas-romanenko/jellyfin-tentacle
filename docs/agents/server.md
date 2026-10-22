@@ -807,6 +807,26 @@ User docs: `docs/features/live-tv.md`.
   event (None / "no_event" / {title,start,stop,timed}), variants,
   variant_name, channel_id, check. Event channels without a guide get one
   programme from their name in `/api/live/xmltv.xml`.
+- **Separator rows** (`routers/livetv._is_separator`, one regex, tests in
+  `test_livetv_separator_rows.py`): a row whose name begins and ends with a
+  run of two or more of `# = * ~ _ | - ★ ▬ ◉ ● •` ("####### SPORTSNET PPV
+  #######"), or is only those. A new one starts switched off (#158); one
+  switched on anyway (before #158, a group switched on, a bulk tick) is left
+  out by `_shown_channels()`: the pool (so the lineup M3U, My Channels, the
+  pool page, the checker's pool), `/api/live/playlist.m3u`, `lineup.json`,
+  the XMLTV, Discover's channel search and the checker. A custom name that
+  isn't one makes it a channel. The Live TV sync refreshes Jellyfin once
+  when a separator newly leaves (`livetv_hidden_separators`).
+- **Name and logo**: `LiveChannel.custom_name` / `custom_logo_url` (channel
+  syncs never touch them), `LiveNetwork.name` (`name_set`) /
+  `custom_logo_url`; edited on the pool page's Edit (Name and logo), logos
+  offered by `livetv_catalog.logo_choices`. A network's logo: the admin's,
+  else its variant's admin logo, else the logo most of its switched-on
+  versions share (query strings ignored), the variant's on a tie. Jellyfin
+  renames a channel at a guide refresh but sets its image only while it has
+  none (GuideManager), so the sync keeps the logos it gave Jellyfin
+  (`livetv_lineup_logos`) and, for a changed one, deletes the channel's
+  Primary image before the refresh.
 - **Fast start** (jellyfin-notes.md "How long a live channel takes to
   start"): the lineup tuner never has Jellyfin's "Read at native frame
   rate" (not carried from an old tuner; switched off once on a tuner that

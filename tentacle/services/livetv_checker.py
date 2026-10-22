@@ -260,7 +260,9 @@ def candidates(db, now: Optional[datetime] = None) -> list:
         return (ch.check_at is not None, ch.check_at or datetime.min, rank.get(ch.id, 0), ch.id)
 
     first = sorted((rows[c] for c in pool_ids if c in rows), key=age_key)
-    rest = sorted((c for cid, c in rows.items() if cid not in rank), key=age_key)
+    from routers.livetv import _is_separator
+    rest = sorted((c for cid, c in rows.items() if cid not in rank and not _is_separator(c.guide_name)),
+                  key=age_key)
     due = [c for c in first if c.provider_id in providers and _due(c, CYCLE_SECONDS, now)]
     out = [c.id for c in due if c.check_at is None]
     # Channels of the provider's new groups, never checked, the groups the

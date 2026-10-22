@@ -2836,6 +2836,25 @@ def _is_separator(name: str) -> bool:
     return bool(_SEPARATOR_RE.match(name or ""))
 
 
+def _shown_channels(db: Session) -> list:
+    """The switched-on channels, in the tuner's order, minus separator rows:
+    what Jellyfin, the guide, My Channels and search carry. A separator
+    switched on before #158 (or with its whole group) plays nothing and
+    would sit among the channels as "####### SPORTSNET PPV #######"; one the
+    admin gave a name of their own is a channel."""
+    rows = (db.query(LiveChannel)
+            .filter(LiveChannel.enabled == True)  # noqa: E712
+            .order_by(LiveChannel.sort_order, LiveChannel.channel_number, LiveChannel.name)
+            .all())
+    return [ch for ch in rows if not _is_separator(ch.guide_name)]
+
+
+def _hidden_separators(db: Session) -> list:
+    """Ids of the switched-on separator rows _shown_channels() leaves out."""
+    rows = db.query(LiveChannel).filter(LiveChannel.enabled == True).all()  # noqa: E712
+    return sorted(ch.id for ch in rows if _is_separator(ch.guide_name))
+
+
 def _enabled_group_names(db: Session, provider_id: int) -> set:
     """Names of this provider's groups the user has switched on.
 
@@ -3653,6 +3672,8 @@ def list_channels(
                 "stream_id": ch.stream_id,
                 "stream_url": ch.stream_url,
                 "logo_url": ch.logo_url,
+                "custom_logo_url": ch.custom_logo_url,
+                "guide_logo": ch.guide_logo,
                 "group_title": ch.group_title,
                 "epg_channel_id": ch.epg_channel_id,
                 "epg_id_override": ch.epg_id_override,
@@ -4119,12 +4140,7 @@ def hdhr_lineup(request: Request, db: Session = Depends(get_db)):
     """HDHomeRun channel lineup — only enabled channels.
     URLs point to our stream proxy which handles UA spoofing, 302 redirect
     following, and HLS playlist rewriting."""
-    channels = (
-        db.query(LiveChannel)
-        .filter(LiveChannel.enabled == True)
-        .order_by(LiveChannel.sort_order, LiveChannel.channel_number, LiveChannel.name)
-        .all()
-    )
+    channels = _shown_channels(db)
 
     # Build base URL same way as discover.json
     base_url = get_setting(db, "hdhr_base_url", "").strip()
@@ -4150,8 +4166,8 @@ def hdhr_lineup(request: Request, db: Session = Depends(get_db)):
             "GuideName": ch.guide_name,
             "URL": f"{base_url}/api/live/stream/{ch.id}",
         }
-        if ch.logo_url:
-            entry["LogoUrl"] = ch.logo_url
+        if ch.guide_logo:
+            entry["LogoUrl"] = ch.guide_logo
         lineup.append(entry)
 
     # YouTube channels the user exposed to Live TV. They aren't LiveChannel rows
@@ -5755,18 +5771,13 @@ def _m3u_text(text) -> str:
 def live_playlist_m3u(request: Request, db: Session = Depends(get_db)):
     """Generate M3U playlist for Jellyfin M3U tuner import.
     All stream URLs point to our local proxy (like Threadfin's direct mode)."""
-    channels = (
-        db.query(LiveChannel)
-        .filter(LiveChannel.enabled == True)
-        .order_by(LiveChannel.sort_order, LiveChannel.channel_number, LiveChannel.name)
-        .all()
-    )
+    channels = _shown_channels(db)
 
     base_url = str(request.base_url).rstrip("/")
     lines = ["#EXTM3U"]
     for ch, number in _unique_numbers(db, channels):
         epg_id = ch.guide_epg_id or f"tentacle-{ch.id}"
-        logo = f' tvg-logo="{_m3u_text(ch.logo_url)}"' if ch.logo_url else ""
+        logo = f' tvg-logo="{_m3u_text(ch.guide_logo)}"' if ch.guide_logo else ""
         group = f' group-title="{_m3u_text(ch.group_title)}"' if ch.group_title else ""
         lines.append(
             f'#EXTINF:-1 tvg-id="{_m3u_text(epg_id)}" tvg-chno="{_m3u_text(number)}"{logo}{group},'
@@ -5876,12 +5887,7 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
     from services.xmltv import iter_xmltv
 
     # Get enabled channels with EPG IDs
-    channels = (
-        db.query(LiveChannel)
-        .filter(LiveChannel.enabled == True)
-        .order_by(LiveChannel.sort_order, LiveChannel.channel_number, LiveChannel.name)
-        .all()
-    )
+    channels = _shown_channels(db)
 
     # Use stream_id as stable channel ID (same as lineup.json GuideNumber)
     # This ensures IDs never shift when channels are added/removed.
@@ -5904,7 +5910,7 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
         xmltv_channels.append({
             "id": guide_number,
             "name": ch.guide_name,
-            "logo_url": ch.logo_url,
+            "logo_url": ch.guide_logo,
         })
         # Channel group feeds the category inference below when a programme
         # title says nothing about its genre.

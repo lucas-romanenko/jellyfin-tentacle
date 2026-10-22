@@ -13,6 +13,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from typing import Optional
 import httpx
@@ -1056,15 +1057,19 @@ def search_discover(
 
     # Search Live TV channels — prepend to items list
     if type in ("all", "channels"):
+        from routers.livetv import _is_separator
+        term = f"%{q.strip()}%"
         channel_rows = db.query(LiveChannel).filter(
             LiveChannel.enabled == True,
-            LiveChannel.name.ilike(f"%{q.strip()}%"),
-        ).order_by(LiveChannel.sort_order).limit(20).all()
+            or_(LiveChannel.name.ilike(term), LiveChannel.custom_name.ilike(term)),
+        ).order_by(LiveChannel.sort_order).limit(40).all()
+        # Separator rows ("####### SPORTSNET PPV #######") are no channel.
+        channel_rows = [ch for ch in channel_rows if not _is_separator(ch.guide_name)][:20]
         channel_items = [{
             "media_type": "channel",
-            "title": ch.name,
+            "title": ch.guide_name,
             "channel_id": ch.id,
-            "logo_url": ch.logo_url,
+            "logo_url": ch.guide_logo,
             "group_title": ch.group_title,
         } for ch in channel_rows]
         items = channel_items + items

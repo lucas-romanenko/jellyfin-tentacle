@@ -80,15 +80,10 @@ def pool(db: Session) -> list:
     one entry, key "n<id>" (services/livetv_catalog.py). Every entry also has
     types, has_guide, event (None / "no_event" / {title, start, stop, ...}),
     variants, variant_name and check (the stream checker's verdict)."""
-    from routers.livetv import _unique_numbers
+    from routers.livetv import _shown_channels, _unique_numbers
     from services.youtube import livetv as youtube_livetv
 
-    channels = (
-        db.query(LiveChannel)
-        .filter(LiveChannel.enabled == True)  # noqa: E712
-        .order_by(LiveChannel.sort_order, LiveChannel.channel_number, LiveChannel.name)
-        .all()
-    )
+    channels = _shown_channels(db)   # separator rows left out
     def order(pair):
         # The order Jellyfin showed with the old tuner (by channel number),
         # unless the admin set an order or a number of their own.
@@ -102,7 +97,7 @@ def pool(db: Session) -> list:
         out.append({
             "key": f"c{ch.id}",
             "name": ch.guide_name,
-            "logo_url": ch.logo_url,
+            "logo_url": ch.guide_logo,
             "xmltv_id": str(number),
             "stream_path": f"/api/live/stream/{ch.id}",
         })

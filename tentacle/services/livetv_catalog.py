@@ -805,7 +805,8 @@ def place_entries(db: Session, entries: list, slugs) -> list:
             e = {**base,
                  "key": f"n{nid}@{slug}", "base": base["key"], "place": slug,
                  "name": f"{base['name']} · {where}",
-                 "logo_url": ch.logo_url or base.get("logo_url"),
+                 "logo_url": ((nets[nid]["network"].custom_logo_url or "").strip() or ch.guide_logo
+                              or base.get("logo_url")),
                  "xmltv_id": numbers[cid], "stream_path": f"/api/live/net/{nid}/at/{slug}",
                  "has_guide": bool(gid and gid in with_guide),
                  "variant_name": (ch.custom_name or "").strip() or livetv_names.clean_name(ch.name),
@@ -1060,6 +1061,33 @@ def _people_name(ch: LiveChannel, ev) -> str:
     return livetv_names.clean_name(ch.name)
 
 
+def _logo_base(url: str) -> str:
+    """A logo URL without its query: panels add a cache buster per channel
+    ("929.jpg?39673", "929.jpg?31191" are one picture)."""
+    return url.split("?", 1)[0].strip().lower()
+
+
+def network_logo(n: LiveNetwork, variant: Optional[LiveChannel], members: list) -> Optional[str]:
+    """The logo a folded network shows: the admin's (the network's, else one
+    set on its variant), else the one most of its versions share -- a
+    provider that gives one version another channel's logo is outvoted --
+    the variant's own on a tie."""
+    if (n.custom_logo_url or "").strip():
+        return n.custom_logo_url.strip()
+    if variant is not None and (variant.custom_logo_url or "").strip():
+        return variant.custom_logo_url.strip()
+    logos = [m.logo_url for m in members if m.logo_url]
+    if variant is not None and variant.logo_url and variant not in members:
+        logos.append(variant.logo_url)
+    if not logos:
+        return None
+    counts = Counter(_logo_base(u) for u in logos)
+    top = max(counts.values())
+    if variant is not None and variant.logo_url and counts[_logo_base(variant.logo_url)] == top:
+        return variant.logo_url
+    return next(u for u in logos if counts[_logo_base(u)] == top)
+
+
 def fold_pool(db: Session, entries: list, channels_by_id: dict) -> list:
     """The pool with networks folded: `entries` are pool() entries in order
     (c<id> for every switched-on channel, y<id> for YouTube), `channels_by_id`
@@ -1125,7 +1153,9 @@ def fold_pool(db: Session, entries: list, channels_by_id: dict) -> list:
                 vch.name, vch.group_title, guide_types=gtypes.get(gid), fold_key=n.fold_key,
                 removed={"place"} if len(info["all"]) > 1 else None)
             entry = {
-                "key": f"n{nid}", "name": n.name, "logo_url": vch.logo_url or ve.get("logo_url"),
+                "key": f"n{nid}", "name": n.name,
+                "logo_url": network_logo(n, vch, [channels_by_id[c] for c in info["members"] if c in channels_by_id])
+                or ve.get("logo_url"),
                 "xmltv_id": ve["xmltv_id"], "stream_path": f"/api/live/net/{nid}",
                 "types": types, "has_guide": bool(gid and gid in with_guide), "event": None,
                 "variants": len(info["members"]), "variant_name": (vch.custom_name or "").strip() or livetv_names.clean_name(vch.name),
@@ -1313,7 +1343,7 @@ def networks_list(db: Session, include_empty: bool = False) -> list:
             ch = chans[cid]
             variants.append({
                 "channel_id": cid, "name": ch.guide_name, "provider_name": ch.name, "group": ch.group_title,
-                "enabled": bool(ch.enabled), "chosen": cid == info["variant"],
+                "enabled": bool(ch.enabled), "chosen": cid == info["variant"], "logo_url": ch.guide_logo,
                 "has_guide": bool(ch.guide_epg_id and ch.guide_epg_id in facts["with_guide"]),
                 "check": checks.get(f"c{cid}") or {"state": "unchecked", "at": None},
             })
@@ -1322,6 +1352,7 @@ def networks_list(db: Session, include_empty: bool = False) -> list:
             "variant_id": info["variant"], "chosen_by_admin": n.chosen_channel_id is not None and
             n.chosen_channel_id == info["variant"], "default_variant_id": n.auto_channel_id,
             "excluded": bool(n.excluded), "types": _types(n), "manual": n.fold_key is None,
+            "custom_logo_url": n.custom_logo_url,
             "variants": variants, "count": len(info["members"]),
         })
     return out
@@ -1388,6 +1419,81 @@ def set_types(db: Session, key: str, types: Optional[list]) -> list:
         raise CatalogError("Unknown key")
     db.commit()
     return clean
+
+
+LOGO_URL_MAX = 500
+_LOGO_CHOICES_MAX = 12
+
+
+def _logo_target(db: Session, key: str):
+    """The row an admin's logo for `key` ("c<id>" / "n<id>") is kept on."""
+    if key[:1] == "n" and key[1:].isdigit():
+        row = db.query(LiveNetwork).filter(LiveNetwork.id == int(key[1:])).first()
+        if row is None:
+            raise CatalogError("No such network")
+        return row
+    if key[:1] == "c" and key[1:].isdigit():
+        row = db.query(LiveChannel).filter(LiveChannel.id == int(key[1:])).first()
+        if row is None:
+            raise CatalogError("No such channel")
+        return row
+    raise CatalogError("Unknown key")
+
+
+def logo_choices(db: Session, key: str) -> dict:
+    """Logos the admin can pick for a channel or network: the provider's,
+    its other versions' (a network), channels with the same guide, and
+    channels whose name starts the same ("CTV ..." for "CTV Calary News")."""
+    row = _logo_target(db, key)
+    found, out = set(), []
+
+    def add(url, label):
+        if url and _logo_base(url) not in found and len(out) < _LOGO_CHOICES_MAX:
+            found.add(_logo_base(url))
+            out.append({"url": url, "label": label})
+
+    if isinstance(row, LiveNetwork):
+        ids = [c for (c,) in db.query(LiveChannelCatalog.channel_id)
+               .filter(LiveChannelCatalog.network_id == row.id).all()]
+        mine = list(_member_rows(db, ids).values()) if ids else []
+        name = row.name
+    else:
+        mine = [row]
+        name = row.guide_name
+    for ch in mine:
+        add(ch.logo_url, f"{ch.name} (provider)")
+    gids = {ch.guide_epg_id for ch in mine if ch.guide_epg_id}
+    with_logo = db.query(LiveChannel).filter(LiveChannel.logo_url.isnot(None))
+
+    def ordered(rows):
+        return sorted(rows, key=lambda c: (not c.enabled, c.id))
+
+    if gids:
+        for ch in ordered(with_logo.all()):
+            if ch.guide_epg_id in gids:
+                add(ch.logo_url, f"{livetv_names.clean_name(ch.name)} (same guide)")
+    word = (livetv_names.clean_name(name).split() or [""])[0].upper()
+    if len(word) >= 2:
+        for ch in ordered(with_logo.filter(LiveChannel.name.ilike(f"%{word}%")).all()):
+            clean = livetv_names.clean_name(ch.name)
+            if clean.split()[:1] == [] or clean.split()[0].upper() != word:
+                continue
+            add(ch.logo_url, clean)
+    custom = (row.custom_logo_url or "").strip() or None
+    return {"key": key, "custom_logo_url": custom, "choices": out}
+
+
+def set_logo(db: Session, key: str, url: Optional[str]) -> Optional[str]:
+    """The admin's logo for a channel or network ("" / None: the automatic
+    one again). An http(s) address of a picture."""
+    url = (url or "").strip()
+    if url and (not url.lower().startswith(("http://", "https://")) or len(url) > LOGO_URL_MAX
+                or any(c.isspace() for c in url)):
+        raise CatalogError(f"A logo is a web address (http:// or https://, at most {LOGO_URL_MAX} characters)")
+    row = _logo_target(db, key)
+    row.custom_logo_url = url or None
+    db.commit()
+    return row.custom_logo_url
 
 
 def split(db: Session, nid: int, channel_ids: Optional[list] = None, new_name: Optional[str] = None) -> dict:

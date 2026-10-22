@@ -150,7 +150,8 @@ class PoolNames(unittest.TestCase):
     def test_pool_rows_and_variants(self):
         src = ESC + STATE + _top(["pool"]) + functions("mychannels.js", [
             "_mychLogo", "_mychAgo", "_mychWorks", "_mychGuide", "_mychMeta", "_poolNet", "_poolFiltered",
-            "_poolVariantLabel", "_poolVariantSelect", "_poolTypes", "_poolRow", "_poolDetail", "_poolMergeBtn",
+            "_poolVariantLabel", "_poolVariantSelect", "_poolTypes", "_poolRow", "_poolNameLogo", "_poolLoadLogos", "_poolDetail",
+            "_poolMergeBtn",
             "poolRender"])
         variants = [{"channel_id": 10 + i, "name": v, "provider_name": v, "enabled": True, "chosen": i == 0,
                      "has_guide": True, "check": {"state": "works", "at": None}} for i, v in enumerate(VALUES)]
