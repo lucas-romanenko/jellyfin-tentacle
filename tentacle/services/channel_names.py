@@ -53,6 +53,31 @@ def channel_name_key(name: str) -> str:
     return "".join(words)
 
 
+# For finding the same channel under another id of one feed only (epg_match's
+# fallback), never for matching by name: a panel's tier tags ("VIP:", "NOW:")
+# are not part of a name, and one feed spells one channel "TNT SPORT 1" and
+# "TNT SPORTS 1". Folded in the name pass they would join channels of different
+# countries for a name with no tag ("Sky Sports News" .uk, "Sky Sport News" .de)
+# and take away a guide that works today.
+_TIER_RE = re.compile(r"^\s*[|\[(]?\s*(?:VIP|NOW)\s*[|\]):]\s*", re.IGNORECASE)
+_WORD_FORMS = {"sports": "sport"}
+
+
+def loose_name_words(name: str) -> list:
+    """channel_name_words() without a tier tag, "sports" read as "sport"."""
+    if not name:
+        return []
+    text = unicodedata.normalize("NFKC", name)
+    stripped = _TIER_RE.sub("", text, count=1)
+    if stripped.strip():
+        text = stripped
+    return [_WORD_FORMS.get(w, w) for w in channel_name_words(text)]
+
+
+def loose_name_key(name: str) -> str:
+    """"VIP: TNT SPORT 1" and "UK: TNT SPORTS 1 SD" -> "tntsport1"."""
+    return "".join(loose_name_words(name))
+
 # The country a provider's leading tag names: "CA:", "CA EN:", "|UK|", "[US]".
 _COUNTRY_RE = re.compile(r"^\s*[|\[(]?\s*([A-Za-z]{2}|USA)(?:[ /-]([A-Za-z]{2}))?\s*[|\]):]")
 # One country, two spellings.
@@ -104,3 +129,12 @@ def feed_countries(feed_id: str, names) -> set:
         if country:
             out.add(country)
     return out
+
+
+def feed_id_country(feed_id: str) -> Optional[str]:
+    """The country an XMLTV id's two-letter suffix names: "TNTSport1.uk" -> "gb"."""
+    m = _ID_COUNTRY_RE.search(feed_id or "")
+    if not m:
+        return None
+    code = m.group(1).lower()
+    return _SAME_COUNTRY.get(code, code)
