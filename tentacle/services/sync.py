@@ -3604,6 +3604,38 @@ def _sync_series(
     def _met(tid, series):
         met.setdefault(tid, set()).add(str(series.get("series_id")))
 
+    # Which of our rows each listing was placed on before (#621 ids; ids two rows share are left out)
+    listing_row, shared_listing = {}, set()
+    for tid, ids in db.query(Series.tmdb_id, Series.provider_series_ids).filter(
+            Series.provider_id == provider.id).all():
+        for sid in ids or []:
+            if sid in listing_row and listing_row[sid] != tid:
+                shared_listing.add(sid)
+            listing_row[sid] = tid
+
+    def _keeps_its_show(series, found_id):
+        """#796, the series twin of _keeps_its_film (#310): when TMDB now
+        answers another show for a listing that one of our rows was placed on
+        before, and that row's .strm files play this listing, the row keeps
+        it (a new row would be a new Jellyfin series: everyone's watched
+        state gone). Returns (tmdb id, series info) or (None, None)."""
+        sid = str(series.get("series_id"))
+        tid = listing_row.get(sid) if sid not in shared_listing else None
+        if tid is None or tid == found_id or tid not in existing_provider_tmdb_ids:
+            return None, None
+        record = db.query(Series).filter(Series.tmdb_id == tid, Series.provider_id == provider.id).first()
+        if record is None:
+            return None, None
+        try:
+            info = client.get_series_info(series.get("series_id")) or {}
+        except Exception:
+            return None, None
+        if _row_plays_listing(record, _episode_refs(client, info.get("episodes"))) is not True:
+            return None, None
+        logger.info(f"[Sync] '{series.get('name')}' (series {sid}) stays '{record.title}' (TMDB {tid}); "
+                    f"TMDB now answers {found_id} for it")
+        return tid, info
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for cat in whitelisted_cats:
@@ -3774,6 +3806,18 @@ def _sync_series(
                 _met(tmdb_id, series)
                 # Existing VOD series — back-fill any new seasons/episodes
                 _backfill_series_episodes(client, series, tmdb_id, provider, db, slots)
+                cat_existing += 1
+                stats["existing"] += 1
+                if item_idx % 10 == 0 or item_idx == total_in_cat:
+                    logger.info(f"  {cat.category_name} ({item_idx}/{total_in_cat}) — {cat_new} new, {cat_existing} existing")
+                continue
+
+            kept_tid, kept_info = _keeps_its_show(series, tmdb_id)
+            if kept_tid is not None:
+                seen_ids_all.add(kept_tid)
+                _merge_source_tag(kept_tid, "series", cat.source_tag, provider.id, db)
+                _met(kept_tid, series)
+                _backfill_series_episodes(client, series, kept_tid, provider, db, slots, series_info=kept_info)
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:

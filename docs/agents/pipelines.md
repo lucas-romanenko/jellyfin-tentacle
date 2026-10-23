@@ -333,6 +333,13 @@ read that row.
   show, left to the prune. No files to compare (opted out, or the listing
   can't be read): kept, nothing written (#621). A show relabelled before
   its id was ever recorded is still pruned.
+- A re-searched listing whose TMDB answer now names a show this provider
+  has no row for stays with the row it was met by before
+  (`provider_series_ids`, ids two rows share left out) when that row's
+  `.strm` files play its episodes (`_keeps_its_show()`, the series twin of
+  `_keeps_its_film()`): a new row would be a new Jellyfin series, every
+  user's watched state gone. A wrong row is fixed by hand; a listing whose
+  episodes aren't the row's (a reused series id) still moves (#796).
 - `.strm` files are written with `_write_strm()`: a hidden temp file in the
   same folder, then a rename, so a write cut short leaves the old file
   whole. An existing `.strm` that is empty or blank is rewritten like a
