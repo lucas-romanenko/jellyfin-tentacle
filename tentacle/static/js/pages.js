@@ -5965,7 +5965,6 @@ const liveState = {
 
 async function loadLiveTV() {
   const noProvEl = document.getElementById('live-no-provider');
-  const statsEl = document.getElementById('live-stats');
   const tabsEl = document.querySelector('#page-live-tv .live-tabs');
   const panels = document.querySelectorAll('#page-live-tv .live-tab-panel');
   const pick = document.getElementById('live-provider-pick');
@@ -5984,23 +5983,19 @@ async function loadLiveTV() {
         sel.value = String(liveState.providerId);
       }
       if (noProvEl) noProvEl.style.display = 'none';
-      if (statsEl) statsEl.style.display = 'grid';
       if (tabsEl) tabsEl.style.display = 'flex';
       panels.forEach(p => p.style.display = '');
 
       liveState.dirtyChannels = {};  // Reset pending changes on fresh page load
-      const data = await api('/api/live/status');
-      renderLiveStats(data);
-      await loadLiveGroups();
-      await loadLiveChannels();
-      if (document.getElementById('live-panel-pool')?.classList.contains('active')) loadLivePool();
-      if (document.getElementById('live-panel-new')?.classList.contains('active')) loadNewGroups();
-      if (document.getElementById('live-panel-setup')?.classList.contains('active')) loadLiveSetup();
+      const active = document.querySelector('#page-live-tv .live-tab-panel.active')?.id || '';
+      if (active === 'live-panel-pool') loadLivePool();
+      if (active === 'live-panel-new') loadNewGroups();
+      if (active === 'live-panel-more') loadLiveMore();
+      if (active === 'live-panel-channels') { await loadLiveGroups(); await loadLiveChannels(); }
     } else {
       liveState.providerId = null;
       if (pick) pick.style.display = 'none';
       if (noProvEl) noProvEl.style.display = '';
-      if (statsEl) statsEl.style.display = 'none';
       if (tabsEl) tabsEl.style.display = 'none';
       panels.forEach(p => p.style.display = 'none');
       // No IPTV provider, but YouTube channels can still be Live TV channels:
@@ -6013,8 +6008,10 @@ async function loadLiveTV() {
       }
     }
   } catch (e) {
-    if (statsEl) statsEl.innerHTML =
-      `<div style="grid-column:1/-1;color:var(--red);font-size:13px">Failed to load: ${escapeAttr(e.message)}</div>`;
+    if (noProvEl) {
+      noProvEl.style.display = '';
+      noProvEl.textContent = `Failed to load: ${e.message}`;
+    }
   }
 }
 
@@ -6027,39 +6024,18 @@ function showLiveTab(name) {
   page.querySelector(`[data-livetab="${name}"]`)?.classList.add('active');
   document.getElementById(`live-panel-${name}`)?.classList.add('active');
 
-  if (name === 'channels') loadLiveChannels();
+  if (name === 'channels') { loadLiveGroups(); loadLiveChannels(); }
   if (name === 'pool') loadLivePool();
-  if (name === 'setup') loadLiveSetup();
-  if (name === 'people') loadLivePeople();
+  if (name === 'more') loadLiveMore();
   if (name === 'new') loadNewGroups();
+  // The provider's own list is opened from More: More stays the tab lit for it
+  if (name === 'channels') page.querySelector('[data-livetab="more"]')?.classList.add('active');
 }
 
-function renderLiveStats(data) {
-  const el = document.getElementById('live-stats');
-  el.innerHTML = `
-    <div class="stat-card" style="border-top:3px solid var(--accent)">
-      <div style="font-size:11px;color:var(--text3);text-transform:uppercase;margin-bottom:4px">Groups on</div>
-      <div style="font-size:24px;font-weight:600">${data.enabled_groups || 0} / ${data.total_groups || 0}</div>
-    </div>
-    <div class="stat-card" style="border-top:3px solid var(--blue)">
-      <div style="font-size:11px;color:var(--text3);text-transform:uppercase;margin-bottom:4px">Channels</div>
-      <div style="font-size:24px;font-weight:600">${data.total_channels || 0}</div>
-    </div>
-    <div class="stat-card" style="border-top:3px solid var(--green)">
-      <div style="font-size:11px;color:var(--text3);text-transform:uppercase;margin-bottom:4px">Channels on</div>
-      <div style="font-size:24px;font-weight:600">${data.enabled_channels || 0}</div>
-    </div>
-    <div class="stat-card" style="border-top:3px solid var(--amber)">
-      <div style="font-size:11px;color:var(--text3);text-transform:uppercase;margin-bottom:4px">In the TV guide</div>
-      <div style="font-size:24px;font-weight:600">${data.epg_programs || 0}</div>
-    </div>`;
-}
-
-async function refreshLiveStats() {
-  try {
-    const data = await api('/api/live/status');
-    renderLiveStats(data);
-  } catch (e) {}
+// More: Jellyfin's setup and the region.
+function loadLiveMore() {
+  loadLiveSetup();
+  _poolLoadRegion();
 }
 
 // ── Groups ────────────────────────────────────────────────────────────────
@@ -6377,7 +6353,6 @@ function startEpgPoll() {
         clearInterval(liveState.epgPollTimer);
         statusEl.innerHTML = `<span style="color:var(--green)">${escapeAttr(plainWords(s.message))}</span>`;
         toast('TV guide updated', 'success');
-        refreshLiveStats();
         // Auto-refresh Jellyfin guide if server address is configured
         try {
           const settings = await api('/api/settings/raw');
@@ -6413,7 +6388,6 @@ function startSyncPoll() {
         liveState.syncPollTimer = null;
         toast(plainWords(s.message), 'success');
         setTimeout(() => { statusEl.textContent = ''; }, 3000);
-        refreshLiveStats();
         loadLiveTV();
         // Auto-refresh Jellyfin guide if server address is configured
         try {
@@ -7200,7 +7174,7 @@ function renderHealthLog() {
     // Migration
     showMigrate, previewMigration, runMigration,
     // Sources (sources.js: provider cards, their categories and channel groups)
-    showSourcesTab, loadProviders, setProviderUse, toggleProviderPanel,
+    showSourcesTab, loadProviders, setProviderUse, toggleProviderPanel, toggleProviderMore,
     setProvCatFilter, renderProvCats, provCatToggle, provCatsSelectShown, provCatsRefresh, provCatsSave,
     renderProvGroups, provGroupToggle, provGroupsSelectShown, provGroupsRefresh, provGroupsSave,
     loadArrSources, saveTentacleAddress, onLiveProviderChange,

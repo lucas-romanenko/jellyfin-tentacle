@@ -27,7 +27,7 @@ class LiveTvNames(unittest.TestCase):
 
     def test_provider_card(self):
         src = ESC + "const srcState = {open: {}};\n" + functions(
-            "sources.js", ["renderProviderCard", "_providerAddress", "_switchRow", "_providerSection", "_liveLimitsRow"])
+            "sources.js", ["renderProviderCard", "_providerAddress", "_switchRow", "_providerSection", "_liveLimitsRow", "_liveNumbersRow"])
         for i, name in enumerate(NAMES):
             p = {"id": 1, "name": name, "server_url": f"http://prov.test/{i}?a=1&b=2", "status": "ok",
                  "has_vod": True, "has_live": True, "active": True, "live_tv_enabled": True}

@@ -701,7 +701,7 @@ User docs: `docs/features/live-tv.md`.
 
 - **New from your provider** (admin; `services/provider_new.py`,
   `routers/provider_new.py`, dashboard `static/js/newgroups.js`, Sources →
-  Live TV → New from your provider, plus a card on the VOD providers tab):
+  Live TV → New groups, plus a card on the VOD providers tab):
   every group or category a refresh or the nightly discovery creates gets
   `review_state` "new" (not on a provider's first list, its setup), counted
   on the sidebar's Sources badge. Each group name is read by
@@ -802,7 +802,11 @@ User docs: `docs/features/live-tv.md`.
   `{key, favourite}`, quick picks `PUT /api/my/channels/favourites`
   `{keys, favourite}` (Jellyfin favourites, set with the admin key for the
   signed-in person only). Admins: `GET /api/live/people` = each person's
-  `favourites` and `channels` (kids: the kids channels).
+  `favourites` and `channels` (kids: the kids channels) and the setup
+  status; the dashboard shows only `total` and `setup` (Sources → Live TV →
+  More): people's favourites are theirs, never on the admin's pages. The
+  Household channels count is the pool without `no_event` slots, = the
+  lineup (`L.lineup()`), = Jellyfin's channels.
 - Stream checker (`services/livetv_checker.py`, always on, started in
   main.py's lifespan): opens one channel at a time over all providers and
   judges its first bytes (MPEG-TS sync, or an HLS playlist's first segment;

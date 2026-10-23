@@ -1,4 +1,4 @@
-"""My Channels and Live TV → Channels / People: channel and person names show
+"""My Channels and Live TV → Household channels: channel names show
 exactly as they came (provider names are text, never markup), and the page's
 rules: everyone has the same channels and stars favourites (quick picks star
 or unstar a type's short list), event slots with nothing on hidden, channels
@@ -16,8 +16,8 @@ VALUES = ["O'Brien & \"Sons\" <3", "Tom &#39; Jerry &amp; co", "Ocean’s “Ele
           "Šėšta `tick` ${x} </div>", "a\\\\b\\"]
 ESC = functions("app.js", ["escHtml"])
 
-ROW_FNS = ["_mychByKey", "_mychIsAdmin", "_mychChoosable", "_mychFavs", "_mychLogo", "_mychStar",
-           "_mychMatches", "_mychAgo", "_mychWhenEvent", "_mychVia", "_mychWorks", "_mychGuide", "_mychMeta",
+ROW_FNS = ["_mychByKey", "_mychChoosable", "_mychFavs", "_mychLogo", "_mychStar",
+           "_mychMatches", "_mychAgo", "_mychWhenEvent", "_mychWorks", "_mychGuide", "_mychMeta",
            "_mychRow", "_mychPicks", "mychRenderPicks", "mychRenderFavs", "mychRenderAll"]
 
 
@@ -77,23 +77,11 @@ class MyChannelsNames(unittest.TestCase):
         admins = render(src, "var state = {currentUser: {is_admin: true}};",
                         "mych.data = %s; mychRenderAll()" % data)
         self.assertEqual([], missing_text([VALUES[1]], people["mych-all-list"]))
-        # Where a network streams from is the admin's business: people see "NBC".
+        # My Channels is the same for everyone: where a network streams from
+        # is on Sources → Live TV, so nobody sees it here, admins included.
         self.assertEqual([VALUES[0]], missing_text([VALUES[0]], people["mych-all-list"]))
-        self.assertEqual([], missing_text([VALUES[0]], admins["mych-all-list"]))
-
-    def test_people(self):
-        src = ESC + functions("mychannels.js", ["loadLivePeople"])
-        people = {"total": 30, "kids_channels": 4, "setup": {},
-                  "people": [{"name": v, "kids": i == 1, "channels": 4 if i == 1 else 30,
-                              "favourites": None if i == 2 else i} for i, v in enumerate(VALUES)]}
-        html = render(src, "API['/api/live/people'] = %s;" % json.dumps(people), "await loadLivePeople()")
-        self.assertEqual([], missing_text(VALUES, html["live-people"]))
-        out = html["live-people"][-1]
-        self.assertIn("0 favourites", out)
-        self.assertIn("1 favourite<", out)
-        self.assertIn("Kids channels only (4)", out)
-        self.assertIn("Not known yet", out)
-        self.assertNotIn("tuner", out.lower())
+        self.assertEqual([VALUES[0]], missing_text([VALUES[0]], admins["mych-all-list"]))
+        self.assertEqual(people["mych-all-list"], admins["mych-all-list"])
 
 
 @unittest.skipUnless(HAVE_NODE, "node is not installed")
@@ -151,7 +139,7 @@ class PoolNames(unittest.TestCase):
         src = ESC + STATE + _top(["pool"]) + functions("mychannels.js", [
             "_mychLogo", "_mychAgo", "_mychWorks", "_mychGuide", "_mychMeta", "_poolNet", "_poolFiltered",
             "_poolVariantLabel", "_poolVariantSelect", "_poolTypes", "_poolRow", "_poolNameLogo", "_poolLoadLogos", "_poolDetail",
-            "_poolMergeBtn",
+            "_poolTotals", "_poolMergeBtn",
             "poolRender"])
         variants = [{"channel_id": 10 + i, "name": v, "provider_name": v, "enabled": True, "chosen": i == 0,
                      "has_guide": True, "check": {"state": "works", "at": None}} for i, v in enumerate(VALUES)]
@@ -165,6 +153,26 @@ class PoolNames(unittest.TestCase):
         html = render(src, setup, "poolRender()")
         self.assertEqual([], missing_text(VALUES, html["pool-list"]))
         self.assertEqual([], missing([f"{v} · Guide ✓ · ✓ Works" for v in VALUES], html["pool-list"]))
+
+    def test_one_true_count_and_empty_event_slots_left_out(self):
+        """The count is what people get (the lineup: no event slots with
+        nothing on), and the list shows the same channels unless asked for
+        the empty slots."""
+        src = ESC + STATE + _top(["pool"]) + functions("mychannels.js", [
+            "_mychLogo", "_mychAgo", "_mychWorks", "_mychGuide", "_mychMeta", "_mychWhenEvent", "_poolNet", "_poolFiltered",
+            "_poolTypes", "_poolRow", "_poolTotals", "_poolMergeBtn", "poolRender"])
+        entries = ([{"key": f"c{i}", "name": f"Ch {i}", "types": [], "has_guide": True, "event": None,
+                     "check": {"state": "works" if i < 3 else "unchecked", "at": None}} for i in range(1, 6)]
+                   + [{"key": f"c{i}", "name": f"PPV {i}", "types": [], "has_guide": False, "event": "no_event"}
+                      for i in range(6, 1300)])
+        setup = "pool.entries = %s; pool.nets = {}; pool.types = [];" % json.dumps(entries)
+        html = render(src, setup, "poolRender()")
+        self.assertIn("5 channels <small>in your household", html["pool-total"][-1])
+        self.assertIn("2 checked and working", html["pool-count"][-1])
+        self.assertIn("3 not checked yet", html["pool-count"][-1])
+        self.assertNotIn("1,29", html["pool-total"][-1])
+        self.assertEqual(5, html["pool-list"][-1].count('class="pool-row'))
+        self.assertNotIn("PPV", html["pool-list"][-1])
 
 
 if __name__ == "__main__":

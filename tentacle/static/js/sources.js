@@ -126,9 +126,12 @@ function renderProviderCard(p) {
   if (p.last_synced) meta.push(`Synced ${dashTimeAgo(p.last_synced)}`);
   else if (p.last_tested) meta.push(`Tested ${new Date(p.last_tested).toLocaleDateString()}`);
 
-  // Several addresses (Xtream): the one in use and its backups, tested and ranked
+  // The rare settings wait behind More: several addresses (Xtream: the one
+  // in use and its backups, tested and ranked) and the channel numbers.
   const xtream = !p.provider_type || p.provider_type === 'xtream';
-  const addresses = xtream && p.server_url ? _providerSection(p.id, 'addr', 'Address', 'Addresses', true) : '';
+  const more = (xtream && p.server_url ? _providerSection(p.id, 'addr', 'Backup addresses', 'Addresses', true) : '')
+    + (p.live_tv_enabled ? _liveNumbersRow(p) : '');
+  const moreOpen = !!srcState.open[`${p.id}:more`];
 
   let uses = '';
   // A switch is shown for what the provider offers (and for one that is on,
@@ -140,9 +143,9 @@ function renderProviderCard(p) {
   }
   if (p.has_live || p.live_tv_enabled) {
     uses += _switchRow(p, 'live', !!p.live_tv_enabled, 'Use for Live TV',
-      'The channel groups you switch on are the channels your household can watch, with a TV guide. Everyone stars their favourites under My Channels.');
+      'Channel groups are the provider&rsquo;s folders of channels (like &ldquo;US: News&rdquo;). The channels in the groups you pick are your household&rsquo;s, with a TV guide; everyone stars their own favourites under My Channels.');
     if (p.live_tv_enabled) {
-      uses += _providerSection(p.id, 'groups', 'Channel groups for everyone');
+      uses += _providerSection(p.id, 'groups', 'Channel groups');
       uses += _liveLimitsRow(p);
     }
   }
@@ -161,11 +164,12 @@ function renderProviderCard(p) {
       </div>
       ${meta.length ? `<div class="provider-meta">${meta.map(m => `<div class="provider-meta-item">${escHtml(m)}</div>`).join('')}</div>` : ''}
       <div class="provider-offers"><span class="provider-offers-label">Offers</span> ${offersHtml}</div>
-      ${addresses}
       ${uses ? `<div class="provider-uses">${uses}</div>` : ''}
+      ${more ? `<div class="provider-more" id="prov-more-${p.id}" style="${moreOpen ? '' : 'display:none'}">${more}</div>` : ''}
       <div class="provider-actions">
         <button class="btn btn-secondary btn-sm" onclick="refreshProvider(${p.id})">Test</button>
         <button class="btn btn-secondary btn-sm" onclick="editProvider(${p.id})">Edit</button>
+        ${more ? `<button class="btn btn-secondary btn-sm" id="prov-more-btn-${p.id}" aria-expanded="${moreOpen}" aria-controls="prov-more-${p.id}" onclick="toggleProviderMore(${p.id})">${moreOpen ? 'Less' : 'More'}</button>` : ''}
         <button class="btn btn-danger btn-sm" onclick="confirmDeleteProvider(${p.id}, '${escapeJS(p.name)}')">Delete</button>
       </div>
     </div>`;
@@ -207,6 +211,19 @@ async function setProviderUse(id, use, on) {
     await loadProviders();
   } catch (e) {
     toast(e.message, 'error', 8000);
+  }
+}
+
+// More on a provider's card: backup addresses and channel numbers.
+function toggleProviderMore(id) {
+  const key = `${id}:more`;
+  srcState.open[key] = !srcState.open[key];
+  const box = document.getElementById(`prov-more-${id}`);
+  const btn = document.getElementById(`prov-more-btn-${id}`);
+  if (box) box.style.display = srcState.open[key] ? '' : 'none';
+  if (btn) {
+    btn.textContent = srcState.open[key] ? 'Less' : 'More';
+    btn.setAttribute('aria-expanded', String(srcState.open[key]));
   }
 }
 
@@ -401,11 +418,12 @@ function _updateGroupsSummary(id) {
   if (!sum) return;
   if (srcState.groupPoll[id]) return;   // the sync's own message is showing
   const groups = srcState.groups[id] || [];
+  // Groups only: how many channels that makes is on the Live TV tab, after
+  // the same channel in several places is folded into one.
   const on = groups.filter(g => g.enabled);
-  const channels = on.reduce((n, g) => n + (g.channel_count || 0), 0);
   sum.textContent = !groups.length ? '— none read yet'
-    : on.length ? `— ${on.length} of ${groups.length} on (${channels.toLocaleString()} channels)`
-    : `— none of ${groups.length} on yet`;
+    : on.length ? `— ${on.length} of ${groups.length} picked`
+    : `— none of ${groups.length} picked yet`;
   sum.style.color = on.length ? '' : 'var(--amber)';
 }
 
@@ -427,7 +445,7 @@ function renderProvGroupsPanel(id) {
           <button class="btn btn-primary btn-sm" onclick="provGroupsSave(${id})">Save &amp; update channels</button>
         </div>
       </div>
-      <div class="form-hint" style="margin-top:8px">Channels, their order and names are set on the <a href="#" onclick="showSourcesTab('live');return false" style="color: var(--accent-text)">Live TV</a> tab.</div>`;
+      <div class="form-hint" style="margin-top:8px">The channels they make, their names and logos are on the <a href="#" onclick="showSourcesTab('live');return false" style="color: var(--accent-text)">Live TV</a> tab.</div>`;
     panel.dataset.built = '1';
   }
   renderProvGroups(id);
@@ -715,10 +733,9 @@ async function setAddressAutoSwitch(id, mode) {
   }
 }
 
-// ── Live TV per provider: streams at once, channel numbers ───────────────
+// ── Live TV per provider: streams at once; channel numbers (under More) ──
 function _liveLimitsRow(p) {
   const account = p.max_connections ? `The account says ${p.max_connections}.` : '';
-  const off = p.channel_number_offset;
   return `
     <div class="provider-live-limits">
       <label>Streams at once
@@ -726,10 +743,18 @@ function _liveLimitsRow(p) {
           aria-label="Streams at once (${escapeAttr(p.name)})" onchange="saveProviderLiveNumber(${p.id}, 'live_max_streams', this)">
       </label>
       <span class="form-hint" style="margin:0">${account} Live TV, recordings and films share them.</span>
+    </div>`;
+}
+
+function _liveNumbersRow(p) {
+  const off = p.channel_number_offset;
+  return `
+    <div class="provider-live-limits">
       <label>Channel numbers +
         <input type="number" min="0" step="1000" class="form-input wide" value="${off ?? ''}" placeholder="automatic"
           aria-label="Added to the channel numbers (${escapeAttr(p.name)})" onchange="saveProviderLiveNumber(${p.id}, 'channel_number_offset', this)">
       </label>
+      <span class="form-hint" style="margin:0">Only with several providers: keeps their channel numbers apart.</span>
     </div>`;
 }
 

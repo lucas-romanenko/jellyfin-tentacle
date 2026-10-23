@@ -45,10 +45,6 @@ function _mychByKey() {
   return m;
 }
 
-function _mychIsAdmin() {
-  return !!(typeof state !== 'undefined' && state.currentUser && state.currentUser.is_admin);
-}
-
 // The channels to star: event slots with nothing on are left out, channels
 // that don't work go to the bottom; otherwise the lineup's order.
 function _mychChoosable() {
@@ -284,12 +280,6 @@ function _mychWhenEvent(iso) {
   return `${d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })} ${time}`;
 }
 
-// Where a folded network streams from (admins only): "from NBC 2 Buffalo · 16 versions".
-function _mychVia(c) {
-  if (!_mychIsAdmin() || !(c.variants > 1)) return '';
-  return ` <span class="via">from ${escHtml(c.variant_name || '')} · ${c.variants} versions</span>`;
-}
-
 function _mychWorks(c) {
   const s = c.check && c.check.state;
   const when = c.check && c.check.at ? ` <span class="when">(checked ${escHtml(_mychAgo(c.check.at))})</span>` : '';
@@ -312,12 +302,12 @@ function _mychMeta(parts) {
   return items.length ? `<span class="mych-meta">${items.join('')}</span>` : '';
 }
 
-function _mychRow(c, meta, via = true) {
+function _mychRow(c, meta) {
   const broken = c.check && c.check.state === 'broken';
   return `
     <div class="mych-row${c.favourite ? ' starred' : ''}${broken ? ' broken' : ''}" data-key="${escHtml(c.key)}">
       <span class="mych-num">${c.number != null ? escHtml(String(c.number)) : ''}</span>${_mychLogo(c)}
-      <span class="mych-text"><span class="mych-name" title="${escHtml(c.name)}">${escHtml(c.name)}${c.new ? '<span class="mych-new" title="Added to the household’s channels in the last two weeks">New</span>' : ''}${via ? _mychVia(c) : ''}</span>${meta}</span>${_mychStar(c)}
+      <span class="mych-text"><span class="mych-name" title="${escHtml(c.name)}">${escHtml(c.name)}${c.new ? '<span class="mych-new" title="Added to the household’s channels in the last two weeks">New</span>' : ''}</span>${meta}</span>${_mychStar(c)}
     </div>`;
 }
 
@@ -333,7 +323,7 @@ function mychRenderFavs() {
   el.innerHTML = favs.map(c => {
     const ev = c.event && typeof c.event === 'object' ? _mychGuide(c) : '';
     const broken = c.check && c.check.state === 'broken' ? '<span class="bad">✗ Not working</span>' : '';
-    return _mychRow(c, _mychMeta([ev, broken]), false);
+    return _mychRow(c, _mychMeta([ev, broken]));
   }).join('');
 }
 
@@ -447,7 +437,6 @@ const pool = {
 async function loadLivePool() {
   const el = document.getElementById('pool-list');
   if (!el) return;
-  loadPoolChecker();
   try {
     const [p, n, t] = await Promise.all([
       api('/api/live/catalog/pool'), api('/api/live/catalog/networks'), api('/api/live/catalog/types')]);
@@ -465,26 +454,6 @@ async function loadLivePool() {
       pool.types.map(t => `<option value="${escHtml(t)}">${escHtml(MYCH_TYPE_LABEL[t] || t)}</option>`).join('');
   }
   poolRender();
-  _poolLoadRegion();
-}
-
-async function loadPoolChecker() {
-  const el = document.getElementById('pool-checker');
-  if (!el) return;
-  let s;
-  try { s = await api('/api/live/checker/status'); } catch (e) { el.textContent = ''; el.style.display = 'none'; return; }
-  el.style.display = '';
-  const doing = s.state === 'checking' ? `checking ${escHtml(s.current?.name || 'a channel')}`
-    : s.state === 'paused' ? `paused: ${escHtml(s.paused_reason || 'someone is watching')}`
-    : s.state === 'backoff' ? 'waiting: the provider asked to slow down'
-    : s.state === 'stopped' ? 'stopped'
-    : 'waiting for the next check';
-  const dot = s.state === 'checking' ? 'on' : s.state === 'paused' || s.state === 'backoff' ? 'paused' : '';
-  const t = s.pool || {};
-  el.innerHTML = `<span><span class="dot ${dot}"></span><strong>Stream checker</strong>: ${doing}</span>`
-    + `<span><span style="color:var(--green)">${t.works || 0} work</span> · <span style="color:var(--red)">${t.broken || 0} not working</span> · ${t.unchecked || 0} not checked yet</span>`
-    + (s.last_checked_at ? `<span>last check ${escHtml(_mychAgo(s.last_checked_at))}</span>` : '')
-    + '<span class="note" style="color:var(--text3)">One channel at a time, only while nobody watches or records.</span>';
 }
 
 function _poolNet(e) {
@@ -508,7 +477,7 @@ function _poolFiltered() {
     if (show === 'broken') return broken(e);
     if (show === 'noguide') return !e.has_guide && !(e.event && typeof e.event === 'object');
     if (show === 'noevent') return e.event === 'no_event';
-    return true;
+    return e.event !== 'no_event';   // what people get: event slots with nothing on are left out
   }).map((e, i) => [e, i]).sort((a, b) => broken(a[0]) - broken(b[0]) || a[1] - b[1]).map(p => p[0]);
 }
 
@@ -536,8 +505,7 @@ function _poolRow(e) {
   const via = isNet && net.count > 1
     ? `<span class="via">from ${escHtml(e.variant_name || '')} · ${net.count} versions</span>` : '';
   const meta = e.out ? _mychMeta(['<span>Taken out: people don’t see it</span>'])
-    : _mychMeta([via, _mychGuide(e), _mychWorks(e), _poolTypes(e),
-      (e.main_types || []).length ? `<span class="ev" title="A quick pick adds it">In quick pick: ${escHtml(e.main_types.map(t => MYCH_TYPE_LABEL[t] || t).join(', '))}</span>` : '']);
+    : _mychMeta([via, _mychGuide(e), _mychWorks(e), _poolTypes(e)]);
   const selectable = e.key[0] === 'n' || e.key[0] === 'c';
   const actions = e.out
     ? `<button class="btn btn-secondary btn-sm" data-act="putback">Put back</button>`
@@ -609,11 +577,7 @@ function poolRender() {
   const el = document.getElementById('pool-list');
   if (!el) return;
   const rows = _poolFiltered();
-  const nets = pool.entries.filter(e => e.key[0] === 'n').length;
-  const hidden = pool.entries.filter(e => e.event === 'no_event').length;
-  document.getElementById('pool-count').textContent =
-    `${pool.entries.length} channels, ${nets} of them networks folded from several versions`
-    + (hidden ? ` · ${hidden} event slots with nothing on, hidden from people` : '');
+  _poolTotals();
   _poolMergeBtn();
   if (!rows.length) {
     el.innerHTML = `<div class="mych-none">${pool.entries.length ? 'Nothing matches.' : 'No channels yet. Switch on channel groups on the provider’s card (IPTV providers).'}</div>`;
@@ -623,6 +587,29 @@ function poolRender() {
   el.innerHTML = shown.map(_poolRow).join('') + (rows.length > shown.length
     ? `<button class="mych-more" data-act="more">Show all ${rows.length}</button>` : '');
   if (pool.open && /^[cn]\d+$/.test(pool.open) && shown.some(e => e.key === pool.open)) _poolLoadLogos(pool.open);
+}
+
+// One number, the one people get: the household's guide is the pool
+// without the event slots that have nothing on now (the lineup tuner's
+// channels, Jellyfin's channels). Under it, how many of them work.
+function _poolTotals() {
+  const shown = pool.entries.filter(e => e.event !== 'no_event');
+  const n = shown.length;
+  const works = shown.filter(e => e.check && e.check.state === 'works').length;
+  const broken = shown.filter(e => e.check && e.check.state === 'broken').length;
+  const unchecked = n - works - broken;
+  const total = document.getElementById('pool-total');
+  if (total) total.innerHTML = n
+    ? `${n.toLocaleString()} channel${n === 1 ? '' : 's'} <small>in your household&rsquo;s guide</small>`
+    : 'No channels yet <small>&middot; pick channel groups on the provider&rsquo;s card</small>';
+  const count = document.getElementById('pool-count');
+  if (!count) return;
+  const bits = [];
+  if (works) bits.push(`<span style="color:var(--green)">${works.toLocaleString()} checked and working</span>`);
+  if (broken) bits.push(`<span style="color:var(--red)">${broken.toLocaleString()} not working</span>`);
+  if (unchecked) bits.push(`${unchecked.toLocaleString()} not checked yet`);
+  count.innerHTML = n ? bits.join(' &middot; ')
+    + ' <span style="color:var(--text3)">&middot; Tentacle tries one channel at a time while nobody watches.</span>' : '';
 }
 
 function _poolMergeBtn() {
@@ -673,7 +660,7 @@ function _poolOnClick(ev) {
         `${e.name} taken out. Show “Taken out” to put it back.`);
     } else {
       _poolDo(() => api(`/api/live/catalog/channels/${id}/enabled`, { method: 'PUT', body: { enabled: false } }),
-        `${e.name} switched off. Switch it on again in the Provider list.`);
+        `${e.name} switched off. Switch it on again under More → Every channel the provider lists.`);
     }
   } else if (act === 'putback') {
     _poolDo(() => api(`/api/live/catalog/networks/${id}`, { method: 'PUT', body: { excluded: false } }), 'Put back');
@@ -742,29 +729,12 @@ async function poolSaveRegion() {
   }
 }
 
-// ── Admins: Sources → Live TV → People and In Jellyfin ─────────────────────
+// ── Admins: Sources → Live TV → More: Live TV in Jellyfin ─────────────────────
 
 function _mychWhen(iso) {
   if (!iso) return '';
   const d = new Date(iso);
   return isNaN(d) ? '' : d.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
-}
-
-// Each person's favourites; a kids profile sees the kids channels only.
-async function loadLivePeople() {
-  const el = document.getElementById('live-people');
-  if (!el) return;
-  let d;
-  try { d = await api('/api/live/people'); } catch (e) { el.innerHTML = `<div class="mych-none">${escHtml(e.message)}</div>`; return; }
-  if (!d.people.length) { el.innerHTML = '<div class="mych-none">Nobody has signed in yet.</div>'; return; }
-  const favs = p => p.favourites == null ? '<span class="muted">Not known yet</span>'
-    : `${p.favourites} favourite${p.favourites === 1 ? '' : 's'}`;
-  const places = new Set(d.people.map(p => p.location && p.location.slug));
-  const where = p => places.size > 1 && p.location ? ` · local channels from ${escHtml(p.location.city)}` : '';
-  el.innerHTML = `<table class="mych-people"><thead><tr><th>Person</th><th>Favourites</th><th>Channels</th></tr></thead><tbody>${
-    d.people.map(p => `<tr><td>${escHtml(p.name)}${p.kids ? ' <span class="badge badge-blue">Kids</span>' : ''}</td><td>${favs(p)}</td>`
-      + `<td class="muted">${p.kids ? `Kids channels only (${p.channels})` : `All ${p.channels}`}${where(p)}</td></tr>`).join('')
-  }</tbody></table>`;
 }
 
 async function loadLiveSetup() {
