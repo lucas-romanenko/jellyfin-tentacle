@@ -418,7 +418,9 @@ def preview_rule(body: RuleBody, request: Request, db: Session = Depends(get_db)
         return limits[pid]
 
     book.fit_plans(others + [pl], [], limit_of)
-    guide_until = max((a.stop for a in items), default=None)
+    # how far the guide reaches: regular listings (an event channel's name can
+    # carry any date)
+    guide_until = max((a.stop for a in items if not a.from_event), default=None)
     return {"name": name, "events": [_event_json(e) for e in pl.events],
             "near": [{"airing": _airing_json(n.airing), "reason": n.reason} for n in pl.near],
             "min_minutes": P.min_minutes(rule), "listings": len(items),
