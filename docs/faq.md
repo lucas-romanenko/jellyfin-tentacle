@@ -140,7 +140,11 @@ Yes. Tentacle includes a built-in HDHomeRun emulator that serves the same purpos
 
 ### Can I use the same provider for VOD and Live TV?
 
-Yes, and you add it only once: Sources → IPTV providers → + Add Provider. When the account has live channels, Live TV is switched on for that provider automatically (the **Use for Live TV** switch on its card) and you choose its channel groups on the same card. Live TV needs an Xtream Codes provider; M3U providers are used for VOD only.
+Yes, and you add it only once: Sources → IPTV providers → + Add Provider. When the account has live channels, Live TV is switched on for that provider automatically (the **Use for Live TV** switch on its card) and you choose its channel groups on the same card. That works the same for an Xtream Codes login, a playlist link (M3U URL) and a playlist file.
+
+### Do I need tuliprox, xTeVe or Threadfin to watch several channels at once?
+
+No. Tentacle pulls each live channel as one continuous stream and shares it between everyone watching that channel, so a one-connection account carried 5 people on 5 different channels, and 8 streams at once (live, films and a recording), in our tests, with an Xtream login and with a playlist (M3U) from the same provider. Add your provider directly. If you keep a re-streamer anyway, add its address as the provider; a re-streamer on your own network is allowed for that address only.
 
 ### Why are some channels missing EPG?
 

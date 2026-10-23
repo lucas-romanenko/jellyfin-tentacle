@@ -898,7 +898,7 @@ User docs: `docs/features/live-tv.md`.
   (most likely the account's own limit). Headers `X-Tentacle-Reason:
   provider not delivering` / `connection in use`. Recordings keep the
   refusal.
-- Stream format: Xtream channels open as continuous MPEG-TS (`.ts`) by
+- Stream format: Xtream channels (and M3U channels whose link is an Xtream panel's) open as continuous MPEG-TS (`.ts`) by
   default, HLS only when the account's `allowed_output_formats` lacks ts or
   the channel's ts open is refused outright (then remembered per channel
   until restart). Chosen at open time (`_live_open_urls`), so no channel sync
@@ -1020,8 +1020,21 @@ User docs: `docs/features/live-tv.md`.
   `user_agent`, `epg_url`, `require_tmdb_match`, `live_tv_enabled`. The
   dashboard adds providers only in Sources → IPTV providers, and one row serves
   VOD and Live TV: `POST /api/providers/{id}/test` sets `live_tv_enabled`
-  when an Xtream account has live categories (an M3U one never gets it).
-  `user_agent` / `epg_url` have no field: API only. (The one-provider
+  when an Xtream account has live categories, or an M3U playlist live
+  entries. `epg_url` has a field for M3U providers only; `user_agent` is API only.
+- M3U providers (`services/m3u_source.py`): a read classifies every entry
+  (`m3u_parser.classify`: tvg-type, panel path, file extension) so Live TV
+  takes channels and VOD films/episodes; a playlist whose links are mostly
+  one Xtream panel login (`panel_login`) stores it in the provider's
+  `server_url`/`username`/`password` (as Xtream does): live opens `.ts` with
+  `.m3u8` fallback (`_m3u_open_urls`), the panel's films get `/api/vod`
+  links (`M3UClient._link`, `_resolve` rebuilds the same URL), the test reads
+  player_api for expiry/max connections, `_account_key` groups rows on one
+  account. The header's `url-tvg`/`x-tvg-url` is kept in
+  `livetv_m3u_guide_url_{id}` (guide: `epg_url`, then that, then the panel's
+  xmltv.php). The SSRF LAN exception for an M3U URL is the playlist's own
+  origin (`m3u_source.guard_origin`). Nightly discovery re-reads the
+  playlist. (The one-provider
   `/api/live/provider` routes are gone: Live TV is a switch per card.)
 - Several Live TV providers (#704): each account carries its own streams
   at once (`Provider.live_max_streams`, else `livetv_max_concurrent_streams`,

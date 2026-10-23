@@ -3916,18 +3916,20 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
     </div>
 
     <div class="form-group">
-      <div class="form-label">Provider Type</div>
+      <div class="form-label">What your provider gave you</div>
       <select class="form-input" id="p-type" onchange="onProviderTypeChange()">
-        <option value="xtream">Xtream Codes (URL + username + password)</option>
-        <option value="m3u_url">M3U URL</option>
-        <option value="m3u_file">M3U File (path on server)</option>
+        <option value="xtream">Xtream Codes login (server, username, password)</option>
+        <option value="m3u_url">Playlist link (M3U URL)</option>
+        <option value="m3u_file">Playlist file on the server (M3U)</option>
       </select>
+      <div class="form-hint">Any of the three works the same: live channels with a guide, films and series, several people watching at once. Paste a link into any box and Tentacle sorts it out.</div>
     </div>
 
     <div id="p-xtream-fields">
       <div class="form-group">
         <div class="form-label">Server URL</div>
-        <input class="form-input mono" id="p-url" placeholder="http://provider.com:8080">
+        <input class="form-input mono" id="p-url" placeholder="http://provider.com:8080" oninput="onProviderAddressInput(this)">
+        <div class="form-hint" id="p-url-hint" style="display:none"></div>
       </div>
 
       <div class="form-row">
@@ -3944,9 +3946,18 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
     <div id="p-m3u-fields" style="display:none">
       <div class="form-group">
-        <div class="form-label" id="p-m3u-label">M3U URL</div>
-        <input class="form-input mono" id="p-m3u-url" placeholder="http://provider.com/get.php?username=…&password=…&type=m3u_plus">
-        <div class="form-hint" id="p-m3u-hint">Direct link to the playlist. VOD movies &amp; series are parsed from it and matched to TMDB.</div>
+        <div class="form-label" id="p-m3u-label">Playlist link</div>
+        <input class="form-input mono" id="p-m3u-url" placeholder="http://provider.com/get.php?username=…&password=…&type=m3u_plus" oninput="onProviderAddressInput(this)">
+        <div class="form-hint" id="p-m3u-hint"></div>
+        <div class="form-hint" id="p-m3u-xtream" style="display:none">
+          This is an Xtream Codes link. It works as it is; as an Xtream login Tentacle can also keep backup addresses for it.
+          <button type="button" class="btn btn-sm" style="margin-left:6px" onclick="useLinkAsXtream()">Use as Xtream login</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <div class="form-label">Guide link (optional)</div>
+        <input class="form-input mono" id="p-epg-url" placeholder="Read from the playlist">
+        <div class="form-hint">Leave it empty: Tentacle uses the guide the playlist names, or the provider's own. Enter an XMLTV link only to use another guide.</div>
       </div>
     </div>
 

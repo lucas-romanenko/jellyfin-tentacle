@@ -187,10 +187,16 @@ class OpenUsesTheFormatNow(_Base):
 
     def test_urls_a_sync_did_not_build_are_left_alone(self):
         from routers import livetv
-        for prov, url in ((_provider("m3u_url"), PANEL + ".m3u8"),
+        for prov, url in ((_provider("m3u_url"), "http://cdn.test/news/master.m3u8"),
                           (_provider(), "http://panel.test/play/abc.m3u8"),
                           (None, PANEL + ".m3u8")):
             self.assertEqual((url, None), livetv._live_open_urls(self.db, prov, _channel(url)))
+
+    def test_an_m3u_of_a_panels_links_opens_like_xtream(self):
+        # a get.php playlist: the same panel links, ts first (#700)
+        from routers import livetv
+        self.assertEqual((PANEL + ".ts", PANEL + ".m3u8"),
+                         livetv._live_open_urls(self.db, _provider("m3u_url"), _channel(PANEL + ".m3u8")))
 
 
 def _resp(status, url, content=b"", headers=None):

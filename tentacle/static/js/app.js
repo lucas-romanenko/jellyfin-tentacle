@@ -1182,6 +1182,7 @@ function showAddProvider() {
   document.getElementById('p-require-tmdb').checked = true;
   document.getElementById('p-type').value = 'xtream';
   document.getElementById('p-m3u-url').value = '';
+  document.getElementById('p-epg-url').value = '';
   onProviderTypeChange();
   showModal('modal-add-provider');
 }
@@ -1194,14 +1195,88 @@ function onProviderTypeChange() {
   document.getElementById('p-m3u-fields').style.display = isM3u ? '' : 'none';
   if (isM3u) {
     const isFile = type === 'm3u_file';
-    document.getElementById('p-m3u-label').textContent = isFile ? 'M3U File Path' : 'M3U URL';
+    document.getElementById('p-m3u-label').textContent = isFile ? 'Playlist file' : 'Playlist link';
     document.getElementById('p-m3u-hint').textContent = isFile
-      ? 'Absolute path to a .m3u file inside the Tentacle container (e.g. /data/playlist.m3u).'
-      : 'Direct link to the playlist. VOD movies & series are parsed from it and matched to TMDB.';
+      ? 'The file\'s path inside Tentacle\'s container: put it in Tentacle\'s data folder and enter /data/<file name>. It is read again at every sync.'
+      : 'Its channels go to Live TV, its films and series to the library (matched to TMDB), and its guide is read from it.';
     document.getElementById('p-m3u-url').placeholder = isFile
       ? '/data/playlist.m3u'
       : 'http://provider.com/get.php?username=…&password=…&type=m3u_plus';
   }
+  _providerLinkHints();
+}
+
+// An Xtream panel's playlist link: get.php?username=…&password=… on its server.
+function _xtreamFromLink(text) {
+  let u;
+  try { u = new URL((text || '').trim()); } catch (e) { return null; }
+  if (!/^https?:$/.test(u.protocol) || !/\/(get|player_api)\.php$/i.test(u.pathname)) return null;
+  const user = u.searchParams.get('username'), pass = u.searchParams.get('password');
+  if (!user || !pass) return null;
+  const prefix = u.pathname.replace(/\/(get|player_api)\.php$/i, '');
+  return { server: `${u.protocol}//${u.host}${prefix}`, user, pass };
+}
+
+// A pasted address that belongs in another box: a get.php link in the Xtream
+// server box is split into server, username and password; a playlist link
+// there or in the file box moves to the link box; a path in the link box to
+// the file box.
+function onProviderAddressInput(el) {
+  const v = (el.value || '').trim();
+  const type = document.getElementById('p-type');
+  if (el.id === 'p-url') {
+    const x = _xtreamFromLink(v);
+    if (x) {
+      el.value = x.server;
+      document.getElementById('p-user').value = x.user;
+      document.getElementById('p-pass').value = x.pass;
+      _providerHint('p-url-hint', 'Filled in from the Xtream link you pasted.');
+      return;
+    }
+    if (/^https?:\/\/\S+\.m3u8?(\?|$)/i.test(v) || /[?&]type=m3u/i.test(v)) {
+      type.value = 'm3u_url';
+      document.getElementById('p-m3u-url').value = v;
+      el.value = '';
+      onProviderTypeChange();
+      _providerHint('p-m3u-hint', 'That is a playlist link, so it is added as one.');
+      return;
+    }
+    _providerHint('p-url-hint', '');
+    return;
+  }
+  if (type.value === 'm3u_file' && /^https?:\/\//i.test(v)) {
+    type.value = 'm3u_url';
+    onProviderTypeChange();
+  } else if (type.value === 'm3u_url' && v.startsWith('/')) {
+    type.value = 'm3u_file';
+    onProviderTypeChange();
+  }
+  _providerLinkHints();
+}
+
+function _providerHint(id, text) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (text) { el.textContent = text; el.style.display = ''; }
+  else if (id === 'p-url-hint') el.style.display = 'none';
+}
+
+function _providerLinkHints() {
+  const isLink = document.getElementById('p-type').value === 'm3u_url';
+  const x = isLink ? _xtreamFromLink(document.getElementById('p-m3u-url').value) : null;
+  document.getElementById('p-m3u-xtream').style.display = x ? '' : 'none';
+}
+
+function useLinkAsXtream() {
+  const x = _xtreamFromLink(document.getElementById('p-m3u-url').value);
+  if (!x) return;
+  document.getElementById('p-type').value = 'xtream';
+  document.getElementById('p-url').value = x.server;
+  document.getElementById('p-user').value = x.user;
+  document.getElementById('p-pass').value = x.pass;
+  document.getElementById('p-m3u-url').value = '';
+  onProviderTypeChange();
+  _providerHint('p-url-hint', 'Filled in from the playlist link.');
 }
 
 function editProvider(id) {
@@ -1218,6 +1293,7 @@ function editProvider(id) {
   document.getElementById('p-require-tmdb').checked = p.require_tmdb_match !== false;
   document.getElementById('p-type').value = p.provider_type || 'xtream';
   document.getElementById('p-m3u-url').value = p.m3u_url || '';
+  document.getElementById('p-epg-url').value = p.epg_url || '';
   onProviderTypeChange();
   showModal('modal-add-provider');
 }
@@ -1237,7 +1313,8 @@ async function saveProvider() {
 
   if (isM3u) {
     body.m3u_url = document.getElementById('p-m3u-url').value.trim();
-    if (!body.m3u_url) { toast(type === 'm3u_file' ? 'M3U file path is required' : 'M3U URL is required', 'error'); return; }
+    if (!body.m3u_url) { toast(type === 'm3u_file' ? 'Enter the playlist file\'s path' : 'Enter the playlist link', 'error'); return; }
+    body.epg_url = document.getElementById('p-epg-url').value.trim();
   } else {
     body.server_url = document.getElementById('p-url').value.trim();
     body.username = document.getElementById('p-user').value.trim();
@@ -1288,7 +1365,12 @@ async function testProvider(id) {
   toast('Testing connection...', 'info');
   try {
     const r = await api(`/api/providers/${id}/test`, { method: 'POST' });
-    toast(`Connected — expires ${new Date(r.expiry).toLocaleDateString()}, ${r.max_connections} max streams`);
+    const parts = [];
+    if (r.expiry) parts.push(`expires ${new Date(r.expiry).toLocaleDateString()}`);
+    if (r.max_connections) parts.push(`${r.max_connections} connection${r.max_connections === 1 ? '' : 's'} at once`);
+    const offers = [r.has_live && 'live channels', r.has_vod && 'films', r.has_series && 'series'].filter(Boolean);
+    if (!parts.length && offers.length) parts.push(offers.join(', '));
+    toast(parts.length ? `Connected — ${parts.join(', ')}` : 'Connected');
     loadProviders();
   } catch (e) {
     toast(e.message, 'error');

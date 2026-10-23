@@ -176,13 +176,17 @@ def _category_list(data) -> list:
     raise ValueError("the provider did not answer with a category list")
 
 
-def fetch_provider_categories(provider: Provider):
+def fetch_provider_categories(provider: Provider, read: dict = None):
     """Fetch VOD/series categories + counts. Xtream via the player API; M3U by
-    parsing the playlist and using group-titles as categories."""
+    parsing the playlist and using group-titles as categories (`read` is told
+    how many entries the playlist had)."""
     if (provider.provider_type or "xtream") in ("m3u_url", "m3u_file"):
         from services.sync import M3UClient
         c = M3UClient(provider)
-        return c.get_vod_categories(), c.get_series_categories(), c.vod_counts(), c.series_counts()
+        vod_cats, series_cats = c.get_vod_categories(), c.get_series_categories()
+        if read is not None:
+            read["entries"] = len(c.playlist.entries) if c.playlist else 0
+        return vod_cats, series_cats, c.vod_counts(), c.series_counts()
 
     base = _api_base(provider)
     session = requests.Session()
@@ -214,18 +218,20 @@ def fetch_provider_categories(provider: Provider):
     return vod_cats, series_cats, vod_counts, series_counts
 
 
-def test_provider_connection(provider: Provider):
-    """Test connection and get account info. For M3U, verify the playlist is
-    reachable and contains VOD content."""
+def test_provider_connection(provider: Provider, db: Session = None):
+    """Test connection and get account info. For M3U, read the playlist: what
+    it offers (channels, films, episodes), and with `db` what it says about
+    the provider (services/m3u_source.py)."""
     if (provider.provider_type or "xtream") in ("m3u_url", "m3u_file"):
         from services.sync import M3UClient
-        c = M3UClient(provider)
+        c = M3UClient(provider, db)
         c._load()  # raises ProviderConnectionError if unreachable/unparseable
         n_movies = sum(len(v) for v in c._movies.values())
         n_series = sum(len(s) for s in c._series.values())
-        if n_movies == 0 and n_series == 0:
-            raise Exception("Playlist reachable but no VOD movies or series found")
-        return {"user_info": {"auth": 1}, "_m3u": {"has_vod": n_movies > 0, "has_series": n_series > 0}}
+        if n_movies == 0 and n_series == 0 and c.live_count == 0:
+            raise Exception("The playlist was read, but it lists no channels, films or episodes")
+        return {"user_info": {"auth": 1}, "_m3u": {"has_vod": n_movies > 0, "has_series": n_series > 0,
+                                                   "has_live": c.live_count > 0}}
 
     url = _api_base(provider)
     r = requests.get(url, headers=HEADERS, timeout=15)
@@ -260,6 +266,7 @@ def list_providers(db: Session = Depends(get_db)):
             "provider_type": p.provider_type or "xtream",
             "server_url": p.server_url,
             "m3u_url": p.m3u_url,
+            "epg_url": p.epg_url,
             "username": p.username,
             "active": p.active,
             "priority": p.priority,
@@ -283,12 +290,27 @@ def list_providers(db: Session = Depends(get_db)):
     ]
 
 
+def _check_m3u_address(ptype: str, address: str) -> None:
+    """A playlist link must be a web address, and a playlist file one
+    Tentacle can read inside its container: said when it is saved, not after."""
+    address = (address or "").strip()
+    if ptype == "m3u_file":
+        from services.m3u_parser import m3u_file_problem
+        problem = m3u_file_problem(address)
+        if problem:
+            raise HTTPException(400, problem)
+    elif not address.lower().startswith(("http://", "https://")):
+        raise HTTPException(400, "A playlist link starts with http:// or https://. "
+                                 "For a file on the server choose \"Playlist file on the server\".")
+
+
 @router.post("")
 def create_provider(body: ProviderCreate, db: Session = Depends(get_db)):
     ptype = body.provider_type or "xtream"
     if ptype in ("m3u_url", "m3u_file"):
         if not body.m3u_url:
             raise HTTPException(400, "An M3U URL (or file path) is required for M3U providers")
+        _check_m3u_address(ptype, body.m3u_url)
     elif not (body.server_url and body.username and body.password):
         raise HTTPException(400, "Server URL, username and password are required for Xtream providers")
 
@@ -362,6 +384,8 @@ def update_provider(provider_id: int, body: ProviderUpdate, db: Session = Depend
     if body.password is not None:
         p.password = body.password
     if body.m3u_url is not None:
+        if (p.provider_type or "xtream") in ("m3u_url", "m3u_file") and body.m3u_url != p.m3u_url:
+            _check_m3u_address(p.provider_type, body.m3u_url)
         p.m3u_url = body.m3u_url
         p.status = "untested"
     if body.epg_url is not None:
@@ -515,6 +539,24 @@ def delete_provider(provider_id: int, db: Session = Depends(get_db)):
     }
 
 
+def _keep_account_info(db: Session, p: Provider, data: dict) -> None:
+    """Expiry, connection limit and output formats from a player_api answer."""
+    info = data.get("user_info") or {}
+    exp_ts = info.get("exp_date")
+    if exp_ts:
+        try:
+            p.expiry = datetime.fromtimestamp(int(exp_ts))
+        except (TypeError, ValueError, OverflowError, OSError):
+            pass
+    try:
+        p.max_connections = int(info.get("max_connections", 1))
+    except (TypeError, ValueError):
+        p.max_connections = 1
+    if (p.provider_type or "xtream") != "xtream":
+        from routers.livetv import _remember_output_formats
+        _remember_output_formats(db, p.id, data)
+
+
 @router.post("/{provider_id}/test")
 def test_provider(provider_id: int, db: Session = Depends(get_db)):
     p = db.query(Provider).filter(Provider.id == provider_id).first()
@@ -523,26 +565,38 @@ def test_provider(provider_id: int, db: Session = Depends(get_db)):
     from services.provider_activity import refuse_while_recording
     refuse_while_recording(db, "Testing the provider")
     try:
-        data = test_provider_connection(p)
+        first_test = p.last_tested is None
+        data = test_provider_connection(p, db)
         info = data.get("user_info", {})
         p.status = "ok"
         p.last_tested = datetime.utcnow()
 
-        # M3U provider: capabilities come from parsing the playlist; no account/expiry.
+        # M3U provider: what it offers comes from the playlist; the account's
+        # details from its panel when its links are a panel's and it answers.
         if "_m3u" in data:
+            from services import m3u_source
+            had_live = bool(p.has_live)
             p.has_vod = data["_m3u"].get("has_vod", False)
             p.has_series = data["_m3u"].get("has_series", False)
-            p.has_live = False
+            p.has_live = data["_m3u"].get("has_live", False)
+            if p.has_live and not had_live:
+                p.live_tv_enabled = True      # as for Xtream, below
+            if first_test and not (p.has_vod or p.has_series):
+                p.active = False              # a channels-only playlist: no Movies & Series switch
+            account = m3u_source.account_info(p)
+            ainfo = account.get("user_info") or {}
+            if ainfo:
+                _keep_account_info(db, p, account)
             db.commit()
             return {
-                "success": True, "status": "Active",
-                "has_live": False, "has_vod": p.has_vod, "has_series": p.has_series,
+                "success": True, "status": ainfo.get("status") or "Active",
+                "expiry": p.expiry, "max_connections": p.max_connections if ainfo else None,
+                "active_connections": ainfo.get("active_cons"),
+                "has_live": p.has_live, "has_vod": p.has_vod, "has_series": p.has_series,
+                "panel": bool(p.server_url),
             }
 
-        exp_ts = info.get("exp_date")
-        if exp_ts:
-            p.expiry = datetime.fromtimestamp(int(exp_ts))
-        p.max_connections = int(info.get("max_connections", 1))
+        _keep_account_info(db, p, data)
 
         # Probe capabilities
         had_live = bool(p.has_live)
@@ -593,7 +647,13 @@ def fetch_categories(provider_id: int, db: Session = Depends(get_db)):
     refuse_while_recording(db, "Fetching the provider's categories")
 
     try:
-        vod_cats, series_cats, vod_counts, series_counts = fetch_provider_categories(p)
+        read = {}
+        if (p.provider_type or "xtream") in ("m3u_url", "m3u_file"):
+            vod_cats, series_cats, vod_counts, series_counts = fetch_provider_categories(p, read)
+        else:
+            vod_cats, series_cats, vod_counts, series_counts = fetch_provider_categories(p)
+        # An M3U playlist that listed anything at all (a live-only one lists no films)
+        m3u_read_entries = bool(read.get("entries"))
     except Exception as e:
         from services.log_redaction import redact  # the error text carries the login URL
         raise HTTPException(400, f"Failed to fetch categories: {redact(str(e))}")
@@ -641,11 +701,26 @@ def fetch_categories(provider_id: int, db: Session = Depends(get_db)):
                 created.append(new_cat)
                 new_count += 1
 
+    removed = 0
+    if (p.provider_type or "xtream") in ("m3u_url", "m3u_file") and m3u_read_entries:
+        # A playlist's categories are its group titles. Groups it no longer
+        # lists as films or series (its live channels' groups, which an older
+        # build offered as film categories) go, unless chosen.
+        listed = {(str(c["category_id"]), "movie") for c in vod_cats} | \
+                 {(str(c["category_id"]), "series") for c in series_cats}
+        from models.database import CategorySnapshot
+        for key, row in existing.items():
+            if key not in listed and not row.whitelisted:
+                db.query(CategorySnapshot).filter(CategorySnapshot.category_id == row.id).delete(
+                    synchronize_session=False)
+                db.delete(row)
+                removed += 1
+
     if created:
         from services import provider_new
         provider_new.note_created(db, created, first_setup=not existing)
     db.commit()
-    return {"success": True, "new_categories": new_count}
+    return {"success": True, "new_categories": new_count, "removed_categories": removed}
 
 
 @router.get("/{provider_id}/categories")

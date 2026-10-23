@@ -49,12 +49,12 @@ Stars save by themselves and show in Jellyfin at once.
 
 ## Adding a Provider
 
-There is no separate Live TV provider. Go to **Sources → IPTV providers**, click **+ Add Provider** and choose **Xtream Codes** (server URL, username, password). The same provider serves VOD and Live TV.
+There is no separate Live TV provider. Go to **Sources → IPTV providers**, click **+ Add Provider** and enter an Xtream Codes login, a playlist link (M3U URL) or a playlist file. The same provider serves VOD and Live TV.
 
 When you save it, Tentacle tests the connection. If the account has live channels, Live TV is switched on for that provider and its channel groups are fetched automatically. The provider's card (Sources → IPTV providers) then holds them under **Channel groups**, and a **Live TV** tab appears under Sources. Until a provider is used for Live TV, that tab says no provider is used for Live TV.
 
-!!! info "M3U providers"
-    An M3U URL or M3U file provider added in Sources → IPTV providers is used for VOD only. Live TV needs an Xtream Codes provider.
+!!! info "Playlist (M3U) providers"
+    A playlist link or file works like an Xtream login. Its live channels (not its films and episodes) become the channel groups; the guide comes from the link the playlist names (`url-tvg` / `x-tvg-url`), or from the optional **Guide link** on the provider. When its links are an Xtream panel's, each channel is opened as one continuous `.ts` stream (`.m3u8` as the fallback) and viewers of the same channel share it, so several people can watch on an account with few connections. Other links are opened as listed. The playlist is read again every night (new groups, changed links). Backup addresses are for Xtream logins only.
 
 ### Several providers
 

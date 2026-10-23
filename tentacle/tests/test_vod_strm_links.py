@@ -134,9 +134,11 @@ class LinksComeFromTheSettings(unittest.TestCase):
         self.assertRegex(links.movie(1, "mp4"), r"^http://192\.168\.2\.52:8888/api/vod/movie/")
         self.assertEqual([], self.probed)
 
-    def test_m3u_providers_keep_their_own_urls(self):
+    def test_m3u_providers_get_the_route_for_their_panels_films(self):
+        # used only for the films of the playlist's own panel login; any
+        # other link keeps its own URL (test_m3u_works_like_xtream)
         self.provider.provider_type = "m3u_url"
-        self.assertIsNone(self._links(plugin="http://192.168.2.77:8888")[0])
+        self.assertIsNotNone(self._links(plugin="http://192.168.2.77:8888")[0])
 
 
 class ExistingFilesAreRewrittenInPlace(unittest.TestCase):

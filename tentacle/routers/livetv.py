@@ -1190,7 +1190,8 @@ _EPG_COVERAGE_KEY = "livetv_epg_coverage_{}"
 _EPG_SYNCED_KEY = "livetv_epg_synced_{}"
 _M3U_SWITCHED_OFF_KEY = "livetv_m3u_switched_off_{}"
 PROVIDER_SETTING_KEYS = (_OUTPUT_FORMATS_KEY, _EPG_COVERAGE_KEY, _EPG_SYNCED_KEY,
-                         _M3U_SWITCHED_OFF_KEY, "provider_address_probation_{}")
+                         _M3U_SWITCHED_OFF_KEY, "provider_address_probation_{}",
+                         "livetv_m3u_guide_url_{}")   # services.m3u_source.GUIDE_URL_KEY
 
 
 def _remembered_output_formats(db, provider_id: int) -> list:
@@ -1234,7 +1235,11 @@ def _live_open_urls(db, provider, channel) -> "tuple[str, str | None]":
     in .<ext> as its last sync wrote it; the open asks for the format the
     setting picks now. Under auto a ts open has m3u8 as its fallback."""
     url = channel.stream_url or ""
-    if provider is None or (provider.provider_type or "xtream") != "xtream" or not channel.stream_id:
+    if provider is None:
+        return url, None
+    if (provider.provider_type or "xtream") != "xtream":
+        return _m3u_open_urls(db, provider, channel, url)
+    if not channel.stream_id:
         return url, None
     m = re.search(rf"/live/.+/{re.escape(channel.stream_id)}\.(m3u8|ts)$", url)
     if not m:
@@ -1246,6 +1251,27 @@ def _live_open_urls(db, provider, channel) -> "tuple[str, str | None]":
             return base + "m3u8", None
         return base + "ts", base + "m3u8"
     return base + ext, None
+
+
+def _m3u_open_urls(db, provider, channel, url: str) -> "tuple[str, str | None]":
+    """An M3U channel whose link is an Xtream panel's (/live/u/p/123.m3u8,
+    /u/p/123 ...: most provider playlists) opens like an Xtream channel: as
+    one continuous .ts, with .m3u8 as the fallback, per the same setting.
+    That is what lets one connection carry several channels (#700): an HLS
+    pull asks the panel again for every segment. Any other link is opened
+    as listed."""
+    from services.m3u_parser import panel_link
+    link = panel_link(url)
+    if link is None or link.kind != "live":
+        return url, None
+    as_ts = url if link.ext == "ts" else link.live_url("ts")
+    as_m3u8 = url if link.ext == "m3u8" else link.live_url("m3u8")
+    ext = _live_extension(db, provider.id)
+    if ext == "ts" and _live_stream_format(db) == "auto":
+        if channel.id in _ts_refused_channels:
+            return as_m3u8, None
+        return as_ts, as_m3u8
+    return (as_ts if ext == "ts" else as_m3u8), None
 
 
 # Which channels are being RECORDED right now. Jellyfin opens the same tuner
@@ -2820,55 +2846,50 @@ def _sync_channels_from_xtream(provider_data: dict, db: Session) -> dict:
 
 def _sync_from_m3u_url(provider_data: dict, db: Session) -> dict:
     """Sync live channels from an M3U URL."""
-    from services.m3u_parser import parse_m3u_from_url
-
-    provider_id = provider_data["id"]
-    provider_name = provider_data["name"]
-    url = provider_data.get("m3u_url") or provider_data.get("server_url")
-    if not url:
+    if not (provider_data.get("m3u_url") or provider_data.get("server_url")):
         raise ValueError("No M3U URL configured")
-
-    _set_sync_status(provider_id, {"phase": "running", "progress": 10, "message": "Downloading M3U..."})
-
-    channels = parse_m3u_from_url(url, user_agent=provider_data["user_agent"])
-    logger.info(f"[LiveTV] {provider_name}: parsed {len(channels)} channels from M3U URL")
-
-    _set_sync_status(provider_id, {"phase": "running", "progress": 80, "message": f"Saving {len(channels)} channels..."})
-    stats = _upsert_channels_from_m3u(provider_id, channels, db)
-
-    provider = db.query(Provider).filter(Provider.id == provider_id).first()
-    if provider:
-        provider.last_live_sync = datetime.utcnow()
-    db.commit()
-
-    _log_m3u_sync(db, f"Live TV M3U sync for {provider_name}", stats)
-    return stats
+    return _sync_from_m3u(provider_data, db, "Downloading the playlist...")
 
 
 def _sync_from_m3u_file(provider_data: dict, db: Session) -> dict:
     """Sync live channels from a local M3U file."""
-    from services.m3u_parser import parse_m3u_from_file
+    if not provider_data.get("m3u_url"):  # For file type, m3u_url stores the file path
+        raise ValueError("No M3U file path configured")
+    return _sync_from_m3u(provider_data, db, "Reading the playlist file...")
+
+
+def _sync_from_m3u(provider_data: dict, db: Session, reading: str) -> dict:
+    """Live channels from an M3U provider's playlist: only its channels (a
+    provider's playlist lists its films and episodes too, which the VOD import
+    takes), and what the playlist says about the provider (its panel login,
+    its guide address: services/m3u_source.py)."""
+    from services import m3u_source
 
     provider_id = provider_data["id"]
     provider_name = provider_data["name"]
-    path = provider_data.get("m3u_url")  # For file type, m3u_url stores the file path
-    if not path:
-        raise ValueError("No M3U file path configured")
+    provider = db.query(Provider).filter(Provider.id == provider_id).first()
+    if provider is None:
+        raise ValueError("Provider not found")
+    if not provider_data.get("m3u_url") and provider_data.get("server_url"):
+        provider.m3u_url = provider.m3u_url or provider_data["server_url"]   # older callers
 
-    _set_sync_status(provider_id, {"phase": "running", "progress": 10, "message": "Reading M3U file..."})
-
-    channels = parse_m3u_from_file(path)
-    logger.info(f"[LiveTV] {provider_name}: parsed {len(channels)} channels from M3U file")
+    _set_sync_status(provider_id, {"phase": "running", "progress": 10, "message": reading})
+    playlist = m3u_source.read(provider)
+    channels = playlist.of_kind("live")
+    counts = playlist.counts()
+    logger.info(f"[LiveTV] {provider_name}: {counts['live']} channels in the playlist "
+                f"(and {counts['movie']} films, {counts['series']} episodes, left to the VOD import)")
+    m3u_source.learn(db, provider, playlist)
+    if channels and not provider.has_live:
+        provider.has_live = True
 
     _set_sync_status(provider_id, {"phase": "running", "progress": 80, "message": f"Saving {len(channels)} channels..."})
     stats = _upsert_channels_from_m3u(provider_id, channels, db)
 
-    provider = db.query(Provider).filter(Provider.id == provider_id).first()
-    if provider:
-        provider.last_live_sync = datetime.utcnow()
+    provider.last_live_sync = datetime.utcnow()
     db.commit()
 
-    _log_m3u_sync(db, f"Live TV file sync for {provider_name}", stats)
+    _log_m3u_sync(db, f"Live TV playlist sync for {provider_name}", stats)
     return stats
 
 
@@ -3196,6 +3217,31 @@ def _m3u_switched_off(db: Session, provider_id: int) -> list:
     return [n for n in names if isinstance(n, str)] if isinstance(names, list) else []
 
 
+def _drop_m3u_vod_rows(provider_id: int, db: Session) -> int:
+    """Films and episodes an older sync stored as channels (it took every line
+    of a playlist that lists all three), and the groups only they filled. Not
+    a removal the "failed download" guard below should weigh: they were never
+    channels."""
+    from services.m3u_parser import classify
+    rows = db.query(LiveChannel.id, LiveChannel.stream_url, LiveChannel.name, LiveChannel.group_title).filter(
+        LiveChannel.provider_id == provider_id).all()
+    vod = [r for r in rows if classify({"stream_url": r.stream_url, "name": r.name}) != "live"]
+    if not vod:
+        return 0
+    ids = [r.id for r in vod]
+    for i in range(0, len(ids), 500):
+        db.query(LiveChannel).filter(LiveChannel.id.in_(ids[i:i + 500])).delete(synchronize_session=False)
+    dropped = set(ids)
+    gone_groups = {r.group_title for r in vod} - {r.group_title for r in rows if r.id not in dropped}
+    if gone_groups:
+        db.query(LiveChannelGroup).filter(LiveChannelGroup.provider_id == provider_id,
+                                          LiveChannelGroup.name.in_(list(gone_groups)),
+                                          LiveChannelGroup.enabled == False).delete(synchronize_session=False)  # noqa: E712
+    logger.info(f"[LiveTV] Provider {provider_id}: {len(ids)} films/episodes an older sync took for channels "
+                f"removed from Live TV ({len(gone_groups)} group(s) only they filled)")
+    return len(ids)
+
+
 def _upsert_channels_from_m3u(
     provider_id: int,
     parsed_channels: list[dict],
@@ -3209,6 +3255,10 @@ def _upsert_channels_from_m3u(
     the M3U file.
     """
     parsed_channels = _dedupe_m3u(parsed_channels)
+    for ch in parsed_channels:
+        # A channel with no group still gets one, or it could never be switched on
+        ch["group_title"] = (ch.get("group_title") or "").strip() or "Uncategorized"
+    _drop_m3u_vod_rows(provider_id, db)
     enabled_groups = _enabled_group_names(db, provider_id)
     switched_off = _m3u_switched_off(db, provider_id)
     remembered_off = set(switched_off)
@@ -3412,6 +3462,7 @@ def _epg_provider_data(provider, all_channels) -> dict:
         "password": provider.password,
         "user_agent": provider.user_agent or "TiviMate/4.7.0 (Linux; Android 12)",
         "epg_url": provider.epg_url,
+        "m3u_guide_url": _m3u_guide_url(provider),
         "channels": [
             {"stream_id": ch.stream_id, "epg_channel_id": ch.epg_channel_id, "name": ch.name}
             for ch in all_channels
@@ -3420,11 +3471,32 @@ def _epg_provider_data(provider, all_channels) -> dict:
     }
 
 
+def _m3u_guide_url(provider) -> str:
+    """The guide address an M3U provider's playlist names (url-tvg), or ""."""
+    if (provider.provider_type or "xtream") == "xtream":
+        return ""
+    from sqlalchemy.orm import object_session
+    from services import m3u_source
+    db = object_session(provider)
+    if db is not None:
+        return m3u_source.guide_url(db, provider.id)
+    db = SessionLocal()
+    try:
+        return m3u_source.guide_url(db, provider.id)
+    finally:
+        db.close()
+
+
 def _epg_feed_url(provider_data: dict) -> str | None:
-    """The XMLTV feed a guide sync reads: the provider's EPG URL, else Xtream's own."""
+    """The XMLTV feed a guide sync reads: the provider's EPG URL, else the one
+    its playlist names (M3U), else its Xtream panel's own (an Xtream provider,
+    or an M3U one whose links are a panel's)."""
     if provider_data.get("epg_url"):
         return provider_data["epg_url"]
-    if provider_data["provider_type"] != "xtream":
+    if provider_data.get("m3u_guide_url"):
+        return provider_data["m3u_guide_url"]
+    if provider_data["provider_type"] != "xtream" and not (
+            provider_data.get("server_url") and provider_data.get("username")):
         return None
     from services.xtream_client import XtreamClient
     client = XtreamClient(
@@ -4626,7 +4698,8 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
         # resolver that hangs (seconds per lookup in an outage) doesn't freeze
         # every running stream with it. The log says what the name resolved to,
         # or that it didn't resolve: a DNS outage is not an SSRF refusal.
-        guard = (await asyncio.to_thread(lan_origin_guard, provider.server_url)) if provider else is_safe_url
+        from services.m3u_source import guard_origin
+        guard = (await asyncio.to_thread(lan_origin_guard, guard_origin(provider))) if provider else is_safe_url
         allowed, why = await asyncio.to_thread(explain_url, guard, stream_url)
         if not allowed:
             logger.warning(f"[LiveTV] Blocked stream URL for channel {channel_id} "
