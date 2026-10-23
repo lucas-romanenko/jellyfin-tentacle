@@ -101,8 +101,10 @@ body.moonfin-details-visible .moonfin-navbar {
     z-index: 10002;
 }
 
-/* Hide navbar's subtle back button when details overlay has its own prominent one */
-body.moonfin-details-visible .moonfin-nav-back {
+/* With Tentacle's header the page uses the header's back button (previous
+   title, else close). The overlay's own sat under the header's logo (PC) and
+   avatar (phone): a grey circle behind them that couldn't be clicked. */
+body.moonfin-navbar-active .moonfin-details-back {
     display: none !important;
 }
 
@@ -2304,4 +2306,13 @@ body.moonfin-details-visible .moonfin-nav-back {
    Jellyfin's hidden meanwhile, so it doesn't flash (tentacle-details.js onRoute). */
 html.tentacle-details-route:not(.layout-tv) .itemDetailPage {
     visibility: hidden;
+}
+
+/* The header's back button over a bright backdrop: dark glass, like the
+   overlay's own used to be */
+body.moonfin-details-visible .moonfin-nav-back {
+    background: rgba(0, 0, 0, 0.45);
+}
+body.moonfin-details-visible .moonfin-nav-back:hover {
+    background: rgba(255, 255, 255, 0.15);
 }

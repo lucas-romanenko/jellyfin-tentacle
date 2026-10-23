@@ -26,17 +26,37 @@ body.tentacle-search-active .searchPage input[type="text"] {
   box-shadow: 0 0 0 3px rgba(139, 128, 255, 0.08) !important;
 }
 
+/* Jellyfin's search box: one centred box with the magnifier inside it */
+body.tentacle-search-active .searchFields .searchFieldsInner {
+  max-width: 760px;
+  margin: 0 auto;
+}
+body.tentacle-search-active .searchFields .searchfields-icon {
+  display: none !important;
+}
+body.tentacle-search-active .searchFields .inputContainer {
+  margin: 0 !important;
+  padding-top: 0;
+}
+body.tentacle-search-active .searchFields .searchfields-txtSearch {
+  padding-left: 46px !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23a59fd0'%3E%3Cpath d='M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: 14px center !important;
+  background-size: 22px 22px !important;
+}
+
 /* ── Results container ────────────────────────────────────────────── */
 /* Mounted on document.body (outside Jellyfin views) for SPA resilience.
-   Positioned fixed to fill the content area below the search bar. */
+   Fixed below Jellyfin's search box: tentacle-search.js sets `top` from the
+   box's real position (placeResults), so the filters never cover it. */
 .tentacle-search-section {
   position: fixed;
-  top: 0;
+  top: 180px;
   left: 0;
   right: 0;
   bottom: 0;
   padding: 0 3.3%;
-  padding-top: 140px; /* below navbar + search input */
   overflow-y: auto;
   z-index: 100;
   pointer-events: auto;
@@ -46,24 +66,19 @@ body.tentacle-search-active .tentacle-search-section {
   display: block;
 }
 
-/* Header */
+/* Header: the filters, centred under the search box */
 .tentacle-search-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 8px 0 16px;
-}
-
-.tentacle-search-title {
-  font-size: 1.4em;
-  font-weight: 600;
-  color: #e8e6f0;
-  letter-spacing: -0.01em;
+  justify-content: center;
+  padding: 6px 0 18px;
 }
 
 /* Filter pills */
 .tentacle-search-filters {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 8px;
 }
 
@@ -74,6 +89,7 @@ body.tentacle-search-active .tentacle-search-section {
   padding: 6px 18px;
   border-radius: 24px;
   font-size: 13px;
+  font-family: inherit;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s;
@@ -267,14 +283,78 @@ body.tentacle-search-active .tentacle-search-section {
   font-size: 14px;
 }
 
-/* ── Live TV channel cards ─────────────────────────────────────────── */
-.ts-channel-card .ts-card-poster {
-  background: #1a1632;
+.tentacle-search-hint {
+  text-align: center;
+  padding: 56px 4px;
+  color: rgba(200, 195, 220, 0.45);
+  font-size: 15px;
 }
 
-.ts-channel-card .ts-card-poster img {
+/* ── Sections under "All": Live TV (one row), then Movies & Shows ─── */
+.ts-section + .ts-section {
+  margin-top: 10px;
+}
+.ts-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 0 0 12px;
+}
+.ts-section-title {
+  font-size: 1.1em;
+  font-weight: 600;
+  color: #e8e6f0;
+}
+.ts-section-more {
+  background: none;
+  border: none;
+  color: #a79bff;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 4px 0;
+}
+.ts-section-more:hover {
+  color: #c4bcff;
+}
+
+/* ── Live TV channel cards: a logo tile, name and number ────────────── */
+.ts-channel-grid {
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+}
+/* One row under "All": swipes sideways, the rest behind "See all" */
+.ts-channel-row {
+  display: flex;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 0;
+  margin-bottom: 18px;
+}
+.ts-channel-row::-webkit-scrollbar {
+  display: none;
+}
+.ts-channel-row > .ts-card {
+  flex: 0 0 200px;
+}
+.ts-channel-logo {
+  aspect-ratio: 16 / 9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #1a1632;
+  padding: 14px 18px;
+}
+.ts-channel-logo img {
+  max-width: 100%;
+  max-height: 100%;
   object-fit: contain;
-  padding: 16px;
+  display: block;
+}
+.ts-channel-initial {
+  font-size: 30px;
+  font-weight: 600;
+  color: rgba(200, 195, 220, 0.35);
 }
 
 .ts-badge-livetv {
@@ -296,10 +376,11 @@ body.tentacle-search-active .tentacle-search-section {
     grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
     gap: 0.8em;
   }
-  .tentacle-search-header {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 10px;
+  .ts-channel-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  }
+  .ts-channel-row > .ts-card {
+    flex-basis: 150px;
   }
 }
 

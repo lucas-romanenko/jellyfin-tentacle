@@ -104,7 +104,10 @@
         'details', 'search', 'favorites', 'list', 'homevideos', 'books',
         'mypreferencesmenu', 'mypreferencesmenudisplay', 'mypreferencesmenusubtitles',
         'mypreferencesmenuhome', 'mypreferencesmenuplayback', 'mypreferencesmenuquickconnect',
-        'mypreferencesmenucontrol', 'video', 'queue', 'nowplaying', 'playlists'
+        'mypreferencesmenucontrol', 'video', 'queue', 'nowplaying', 'playlists',
+        // Jellyfin 10.11's own names for the pages under the user menu
+        'userprofile', 'quickconnect', 'mypreferencesdisplay', 'mypreferenceshome',
+        'mypreferencesplayback', 'mypreferencessubtitles', 'mypreferencescontrols'
     ];
 
     var Navbar = {
@@ -356,8 +359,8 @@
             }
             return '<button class="moonfin-nav-btn moonfin-expandable-btn ' + def.cls + '" data-action="' + def.action + '" title="' + def.label + '">' +
                 def.icon +
-                '<span class="moonfin-expand-label">' + def.label + '</span>' +
                 (def.extra || '') +
+                '<span class="moonfin-expand-label">' + def.label + '</span>' +
                 '</button>';
         },
 

@@ -23,6 +23,10 @@
     _onInputChange: null, // bound listener ref for cleanup
     musicShow: false,    // Tentacle's music module + its Jellyfin music integration are on
     musicSeq: 0,
+    searchSeq: 0,        // the newest search; older answers are dropped
+    channels: [],
+    channelTotal: 0,
+    error: '',
     nativeFor: null,     // a kids profile's user id: Jellyfin's own search for them (#773)
   };
 
@@ -257,6 +261,10 @@
 
     // Create our results container on document.body (stable, immune to view transitions)
     getOrCreateContainer();
+    placeResults();
+    // Jellyfin's page and Tentacle's header can still be settling: place it again
+    [80, 400, 1200].forEach(function (ms) { setTimeout(function () { if (gen === SEARCH.generation) placeResults(); }, ms); });
+    window.addEventListener('resize', placeResults);
 
     SEARCH._onInputChange = function (e) { onInputChange(e, gen); };
     input.addEventListener('input', SEARCH._onInputChange);
@@ -343,7 +351,6 @@
     container.className = 'tentacle-search-section';
     container.innerHTML =
       '<div class="tentacle-search-header">' +
-        '<div class="tentacle-search-title">Search Results</div>' +
         '<div class="tentacle-search-filters">' +
           '<button class="tentacle-search-filter-btn ts-active" data-tstype="all">All</button>' +
           '<button class="tentacle-search-filter-btn" data-tstype="movies">Movies</button>' +
@@ -352,7 +359,7 @@
           '<button class="tentacle-search-filter-btn" data-tstype="music" id="tsMusicFilterBtn" style="display:none">Music</button>' +
         '</div>' +
       '</div>' +
-      '<div id="tentacleSearchGrid"></div>';
+      '<div id="tentacleSearchGrid">' + hintHtml() + '</div>';
 
     // Single delegated click handler for the entire container
     container.addEventListener('click', function (e) {
@@ -367,45 +374,20 @@
         return;
       }
 
-      // Channel card click — find Jellyfin channel and play stream directly
+      // Live TV channel: Jellyfin's own channel (the search asked Jellyfin), played by id
       var channelCard = e.target.closest('.ts-channel-card');
       if (channelCard) {
         e.preventDefault();
         e.stopPropagation();
-        var chName = channelCard.querySelector('.ts-card-title');
-        var name = chName ? chName.textContent.trim() : '';
-        console.log('[TentacleSearch] Channel clicked:', name);
-        if (name) {
-          var userId = window.ApiClient.getCurrentUserId();
-          apiGet('Users/' + userId + '/Items?SearchTerm=' + encodeURIComponent(name) +
-            '&IncludeItemTypes=LiveTvChannel&Recursive=true&Limit=20')
-            .then(function (data) {
-              var items = (data && data.Items) || [];
-              console.log('[TentacleSearch] Found', items.length, 'LiveTvChannel results:', items.map(function(i) { return i.Name; }));
-              var nameLower = name.toLowerCase();
-              var match = null;
-              for (var i = 0; i < items.length; i++) {
-                if ((items[i].Name || '').toLowerCase() === nameLower) { match = items[i]; break; }
-              }
-              if (!match && items.length) match = items[0];
-              if (match) {
-                console.log('[TentacleSearch] Playing channel:', match.Name, match.Id);
-                var pm = (typeof playbackManager !== 'undefined') ? playbackManager : null;
-                console.log('[TentacleSearch] playbackManager available:', !!pm);
-                cleanup();
-                if (pm) {
-                  pm.play({ ids: [match.Id], serverId: window.ApiClient.serverId() });
-                } else {
-                  window.location.hash = '#/details?id=' + match.Id;
-                }
-              } else {
-                console.warn('[TentacleSearch] No LiveTvChannel match found for:', name);
-              }
-            })
-            .catch(function (err) {
-              console.error('[TentacleSearch] Channel lookup failed:', err);
-            });
-        }
+        playChannel(channelCard.getAttribute('data-channel-id'));
+        return;
+      }
+
+      // "See all" under the Live TV row: the Live TV filter
+      var more = e.target.closest('.ts-section-more');
+      if (more) {
+        var btn = container.querySelector('.tentacle-search-filter-btn[data-tstype="channels"]');
+        if (btn) btn.click();
         return;
       }
 
@@ -436,7 +418,37 @@
     return container;
   }
 
+  // The results start right under Jellyfin's search box, wherever it is at this
+  // width (a fixed offset put the filters on top of the box on some widths).
+  function placeResults() {
+    var c = document.getElementById('tentacleSearchResults');
+    var inp = SEARCH.nativeInput;
+    if (!c || !inp) return;
+    var box = inp.closest('.searchFields') || inp;
+    var r = box.getBoundingClientRect();
+    if (!r.height) return;
+    c.style.top = Math.round(r.bottom + 4) + 'px';
+  }
+
   // ── Search ───────────────────────────────────────────────────────────
+
+  // The page before anything is typed: say what it finds, so it never looks empty.
+  function hintHtml() {
+    return '<div class="tentacle-search-hint">Find movies, shows and Live TV channels</div>';
+  }
+
+  var CHANNEL_ROW = 8;   // Live TV cards shown under "All" (one row); the Live TV filter shows them all
+
+  // Live TV channels come from Jellyfin, with the person's own token: the names,
+  // numbers and logos their guide shows, only channels they may watch, and the
+  // id to play. (Tentacle's channel list holds the providers' raw stream names,
+  // which Jellyfin doesn't know: a click found nothing.)
+  function searchChannels(query) {
+    var userId = currentUserId();
+    return apiGet('Users/' + userId + '/Items?SearchTerm=' + encodeURIComponent(query) +
+      '&IncludeItemTypes=LiveTvChannel&Recursive=true&Limit=60&Fields=ChannelInfo&EnableUserData=false')
+      .then(function (data) { return { items: (data && data.Items) || [], total: (data && data.TotalRecordCount) || 0 }; });
+  }
 
   function doSearch(query, gen) {
     getOrCreateContainer();
@@ -444,12 +456,37 @@
     if (!grid) return;
 
     if (SEARCH.mediaFilter === 'music') { doMusicSearch(query, gen, grid); return; }
-    grid.innerHTML = '<div class="tentacle-search-loading"><div class="md-spinner"></div>Searching...</div>';
+    var seq = ++SEARCH.searchSeq;
+    var filter = SEARCH.mediaFilter;
+    var wantChannels = filter === 'all' || filter === 'channels';
+    var wantTitles = filter !== 'channels';
+    // null = still asking; an array = answered
+    SEARCH.channels = wantChannels ? null : [];
+    SEARCH.channelTotal = 0;
+    SEARCH.results = wantTitles ? null : [];
+    SEARCH.error = '';
+    render(query);
 
-    apiGet('TentacleDiscover/Search?q=' + encodeURIComponent(query) + '&type=' + SEARCH.mediaFilter)
+    function stale() { return gen !== SEARCH.generation || seq !== SEARCH.searchSeq; }
+
+    if (wantChannels) {
+      searchChannels(query).then(function (r) {
+        if (stale()) return;
+        SEARCH.channels = r.items;
+        SEARCH.channelTotal = r.total;
+        render(query);
+      }).catch(function () {
+        if (stale()) return;
+        SEARCH.channels = [];
+        render(query);
+      });
+    }
+
+    if (!wantTitles) return;
+    apiGet('TentacleDiscover/Search?q=' + encodeURIComponent(query) + '&type=' + filter)
       .then(function (data) {
-        // Stale check — did user navigate away during the API call?
-        if (gen !== SEARCH.generation) return;
+        // Stale check — did user navigate away or type on during the API call?
+        if (stale()) return;
 
         // A kids profile: Tentacle's search is TMDB's catalogue, not theirs.
         // Jellyfin's own search (their age limit applied) shows instead, for
@@ -461,52 +498,93 @@
           return;
         }
 
-        var items = data.items || [];
-        SEARCH.results = items;
-        if (!items.length) {
-          // {error, message}: Tentacle couldn't be asked (busy, not set up) —
-          // not the same as nothing matching.
-          grid.innerHTML = (data && data.error && data.message)
-            ? '<div class="tentacle-search-empty">' + esc(String(data.message)) + '</div>'
-            : '<div class="tentacle-search-empty">No results for \u201c' + esc(query) + '\u201d</div>';
-          return;
-        }
-        renderResults(items, grid);
+        // Channels come from Jellyfin (searchChannels), not from this answer.
+        SEARCH.results = ((data && data.items) || []).filter(function (it) { return it.media_type !== 'channel'; });
+        // {error, message}: Tentacle couldn't be asked (busy, not set up) —
+        // not the same as nothing matching.
+        if (!SEARCH.results.length && data && data.error && data.message) SEARCH.error = String(data.message);
+        render(query);
       })
       .catch(function () {
-        if (gen !== SEARCH.generation) return;
+        if (stale()) return;
         // Tentacle search is the only search — show an honest error state in
         // our UI instead of silently reverting to Jellyfin's native results.
-        grid.innerHTML = '<div class="tentacle-search-empty">Search is unavailable — the Tentacle backend could not be reached.<br>Check the plugin’s TentacleUrl setting and that the Tentacle server is running.</div>';
+        SEARCH.results = [];
+        SEARCH.error = 'Search is unavailable — the Tentacle server could not be reached.';
+        render(query);
       });
   }
 
   // ── Render ───────────────────────────────────────────────────────────
 
-  function renderResults(items, container) {
+  function render(query) {
+    var grid = document.getElementById('tentacleSearchGrid');
+    if (!grid) return;
+    var filter = SEARCH.mediaFilter;
+    var chans = SEARCH.channels, titles = SEARCH.results;
+    var loading = '<div class="tentacle-search-loading"><div class="md-spinner"></div>Searching...</div>';
+    var html = '';
+
+    if (filter === 'channels') {
+      if (chans === null) { grid.innerHTML = loading; return; }
+      grid.innerHTML = chans.length
+        ? '<div class="tentacle-search-grid ts-channel-grid">' + chans.map(channelCard).join('') + '</div>'
+        : '<div class="tentacle-search-empty">No Live TV channels match “' + esc(query) + '”</div>';
+      return;
+    }
+
+    if (filter === 'all' && chans && chans.length) {
+      var shown = chans.slice(0, CHANNEL_ROW);
+      var total = Math.max(SEARCH.channelTotal || 0, chans.length);
+      html += '<div class="ts-section"><div class="ts-section-head"><span class="ts-section-title">Live TV</span>' +
+        (total > shown.length ? '<button class="ts-section-more">See all ' + total + '</button>' : '') + '</div>' +
+        '<div class="tentacle-search-grid ts-channel-grid ts-channel-row">' + shown.map(channelCard).join('') + '</div></div>';
+    }
+
+    if (titles === null) {
+      html += loading;
+    } else if (titles.length) {
+      html += '<div class="ts-section">' +
+        (filter === 'all' && chans && chans.length ? '<div class="ts-section-head"><span class="ts-section-title">Movies &amp; Shows</span></div>' : '') +
+        titlesGrid(titles) + '</div>';
+    } else if (chans !== null && !(filter === 'all' && chans.length)) {
+      html += '<div class="tentacle-search-empty">' + (SEARCH.error ? esc(SEARCH.error) : 'No results for “' + esc(query) + '”') + '</div>';
+    }
+    grid.innerHTML = html;
+  }
+
+  function channelCard(ch) {
+    var tag = ch.ImageTags && ch.ImageTags.Primary;
+    var logo = tag ? window.ApiClient.getScaledImageUrl(ch.Id, { type: 'Primary', maxWidth: 320, tag: tag }) : '';
+    var logoHtml = logo
+      ? '<img src="' + escAttr(logo) + '" loading="lazy" alt="" onerror="this.style.display=\'none\'">'
+      : '<div class="ts-channel-initial">' + esc((ch.Name || '?').charAt(0)) + '</div>';
+    return '<div class="ts-card ts-channel-card" data-channel-id="' + escAttr(ch.Id) + '" title="' + escAttr(ch.Name) + '">' +
+      '<div class="ts-channel-logo">' + logoHtml + '</div>' +
+      '<div class="ts-card-info">' +
+        '<div class="ts-card-title">' + esc(ch.Name) + '</div>' +
+        '<div class="ts-card-meta">' + (ch.ChannelNumber ? 'Ch ' + esc(String(ch.ChannelNumber)) : 'Live TV') + '</div>' +
+      '</div></div>';
+  }
+
+  function playChannel(id) {
+    if (!id) return;
+    var pm = window.playbackManager;
+    if (pm && typeof pm.play === 'function') {
+      cleanup();
+      pm.play({ ids: [id], serverId: window.ApiClient.serverId() });
+    } else {
+      window.location.hash = '#/details?id=' + encodeURIComponent(id);
+    }
+  }
+
+  function titlesGrid(items) {
     var getDownloadInfo = (window.TentacleDiscover && window.TentacleDiscover.getDownloadInfo)
       ? window.TentacleDiscover.getDownloadInfo
       : function () { return null; };
 
-    container.innerHTML = '<div class="tentacle-search-grid">' +
+    return '<div class="tentacle-search-grid">' +
       items.map(function (item) {
-        // Live TV channel card
-        if (item.media_type === 'channel') {
-          var logoSafe = safeUrl(item.logo_url);
-          var logoHtml = logoSafe
-            ? '<img src="' + escAttr(logoSafe) + '" loading="lazy" onerror="this.style.display=\'none\'">'
-            : '<div class="ts-card-poster-placeholder">&#9654;</div>';
-          var groupHtml = item.group_title ? esc(item.group_title) : 'Live TV';
-          return '<div class="ts-card ts-channel-card" data-channel-id="' + escAttr(item.channel_id) + '">' +
-            '<div class="ts-card-poster">' + logoHtml +
-              '<div class="ts-card-badge ts-badge-type ts-badge-livetv">Live TV</div>' +
-            '</div>' +
-            '<div class="ts-card-info">' +
-              '<div class="ts-card-title">' + esc(item.title) + '</div>' +
-              '<div class="ts-card-meta">' + groupHtml + '</div>' +
-            '</div></div>';
-        }
-
         // TMDB movie/series card
         var posterUrl = item.poster_path
           ? (item.poster_path.startsWith('http') || item.poster_path.startsWith('/TentacleDiscover/') ? item.poster_path : 'https://image.tmdb.org/t/p/w342' + item.poster_path)
@@ -606,8 +684,9 @@
   // ── Cleanup ──────────────────────────────────────────────────────────
 
   function clearResults() {
+    SEARCH.searchSeq++;
     var grid = document.getElementById('tentacleSearchGrid');
-    if (grid) grid.innerHTML = '';
+    if (grid) grid.innerHTML = hintHtml();
     SEARCH.results = [];
     SEARCH.channels = [];
   }
@@ -626,6 +705,7 @@
       SEARCH.nativeInput.removeEventListener('input', SEARCH._onInputChange);
       SEARCH._onInputChange = null;
     }
+    window.removeEventListener('resize', placeResults);
     removeHideCSS();
     SEARCH.active = false;
     SEARCH.lastQuery = '';
