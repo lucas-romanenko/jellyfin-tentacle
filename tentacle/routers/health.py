@@ -32,6 +32,7 @@ class DownloadImportRequest(BaseModel):
     download_id: str
     movie_id: int | None = None
     episode_id: int | None = None
+    allow_rejected: bool = False  # the admin confirmed importing a file the arr refused
 
 
 class DownloadTogglesRequest(BaseModel):
@@ -68,12 +69,15 @@ def remove_queued_download(body: DownloadActionRequest, db: Session = Depends(ge
 
 @router.post("/downloads/manual-import")
 def manual_import_download(body: DownloadImportRequest, db: Session = Depends(get_db)):
-    """Force-import a blocked download when the arr's own lookup is unambiguous."""
+    """Force-import a blocked download when the arr's own lookup is unambiguous.
+    A file the arr refused (e.g. not an upgrade) answers ok false with its
+    reasons in "refused"; the page asks the admin, then sends allow_rejected."""
     _validate_source(body.source)
     from services.download_health import attempt_manual_import
     try:
         result = attempt_manual_import(db, body.source, body.download_id,
-                                       movie_id=body.movie_id, episode_id=body.episode_id)
+                                       movie_id=body.movie_id, episode_id=body.episode_id,
+                                       allow_rejected=body.allow_rejected)
     except Exception as e:
         raise HTTPException(502, f"Manual import failed: {e}")
     return result

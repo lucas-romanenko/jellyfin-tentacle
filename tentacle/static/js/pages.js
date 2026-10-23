@@ -6899,7 +6899,16 @@ async function healthRemoveDownload(source, queueId, deleteFile, btn) {
 async function healthImportDownload(source, downloadId, btn) {
   if (btn) btn.disabled = true;
   try {
-    const r = await api('/api/health/downloads/manual-import', { method: 'POST', body: { source, download_id: downloadId } });
+    let r = await api('/api/health/downloads/manual-import', { method: 'POST', body: { source, download_id: downloadId } });
+    if (!r.ok && r.refused && r.refused.length) {
+      // A manual import skips the arr's decision and replaces the file it has.
+      const arr = source === 'radarr' ? 'Radarr' : 'Sonarr';
+      if (!confirm(`${arr} refused this file:\n\n- ${r.refused.join('\n- ')}\n\nImport it anyway? It replaces the file in your library (the old one goes to ${arr}'s recycle bin, or is deleted if none is set).`)) {
+        toast(r.reason || 'Not imported', 'info', 6000);
+        return;
+      }
+      r = await api('/api/health/downloads/manual-import', { method: 'POST', body: { source, download_id: downloadId, allow_rejected: true } });
+    }
     if (r.ok) {
       toast(`Imported: ${r.title || 'download'}`);
     } else {
