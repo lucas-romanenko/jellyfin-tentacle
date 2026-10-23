@@ -22,8 +22,15 @@ Auto-fix (both toggles default OFF):
                                   the arr search: resolve_stuck_download)
   downloads_auto_import_enabled — for import_blocked items, force a ManualImport
                                   when the arr's own lookup finds exactly one
-                                  unambiguous file; otherwise dequeue but keep the
-                                  file on disk for a human to sort out
+                                  unambiguous file the arr didn't refuse;
+                                  otherwise dequeue but keep the file on disk
+                                  for a human to sort out
+
+A ManualImport skips the arr's import decisions and replaces the existing file
+(#766), so a candidate with a permanent rejection ("Not an upgrade…", "Sample",
+wrong series) is never imported by the sweep, and each download is tried once:
+the tries are kept in the `downloads_auto_import_tried` Setting as
+{download_id: {at, told}} for a week.
 """
 
 import json
@@ -58,6 +65,9 @@ WAITING_STATUSES = {"queued", "paused", "delay"}
 NOT_TRYING_STATUSES = {"paused", "delay"}  # never expected to resolve on their own — excluded from stall tracking
 
 STALL_STATE_KEY = "downloads_stall_state"
+IMPORT_TRIED_KEY = "downloads_auto_import_tried"
+IMPORT_TRIED_DAYS = 7
+IMPORT_VERIFY_TRIES = 3   # queue reads after the command, 1 s apart
 
 # Serializes every resolve (manual Fix button + auto-fix sweep) — two racing
 # callers could otherwise both cancel + re-grab, leaving duplicate downloads.
@@ -344,11 +354,47 @@ def remove_download(db, app: str, queue_id: int, delete_file: bool = True, reaso
     return {"ok": True, "title": title}
 
 
+def _rejections(item: dict) -> tuple:
+    """(permanent, temporary) refusal reasons of a Manual Import candidate.
+    Older arrs list plain strings; those count as permanent."""
+    permanent, temporary = [], []
+    for r in item.get("rejections") or []:
+        if isinstance(r, dict):
+            reason = r.get("reason") or "refused"
+            (temporary if (r.get("type") or "").lower() == "temporary" else permanent).append(reason)
+        elif r:
+            permanent.append(str(r))
+    return permanent, temporary
+
+
+def _still_blocked(url: str, key: str, app: str, download_id: str):
+    """After a completed ManualImport: the arr's own message when the download
+    is still import-blocked in its queue, else None (imported, or importing)."""
+    for n in range(IMPORT_VERIFY_TRIES):
+        if n:
+            time.sleep(1)
+        records = fetch_queue_records(url, key, app)
+        r = next((x for x in records if (x.get("downloadId") or str(x.get("id"))) == download_id), None)
+        if not r or r.get("trackedDownloadState") != "importBlocked":
+            return None
+    msgs = [m for sm in (r.get("statusMessages") or []) for m in (sm.get("messages") or [])]
+    return r.get("errorMessage") or (msgs[0] if msgs else "still blocked")
+
+
 def attempt_manual_import(db, app: str, download_id: str,
-                          movie_id: int = None, episode_id: int = None) -> dict:
+                          movie_id: int = None, episode_id: int = None,
+                          allow_rejected: bool = False) -> dict:
     """Force-import a completed download the arr's automated pipeline declined —
     but only when its own Manual Import lookup finds exactly one candidate file
-    matching the expected movie/episode. Anything ambiguous is left for a human."""
+    matching the expected movie/episode. Anything ambiguous is left for a human.
+
+    A candidate the arr refused for good (e.g. "Not an upgrade for existing
+    episode file(s)") answers {"ok": False, "refused": [reasons]} unless
+    allow_rejected (the admin confirmed on the Health page): a manual import
+    replaces the file already in the library. Temporary refusals answer
+    "wait": the arr retries those itself. "sent" is set once the ManualImport
+    command went out; ok is True only when the download then left the blocked
+    state."""
     url, key = _arr_conn(db, app)
     if not url or not key:
         return {"ok": False, "reason": f"{app} not configured"}
@@ -357,6 +403,14 @@ def attempt_manual_import(db, app: str, download_id: str,
     if len(candidates) != 1:
         return {"ok": False, "reason": f"{len(candidates)} candidate files found — needs manual review"}
     item = candidates[0]
+    arr_name = app.capitalize()
+    permanent, temporary = _rejections(item)
+    if permanent and not allow_rejected:
+        return {"ok": False, "refused": permanent,
+                "reason": f"{arr_name} refused it: {'; '.join(permanent)}"}
+    if temporary and not permanent and not allow_rejected:
+        return {"ok": False, "wait": True,
+                "reason": f"{arr_name} will retry it itself: {'; '.join(temporary)}"}
 
     file = {
         "path": item["path"],
@@ -388,18 +442,90 @@ def attempt_manual_import(db, app: str, download_id: str,
         return {"ok": False, "reason": "quality could not be determined — needs manual review"}
 
     result = _arr_post(url, key, "command", {"name": "ManualImport", "importMode": "auto", "files": [file]})
-    command_id = result.get("id")
-    for _ in range(20):
-        time.sleep(0.5)
-        status = _arr_get(url, key, f"command/{command_id}")
-        if status.get("status") == "completed":
-            return {"ok": True, "title": item.get("name")}
-        if status.get("status") in ("failed", "aborted", "cancelled"):
-            return {"ok": False, "reason": status.get("exception") or f"import {status['status']}"}
-    return {"ok": False, "reason": "still running after 10s — check Radarr/Sonarr directly"}
+    title = item.get("name")
+    try:
+        command_id = result.get("id")
+        for _ in range(20):
+            time.sleep(0.5)
+            status = _arr_get(url, key, f"command/{command_id}")
+            if status.get("status") == "completed":
+                # "Completed" isn't "imported": the arr catches a file's import
+                # failure inside the command, and the download stays blocked.
+                blocked = _still_blocked(url, key, app, download_id)
+                if blocked:
+                    return {"ok": False, "sent": True, "title": title,
+                            "reason": f"{arr_name} ran the import but the download is still blocked: {blocked}"}
+                return {"ok": True, "sent": True, "title": title}
+            if status.get("status") in ("failed", "aborted", "cancelled"):
+                return {"ok": False, "sent": True, "title": title,
+                        "reason": status.get("exception") or f"import {status['status']}"}
+    except Exception as e:
+        return {"ok": False, "sent": True, "title": title, "reason": f"couldn't check the import: {e}"}
+    return {"ok": False, "sent": True, "title": title,
+            "reason": f"still running after 10s — check {arr_name} directly"}
 
 
 # ─── Background job (every 5 minutes) ─────────────────────────────────────────
+
+def get_import_tried(db) -> dict:
+    """{download_id: {"at", "told"}} of the sweep's force-imports, kept a week."""
+    try:
+        tried = json.loads(get_setting(db, IMPORT_TRIED_KEY, "") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    now = datetime.utcnow()
+    kept = {}
+    for download_id, entry in tried.items():
+        try:
+            if (now - datetime.fromisoformat(entry["at"])).days < IMPORT_TRIED_DAYS:
+                kept[download_id] = entry
+        except (KeyError, TypeError, ValueError):
+            pass
+    return kept
+
+
+def _save_import_tried(db, tried: dict):
+    set_setting(db, IMPORT_TRIED_KEY, json.dumps(tried))
+
+
+def _auto_import_blocked(db, app: str, r: dict):
+    """The sweep's one go at a blocked download: import it once, or leave it
+    for the admin with the reason in Activity."""
+    download_id = r.get("downloadId") or str(r["id"])
+    title = r.get("title")
+    tried = get_import_tried(db)
+    entry = tried.get(download_id)
+    if entry:
+        if not entry.get("told"):
+            entry["told"] = True
+            _save_import_tried(db, tried)
+            log_activity(db, "download_fix",
+                         f"Blocked import left for you (auto-import already tried it once): {title}")
+        return
+
+    imported = attempt_manual_import(db, app, download_id,
+                                     movie_id=r.get("movieId"), episode_id=r.get("episodeId"))
+    if imported.get("sent"):
+        ok = bool(imported.get("ok"))
+        tried[download_id] = {"at": datetime.utcnow().isoformat(), "told": not ok}
+        _save_import_tried(db, tried)
+        if ok:
+            log_activity(db, "download_fix", f"Blocked import force-imported: {title}")
+            logger.info(f"[Download health] auto-imported: {title}")
+        else:
+            log_activity(db, "download_fix",
+                         f"Blocked import not imported, left for you: {title} — {imported.get('reason')}")
+            logger.warning(f"[Download health] auto-import of '{title}' didn't take: {imported.get('reason')}")
+        return
+    if imported.get("wait"):
+        logger.info(f"[Download health] blocked import left to {app}: {title} — {imported.get('reason')}")
+        return
+    result = remove_download(db, app, r["id"], delete_file=False, reason="auto")
+    if result.get("ok"):
+        log_activity(db, "download_fix",
+                     f"Blocked import left for review (file kept): {title} — {imported.get('reason')}")
+        logger.info(f"[Download health] blocked import dequeued (file kept): {title} — {imported.get('reason')}")
+
 
 def run_download_health_check():
     """Always advances stall tracking so the UI's phase stays accurate; only
@@ -450,18 +576,7 @@ def run_download_health_check():
                         if result.get("ok"):
                             logger.info(f"[Download health] auto-fixed: {result.get('title')}")
                     elif auto_import and cls["status"] == "import_blocked":
-                        download_id = r.get("downloadId") or str(r["id"])
-                        imported = attempt_manual_import(db, app, download_id,
-                                                         movie_id=r.get("movieId"),
-                                                         episode_id=r.get("episodeId"))
-                        if imported.get("ok"):
-                            log_activity(db, "download_fix",
-                                         f"Blocked import force-imported: {r.get('title')}")
-                            logger.info(f"[Download health] auto-imported: {r.get('title')}")
-                        else:
-                            result = remove_download(db, app, r["id"], delete_file=False, reason="auto")
-                            if result.get("ok"):
-                                logger.info(f"[Download health] blocked import dequeued (file kept): {result.get('title')}")
+                        _auto_import_blocked(db, app, r)
                 except Exception:
                     logger.exception(f"[Download health] action failed for queue item {r.get('id')} ({app})")
     except Exception:
