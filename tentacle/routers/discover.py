@@ -1389,11 +1389,19 @@ def get_sonarr_episodes(
 
     from services.sonarr import SonarrService
     sonarr = SonarrService(sonarr_url, sonarr_key)
-    series = sonarr.get_series_by_tmdb(tmdb_id)
+    # A failed read must not show as an empty list: Save on an empty list
+    # unmonitors every episode (#764).
+    try:
+        series = sonarr.get_series_by_tmdb(tmdb_id, raise_errors=True)
+    except Exception:
+        raise HTTPException(503, "Could not read Sonarr's series list (Sonarr may be busy or down).")
     if not series:
         return {"in_sonarr": False}
 
-    episodes = sonarr.get_episodes(series["id"])
+    try:
+        episodes = sonarr.get_episodes(series["id"], raise_errors=True)
+    except Exception:
+        raise HTTPException(503, "Could not read the series' episodes from Sonarr.")
     return {
         "in_sonarr": True,
         "sonarr_id": series["id"],
@@ -1445,6 +1453,9 @@ def get_vod_episodes(
 class ManageEpisodesBody(BaseModel):
     tmdb_id: int
     selected_episodes: list  # [{season: int, episode: int}]
+    # Set by a client that showed the list and had every episode unticked on
+    # purpose; an empty selection without it is refused (#764).
+    unmonitor_all: bool = False
 
 
 @router.post("/manage-episodes")
@@ -1483,6 +1494,12 @@ def manage_episodes(
         ep = ep_lookup.get((sel["season"], sel["episode"]))
         if ep:
             selected_ids.append(ep["id"])
+
+    # Nothing selected unmonitors the whole show: only when the client says
+    # that's what the person chose, never for a list that didn't load (#764).
+    if not selected_ids and episodes and not body.unmonitor_all:
+        raise HTTPException(400, "No episodes were selected, so nothing was changed. To stop monitoring "
+                                 "every episode, untick them all in the list and save again.")
 
     # Track which are newly monitored (for search)
     currently_monitored = {ep["id"] for ep in episodes if ep.get("monitored")}

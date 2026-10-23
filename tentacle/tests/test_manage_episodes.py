@@ -15,6 +15,7 @@ Expected: read failures -> 503 with a reason; a rejected monitoring change ->
 502 with a reason; monitor the selection first, then unmonitor only the
 episodes that are not selected.
 """
+import contextlib
 import json
 import sys
 import types
@@ -128,14 +129,21 @@ class FakeSonarr:
         return _resp(201, {"id": 1})
 
 
+def _sonarr(fake):
+    settings = {"sonarr_url": "http://sonarr:8989", "sonarr_api_key": "k"}
+    stack = contextlib.ExitStack()
+    stack.enter_context(mock.patch.object(discover, "get_setting",
+                                          side_effect=lambda db, k, d="": settings.get(k, d)))
+    for verb in ("get", "put", "post"):
+        stack.enter_context(mock.patch.object(requests.Session, verb,
+                                              lambda s, url, _v=verb, **kw: getattr(fake, _v)(url, **kw)))
+    return stack
+
+
 class ManageEpisodes(unittest.TestCase):
-    def _call(self, fake, selected):
-        settings = {"sonarr_url": "http://sonarr:8989", "sonarr_api_key": "k"}
-        body = discover.ManageEpisodesBody(tmdb_id=5555, selected_episodes=selected)
-        with mock.patch.object(discover, "get_setting", side_effect=lambda db, k, d="": settings.get(k, d)), \
-             mock.patch.object(requests.Session, "get", lambda s, url, **kw: fake.get(url, **kw)), \
-             mock.patch.object(requests.Session, "put", lambda s, url, **kw: fake.put(url, **kw)), \
-             mock.patch.object(requests.Session, "post", lambda s, url, **kw: fake.post(url, **kw)):
+    def _call(self, fake, selected, **extra):
+        body = discover.ManageEpisodesBody(tmdb_id=5555, selected_episodes=selected, **extra)
+        with _sonarr(fake):
             return discover.manage_episodes(body, db=None, user=SimpleNamespace(id=1))
 
     def test_happy_path_shape(self):
@@ -164,6 +172,58 @@ class ManageEpisodes(unittest.TestCase):
         unmonitor = [p for p in puts if p["monitored"] is False]
         self.assertTrue(unmonitor)
         self.assertNotIn(103, unmonitor[0]["episodeIds"])
+
+    # #764: an empty selection from a list that never loaded unmonitored the whole show.
+    def test_empty_selection_without_unmonitor_all_changes_nothing(self):
+        fake = FakeSonarr()
+        with self.assertRaises(HTTPException) as ctx:
+            self._call(fake, [])
+        self.assertEqual(ctx.exception.status_code, 400, ctx.exception.detail)
+        self.assertEqual([], [c for c in fake.calls if c[0] != "GET"])
+
+    def test_selection_matching_no_episode_changes_nothing(self):
+        fake = FakeSonarr()
+        with self.assertRaises(HTTPException) as ctx:
+            self._call(fake, [{"season": 9, "episode": 9}])
+        self.assertEqual(ctx.exception.status_code, 400, ctx.exception.detail)
+        self.assertEqual([], [c for c in fake.calls if c[0] != "GET"])
+
+    def test_unticking_everything_on_purpose_unmonitors_the_show(self):
+        fake = FakeSonarr()
+        r = self._call(fake, [], unmonitor_all=True)
+        self.assertEqual(r["monitored"], 0)
+        puts = [c[3] for c in fake.calls if c[0] == "PUT"]
+        self.assertEqual(puts, [{"episodeIds": [101, 102, 103, 104], "monitored": False}])
+
+
+class SonarrEpisodesRead(unittest.TestCase):
+    """GET /api/discover/sonarr-episodes: a failed read is an error, not an empty list (#764)."""
+
+    def _get(self, fake):
+        with _sonarr(fake):
+            return discover.get_sonarr_episodes(5555, db=None)
+
+    def test_episodes_listed(self):
+        r = self._get(FakeSonarr())
+        self.assertEqual((r["in_sonarr"], len(r["episodes"])), (True, 4))
+
+    def test_failed_series_read_is_503(self):
+        with self.assertRaises(HTTPException) as ctx:
+            self._get(FakeSonarr(series_error=requests.exceptions.ConnectionError("refused")))
+        self.assertEqual(ctx.exception.status_code, 503)
+
+    def test_failed_episode_read_is_503_not_an_empty_list(self):
+        fake = FakeSonarr()
+        real_get = fake.get
+
+        def get(url, **kw):
+            if url.endswith("/api/v3/episode"):
+                raise requests.exceptions.ReadTimeout("slow")
+            return real_get(url, **kw)
+        fake.get = get
+        with self.assertRaises(HTTPException) as ctx:
+            self._get(fake)
+        self.assertEqual(ctx.exception.status_code, 503)
 
 
 if __name__ == "__main__":
