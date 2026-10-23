@@ -51,11 +51,12 @@
 
   function onRoute() {
     var t = routeTab();
-    if (!t || (window.TentacleStandAside && window.TentacleStandAside())) { deactivate(); return; }
+    if (!t) { deactivate(); return; }
     activate(t);
   }
 
   function activate(tab) {
+    if (window.TentacleStandAside && window.TentacleStandAside()) return; // TV layout: Jellyfin's pages
     ensureContainer();
     var first = !R.active;
     R.active = true;

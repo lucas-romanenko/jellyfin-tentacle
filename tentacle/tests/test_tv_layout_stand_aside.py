@@ -28,6 +28,7 @@ ENTRY_POINTS = {
     "tentacle-home.js": "onHomePage",
     "tentacle-search.js": "init",
     "tentacle-livetv.js": "activate",
+    "tentacle-recordings.js": "activate",
     "tentacle-favorites.js": "activate",
     "tentacle-discover.js": "tryInject",
     "tentacle-details.js": "boot",
