@@ -373,6 +373,7 @@ def get_discover(
     type: str = "movies",
     db: Session = Depends(get_db),
     user: TentacleUser = Depends(get_user_from_request),
+    request: Request = None,
 ):
     """Return discover sections based on media type.
     Movies: Popular, Now Playing, Upcoming, From Your Lists
@@ -464,9 +465,20 @@ def get_discover(
             "items": missing,
         })
 
+    _watch_links(db, request, sections, user)
     if tmdb_down:
         return {"sections": sections, "warning": TMDB_UNREACHABLE}
     return {"sections": sections}
+
+
+def _watch_links(db: Session, request: Request, sections: list, user=None) -> None:
+    """▶ Play / Open in Jellyfin on the cards that are in the library, for
+    this person (services/watch_links.py). Items are copied: TMDB answers
+    are shared through caches."""
+    from services import watch_links
+    links = watch_links.linker(db, request, user)
+    for section in sections:
+        section["items"] = links.attach(section.get("items") or [], only_in_library=True)
 
 
 def _get_missing_from_lists(db: Session, known_ids: dict, type_filter: str, user: TentacleUser = None,
@@ -612,6 +624,14 @@ def get_discover_detail(
         if _caller_can_open(db, request, resolved_id):
             details["jellyfin_item_id"] = resolved_id
             details["jellyfin_url"] = _jellyfin_web_url(db, resolved_id)
+            # ▶ Play / Open in Jellyfin (services/watch_links.py): not while
+            # a download of it is still being got ready.
+            from services import watch_links
+            from services.download_readiness import held_back
+            if not held_back("series" if media_type == "series" else "movie", tmdb_id):
+                links = watch_links.linker(db, request).links_for_item(resolved_id)
+                if links:
+                    details["jellyfin"] = links
         if db_item is not None and getattr(db_item, "jellyfin_item_id", None) != resolved_id:
             try:
                 db_item.jellyfin_item_id = resolved_id
@@ -992,7 +1012,8 @@ def _mark_search_items(items: list, known_ids: dict, deadline: float) -> None:
 def search_discover(
     q: str = "",
     type: str = "all",
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    request: Request = None,
 ):
     """Live TV channels first, then TMDB movies/series, supplemented by
     Sonarr/Radarr lookups (TheTVDB coverage) when they answer in time."""
@@ -1074,7 +1095,9 @@ def search_discover(
         } for ch in channel_rows]
         items = channel_items + items
 
-    return {"items": items}
+    out = {"items": items}
+    _watch_links(db, request, [out])
+    return out
 
 
 # ── New on Streaming Services ──────────────────────────────────────────────
@@ -1141,7 +1164,7 @@ def get_discover_genres(type: str = "movies", db: Session = Depends(get_db)):
 
 @router.get("/genre", dependencies=[Depends(get_user_from_request)])
 def get_discover_by_genre(genre_id: int, type: str = "movies", mode: str = "top_rated",
-                          db: Session = Depends(get_db)):
+                          db: Session = Depends(get_db), request: Request = None):
     """Titles in a genre. mode='top_rated' (all-time best) or 'new' (recent). Marked."""
     if mode not in ("top_rated", "new"):
         mode = "top_rated"
@@ -1151,11 +1174,14 @@ def get_discover_by_genre(genre_id: int, type: str = "movies", mode: str = "top_
     media_type = "series" if type == "series" else "movie"
     items = tmdb.get_by_genre(media_type, genre_id, mode=mode)
     known_ids = _known_tmdb_ids(db)
-    return {"genre_id": genre_id, "mode": mode, "items": _dedup_and_mark(items, known_ids)}
+    out = {"genre_id": genre_id, "mode": mode, "items": _dedup_and_mark(items, known_ids)}
+    _watch_links(db, request, [out])
+    return out
 
 
 @router.get("/streaming", dependencies=[Depends(get_user_from_request)])
-def get_new_on_streaming(provider: str, type: str = "movies", db: Session = Depends(get_db)):
+def get_new_on_streaming(provider: str, type: str = "movies", db: Session = Depends(get_db),
+                         request: Request = None):
     """Recently released movies or TV on one streaming service, newest first.
 
     In-library and already-requested titles are marked the same way as the rest
@@ -1171,8 +1197,10 @@ def get_new_on_streaming(provider: str, type: str = "movies", db: Session = Depe
     media_type = "series" if type == "series" else "movie"
     items = tmdb.get_new_on_provider(media_type, prov["id"], region=region)
     known_ids = _known_tmdb_ids(db)
-    return {"provider": provider, "name": prov["name"],
-            "items": _dedup_and_mark(items, known_ids)}
+    out = {"provider": provider, "name": prov["name"],
+           "items": _dedup_and_mark(items, known_ids)}
+    _watch_links(db, request, [out])
+    return out
 
 
 @router.get("/config")

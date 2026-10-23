@@ -173,10 +173,11 @@ public static class IndexHtmlPatch
             var notifJsTag = $"<script src=\"/Tentacle/notifications.js?v={cacheBust}\" defer></script>";
             var loginCssTag = $"<link rel=\"stylesheet\" href=\"/Tentacle/login.css?v={cacheBust}\" />";
             var loginJsTag = $"<script src=\"/Tentacle/login.js?v={cacheBust}\" defer></script>";
+            var playJsTag = $"<script src=\"/Tentacle/play.js?v={cacheBust}\" defer></script>";
 
             content = content
                 .Replace("</head>", $"{cssTag}{discoverCssTag}{detailsCssTag}{mdblistCssTag}{navbarCssTag}{mediabarCssTag}{searchCssTag}{livetvCssTag}{favoritesCssTag}{notifCssTag}{loginCssTag}</head>")
-                .Replace("</body>", $"{mdblistJsTag}{tmdbJsTag}{navbarJsTag}{mediabarJsTag}{jsTag}{discoverJsTag}{searchJsTag}{livetvJsTag}{favoritesJsTag}{detailsJsTag}{notifJsTag}{loginJsTag}</body>");
+                .Replace("</body>", $"{mdblistJsTag}{tmdbJsTag}{navbarJsTag}{mediabarJsTag}{jsTag}{discoverJsTag}{searchJsTag}{livetvJsTag}{favoritesJsTag}{detailsJsTag}{notifJsTag}{playJsTag}{loginJsTag}</body>");
 
             var bytes = System.Text.Encoding.UTF8.GetBytes(content);
             lock (_transformLock)

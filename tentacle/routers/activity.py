@@ -1105,6 +1105,9 @@ def get_activity(request: Request, db: Session = Depends(get_db),
 
     if downloads:
         logger.info(f"Activity: {len(downloads)} download(s) in queue")
+    # ▶ Play / Open in Jellyfin on what is ready to watch (services/watch_links.py)
+    from services import watch_links
+    recently_downloaded = watch_links.linker(db, request, user).attach(recently_downloaded)
     # for_names: items carry "for" (whose it is) only when it's someone else's;
     # clients from before it show requested_by instead.
     return {"downloads": downloads, "searching": searching, "unreleased": unreleased,

@@ -30,7 +30,7 @@ class LibraryAndDiscoverText(unittest.TestCase):
         self.assertEqual([], missing_text(values, html_list))
 
     def test_library_card(self):
-        src = ESC + functions("pages.js", ["renderLibCard"])
+        src = ESC + functions("pages.js", ["_watchOk", "_watchTarget", "watchButtons", "watchCardButtons", "renderLibCard"])
         for i, v in enumerate(VALUES):
             item = {"tmdb_id": i + 1, "media_type": "movie", "title": v, "year": "19\"99",
                     "source_tag": v + " tag", "poster_path": f"/p{i}\"x.jpg", "in_library": True}
@@ -41,7 +41,7 @@ class LibraryAndDiscoverText(unittest.TestCase):
     def test_discover_grid_and_coverage_card(self):
         src = ESC + ("function _discoverDownloadInfo() { return null; } function _discoverUnreleasedInfo() { return null; }\n"
                      "const state = {};\n"
-                     + functions("pages.js", ["_arrAddLabel", "renderDiscoverGrid", "coverageCard"]))
+                     + functions("pages.js", ["_watchOk", "_watchTarget", "watchButtons", "watchCardButtons", "_arrAddLabel", "renderDiscoverGrid", "coverageCard"]))
         items = [{"tmdb_id": i + 1, "media_type": "movie", "title": v, "year": "2001", "rating": 7.5,
                   "poster_path": f"http://img.test/{i}.jpg?a=1&b=\"2\"", "list_name": v + " list"}
                  for i, v in enumerate(VALUES)]
@@ -56,7 +56,7 @@ class LibraryAndDiscoverText(unittest.TestCase):
     def test_media_detail(self):
         src = ESC + ("let _detailSeq = 0; function _detailOpening() { return _detailSeq; }\n"
                      "function showModal() {} function closeModal() {} const state = {currentUser: {is_admin: true}};\n"
-                     + functions("pages.js", ["showMediaDetail"]))
+                     + functions("pages.js", ["_watchOk", "_watchTarget", "watchButtons", "watchCardButtons", "showMediaDetail"]))
         for v in VALUES:
             data = {"title": v, "year": 2001, "rating": 7, "overview": v + " overview", "genres": [v + " genre"],
                     "tags": [v + " tag"], "source": "provider_x", "strm_path": "/media/vod/" + v + ".strm",

@@ -44,6 +44,7 @@
     <EmbeddedResource Include="Inject/tentacle-notifications.css" />
     <EmbeddedResource Include="Inject/tentacle-login.js" />
     <EmbeddedResource Include="Inject/tentacle-login.css" />
+    <EmbeddedResource Include="Inject/tentacle-play.js" />
     <EmbeddedResource Include="Assets/imdb.svg" />
     <EmbeddedResource Include="Assets/tmdb.svg" />
     <EmbeddedResource Include="Assets/trakt.svg" />

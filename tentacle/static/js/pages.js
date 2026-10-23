@@ -713,8 +713,25 @@ function setLibSort(value) {
   fetchLibraryPage();
 }
 
+function _libParams(offset, limit) {
+  const { type, src, sourceTag, listId, listStatus, sort } = pages.lib;
+  const params = new URLSearchParams({ limit, offset });
+  if (listId) {
+    params.set('list_id', listId);
+    if (listStatus) params.set('list_status', listStatus);
+  } else {
+    if (type !== 'all') params.set('media_type', type);
+    if (src !== 'all') params.set('source', src);
+    if (sourceTag) params.set('source_tag', sourceTag);
+  }
+  if (sort && sort !== 'date_desc') params.set('sort', sort);
+  const search = document.getElementById('lib-search')?.value.trim();
+  if (search) params.set('search', search);
+  return params;
+}
+
 async function fetchLibraryPage() {
-  const { type, src, sourceTag, listId, listStatus, sort, offset, limit } = pages.lib;
+  const { listId, sourceTag, offset, limit } = pages.lib;
   const el = document.getElementById('lib-grid');
 
   if (offset === 0) {
@@ -722,20 +739,7 @@ async function fetchLibraryPage() {
   }
 
   try {
-    const params = new URLSearchParams({ limit, offset });
-    if (listId) {
-      params.set('list_id', listId);
-      if (listStatus) params.set('list_status', listStatus);
-    } else {
-      if (type !== 'all') params.set('media_type', type);
-      if (src !== 'all') params.set('source', src);
-      if (sourceTag) params.set('source_tag', sourceTag);
-    }
-    if (sort && sort !== 'date_desc') params.set('sort', sort);
-    const search = document.getElementById('lib-search')?.value.trim();
-    if (search) params.set('search', search);
-
-    const data = await api(`/api/library/items?${params}`);
+    const data = await api(`/api/library/items?${_libParams(offset, limit)}`);
     pages.lib.total = data.total;
 
     if (offset === 0) {
@@ -767,6 +771,58 @@ async function fetchLibraryPage() {
   }
 }
 
+// ── ▶ Play / Open in Jellyfin ──
+// Titles that can be watched now carry `jellyfin: {play, open}`
+// (services/watch_links.py). Plain links into Jellyfin Web: on a phone an
+// ordinary tap, so Android opens the Jellyfin app (PWA) when it is installed;
+// on a computer a new tab, so Tentacle stays open. Play starts it in
+// Jellyfin (where the person stopped, or a show's next episode).
+const _WATCH_ICON_PLAY = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 5.5v13a1 1 0 0 0 1.5.86l10.4-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>';
+const _WATCH_ICON_OPEN = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>';
+function _watchTarget() {
+  const touch = window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+  return touch ? '' : ' target="_blank" rel="noopener"';
+}
+function _watchOk(links) {
+  return !!(links && /^https?:\/\//.test(links.play || '') && /^https?:\/\//.test(links.open || ''));
+}
+// Two buttons, for a details view or a card's row of actions.
+function watchButtons(links, cls = 'btn btn-sm') {
+  if (!_watchOk(links)) return '';
+  const t = _watchTarget();
+  return `<span class="watch-btns"><a class="${cls} btn-primary watch-play" href="${escapeAttr(links.play)}"${t} onclick="event.stopPropagation()">${_WATCH_ICON_PLAY}<span>Play</span></a>`
+    + `<a class="${cls} btn-secondary watch-open" href="${escapeAttr(links.open)}"${t} onclick="event.stopPropagation()" title="The title's page in Jellyfin">${_WATCH_ICON_OPEN}<span>Open in Jellyfin</span></a></span>`;
+}
+// Round buttons on a poster.
+function watchCardButtons(links, title = '') {
+  if (!_watchOk(links)) return '';
+  const t = _watchTarget();
+  const name = title ? ` ${title}` : '';
+  return `<div class="watch-card-btns"><a class="watch-card-play" href="${escapeAttr(links.play)}"${t} onclick="event.stopPropagation()" title="Play${escapeAttr(name)}" aria-label="Play${escapeAttr(name)}">${_WATCH_ICON_PLAY}</a>`
+    + `<a class="watch-card-open" href="${escapeAttr(links.open)}"${t} onclick="event.stopPropagation()" title="Open in Jellyfin" aria-label="Open${escapeAttr(name)} in Jellyfin">${_WATCH_ICON_OPEN}</a></div>`;
+}
+
+// A download became ready to watch (or went): the cards shown get ▶ Play /
+// Open in Jellyfin, or lose them, without redrawing the grid (live.js).
+async function libRefreshWatch() {
+  const grid = document.getElementById('lib-grid');
+  const shown = pages.lib.items.length;
+  if (!grid || !shown) return;
+  let data;
+  try { data = await api(`/api/library/items?${_libParams(0, shown)}`); } catch (_) { return; }
+  for (const item of data.items || []) {
+    const card = grid.querySelector(`.lib-card[data-tmdb-id="${CSS.escape(String(item.tmdb_id))}"][data-media-type="${CSS.escape(item.media_type || '')}"]`);
+    const poster = card && card.querySelector('.lib-card-poster');
+    if (!poster) continue;
+    const old = poster.querySelector('.watch-card-btns');
+    const was = old ? old.querySelector('.watch-card-play')?.getAttribute('href') || '' : '';
+    if (was === (_watchOk(item.jellyfin) ? item.jellyfin.play : '')) continue;
+    if (old) old.remove();
+    const html = watchCardButtons(item.jellyfin, item.title);
+    if (html) poster.insertAdjacentHTML('beforeend', html);
+  }
+}
+
 function renderLibCard(item) {
   // Library is browse-only — skip missing items entirely
   if (item.in_library === false) return '';
@@ -782,10 +838,11 @@ function renderLibCard(item) {
   const sourceBadge = badges ? `<div class="lib-card-source" style="display:flex;flex-direction:column;gap:3px;align-items:flex-end">${badges}</div>` : '';
 
   return `
-    <div class="lib-card" data-tmdb-id="${item.tmdb_id}" onclick="showMediaDetail(${item.tmdb_id}, '${escapeJS(item.media_type)}')">
+    <div class="lib-card" data-tmdb-id="${item.tmdb_id}" data-media-type="${escapeAttr(item.media_type || '')}" onclick="showMediaDetail(${item.tmdb_id}, '${escapeJS(item.media_type)}')">
       <div class="lib-card-poster">
         ${poster}
         ${sourceBadge}
+        ${watchCardButtons(item.jellyfin, item.title)}
       </div>
       <div class="lib-card-info">
         <div class="lib-card-title" title="${escapeAttr(item.title)}">${escapeAttr(item.title)}</div>
@@ -1593,6 +1650,7 @@ async function showMediaDetail(tmdbId, mediaType) {
         ${data.poster_path ? `<img alt="" src="${escapeAttr(_imgUrl(data.poster_path, 'w185'))}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
           <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(data.year || '—')} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${escapeAttr(data.rating || '—')}</div>
+          ${_watchOk(data.jellyfin) ? `<div class="watch-row">${watchButtons(data.jellyfin)}</div>` : ''}
           <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${escapeAttr(data.overview || 'No overview available.')}</p>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
             ${(data.genres||[]).map(g => `<span class="badge badge-gray">${escapeAttr(g)}</span>`).join('')}
@@ -2015,8 +2073,12 @@ async function detailToggleSeason(sn) {
 
   list.innerHTML = '<div style="padding:8px 12px;color:var(--text3);font-size:12px">Loading...</div>';
   try {
-    const data = await api(`/api/discover/season/${epState.tmdbId}/${sn}`);
+    const [data, watch] = await Promise.all([
+      api(`/api/discover/season/${epState.tmdbId}/${sn}`),
+      api(`/api/library/watch/series/${epState.tmdbId}/season/${sn}`).catch(() => ({})),
+    ]);
     if (seq !== _detailSeq || epState !== _detailEpState || !list.isConnected) return;
+    const epLinks = (watch && watch.episodes) || {};
     epState.loaded[sn] = true;
     const tmdbEps = data.episodes || [];
     const vodEps = epState.vodEps;
@@ -2052,7 +2114,12 @@ async function detailToggleSeason(sn) {
       if (isVod) badges.push('<span class="ep-dl-badge ep-badge-vod">VOD</span>');
       if (isDl) badges.push('<span class="ep-dl-badge ep-badge-dl">DL</span>');
 
+      const links = epLinks[String(epNum)];
+      const play = _watchOk(links)
+        ? `<a class="ep-play-btn" href="${escapeAttr(links.play)}"${_watchTarget()} title="Play episode ${epNum} in Jellyfin" aria-label="Play episode ${epNum}">${_WATCH_ICON_PLAY}</a>`
+        : (Object.keys(epLinks).length ? '<span class="ep-play-btn ep-play-none" aria-hidden="true"></span>' : '');
       rows += `<div class="detail-ep-row">
+        ${play}
         <span class="ep-num">${epNum}</span>
         <span class="detail-ep-name">${escapeAttr(nameMap[epNum] || '')}</span>
         ${badges.join('')}
@@ -2096,6 +2163,7 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
         ${data.poster_path ? `<img alt="" src="${escapeAttr(_imgUrl(data.poster_path, 'w185'))}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
           <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(data.year || '—')} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${escapeAttr(data.rating || '—')}</div>
+          ${_watchOk(data.jellyfin) ? `<div class="watch-row">${watchButtons(data.jellyfin)}</div>` : ''}
           <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${escapeAttr(data.overview || 'No overview available.')}</p>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
             ${(data.genres||[]).map(g => `<span class="badge badge-gray">${escapeAttr(g)}</span>`).join('')}
@@ -5374,6 +5442,7 @@ function renderActivity(data) {
           <div class="activity-title">${escapeAttr(item.title)}${item.episode ? ' · ' + escapeAttr(item.episode) : ''}</div>
           <div class="activity-meta">${item.year || ''} · Ready to watch ${_actFor(item)}</div>
           ${hrs ? `<div class="activity-countdown" style="color:var(--green)">${hrs}</div>` : ''}
+          ${_watchOk(item.jellyfin) ? `<div class="activity-actions">${watchButtons(item.jellyfin, 'btn btn-xs')}</div>` : ''}
         </div>
       </div>`;
     }).join('');
@@ -5711,6 +5780,7 @@ function renderDiscoverGrid(items) {
           ${poster}
           <div class="lib-card-source">${badge}</div>
           ${addBtn}
+          ${item.in_library ? watchCardButtons(item.jellyfin, item.title) : ''}
         </div>
         <div class="lib-card-info">
           <div class="lib-card-title" title="${escapeAttr(item.title)}">${escapeAttr(item.title)}</div>
@@ -5749,16 +5819,15 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
     // "In Library" has to lead somewhere. VOD (.strm) titles used to show the
     // badge and offer only download-again actions, with no way to reach the
     // episodes the user already had.
-    const watchBtn = data.jellyfin_url
-      ? ` <a class="btn btn-primary btn-sm" style="margin-left:6px" href="${escapeAttr(data.jellyfin_url)}" target="_blank" rel="noopener">Watch in Jellyfin</a>`
-      : '';
+    const watchBtn = _watchOk(data.jellyfin) ? ` ${watchButtons(data.jellyfin)}` : '';
     let actionBtn;
     if (dlInfo) {
       const pct = (dlInfo.progress || 0).toFixed(0);
       const st = dlInfo.status === 'importing' ? 'Importing…' : dlInfo.status === 'queued' ? 'Queued' :
         dlInfo.status === 'stuck' ? 'Stuck' : dlInfo.status === 'import_blocked' ? 'Import blocked' : `Downloading ${pct}%`;
       const eta = dlInfo.eta ? ` · ETA ${escapeAttr(dlInfo.eta)}` : '';
-      actionBtn = `<span class="badge ${dlInfo.status === 'stuck' ? 'badge-red' : 'badge-accent'}" style="font-size:12px;padding:4px 10px">${st}${eta}</span>`;
+      // A copy that plays already (a VOD one, a show's earlier episodes) still plays.
+      actionBtn = `<span class="badge ${dlInfo.status === 'stuck' ? 'badge-red' : 'badge-accent'}" style="font-size:12px;padding:4px 10px">${st}${eta}</span>${watchBtn}`;
     } else if (isInLibrary && isSeries && data.library_source === 'sonarr') {
       actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span>${watchBtn} <button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showManageEpisodesModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Manage Episodes</button>`;
     } else if (isInLibrary && isSeries && data.library_source && data.library_source.startsWith('provider_')) {
