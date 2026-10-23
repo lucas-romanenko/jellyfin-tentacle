@@ -5771,6 +5771,7 @@ def _m3u_text(text) -> str:
 def live_playlist_m3u(request: Request, db: Session = Depends(get_db)):
     """Generate M3U playlist for Jellyfin M3U tuner import.
     All stream URLs point to our local proxy (like Threadfin's direct mode)."""
+    from services import livetv_lineups
     channels = _shown_channels(db)
 
     base_url = str(request.base_url).rstrip("/")
@@ -5779,9 +5780,11 @@ def live_playlist_m3u(request: Request, db: Session = Depends(get_db)):
         epg_id = ch.guide_epg_id or f"tentacle-{ch.id}"
         logo = f' tvg-logo="{_m3u_text(ch.guide_logo)}"' if ch.guide_logo else ""
         group = f' group-title="{_m3u_text(ch.group_title)}"' if ch.group_title else ""
+        name = _m3u_text(ch.guide_name)
+        name = livetv_lineups.extinf_name(name.replace('"', "'")) if livetv_lineups.jellyfin_alters(name) \
+            else "," + name
         lines.append(
-            f'#EXTINF:-1 tvg-id="{_m3u_text(epg_id)}" tvg-chno="{_m3u_text(number)}"{logo}{group},'
-            f'{_m3u_text(ch.guide_name)}'
+            f'#EXTINF:-1 tvg-id="{_m3u_text(epg_id)}" tvg-chno="{_m3u_text(number)}"{logo}{group}{name}'
         )
         lines.append(f"{base_url}/api/live/stream/{ch.id}")
 

@@ -308,6 +308,27 @@ def _m3u_text(text) -> str:
     return re.sub(r"[\r\n]+", " ", str(text)).replace('"', "'") if text else ""
 
 
+# double.TryParse(text, CultureInfo.InvariantCulture): NumberStyles.Float | AllowThousands
+_DOTNET_NUMBER = re.compile(r"\s*[+-]?(\d[\d,]*\.?\d*|\.\d+)([eE][+-]?\d+)?\s*$|\s*[+-]?(Infinity|NaN|∞)\s*$", re.I)
+
+
+def jellyfin_alters(name: str) -> bool:
+    """Jellyfin's M3U parser (M3uParser.GetChannelName, 10.11) keeps only the
+    text after the last comma, and drops a first word that reads as a number
+    ("3 Sport" -> "Sport"). It takes tvg-name only when that part is empty."""
+    if "," in name:
+        return True
+    i = name.find(" ")
+    return i > 0 and bool(_DOTNET_NUMBER.match(name[:i].strip(" .")))
+
+
+def extinf_name(name: str) -> str:
+    """The end of an #EXTINF line for a name (already made M3U-safe): after
+    the comma as always, or as tvg-name with nothing after the comma when
+    Jellyfin would cut it (#769)."""
+    return f' tvg-name="{name}",' if name and jellyfin_alters(name) else f",{name}"
+
+
 def m3u(entries: list, base_url: str) -> str:
     """An M3U tuner: tvg-id is the guide's channel id (Jellyfin matches the
     guide on it), tvg-chno the lineup's number. No group-title: people see
@@ -316,8 +337,8 @@ def m3u(entries: list, base_url: str) -> str:
     lines = ["#EXTM3U"]
     for e in entries:
         logo = f' tvg-logo="{_m3u_text(e["logo_url"])}"' if e.get("logo_url") else ""
-        lines.append(f'#EXTINF:-1 tvg-id="{_m3u_text(e["xmltv_id"])}" tvg-chno="{e["number"]}"{logo},'
-                     f'{_m3u_text(e["name"])}')
+        lines.append(f'#EXTINF:-1 tvg-id="{_m3u_text(e["xmltv_id"])}" tvg-chno="{e["number"]}"{logo}'
+                     + extinf_name(_m3u_text(e["name"])))
         lines.append(base + e["stream_path"])
     return "\n".join(lines) + "\n"
 
