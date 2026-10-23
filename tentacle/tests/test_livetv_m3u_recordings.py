@@ -93,6 +93,16 @@ class M3uTimersAreRecordings(_Base):
                 "http://jf.test", "k", lambda: self.livetv._tentacle_m3u_ids(self.db))
         self.assertEqual({"999"}, got)
 
+    def test_an_event_channel_out_of_the_lineup_now_is_still_known(self):
+        # no event in its name now: not in the lineup, but Jellyfin still has
+        # the channel (until its next refresh) and a timer may be on it
+        pool = [{"key": f"c{self.a.id}", "stream_path": f"/api/live/stream/{self.a.id}", "event": "no_event"},
+                {"key": f"c{self.b.id}", "stream_path": f"/api/live/stream/{self.b.id}"}]
+        with mock.patch.object(self.L, "pool", lambda db: list(pool)):
+            ids = self.livetv._tentacle_m3u_ids(self.db)
+        self.assertEqual("277", ids.get(self.L.m3u_external_id(TUNER, f"{SAVED}/api/live/stream/{self.a.id}")))
+        self.assertEqual("999", ids.get(self.ext_b))
+
     def test_a_per_person_tuner_of_before_is_ours_too(self):
         from models.database import LiveUserLineup
         old = SAVED + "/api/live/users/abc/tuner.m3u"
