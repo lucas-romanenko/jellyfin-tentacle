@@ -25,7 +25,11 @@ class WelcomeTextIsEscaped(unittest.TestCase):
                 continue
             raw.append(expr)
         # The title is set with textContent; the rest builds markup from escaped parts.
-        allowed = {"d.name", "d.home_rows.length ? ':' : '.'"}
+        allowed = {"d.name", "d.home_rows.length ? ':' : '.'",
+                   # The counts: numbers and fixed words, put together
+                   # (_welcomeCounts).
+                   "_welcomeCounts(d)", "Number(v).toLocaleString()", "v === 1 ? one : many",
+                   "parts.slice(0, -1).join(', ')", "parts[parts.length - 1]", "list"}
         self.assertEqual([], sorted(e for e in set(raw) - allowed if "escHtml(" not in e))
 
     def test_names_and_addresses_go_through_escHtml(self):

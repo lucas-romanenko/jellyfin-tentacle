@@ -36,6 +36,7 @@ async function welcomeCheck() {
   if (!d.kids) welcome.steps.push('requests');
   welcome.steps.push('watch');
   welcome.at = 0;
+  welcome.countsAsked = false;
   mych.onChange = () => { if (welcome.steps[welcome.at] === 'channels') _welcomePicks(); };
   _welcomeShow();
   showModal('modal-welcome');
@@ -52,6 +53,35 @@ function _welcomeShow() {
   document.getElementById('welcome-title').textContent = title;
   document.getElementById('welcome-body').innerHTML = body;
   if (step === 'channels') _welcomePicks();
+  if (step === 'hello' && !welcome.data.counts && !welcome.countsAsked) _welcomeCountsLate();
+}
+
+// "You now have access to 12,345 movies, 1,234 TV shows and 1,730 live TV
+// channels!", under "Tentacle is your space on Lucas's server". A part that
+// is 0 is left out.
+function _welcomeCounts(d) {
+  const c = d && d.counts;
+  if (!c) return '';
+  const n = (v, one, many) => `<strong>${Number(v).toLocaleString()} ${v === 1 ? one : many}</strong>`;
+  const parts = [];
+  if (c.movies > 0) parts.push(n(c.movies, 'movie', 'movies'));
+  if (c.shows > 0) parts.push(n(c.shows, 'TV show', 'TV shows'));
+  if (c.channels > 0) parts.push(n(c.channels, 'live TV channel', 'live TV channels'));
+  if (!parts.length) return '';
+  const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0];
+  return `You now have access to ${list}!`;
+}
+
+// GET /api/welcome answers at once; the titles may still be being counted.
+async function _welcomeCountsLate() {
+  welcome.countsAsked = true;
+  try {
+    const r = await api('/api/welcome/counts');
+    if (!r || !r.counts) return;
+    welcome.data.counts = r.counts;
+    const el = document.getElementById('welcome-counts');
+    if (el) el.innerHTML = _welcomeCounts(welcome.data);
+  } catch (e) { /* the welcome reads well without them */ }
 }
 
 const WELCOME_STEPS = {
@@ -59,6 +89,7 @@ const WELCOME_STEPS = {
     <p><strong>Tentacle is your space on ${escHtml(d.server)}.</strong>
       ${d.kids ? 'Here you set up your home screen.' : 'Here you pick your channels, set up your home screen and ask for movies and shows.'}
       You watch in Jellyfin; what you choose here shows up there.</p>
+    <p class="welcome-counts" id="welcome-counts">${_welcomeCounts(d)}</p>
     <div class="form-label">Your password</div>
     <label class="fam-radio"><input type="radio" name="welcome-pw" value="keep" checked onchange="_welcomePwMode()"> Keep the one ${escHtml(d.admin)} gave me</label>
     <label class="fam-radio"><input type="radio" name="welcome-pw" value="mine" onchange="_welcomePwMode()"> Pick my own</label>
