@@ -18,6 +18,7 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 from models.database import Movie, Provider, ProviderCategory
 import services.sync as sync
+from nightly_harness import age_prune_marks
 from tmp_dirs import temp_dir
 
 
@@ -125,7 +126,9 @@ class Base(unittest.TestCase):
         self.db.bind.dispose()
 
     def night(self):
+        """One nightly run, a day after the one before (the prune's marks age a day)."""
         TMDB.calls = []
+        age_prune_marks(self.db)
         run = sync.sync_provider(self.p, "full", self.db)
         self.assertEqual(run.status, "completed", run.error_message)
         sync.sweep_orphaned_vod_records(self.db)

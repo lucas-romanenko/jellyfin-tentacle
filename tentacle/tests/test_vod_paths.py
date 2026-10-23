@@ -15,7 +15,7 @@ from pathlib import Path as _RealPath
 
 import services.sync as sync
 from models.database import Movie, Provider, ProviderCategory, Series
-from nightly_harness import FakeClient, FakeTMDB, NightlyHarness
+from nightly_harness import FakeClient, FakeTMDB, NightlyHarness, age_prune_marks
 
 
 class LongNames(NightlyHarness):
@@ -86,6 +86,7 @@ class FolderCollisions(NightlyHarness):
         self.db.commit()
         self.client.movies["1"] = [("Brothers?", 11)]      # the provider drops "Brothers"
         self.sync_only()                                    # first strike: marked
+        age_prune_marks(self.db)                            # the next night
         self.sync_only()                                    # second: removed
         self.assertIsNone(self.movie(2002))
         self.assertTrue(self._file(self.movie(2001)).exists(), "the other title's files were deleted")
