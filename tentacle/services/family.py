@@ -308,6 +308,9 @@ def start_new_person(user_id: int, home=None, channels=None) -> None:
             else:
                 from routers.auth import _build_playlists_for_new_user
                 _build_playlists_for_new_user(user.id)
+            # What their welcome will count, ready before they first sign in.
+            from services import welcome
+            welcome.warm_counts(user.id)
         except Exception as e:
             logger.warning(f"[Family] Could not set up the defaults for user {user_id}: {e}")
         finally:
