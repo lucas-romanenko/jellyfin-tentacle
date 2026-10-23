@@ -21,6 +21,8 @@ Topics:
   youtube        who follows which YouTube channel changed (My YouTube,
                  Sources → YouTube)
   library        a title came into or left the library ({"event": ...})
+  recordings     a recording rule changed, or what it will record (everyone:
+                 recordings are the household's)
 
 Jellyfin Web and the Tentacle TV app hear about requests, activity and
 notifications through the plugin (POST /Tentacle/Notify, one Jellyfin
@@ -149,7 +151,7 @@ async def stream(user_id: int, is_admin: bool, is_disconnected=None):
 
 # ── Jellyfin Web and the TV app, through the plugin ───────────────────────────
 
-CLIENT_TOPICS = ("requests", "activity", "notifications")
+CLIENT_TOPICS = ("requests", "activity", "notifications", "recordings")
 CLIENT_DELAY = 0.3   # gathers a burst (approve = requests + notifications + activity)
 _client_lock = threading.Lock()
 _client_pending: "list[tuple]" = []        # (topic, Tentacle user ids, admins too)

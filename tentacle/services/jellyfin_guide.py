@@ -117,6 +117,14 @@ def refresh_jellyfin_guide(jf_url: str, jf_key: str, then_tag: bool = False) -> 
                              headers=headers, timeout=10)
         resp.raise_for_status()
 
+    # Recording rules book from Jellyfin's guide: look again once the
+    # refresh has had time to finish (services/recording_rules/book.py).
+    try:
+        from services.recording_rules import book
+        book.request_scan(delay=600)
+    except Exception as e:   # never cost the refresh
+        logger.debug(f"[Recordings] rescan after the guide refresh not set: {e}")
+
     if then_tag:
         # Channels the refresh creates get their tuner's tag (who may see
         # them) as soon as it is done: services/livetv_tuners.py.

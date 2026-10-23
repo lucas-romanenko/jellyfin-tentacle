@@ -186,6 +186,19 @@ provider names, URLs or logins).
 | GET | `/api/live/stream/{channel_id}` | none | livetv.py:stream_proxy |
 | GET | `/api/live/streams` | admin or internal | livetv.py:live_streams |
 | GET | `/api/live/recordings/busy` | admin or internal | recordings.py:recordings_busy (Jellyfin recording now, or a timer whose padded start is within `soon_minutes`, default 20; `known` false when Jellyfin could not be asked) |
+| GET | `/api/live/recording-rules/leagues` | signed in | recordings.py:recording_leagues (the built-in leagues and teams) |
+| GET | `/api/live/recording-rules` | signed in | recordings.py:list_rules (every rule, `can_record`, `last_scan`) |
+| POST | `/api/live/recording-rules` | can record | recordings.py:create_rule (team / keywords / series; starts in preview) |
+| PATCH | `/api/live/recording-rules/{id}` | owner or admin | recordings.py:update_rule |
+| DELETE | `/api/live/recording-rules/{id}` | owner or admin | recordings.py:delete_rule (cancels its own upcoming timers) |
+| POST | `/api/live/recording-rules/preview` | signed in | recordings.py:preview_rule (what a rule would record now, replays, near misses) |
+| POST | `/api/live/recording-rules/run` | can record | recordings.py:run_rules (scan now) |
+| GET | `/api/live/recordings/upcoming` | signed in | recordings.py:recordings_upcoming (rules' bookings + Jellyfin's own timers) |
+| GET | `/api/live/recordings/history` | signed in | recordings.py:recordings_history |
+| GET | `/api/live/recordings/marks` | signed in | recordings.py:recordings_marks (for the guides: Jellyfin channel id + start) |
+| POST | `/api/live/recordings/{id}/skip` | can record | recordings.py:skip_booking |
+| POST | `/api/live/recordings/{id}/restore` | can record | recordings.py:restore_booking |
+| POST | `/api/live/recordings/cancelled` | admin or internal | recordings.py:timer_cancelled (the plugin: a person cancelled a timer in Jellyfin) |
 | POST | `/api/live/sync-channels/{provider_id}` | admin | livetv.py:sync_live_channels |
 | POST | `/api/live/sync-epg/{provider_id}` | admin | livetv.py:sync_epg |
 | GET | `/api/live/sync-status` | admin | livetv.py:sync_status_endpoint |
