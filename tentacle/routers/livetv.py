@@ -3889,6 +3889,7 @@ GUIDE_ALERT_AFTER = timedelta(hours=6)
 # restart many times a day) neither forgets a failure nor retries it sooner,
 # and the first check comes a few minutes after start-up (main.setup_scheduler).
 _guide_attempt_lock = threading.Lock()
+_guide_top_up_lock = threading.Lock()
 # What the last failed download of each provider said (_sync_epg_once), read
 # by _note_epg_attempt right after it: {"error": text, "retry_after": seconds}.
 _epg_last_failure: dict = {}
@@ -4155,6 +4156,8 @@ def run_guide_top_up() -> None:
     if _running_syncs or _nightly_holds_guide():
         logger.info("[LiveTV] Guide top-up waits: a sync is running")
         return
+    if not _guide_top_up_lock.acquire(blocking=False):
+        return      # one already runs: never two downloads at once
     db = SessionLocal()
     try:
         synced = False
@@ -4177,6 +4180,7 @@ def run_guide_top_up() -> None:
         logger.error(f"[LiveTV] Guide top-up failed: {e}")
     finally:
         db.close()
+        _guide_top_up_lock.release()
 
 
 # ─── Channel management ────────────────────────────────────────────────────

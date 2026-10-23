@@ -306,6 +306,15 @@ class GuideTopUp(unittest.TestCase):
             livetv.run_guide_top_up()
         self.assertEqual(1, self.server.requests)
 
+    def test_never_two_at_once(self):
+        self.store_guide_ending(datetime.utcnow() - timedelta(hours=1))
+        self.server.refuse = False
+        with livetv._guide_top_up_lock:                # one runs already
+            livetv.run_guide_top_up()
+        self.assertEqual(0, self.server.requests)
+        livetv.run_guide_top_up()
+        self.assertEqual(1, self.server.requests)
+
     def test_a_sync_with_nothing_to_download_is_no_failure(self):
         self.db.query(mdb.LiveChannel).delete()       # "No channels yet"
         self.db.commit()
@@ -500,11 +509,8 @@ class GuideTopUpScheduled(unittest.TestCase):
         job = jobs["guide_top_up"]
         self.assertIs(livetv.run_guide_top_up, job.args[0])
         self.assertEqual(timedelta(minutes=5), job.args[1].interval)
-        # and a few minutes after start-up: an install restarted more often
-        # than hourly would otherwise never run it
-        first = [c.args for c in once.call_args_list if c.args[0] is livetv.run_guide_top_up]
-        self.assertEqual(1, len(first))
-        self.assertTrue(60 <= first[0][1] <= 600, first[0])
+        self.assertEqual(0, len([c for c in once.call_args_list if c.args[0] is livetv.run_guide_top_up]),
+                         "no separate start-up check: it ran at the same moment as the first tick")
 
 
 if __name__ == "__main__":
