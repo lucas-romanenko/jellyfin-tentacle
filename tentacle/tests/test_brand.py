@@ -112,6 +112,14 @@ class BrandColoursTest(unittest.TestCase):
             with self.subTest(token=dash):
                 self.assertEqual(root[dash].lower(), self.t[brand].lower())
 
+    def test_accent_text_not_the_fill(self):
+        # --accent is the fill under white text (3.8:1 as text on the dark backgrounds)
+        static = ROOT / "tentacle" / "static"
+        for p in [static / "index.html", *sorted((static / "js").glob("*.js"))]:
+            with self.subTest(page=p.name):
+                self.assertEqual(re.findall(r"(?<![-\w])color: *var\(--accent\)(?=[;}\s'\"!])", p.read_text()), [],
+                                 "use var(--accent-text) for text")
+
     def test_dashboard_text3_on_its_backgrounds(self):
         html = (ROOT / "tentacle" / "static" / "index.html").read_text()
         text3 = re.search(r"--text3:\s*(#[0-9a-fA-F]{6})", html).group(1)
