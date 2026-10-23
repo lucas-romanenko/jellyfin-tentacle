@@ -137,7 +137,7 @@ class OneStreamPerDevice(unittest.TestCase):
         # anyway and nobody reports the stream
         self.assertIn("UnusedGrace = TimeSpan.FromSeconds(45)", self.src)
         keep = self.src[self.src.index("private void Remember"):]
-        self.assertRegex(keep, r"if \(open\.TryAdd\(liveStreamId, entry\)\)\s*\{\s*_ = CloseIfUnusedLater\(")
+        self.assertRegex(keep, r"if \(ReferenceEquals\(kept, entry\)\)\s*\{\s*_ = CloseIfUnusedLater\(")
         later = self.src[self.src.index("private async Task CloseIfUnusedLater"):]
         self.assertIn("await Task.Delay(UnusedGrace)", later)
         # under the device's lock, only if still this device's and unplayed
@@ -158,6 +158,53 @@ class OneStreamPerDevice(unittest.TestCase):
         self.assertIn('"[Tentacle] Could not close live stream {LiveStream}"', self.src)
         self.assertTrue(re.search(r"catch \(Exception ex\)\s*\{\s*_logger\.LogWarning\(ex, \"\[Tentacle\] Could not check",
                                   self.src))
+
+
+class GivesBackOnlyWhatItHolds(unittest.TestCase):
+    """#794: a player that reported its stop already gave its share back
+    (Jellyfin's stop closes the stream once). The channel switch and the 45 s
+    check gave it back a second time, so a stream shared with a running
+    recording of the channel or another TV closed under it; and with M3U's
+    one id per channel, a remembered id named a later stream of the channel
+    someone else opened."""
+
+    def setUp(self):
+        self.src = FILTER.read_text(encoding="utf-8")
+
+    def test_sees_the_stop_request_and_marks_it_before_the_answer(self):
+        for action in ('("Playstate", "ReportPlaybackStopped")', '("Playstate", "OnPlaybackStopped")'):
+            self.assertIn(action, self.src)
+        stop = self.src[self.src.index("private async Task OnStopRequest"):]
+        self.assertLess(stop.index("await next()"), stop.index("MarkStopped("))
+        self.assertIn('args.TryGetValue("playbackStopInfo", out var b)', stop)
+
+    def test_and_any_other_stop(self):
+        self.assertIn("_sessionManager.PlaybackStopped += OnPlaybackStopped;", self.src)
+        handler = self.src[self.src.index("private void OnPlaybackStopped"):]
+        self.assertIn("MarkStopped(e.DeviceId, e.PlaySessionId)", handler)
+
+    def test_a_stopped_share_is_never_closed_straight_away(self):
+        close = self.src[self.src.index("private async Task CloseOne"):self.src.index("private void Remember")]
+        self.assertRegex(close, r"if \(!opened\.Stopped\s*&& ReferenceEquals\(_mediaSourceManager\.GetLiveStreamInfo\(liveStreamId\), stream\)"
+                                r"\s*&& stream\.ConsumerCount == consumers\)\s*\{\s*await _mediaSourceManager\.CloseLiveStream")
+
+    def test_the_45_s_check_leaves_a_stopped_share_alone(self):
+        later = self.src[self.src.index("private async Task CloseIfUnusedLater"):]
+        self.assertIn("|| opened.Stopped", later)
+
+    def test_only_the_stream_object_it_opened(self):
+        keep = self.src[self.src.index("private void Remember"):]
+        self.assertIn("var entry = new Opened(session, channelId, stream);", keep)
+        close = self.src[self.src.index("private async Task CloseOne"):]
+        self.assertIn("if (stream is null || !ReferenceEquals(stream, opened.Stream))", close)
+        later = self.src[self.src.index("private async Task CloseIfUnusedLater"):]
+        self.assertIn("!ReferenceEquals(_mediaSourceManager.GetLiveStreamInfo(liveStreamId), opened.Stream)", later)
+
+    def test_a_new_share_after_a_stop_is_remembered(self):
+        # the device opens the channel again after its stop: the new share is
+        # the one a later switch gives back
+        keep = self.src[self.src.index("private void Remember"):]
+        self.assertIn("had.Stopped || !ReferenceEquals(had.Stream, stream) ? entry : had", keep)
 
 
 if __name__ == "__main__":
