@@ -26,10 +26,23 @@ from services.tmdb import TMDBService
 
 logger = logging.getLogger(__name__)
 
+# Routes of this router a kids profile may call; they answer a kid themselves.
+_OPEN_TO_KIDS: set = set()
+
+
+def _open_to_kids(endpoint):
+    """Let a kids profile through the router's kids guard to this route."""
+    _OPEN_TO_KIDS.add(endpoint)
+    return endpoint
+
+
 def _not_on_kids_profiles(request: Request, db: Session = Depends(get_db)):
     """Discover is TMDB's whole catalogue, whatever its rating: not on a kids
     profile (their navbar has no Discover either: services/family.py). Callers
-    that aren't signed in get the route's own answer."""
+    that aren't signed in get the route's own answer. Routes marked
+    @_open_to_kids (Search: a kid's navbar keeps it) answer a kid themselves."""
+    if request.scope.get("endpoint") in _OPEN_TO_KIDS:
+        return
     try:
         user = get_user_from_request(request, db)
     except HTTPException:
@@ -1008,16 +1021,23 @@ def _mark_search_items(items: list, known_ids: dict, deadline: float) -> None:
         item["requested"] = tid in arr.get(mt, set())
 
 
-@router.get("/search", dependencies=[Depends(get_user_from_request)])
+@router.get("/search")
+@_open_to_kids
 def search_discover(
     q: str = "",
     type: str = "all",
     db: Session = Depends(get_db),
     request: Request = None,
+    user: TentacleUser = Depends(get_user_from_request),
 ):
     """Live TV channels first, then TMDB movies/series, supplemented by
-    Sonarr/Radarr lookups (TheTVDB coverage) when they answer in time."""
+    Sonarr/Radarr lookups (TheTVDB coverage) when they answer in time.
+    A kids profile gets {"items": [], "kids": true}: TMDB's catalogue isn't
+    theirs, and the client shows Jellyfin's own search instead, where their
+    age limit applies (#773)."""
     import time as _time
+    if getattr(user, "kids_level", None):
+        return {"items": [], "kids": True}
     if not q or not q.strip():
         return {"items": []}
     started = _time.time()

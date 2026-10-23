@@ -23,6 +23,7 @@
     _onInputChange: null, // bound listener ref for cleanup
     musicShow: false,    // Tentacle's music module + its Jellyfin music integration are on
     musicSeq: 0,
+    nativeFor: null,     // a kids profile's user id: Jellyfin's own search for them (#773)
   };
 
   function apiGet(path) {
@@ -239,8 +240,13 @@
 
   // ── Attach to native input ───────────────────────────────────────────
 
+  function currentUserId() {
+    return window.ApiClient && window.ApiClient.getCurrentUserId ? window.ApiClient.getCurrentUserId() : null;
+  }
+
   function attachToInput(input) {
-    if (SEARCH.active) return;
+    // A kids profile keeps Jellyfin's own search (see doSearch: data.kids).
+    if (SEARCH.active || (SEARCH.nativeFor && SEARCH.nativeFor === currentUserId())) return;
     SEARCH.active = true;
     SEARCH.nativeInput = input;
 
@@ -444,6 +450,16 @@
       .then(function (data) {
         // Stale check — did user navigate away during the API call?
         if (gen !== SEARCH.generation) return;
+
+        // A kids profile: Tentacle's search is TMDB's catalogue, not theirs.
+        // Jellyfin's own search (their age limit applied) shows instead, for
+        // this person until the page reloads (#773).
+        if (data && data.kids) {
+          SEARCH.nativeFor = currentUserId();
+          SEARCH.generation++;
+          cleanup();
+          return;
+        }
 
         var items = data.items || [];
         SEARCH.results = items;

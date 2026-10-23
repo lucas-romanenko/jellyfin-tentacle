@@ -827,7 +827,18 @@ public class TentacleDiscoverController : ControllerBase
         try
         {
             var encodedQ = System.Net.WebUtility.UrlEncode(q);
-            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/discover/search?q={encodedQ}&type={type}"));
+            using var upstream = await HttpClient.GetAsync(AppendUserId($"{baseUrl}/api/discover/search?q={encodedQ}&type={type}"));
+            if (upstream.StatusCode == System.Net.HttpStatusCode.Forbidden
+                && (await upstream.Content.ReadAsStringAsync()).Contains("kids profile", StringComparison.Ordinal))
+            {
+                // A Tentacle older than #773 refuses a kids profile's search with 403
+                // "Discover isn't available on a kids profile.": answer as a newer one
+                // does, so the client shows Jellyfin's own search, not "finish setup".
+                return Ok(new { items = Array.Empty<object>(), kids = true });
+            }
+
+            upstream.EnsureSuccessStatusCode();
+            var response = await upstream.Content.ReadAsStringAsync();
             // Rewrite relative proxy paths to absolute plugin endpoint URLs so Android TV can reach them
             var jellyfinBase = $"{Request.Scheme}://{Request.Host}";
             response = response.Replace("/api/discover/image-proxy/", $"{jellyfinBase}/TentacleDiscover/ImageProxy/");
