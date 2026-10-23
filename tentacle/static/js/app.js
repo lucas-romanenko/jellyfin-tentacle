@@ -1481,24 +1481,50 @@ const SETTINGS_PICKER_FIELDS = [
 ];
 
 async function loadSettings() {
+  // What each field holds before the read answers: a field typed into (or
+  // saved) while the read was on its way keeps what the admin put there.
+  const before = {};
+  [...SETTINGS_TEXT_FIELDS, ...SETTINGS_PICKER_FIELDS].forEach(key => {
+    const el = document.getElementById(key);
+    if (el) before[key] = SETTINGS_PICKER_FIELDS.includes(key) ? el.dataset.saved : el.value;
+  });
+  SETTINGS_CHECKBOX_FIELDS.forEach(key => {
+    const el = document.getElementById(key);
+    if (el) before[key] = el.checked;
+  });
+  let settings;
   try {
-    const settings = await api('/api/settings/raw');
+    settings = await api('/api/settings/raw');
+  } catch (e) {
+    // Fields the read never filled are not sent by Save (saveSettings sends
+    // only what differs from what was read), so nothing gets cleared (#761).
+    toast(`Couldn't load the settings: ${e.message}. Only what you type is saved.`, 'error', 8000);
+    return;
+  }
+  try {
     // Tentacle's address shows at once; its check (loadTentacleAddress) follows
     const ta = document.getElementById('settings-tentacle-address');
     if (ta && !ta.value && settings.youtube_base_url) ta.value = settings.youtube_base_url;
     if (typeof loadTentacleAddress === 'function') loadTentacleAddress();
+    // dataset.saved is what the read showed: Save sends only what differs
+    // from it, so a field the read never filled is never sent as empty (#761).
     SETTINGS_TEXT_FIELDS.forEach(key => {
       const el = document.getElementById(key);
-      if (el && settings[key]) el.value = settings[key];
+      if (!el || el.value !== before[key]) return;
+      if (settings[key]) el.value = settings[key];
+      el.dataset.saved = el.value.trim();
     });
     SETTINGS_CHECKBOX_FIELDS.forEach(key => {
       const el = document.getElementById(key);
-      if (el) el.checked = settings[key] === 'true';
+      if (!el || el.checked !== before[key]) return;
+      el.checked = settings[key] === 'true';
+      el.dataset.saved = el.checked ? 'true' : 'false';
     });
     SETTINGS_PICKER_FIELDS.forEach(key => {
       const el = document.getElementById(key);
-      if (!el) return;
+      if (!el || el.dataset.saved !== before[key]) return;
       el.dataset.saved = settings[key] || '';
+      el.dataset.read = el.dataset.saved;
       el.dataset.loaded = '';
       // Remember a choice the moment it is made, so reloading the list (Test)
       // keeps it instead of snapping back to the saved one.
@@ -1822,19 +1848,28 @@ async function loadPathStatus() {
 
 async function saveSettings() {
   const settings = {};
+  // Only what differs from what the read showed (#761): when the read failed
+  // or hasn't answered yet, the empty fields are not sent as empty, so one
+  // Save can't wipe Jellyfin's address and every key. A field cleared on
+  // purpose still differs, and is cleared.
   SETTINGS_TEXT_FIELDS.forEach(key => {
     const el = document.getElementById(key);
-    if (el) settings[key] = el.value.trim();
+    if (el && el.value.trim() !== (el.dataset.saved ?? '')) settings[key] = el.value.trim();
   });
   SETTINGS_CHECKBOX_FIELDS.forEach(key => {
     const el = document.getElementById(key);
-    if (el) settings[key] = el.checked ? 'true' : 'false';
+    // A switch the read never set isn't known: not sent.
+    if (el && el.dataset.saved !== undefined && (el.checked ? 'true' : 'false') !== el.dataset.saved) {
+      settings[key] = el.checked ? 'true' : 'false';
+    }
   });
   SETTINGS_PICKER_FIELDS.forEach(key => {
     const el = document.getElementById(key);
     // A picker whose list didn't load still holds the saved value; never let
-    // an unreachable service clear a choice.
-    if (el) settings[key] = el.dataset.loaded === '1' ? el.value : (el.dataset.saved || '');
+    // an unreachable service clear a choice. One the read never set: not sent.
+    if (!el || el.dataset.read === undefined) return;
+    const v = el.dataset.loaded === '1' ? el.value : (el.dataset.saved || '');
+    if (v !== el.dataset.read) settings[key] = v;
   });
   // Sync schedule: a changed time is stored as a daily cron. An unchanged one
   // is not sent, so the stored schedule stays exactly as it is (#385: a
@@ -1851,9 +1886,13 @@ async function saveSettings() {
   try {
     await api('/api/settings', { method: 'POST', body: { settings } });
     if (_st) _st.dataset.shown = _st.value;
+    [...SETTINGS_TEXT_FIELDS, ...SETTINGS_CHECKBOX_FIELDS].forEach(key => {
+      const el = document.getElementById(key);
+      if (el && key in settings) el.dataset.saved = settings[key];
+    });
     SETTINGS_PICKER_FIELDS.forEach(key => {
       const el = document.getElementById(key);
-      if (el) el.dataset.saved = settings[key];
+      if (el && key in settings) { el.dataset.saved = settings[key]; el.dataset.read = settings[key]; }
     });
     toast('Settings saved');
     loadScheduleInfo();
