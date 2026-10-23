@@ -44,6 +44,16 @@ namespace Jellyfin.Plugin.Tentacle.Services;
 /// device id are left alone. Devices are separate: two people, or one
 /// person on two devices, each keep their own stream. Tabs of one browser
 /// share a device id: the newest channel wins.
+///
+/// A tune given up before the picture (TV #176: Back, Home or standby while
+/// the channel opens): Jellyfin finishes opening the stream anyway (it opens
+/// with no cancellation) and the player never reports it, so nothing would
+/// close it until that device opened another channel. Each stream the filter
+/// remembers is looked at again <see cref="UnusedGrace"/> after it opened:
+/// when no session of the device plays it and no transcode reads it, the
+/// device's share is given back the same way (once; a recording sharing the
+/// stream keeps it). Done here rather than by the app so the share is only
+/// ever given back by one party.
 /// </summary>
 public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
 {
@@ -86,6 +96,9 @@ public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
         _appHost = appHost;
         _logger = logger;
     }
+
+    // How long a device has to start playing a stream it opened
+    internal static readonly TimeSpan UnusedGrace = TimeSpan.FromSeconds(45);
 
     // A live stream a device opened: its play session and its channel
     private sealed record Opened(string PlaySessionId, Guid ChannelId);
@@ -205,42 +218,50 @@ public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
             }
 
             open.TryRemove(liveStreamId, out _);
-            var stream = _mediaSourceManager.GetLiveStreamInfo(liveStreamId);
-            if (stream is null)
+            await CloseOne(deviceId, liveStreamId, opened, "opens another channel").ConfigureAwait(false);
+        }
+    }
+
+    // Give back a device's share of a live stream it opened (already taken
+    // off the device's list): its transcode stopped, its consumer once.
+    private async Task CloseOne(string deviceId, string liveStreamId, Opened opened, string why)
+    {
+        var stream = _mediaSourceManager.GetLiveStreamInfo(liveStreamId);
+        if (stream is null)
+        {
+            return; // already closed (the player stopped)
+        }
+
+        try
+        {
+            _logger.LogInformation(
+                "[Tentacle] Device {Device} {Why}: closing its live stream {LiveStream}",
+                deviceId,
+                why,
+                liveStreamId);
+            if (!string.IsNullOrEmpty(opened.PlaySessionId))
             {
-                continue; // already closed (the player stopped)
+                await _transcodeManager.KillTranscodingJobs(deviceId, opened.PlaySessionId, _ => true).ConfigureAwait(false);
             }
 
-            try
+            // This device's share of the stream, once: through the session
+            // manager when a player reported it (it then won't close it a
+            // second time on its stop), else straight away. A stream
+            // others share stays open for them.
+            var consumers = stream.ConsumerCount;
+            if (!string.IsNullOrEmpty(opened.PlaySessionId))
             {
-                _logger.LogInformation(
-                    "[Tentacle] Device {Device} opens another channel: closing its previous live stream {LiveStream}",
-                    deviceId,
-                    liveStreamId);
-                if (!string.IsNullOrEmpty(opened.PlaySessionId))
-                {
-                    await _transcodeManager.KillTranscodingJobs(deviceId, opened.PlaySessionId, _ => true).ConfigureAwait(false);
-                }
-
-                // This device's share of the stream, once: through the session
-                // manager when a player reported it (it then won't close it a
-                // second time on its stop), else straight away. A stream
-                // others share stays open for them.
-                var consumers = stream.ConsumerCount;
-                if (!string.IsNullOrEmpty(opened.PlaySessionId))
-                {
-                    await _sessionManager.CloseLiveStreamIfNeededAsync(liveStreamId, opened.PlaySessionId).ConfigureAwait(false);
-                }
-
-                if (_mediaSourceManager.GetLiveStreamInfo(liveStreamId) is not null && stream.ConsumerCount == consumers)
-                {
-                    await _mediaSourceManager.CloseLiveStream(liveStreamId).ConfigureAwait(false);
-                }
+                await _sessionManager.CloseLiveStreamIfNeededAsync(liveStreamId, opened.PlaySessionId).ConfigureAwait(false);
             }
-            catch (Exception ex)
+
+            if (_mediaSourceManager.GetLiveStreamInfo(liveStreamId) is not null && stream.ConsumerCount == consumers)
             {
-                _logger.LogWarning(ex, "[Tentacle] Could not close live stream {LiveStream}", liveStreamId);
+                await _mediaSourceManager.CloseLiveStream(liveStreamId).ConfigureAwait(false);
             }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Tentacle] Could not close live stream {LiveStream}", liveStreamId);
         }
     }
 
@@ -278,7 +299,65 @@ public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
         foreach (var (liveStreamId, session) in opened)
         {
             // a stream the device already had (the same channel again) keeps its first play session
-            open.TryAdd(liveStreamId, new Opened(session, channelId));
+            var entry = new Opened(session, channelId);
+            if (open.TryAdd(liveStreamId, entry))
+            {
+                _ = CloseIfUnusedLater(deviceId, liveStreamId, entry);
+            }
         }
+    }
+
+    // TV #176: a stream the device opened but never played is given back.
+    private async Task CloseIfUnusedLater(string deviceId, string liveStreamId, Opened opened)
+    {
+        try
+        {
+            await Task.Delay(UnusedGrace).ConfigureAwait(false);
+            var gate = _locks.GetOrAdd(deviceId, _ => new SemaphoreSlim(1, 1));
+            await gate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                // Still this device's (not closed by a channel switch meanwhile), still open, and unplayed
+                if (!_streams.TryGetValue(deviceId, out var open)
+                    || !open.TryGetValue(liveStreamId, out var now) || !ReferenceEquals(now, opened)
+                    || _mediaSourceManager.GetLiveStreamInfo(liveStreamId) is null
+                    || InUse(deviceId, liveStreamId, opened))
+                {
+                    return;
+                }
+
+                open.TryRemove(liveStreamId, out _);
+                await CloseOne(deviceId, liveStreamId, opened, "never played the channel it opened").ConfigureAwait(false);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Tentacle] Could not check whether live stream {LiveStream} is played", liveStreamId);
+        }
+    }
+
+    // Played: a session of the device reports the stream or the channel, or
+    // a transcode of its play session (or of the stream) runs.
+    private bool InUse(string deviceId, string liveStreamId, Opened opened)
+    {
+        foreach (var session in _sessionManager.Sessions)
+        {
+            if (!string.Equals(session.DeviceId, deviceId, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (string.Equals(session.PlayState?.LiveStreamId, liveStreamId, StringComparison.OrdinalIgnoreCase)
+                || (session.NowPlayingItem is { } item && item.Id == opened.ChannelId))
+            {
+                return true;
+            }
+        }
+
+        return !string.IsNullOrEmpty(opened.PlaySessionId) && _transcodeManager.GetTranscodingJob(opened.PlaySessionId) is not null;
     }
 }

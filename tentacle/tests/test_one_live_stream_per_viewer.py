@@ -132,6 +132,28 @@ class OneStreamPerDevice(unittest.TestCase):
         self.assertIn('args.TryGetValue("playSessionId", out var ps)', self.src)
         self.assertIn("opened.Add((live.MediaSource.LiveStreamId, playSessionId));", self.src)
 
+    def test_a_tune_given_up_before_the_picture_is_given_back(self):
+        # TV #176: Back/Home/standby while the channel opens; Jellyfin opens
+        # anyway and nobody reports the stream
+        self.assertIn("UnusedGrace = TimeSpan.FromSeconds(45)", self.src)
+        keep = self.src[self.src.index("private void Remember"):]
+        self.assertRegex(keep, r"if \(open\.TryAdd\(liveStreamId, entry\)\)\s*\{\s*_ = CloseIfUnusedLater\(")
+        later = self.src[self.src.index("private async Task CloseIfUnusedLater"):]
+        self.assertIn("await Task.Delay(UnusedGrace)", later)
+        # under the device's lock, only if still this device's and unplayed
+        self.assertIn("await gate.WaitAsync()", later)
+        self.assertIn("ReferenceEquals(now, opened)", later)
+        self.assertIn("InUse(deviceId, liveStreamId, opened)", later)
+        # given back exactly as on a channel switch: once, off the list first
+        self.assertLess(later.index("open.TryRemove(liveStreamId, out _);"),
+                        later.index("await CloseOne(deviceId, liveStreamId, opened,"))
+
+    def test_played_means_reported_or_transcoding(self):
+        used = self.src[self.src.index("private bool InUse"):]
+        self.assertIn("session.PlayState?.LiveStreamId", used)
+        self.assertIn("item.Id == opened.ChannelId", used)
+        self.assertIn("_transcodeManager.GetTranscodingJob(opened.PlaySessionId)", used)
+
     def test_never_fails_a_play(self):
         self.assertIn('"[Tentacle] Could not close live stream {LiveStream}"', self.src)
         self.assertTrue(re.search(r"catch \(Exception ex\)\s*\{\s*_logger\.LogWarning\(ex, \"\[Tentacle\] Could not check",

@@ -163,7 +163,15 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   overlap makes the provider cut the new channel, and a player that never
   reports (still retrying, another tab) kept the old one open. Devices are
   separate (two people, or one on two devices, keep a stream each); tabs of
-  one browser share a device id, the newest channel wins.
+  one browser share a device id, the newest channel wins. A tune given up
+  before the picture (TV #176: Back/Home/standby while the channel opens;
+  Jellyfin finishes the open regardless and nothing reports it): 45 s after
+  the open (`UnusedGrace`), a remembered stream that no session of the
+  device reports (`PlayState.LiveStreamId` or the channel as
+  `NowPlayingItem`) and no transcode of its play session reads is given
+  back the same way, once. Only the plugin gives these back: the TV app
+  must not call `LiveStreams/Close` itself (it would close a stream shared
+  with a recording twice).
 - **The guide plays in its own tab** (`tentacle-livetv.js`): Jellyfin Web
   10.11 has no global `playbackManager`, and `sendPlayCommand` makes the
   server send Play to the browser's newest websocket, which may be another
