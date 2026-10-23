@@ -1279,31 +1279,182 @@ def _jellyfin_timers(url: str, key: str):
         return r.json()
 
 
-def _recording_stream_ids_from_jellyfin(url: str, key: str) -> "set[str] | None":
+# Tentacle's own M3U tuners (the household lineup since v1.13, and the
+# per-person tuners of v1.11-1.12): Jellyfin names their channels
+# "m3u_" + MD5(tuner URL) + MD5(stream URL) (livetv_lineups.m3u_external_id),
+# which hashes the exact address the tuner was FIRST given -- so the ids are
+# made from the saved tuner URLs, never from Tentacle's address now (#760).
+_TENTACLE_M3U_TTL = 60.0
+_tentacle_m3u = {"at": -1e9, "ids": {}}
+
+
+def _tentacle_m3u_ids(db=None) -> "dict[str, str]":
+    """Jellyfin's ExternalChannelId -> the GuideNumber of the channel that
+    stream address plays now, for every channel Tentacle's M3U tuners carry
+    (or carried under a key that became another). Kept a minute. Opens its
+    own session when given none (it runs in the lookup's worker thread)."""
+    import time
+    now = time.monotonic()
+    if db is None and now - _tentacle_m3u["at"] < _TENTACLE_M3U_TTL:
+        return _tentacle_m3u["ids"]
+    own = db is None
+    try:
+        if own:
+            db = SessionLocal()
+        try:
+            ids = _build_tentacle_m3u_ids(db)
+        finally:
+            if own:
+                db.close()
+    except Exception as e:   # never cost the hdhr_ answer, nor a stream open
+        logger.warning(f"[LiveTV] Tentacle's own tuner channels not read: {e}")
+        return _tentacle_m3u["ids"]
+    if own:
+        _tentacle_m3u.update(at=now, ids=ids)
+    return ids
+
+
+def _build_tentacle_m3u_ids(db) -> "dict[str, str]":
+    from models.database import LiveUserLineup
+    from services import livetv_lineups as L
+    from services.livetv_tuners import ALL_TUNER_URL_KEY
+    urls = [(get_setting(db, ALL_TUNER_URL_KEY, "") or "").strip()]
+    urls += [(r.tuner_url or "").strip() for r in db.query(LiveUserLineup).all()]
+    urls = [u for u in dict.fromkeys(urls) if u]
+    if not urls:
+        return {}
+    entries = L.lineup(db)
+    # pool key -> the LiveChannel it streams (a network's or a place's: the
+    # variant it plays now; YouTube channels are not the provider's)
+    cid_of = {}
+    for e in entries:
+        k = e["key"]
+        if k[:1] == "c" and k[1:].isdigit():
+            cid_of[k] = int(k[1:])
+        elif k[:1] == "n" and e.get("channel_id") is not None:
+            cid_of[k] = int(e["channel_id"])
+    keys = dict.fromkeys(cid_of)
+    for old, new in L.final_aliases(db, entries).items():
+        if new in cid_of:
+            cid_of.setdefault(old, cid_of[new])
+            keys[old] = None
+    rows = {ch.id: ch for ch in db.query(LiveChannel).filter(LiveChannel.id.in_(set(cid_of.values()))).all()}
+    offsets = _offsets(db)
+    out = {}
+    for url in urls:
+        base = L.tuner_base(url)
+        for k in keys:
+            ch = rows.get(cid_of[k])
+            path = L.stream_path_of_key(k)
+            if ch is not None and path:
+                out[L.m3u_external_id(url, base + path)] = guide_number(ch, offsets)
+    return out
+
+
+STOPPED_FOR_RECORDING = "Stopped for a recording"
+_background_tasks: "set[asyncio.Task]" = set()
+
+
+def _spawn(coro) -> None:
+    task = asyncio.get_running_loop().create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+def _channel_item_ids(db, channel_id: int) -> "set[str]":
+    """Jellyfin's item ids (no dashes) for a channel: on Tentacle's M3U
+    tuners (every lineup entry that streams it now) and the HDHomeRun one."""
+    from services import livetv_lineups as L
+    ch = db.get(LiveChannel, channel_id)
+    if ch is None:
+        return set()
+    number = guide_number(ch, _offsets(db))
+    exts = {e for e, n in _tentacle_m3u_ids().items() if n == number}
+    exts.add(L.hdhr_external_id(number))
+    return {L.channel_item_id(e) for e in exts}
+
+
+def _tell_stopped_for_recording(channel_id: int) -> int:
+    """A recording took this channel's connection: every Jellyfin session
+    playing it is stopped and told so ("Stopped for a recording"), on
+    Jellyfin web and the TV app alike (both act on Jellyfin's Stop and
+    DisplayMessage). Without this the player sat on the last frame. Blocking;
+    never raises. Returns how many sessions were told."""
+    import requests
+    db = SessionLocal()
+    try:
+        url = (get_setting(db, "jellyfin_url", "") or "").strip().rstrip("/")
+        key = (get_setting(db, "jellyfin_api_key", "") or "").strip()
+        if not url or not key:
+            return 0
+        ids = _channel_item_ids(db, channel_id)
+    except Exception as e:
+        logger.warning(f"[LiveTV] Could not tell the viewers of channel {channel_id} why it stopped: {e}")
+        return 0
+    finally:
+        db.close()
+    headers = {"X-Emby-Token": key}
+    told = 0
+    try:
+        r = requests.get(f"{url}/Sessions", params={"activeWithinSeconds": 960}, headers=headers, timeout=5)
+        r.raise_for_status()
+        for session in r.json() or []:
+            item = (session.get("NowPlayingItem") or {}).get("Id") or ""
+            sid = session.get("Id")
+            if not sid or item.replace("-", "").lower() not in ids:
+                continue
+            requests.post(f"{url}/Sessions/{sid}/Playing/Stop", headers=headers, timeout=5)
+            requests.post(f"{url}/Sessions/{sid}/Message", headers=headers, timeout=5,
+                          json={"Header": "", "Text": STOPPED_FOR_RECORDING, "TimeoutMs": 10000})
+            told += 1
+    except Exception as e:
+        logger.warning(f"[LiveTV] Could not tell the viewers of channel {channel_id} why it stopped: {e}")
+    if told:
+        logger.info(f"[LiveTV] Channel {channel_id}: told {told} viewer(s) it stopped for a recording")
+    return told
+
+
+def _timer_guide_number(ext: str, m3u_ids) -> "str | None":
+    """The GuideNumber a timer's ExternalChannelId means: hdhr_<n> from the
+    HDHomeRun tuner, or a channel of Tentacle's own M3U tuner. None for a
+    tuner that isn't Tentacle's."""
+    if ext.startswith("hdhr_"):
+        return ext[len("hdhr_"):]
+    if ext.startswith("m3u_"):
+        ids = m3u_ids() if callable(m3u_ids) else m3u_ids
+        return (ids or {}).get(ext)
+    return None
+
+
+def _recording_stream_ids_from_jellyfin(url: str, key: str, m3u_ids=None) -> "set[str] | None":
     """GuideNumbers of the channels Jellyfin is recording, or None if it
     gave no usable answer. Blocking; run it off the event loop. Raises when
-    Jellyfin cannot be asked at all."""
+    Jellyfin cannot be asked at all. `m3u_ids`: Tentacle's M3U channel ids
+    (default _tentacle_m3u_ids, read only when a timer has such an id)."""
     data = _jellyfin_timers(url, key)
     if not isinstance(data, dict):
         return None
     out = set()
     now = datetime.utcnow()
     items = data.get("Items") or []
+    m3u = m3u_ids if m3u_ids is not None else _tentacle_m3u_ids
     for timer in items:
-        ext = timer.get("ExternalChannelId") or ""
-        if not ext.startswith("hdhr_"):
-            continue
         status = timer.get("Status")
+        if status not in ("InProgress", "New"):
+            continue
+        number = _timer_guide_number(timer.get("ExternalChannelId") or "", m3u)
+        if number is None:
+            continue
         if status == "InProgress":
             _remember_fired_timer(timer, now)
-            out.add(ext[len("hdhr_"):])
-        elif status == "New" and _timer_counts(timer, now):
+            out.add(number)
+        elif _timer_counts(timer, now):
             # Jellyfin opens the tuner stream BEFORE it marks the timer
             # InProgress, so the pull that starts a recording would be a
             # viewer for its first seconds -- and at capacity, a viewer
             # cannot take a slot from a viewer. A timer that is due counts
             # as recording already.
-            out.add(ext[len("hdhr_"):])
+            out.add(number)
     present = {t.get("Id") for t in items}
     for tid, expiry in list(_fired_timers.items()):
         if tid not in present or now >= expiry:
@@ -2035,7 +2186,9 @@ class _SharedUpstream:
 
     async def preempt(self):
         """A more important pull (a recording) took this upstream's slot:
-        end every client's stream cleanly and stop pulling."""
+        end every client's stream cleanly and stop pulling. The people
+        watching are told why (_tell_stopped_for_recording) instead of
+        being left on a frozen picture."""
         if self._closed:
             return
         logger.warning(f"[LiveTV] Channel {self.channel_id}: stream stopped for "
@@ -2043,6 +2196,7 @@ class _SharedUpstream:
         self._publish(None)
         await self._retire()
         self._cancel_pump()
+        _spawn(asyncio.to_thread(_tell_stopped_for_recording, self.channel_id))
 
 
 class _SubscriberResponse(StreamingResponse):
@@ -2347,7 +2501,7 @@ def epg_coverage(provider_id: Optional[int] = None, db: Session = Depends(get_db
 
 class ReserveRequest(BaseModel):
     channel_id: "int | None" = None
-    stream_id: "str | None" = None     # the GuideNumber Jellyfin uses (hdhr_<stream_id>)
+    stream_id: "str | None" = None     # the GuideNumber, or the ExternalChannelId of Jellyfin's timer
     seconds: int = 1800
 
 
@@ -2363,9 +2517,9 @@ async def live_reserve(body: ReserveRequest, db: Session = Depends(get_db)):
         ch = q.filter(LiveChannel.id == body.channel_id).first()
     elif body.stream_id:
         sid = str(body.stream_id).strip()
-        if sid.startswith("hdhr_"):
-            sid = sid[len("hdhr_"):]
-        ch = next(iter(channels_for_guide_numbers(db, [sid])), None)
+        if sid.startswith(("hdhr_", "m3u_")):
+            sid = _timer_guide_number(sid, lambda: _tentacle_m3u_ids(db)) or ""
+        ch = next(iter(channels_for_guide_numbers(db, [sid])), None) if sid else None
     else:
         raise HTTPException(422, "channel_id or stream_id is required")
     if not ch:
