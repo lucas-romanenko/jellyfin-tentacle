@@ -4035,18 +4035,23 @@ def _guide_server_refuses(db: Session, provider) -> bool:
 
 
 def _guide_ends_at(db: Session, provider_id: int):
-    """When the last stored programme of the provider's enabled channels ends
-    (None: none of them has any)."""
+    """When the stored guide of the provider's enabled channels ends: the
+    median of each guide's last programme (None: none of them has any). Not
+    the latest: on a live install one channel's schedule ran six weeks ahead
+    while the rest ended the next morning, and the latest would never have
+    come within GUIDE_TOP_UP_BELOW."""
     gid = _guide_id_expr()
     ids = sorted({row[0] for row in db.query(gid).filter(
         LiveChannel.provider_id == provider_id, LiveChannel.enabled == True,  # noqa: E712
         gid.isnot(None)).distinct()})
-    end = None
+    ends = []
     for chunk in _chunked(ids):
-        last = db.query(func.max(EPGProgram.stop)).filter(EPGProgram.channel_id.in_(chunk)).scalar()
-        if last is not None and (end is None or last > end):
-            end = last
-    return end
+        ends += [last for _, last in db.query(EPGProgram.channel_id, func.max(EPGProgram.stop)).filter(
+            EPGProgram.channel_id.in_(chunk)).group_by(EPGProgram.channel_id) if last is not None]
+    if not ends:
+        return None
+    ends.sort()
+    return ends[(len(ends) - 1) // 2]
 
 
 def _has_enabled_channels(db: Session, provider_id: int) -> bool:
