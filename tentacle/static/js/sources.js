@@ -376,7 +376,7 @@ async function provCatsSave(id) {
 }
 
 // ── Channel groups (Live TV) ─────────────────────────────────────────────
-async function _loadProviderGroups(id) {
+async function _loadProviderGroups(id, autoRead = true) {
   const sum = document.getElementById(`prov-groups-sum-${id}`);
   try {
     const data = await api(`/api/live/groups?provider_id=${id}`);
@@ -386,8 +386,10 @@ async function _loadProviderGroups(id) {
     if (sum) sum.textContent = `Could not read them: ${e.message}`;
     return;
   }
-  if (!srcState.groups[id].length && !srcState.groupPoll[id]) {
+  if (autoRead && !srcState.groups[id].length && !srcState.groupPoll[id]) {
     // Just switched on: read the groups from the provider (groups only, fast).
+    // Not again after a sync ended: a provider that refuses or lists no live
+    // groups was asked every 1.5 s for as long as the page was open (#763).
     provGroupsRefresh(id, true);
   }
   _updateGroupsSummary(id);
@@ -518,7 +520,7 @@ function _pollProviderLive(id) {
       else if (done) toast(plainWords(s.message || 'Done'), 'success');
       const panel = document.getElementById(`prov-groups-panel-${id}`);
       if (panel) delete panel.dataset.built;
-      await _loadProviderGroups(id);
+      await _loadProviderGroups(id, false);
       if (state.sourcesTab === 'live') loadLiveTV();
       return;
     }
