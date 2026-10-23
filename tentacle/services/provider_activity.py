@@ -190,7 +190,9 @@ def wait_for_recordings(db, what: str, cancel_check: Optional[Callable[[], bool]
 # The nightly EPG download waits at most this long for a protected
 # recording, then is skipped until the next night: everything after it in
 # the nightly job (sweeps, playlists, home rows) must not be held for a
-# whole evening of recordings, and yesterday's guide still covers days.
+# whole evening of recordings. A feed may reach only a day or so ahead: the
+# hourly guide top-up (routers.livetv.run_guide_top_up) syncs it once the
+# recordings are over.
 EPG_WAIT_FOR_RECORDING_SECONDS = 3600.0
 
 
