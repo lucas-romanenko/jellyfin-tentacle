@@ -1527,7 +1527,9 @@ def manage_episodes(
     # Monitor the selection FIRST, then unmonitor the rest: if the second call
     # fails the user keeps a superset of what they asked for, never nothing.
     selected_set = set(selected_ids)
-    to_unmonitor = [ep["id"] for ep in episodes if ep["id"] not in selected_set]
+    # Specials (season 0) are in no client's picker: a save leaves them as they are.
+    to_unmonitor = [ep["id"] for ep in episodes
+                    if ep["id"] not in selected_set and (ep.get("seasonNumber") or 0) > 0]
     if selected_ids and not sonarr.set_episode_monitoring(selected_ids, True):
         raise HTTPException(502, "Sonarr did not accept monitoring the selected episodes. Please retry.")
     if to_unmonitor and not sonarr.set_episode_monitoring(to_unmonitor, False):
