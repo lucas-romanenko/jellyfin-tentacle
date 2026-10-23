@@ -704,12 +704,18 @@ _SHOWN = ("state", "since", "checked_at", "skipped_at", "step", "code", "kind", 
 
 def provider_view(db) -> list:
     """Admin view: every watched provider with its state."""
+    from routers.livetv import guide_problem
     state = load_state(db)
     out = []
     for p in _watched(db):
         entry = {**_unknown(), **(state.get(str(p.id)) or {})}
+        try:
+            guide = guide_problem(db, p)    # a failing or ended Live TV guide (#709)
+        except Exception as e:
+            logger.warning(f"[Provider health] Could not read the guide state of {p.name}: {e}")
+            guide = None
         out.append({"id": p.id, "name": p.name, "provider_type": p.provider_type or "xtream",
-                    **{k: entry.get(k) for k in _SHOWN}})
+                    **{k: entry.get(k) for k in _SHOWN}, "guide_problem": guide})
     return out
 
 

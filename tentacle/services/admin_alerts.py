@@ -1,8 +1,9 @@
 """Problems go to the admin, plain words to the family (Roadmap 1c).
 
 Every 10 minutes Tentacle looks at what can break for the household: an
-IPTV provider failing, Radarr/Sonarr unreachable, a disk filling up,
-downloads stuck, Live TV not set up in Jellyfin, Jellyfin itself down. A new
+IPTV provider failing, a Live TV guide not updating, Radarr/Sonarr
+unreachable, a disk filling up, downloads stuck, Live TV not set up in
+Jellyfin, Jellyfin itself down. A new
 problem is told to every admin once (a message in Jellyfin, plus Pushover
 when it's set up), and once more when it's over. Nothing goes to the family:
 they see one plain line where it matters ("Live TV is unavailable right now.
@@ -22,7 +23,7 @@ from models.database import AdminAlert, Provider, TentacleUser, create_notificat
 
 logger = logging.getLogger(__name__)
 
-AREAS = ("livetv", "library", "requests", "downloads", "server")
+AREAS = ("livetv", "guide", "library", "requests", "downloads", "server")
 
 
 def _admins(db: Session) -> list:
@@ -100,6 +101,19 @@ def _seen_providers(db: Session) -> dict:
     return out
 
 
+def _seen_guides(db: Session) -> dict:
+    """A Live TV guide whose download keeps failing, or that has run out
+    (routers.livetv.guide_problem, #709): the guide sync retries it by itself,
+    this tells the admins when that hasn't helped for hours."""
+    from routers.livetv import guide_problem, live_tv_providers
+    out = {}
+    for p in live_tv_providers(db):
+        problem = guide_problem(db, p)
+        if problem:
+            out[f"guide:{p.id}"] = ("guide", f"The Live TV guide of {p.name} isn't updating", problem, True)
+    return out
+
+
 def _seen_arr(db: Session) -> dict:
     from services import arr_insight
     out = {}
@@ -155,7 +169,7 @@ def _seen_jellyfin(db: Session) -> dict:
                                   "Nobody can watch anything until Jellyfin is back.", True)}
 
 
-CHECKS = (_seen_providers, _seen_arr, _seen_downloads, _seen_livetv, _seen_jellyfin)
+CHECKS = (_seen_providers, _seen_guides, _seen_arr, _seen_downloads, _seen_livetv, _seen_jellyfin)
 
 
 def check(db: Session) -> dict:
@@ -171,7 +185,7 @@ def check(db: Session) -> dict:
         seen.update(found)
         owned_prefixes.add(fn.__name__)
     raised = sum(raise_alert(db, k, *v) for k, v in seen.items())
-    prefix_of = {"_seen_providers": "provider:", "_seen_arr": "arr:", "_seen_downloads": "downloads:",
+    prefix_of = {"_seen_providers": "provider:", "_seen_guides": "guide:", "_seen_arr": "arr:", "_seen_downloads": "downloads:",
                  "_seen_livetv": "livetv:", "_seen_jellyfin": "jellyfin:"}
     checked = tuple(prefix_of[n] for n in owned_prefixes)
     cleared = 0
@@ -200,6 +214,7 @@ def run_check() -> None:
 
 _FAMILY_TEXT = {
     "livetv": "Live TV is unavailable right now. {who} knows.",
+    "guide": "The TV guide may be missing programmes right now. {who} knows.",
     "library": "Some movies and shows may not play right now. {who} knows.",
     "requests": "New requests will wait a little: downloads are paused for now. {who} knows.",
     "downloads": "New downloads are paused for now. {who} knows.",

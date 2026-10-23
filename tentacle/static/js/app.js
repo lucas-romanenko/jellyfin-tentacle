@@ -99,14 +99,20 @@ async function loadProviderProblems(data) {
   let providers = [];
   try { providers = (data || await api('/api/health/providers')).providers || []; } catch (e) { return; }
   const failing = providers.filter(p => p.state === 'failing');
-  if (typeof setHealthAlert === 'function') setHealthAlert('providers', failing.length, true);
-  const sig = failing.map(p => [p.id, p.step, p.kind, p.code, p.since].join(':')).join('|');
-  if (!failing.length || sig === _providerProblemsHidden) { el.style.display = 'none'; return; }
+  // A Live TV guide that keeps failing to download, or has run out (#709)
+  const guides = providers.filter(p => p.guide_problem);
+  if (typeof setHealthAlert === 'function') setHealthAlert('providers', failing.length + guides.length, true);
+  const sig = failing.map(p => [p.id, p.step, p.kind, p.code, p.since].join(':'))
+    .concat(guides.map(p => `${p.id}:guide`)).join('|');
+  if ((!failing.length && !guides.length) || sig === _providerProblemsHidden) { el.style.display = 'none'; return; }
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
-  el.innerHTML = `<div class="arr-problems-head">⚠ ${failing.length === 1 ? 'An IPTV provider is failing' : `${failing.length} IPTV providers are failing`}: streams may not play
+  const head = failing.length
+    ? `${failing.length === 1 ? 'An IPTV provider is failing' : `${failing.length} IPTV providers are failing`}: streams may not play`
+    : 'The Live TV guide is not updating';
+  el.innerHTML = `<div class="arr-problems-head">⚠ ${head}
       <span class="arr-problems-actions"><button class="btn btn-secondary btn-sm" id="provider-check-btn" onclick="checkProvidersNow()">Check now</button>
       <button class="btn btn-secondary btn-sm" onclick="hideProviderProblems()">Hide</button></span></div>
-    <ul>${failing.map(p => `<li>⚠ <strong>${esc(p.name)}:</strong> ${esc(p.reason)}</li>`).join('')}</ul>`;
+    <ul>${failing.map(p => `<li>⚠ <strong>${esc(p.name)}:</strong> ${esc(p.reason)}</li>`).join('')}${guides.map(p => `<li>⚠ <strong>${esc(p.name)}:</strong> ${esc(p.guide_problem)}</li>`).join('')}</ul>`;
   el.dataset.sig = sig;
   el.style.display = '';
 }
