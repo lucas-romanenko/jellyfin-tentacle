@@ -58,7 +58,7 @@ from models.database import (
 )
 from routers.auth import require_admin, require_internal_or_admin
 from services.ssrf import explain_url, is_safe_url, lan_origin_guard
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -1189,8 +1189,9 @@ _OUTPUT_FORMATS_KEY = "livetv_output_formats_{}"
 _EPG_COVERAGE_KEY = "livetv_epg_coverage_{}"
 _EPG_SYNCED_KEY = "livetv_epg_synced_{}"
 _M3U_SWITCHED_OFF_KEY = "livetv_m3u_switched_off_{}"
+_GUIDE_TOP_UP_KEY = "livetv_guide_top_up_{}"
 PROVIDER_SETTING_KEYS = (_OUTPUT_FORMATS_KEY, _EPG_COVERAGE_KEY, _EPG_SYNCED_KEY,
-                         _M3U_SWITCHED_OFF_KEY, "provider_address_probation_{}")
+                         _M3U_SWITCHED_OFF_KEY, "provider_address_probation_{}", _GUIDE_TOP_UP_KEY)
 
 
 def _remembered_output_formats(db, provider_id: int) -> list:
@@ -3360,16 +3361,17 @@ def sync_epg(provider_id: int, db: Session = Depends(get_db)):
     return {"success": True, "message": f"EPG sync started for {len(all_channels)} channels ({enabled_count} enabled)"}
 
 
-def _run_epg_sync_background(provider_data: dict):
+def _run_epg_sync_background(provider_data: dict, attempts: int = 3):
     """Background EPG sync — stream-parses full XMLTV, keeps programs for ALL provider channels.
     Every outcome is remembered for the guide top-up (run_guide_top_up)."""
-    ok = _sync_epg_once(provider_data)
+    ok = _sync_epg_once(provider_data, attempts)
     _note_epg_attempt(provider_data["id"], bool(ok))
     return ok
 
 
-def _sync_epg_once(provider_data: dict):
-    """One guide sync of one provider (see _run_epg_sync_background)."""
+def _sync_epg_once(provider_data: dict, attempts: int = 3):
+    """One guide sync of one provider (see _run_epg_sync_background): up to
+    `attempts` downloads, 30 s and 60 s apart."""
     pid = provider_data["id"]
     channels = provider_data["channels"]
     total = len(channels)
@@ -3431,9 +3433,9 @@ def _sync_epg_once(provider_data: dict):
             programs = None
             inputs = None
             last_err = None
-            for attempt in range(1, 4):
+            for attempt in range(1, attempts + 1):
                 try:
-                    suffix = f" (attempt {attempt}/3)" if attempt > 1 else ""
+                    suffix = f" (attempt {attempt}/{attempts})" if attempt > 1 else ""
                     _set_sync_status(pid, {"phase": "epg", "status": "running", "progress": 5, "message": f"Downloading XMLTV guide{suffix}..."})
                     programs = stream_parse_xmltv(
                         url=epg_url,
@@ -3448,11 +3450,11 @@ def _sync_epg_once(provider_data: dict):
                         inputs = _epg_sync_inputs(epg_url, chan_info)
                         break
                     last_err = "provider returned no programs for our channels"
-                    logger.warning(f"[LiveTV] EPG attempt {attempt}/3: {last_err}")
+                    logger.warning(f"[LiveTV] EPG attempt {attempt}/{attempts}: {last_err}")
                 except Exception as e:
                     last_err = str(e)
-                    logger.warning(f"[LiveTV] EPG download attempt {attempt}/3 failed: {e}")
-                if attempt < 3:
+                    logger.warning(f"[LiveTV] EPG download attempt {attempt}/{attempts} failed: {e}")
+                if attempt < attempts:
                     _drop_xmltv_cache()  # don't let a bad cached file poison the retry
                     _time.sleep(30 * attempt)
 
@@ -3621,15 +3623,74 @@ _GUIDE_RETRY_AFTER = (timedelta(hours=1), timedelta(hours=2), timedelta(hours=4)
 # After a sync that worked: what it could get is stored, another one within
 # this long would read the same feed (8 h disk cache) or a barely newer one.
 _GUIDE_RESYNC_AFTER = timedelta(hours=6)
-# provider id -> (UTC end of its last guide sync, failed syncs in a row). In
-# memory: after a restart the first check may sync at once, which is what a
-# guide that is running out needs anyway.
-_epg_attempts: dict = {}
+# Each provider's last guide sync, {"at": UTC end, "failures": failed syncs in
+# a row}, in the setting _GUIDE_TOP_UP_KEY: a restart (some installs restart
+# many times a day) neither forgets a failure nor retries it at once, and the
+# first check comes a few minutes after start-up (main.setup_scheduler).
+_guide_attempt_lock = threading.Lock()
+# A provider-health verdict older than this doesn't keep the top-up from
+# asking (see _guide_server_refuses): two hourly checks.
+_GUIDE_HEALTH_FRESH = timedelta(hours=2)
+
+
+def _epg_attempt(db: Session, provider_id: int):
+    """(UTC end of the provider's last guide sync, failed syncs in a row), or None."""
+    import json
+    try:
+        last = json.loads(get_setting(db, _GUIDE_TOP_UP_KEY.format(provider_id), "") or "null")
+        return datetime.fromisoformat(last["at"]), int(last.get("failures") or 0)
+    except (TypeError, ValueError, KeyError):
+        return None
 
 
 def _note_epg_attempt(provider_id: int, ok: bool) -> None:
-    _, failures = _epg_attempts.get(provider_id, (None, 0))
-    _epg_attempts[provider_id] = (datetime.utcnow(), 0 if ok else failures + 1)
+    """Remember a guide sync's outcome for the top-up. Never raises."""
+    import json
+    db = SessionLocal()
+    try:
+        with _guide_attempt_lock:
+            if db.get(Provider, provider_id) is None:
+                return      # deleted while it synced: its id may go to the next provider (#625)
+            _, failures = _epg_attempt(db, provider_id) or (None, 0)
+            set_setting(db, _GUIDE_TOP_UP_KEY.format(provider_id), json.dumps(
+                {"at": datetime.utcnow().isoformat(), "failures": 0 if ok else failures + 1}))
+    except Exception as e:
+        logger.warning(f"[LiveTV] Could not note the guide sync of provider {provider_id}: {e}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
+def _guide_server_refuses(db: Session, provider) -> bool:
+    """Provider health has lately confirmed that the provider's server refuses
+    it (login, 403, expired, not answering: the "api" step), and the guide
+    comes from that server: a download now would only be refused too. A
+    refused stream says nothing about the guide; a guide from another host
+    (the provider's EPG URL) isn't judged by it. Only a recent verdict counts:
+    the hourly check stands aside while live TV plays, and a failure only a
+    check or sync that works clears could otherwise hold the guide back all
+    evening after the provider recovered."""
+    entry = provider_health.load_state(db).get(str(provider.id))
+    if not isinstance(entry, dict) or entry.get("state") != "failing" or entry.get("step") != "api":
+        return False
+    try:
+        checked = datetime.fromisoformat(entry.get("checked_at") or "")
+    except (TypeError, ValueError):
+        return False
+    if checked.tzinfo is None or datetime.now().astimezone() - checked > _GUIDE_HEALTH_FRESH:
+        return False
+    if not provider.epg_url:
+        return (provider.provider_type or "xtream") == "xtream"     # Xtream's own xmltv.php
+
+    def host(url):
+        try:
+            return (urlsplit(url or "").hostname or "").lower() or None
+        except ValueError:
+            return None
+    return host(provider.epg_url) in {host(provider.server_url), host(provider.m3u_url)} - {None}
 
 
 def _guide_ends_at(db: Session, provider_id: int):
@@ -3656,7 +3717,9 @@ def guide_top_up_due(db: Session, provider, now: datetime | None = None) -> str 
     status = _get_sync_status(provider.id)
     if status.get("phase") == "epg" and status.get("status") == "running":
         return None
-    last = _epg_attempts.get(provider.id)
+    if _guide_server_refuses(db, provider):
+        return None
+    last = _epg_attempt(db, provider.id)
     if last is not None:
         at, failures = last
         wait = (_GUIDE_RETRY_AFTER[min(failures, len(_GUIDE_RETRY_AFTER)) - 1]
@@ -3700,7 +3763,9 @@ def run_guide_top_up() -> None:
     is running out (guide_top_up_due). Stands aside for a protected recording,
     like the nightly download, and while a VOD sync or the nightly job runs
     (that job syncs the guide itself, and one more request in the middle of
-    its burst is one more the provider may refuse); the next hour tries again."""
+    its burst is one more the provider may refuse); the next hour tries again.
+    One download per sync: the hour, then the back-off, is the retry (the
+    nightly's quick retries are for a one-off bad read)."""
     from services.provider_activity import recording_protected
     from routers.sync import _after_sync, _running_syncs
     if _running_syncs or "nightly" in _after_sync:
@@ -3720,7 +3785,7 @@ def run_guide_top_up() -> None:
             logger.info(f"[LiveTV] The guide of '{provider.name}' {reason}: syncing it again")
             _set_sync_status(provider.id, {"phase": "epg", "status": "running", "progress": 0,
                                            "message": f"The guide {reason}: syncing it again..."})
-            if _run_epg_sync_background(_epg_provider_data(provider, rows)):
+            if _run_epg_sync_background(_epg_provider_data(provider, rows), attempts=1):
                 synced = True
         if synced:
             start_jellyfin_guide_refresh(db)

@@ -756,7 +756,10 @@ def setup_scheduler(db):
 
     # Live TV guide: a nightly download that failed, or a feed that reaches
     # only a day or so ahead, left an empty guide until the next night. The
-    # guide is synced again when it is running out (routers.livetv).
+    # guide is synced again when it is running out (routers.livetv). Also
+    # once a few minutes after start-up, so an install that restarts more
+    # often than hourly still gets it; the back-off after a failed download
+    # is kept in the database, so a restart doesn't retry any sooner.
     from routers.livetv import run_guide_top_up
     scheduler.add_job(
         run_guide_top_up,
@@ -766,7 +769,8 @@ def setup_scheduler(db):
         max_instances=1,
         coalesce=True,
     )
-    logger.info("Live TV guide top-up scheduled: hourly")
+    schedule_once(run_guide_top_up, 300, "guide_top_up_first")
+    logger.info("Live TV guide top-up scheduled: hourly, first check 5 min after start-up")
 
     # YouTube source: check enabled channels for new uploads and live streams.
     # The job checks the youtube_enabled setting itself, so the schedule can
