@@ -23,7 +23,7 @@ In Jellyfin's web app, **Live TV** opens straight to Tentacle's guide:
 - **Favorites / All** at the top: Favorites is the guide with only your favourite channels, All is every channel you can see. It remembers your choice (on every browser you sign in to). With no favourites yet it says how to star one and offers All.
 - **☆** next to a channel stars it (or unstars it); **Find a channel** searches by name or number.
 - **Dates** run from today to the last day the TV guide has programmes for, so there are no empty days to tap through (a guide with one day of data shows no dates at all).
-- A line marks **now**; what's on now is highlighted with how far in it is. Tap a channel or what's on now to watch; tap a later programme to see it and record it. **Recordings** and **Schedule** are next to the search.
+- A line marks **now**; what's on now is highlighted with how far in it is. Tap a channel or what's on now to watch; tap a later programme to see it and record it. A red dot marks what will record (amber: waiting for a free connection; hollow: a team or rule in preview would). **Schedule** (next to the search) lists what will record, from your teams and rules and from Jellyfin's Record button; **Recordings** shows what is recorded, to play.
 
 It stays quick with thousands of channels and works on a phone. (Jellyfin's TV layout keeps Jellyfin's own guide.)
 

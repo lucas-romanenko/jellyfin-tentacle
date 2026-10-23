@@ -1201,6 +1201,18 @@ public class TentacleDiscoverController : ControllerBase
     public ActionResult GetLiveTvCss() => ServeAsset("tentacle-livetv.css", "text/css");
 
     /// <summary>
+    /// Serves the Tentacle Recordings and Schedule pages (Live TV) JavaScript.
+    /// </summary>
+    [HttpGet("/Tentacle/recordings.js")]
+    public ActionResult GetRecordingsJs() => ServeAsset("tentacle-recordings.js", "application/javascript");
+
+    /// <summary>
+    /// Serves the Tentacle Recordings and Schedule pages CSS.
+    /// </summary>
+    [HttpGet("/Tentacle/recordings.css")]
+    public ActionResult GetRecordingsCss() => ServeAsset("tentacle-recordings.css", "text/css");
+
+    /// <summary>
     /// Serves the Tentacle Favorites JavaScript.
     /// </summary>
     [HttpGet("/Tentacle/favorites.js")]
@@ -1334,6 +1346,48 @@ public class TentacleDiscoverController : ControllerBase
         {
             _logger.LogDebug("[Tentacle Discover] Family status not read: {Error}", ex.Message);
             return Ok(new { messages = Array.Empty<object>() });
+        }
+    }
+
+    /// <summary>
+    /// Recordings, read-only, for Jellyfin Web's Recordings and Schedule pages and the TV
+    /// app: "upcoming", "history", "marks" (what the guides mark) or "rules". The caller's
+    /// own token goes along; Tentacle checks it. Changing teams and rules is in Tentacle.
+    /// </summary>
+    /// <param name="what">upcoming | history | marks | rules.</param>
+    [HttpGet("Recordings/{what}")]
+    [Authorize]
+    public async Task<ActionResult> GetRecordings([FromRoute] string what)
+    {
+        var path = what switch
+        {
+            "upcoming" => "/api/live/recordings/upcoming",
+            "history" => "/api/live/recordings/history",
+            "marks" => "/api/live/recordings/marks",
+            "rules" => "/api/live/recording-rules",
+            _ => null,
+        };
+        var baseUrl = GetTentacleUrl();
+        if (path is null)
+        {
+            return NotFound();
+        }
+
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            return StatusCode(503, new { error = "Tentacle is not set up" });
+        }
+
+        try
+        {
+            var response = await HttpClient.GetAsync(AppendUserId($"{baseUrl}{path}"));
+            var body = await response.Content.ReadAsStringAsync();
+            return new ContentResult { Content = body, ContentType = "application/json", StatusCode = (int)response.StatusCode };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("[Tentacle Discover] Recordings not read: {Error}", ex.Message);
+            return StatusCode(502, new { error = "Tentacle didn't answer" });
         }
     }
 

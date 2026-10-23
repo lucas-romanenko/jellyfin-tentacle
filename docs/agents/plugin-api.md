@@ -58,7 +58,7 @@ Gotchas:
   connected user an empty LibraryChanged with `tentacle-livetv:<v>` in
   `CollectionFolders`; open guides read their channel list again.
 - **Requests, activity, notifications changed**: `POST
-  /Tentacle/Notify?userIds=<ids>&topics=<requests,activity,notifications>`
+  /Tentacle/Notify?userIds=<ids>&topics=<requests,activity,notifications,recordings>`
   (Tentacle, services/live_updates.py) sends those users' sessions a
   `RefreshProgress` message with Data `{"ItemId": "tentacle", "Progress":
   "0", "Tentacle": "<topics>"}` (only to users with a session). Not a
@@ -84,6 +84,7 @@ Gotchas:
 | GET | `/Tentacle/HomeConfig` | admin | GetHomeConfig |  |
 | GET | `/Tentacle/MdbList/Ratings` | user | GetRatings |  |
 | POST | `/Tentacle/Notify` | admin | Notify |  |
+| GET | `/Tentacle/TimerCancelled/{timerId}` | admin | TimerCancelled (Tentacle confirms a cancel the plugin passed on) |  |
 | GET | `/Tentacle/Playlists/Ownerless` | admin | GetOwnerlessPlaylists |  |
 | POST | `/Tentacle/Playlists/PruneDead` | admin | PruneDeadPlaylistEntries |  |
 | GET | `/Tentacle/Playlists/PruneDead/{runId}` | admin | GetPruneRun |  |
@@ -134,6 +135,8 @@ Gotchas:
 | POST | `/TentacleDiscover/Follow/{tmdbId}` | user | ToggleFollow | yes |
 | GET | `/TentacleDiscover/Genre` | user | GetByGenre | yes |
 | GET | `/TentacleDiscover/FamilyStatus` | user | GetFamilyStatus | yes |
+| GET | `/TentacleDiscover/Recordings/{upcoming,history,marks,rules}` | user | GetRecordings (read-only, caller's token passed on) | yes |
+| GET | `/Tentacle/recordings.js`, `/Tentacle/recordings.css` | none | GetRecordingsJs/Css |  |
 | GET | `/TentacleDiscover/Genres` | user | GetGenres | yes |
 | GET | `/TentacleDiscover/ImageProxy/{cacheKey}` | none | ImageProxy |  |
 | GET | `/TentacleDiscover/Items` | user | GetDiscoverItems | yes |

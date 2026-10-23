@@ -4,7 +4,7 @@
 //   - #tentacleLiveTvContainer mounted on document.body
 //   - Body class `tentacle-livetv-active` hides native content
 //   - Active on #/livetv with no tab, tab 0 (Programs) or tab 1 (Guide);
-//     Channels, Recordings, Schedule and Series stay native.
+//     Channels and Series stay native; Recordings and Schedule are Tentacle's pages (tentacle-recordings.js).
 //   - Favorites / All toggle: Favorites = this person's favourite channels
 //     (Jellyfin favourites are per user), All = every channel they can see.
 //     The choice is kept in Jellyfin's display preferences (id tentacle-livetv,
@@ -17,6 +17,10 @@
 //     day for the visible rows in batches (POST LiveTv/Programs).
 //   - Click a programme on now / a channel → play; a later programme → its
 //     details page (record from there); the star toggles the favourite.
+//   - A dot marks what will record (Jellyfin's timers, Tentacle's teams and
+//     rules; hollow: a team or rule in preview would), within seconds of a
+//     change here, in Tentacle or on another device.
+//   - Recordings and Schedule open Tentacle's pages (tentacle-recordings.js).
 //   - Live: a favourite changed anywhere (Tentacle's My Channels, this guide,
 //     another device) shows within about a second (Jellyfin's UserDataChanged
 //     on its websocket); a lineup change (LibraryChanged, Jellyfin's or the one
@@ -62,6 +66,8 @@
     m: null,                // metrics for the current screen size
     place: null,            // where the guide was when it was left (see keepPlace)
     lastId: '',             // the channel last watched from the guide (highlighted)
+    marks: {},              // markKey(channel, start) -> 'rec' | 'wait' | 'pv' (what will record)
+    marksAt: 0,
   };
 
   // ── Helpers ────────────────────────────────────────────────────────
@@ -229,6 +235,7 @@
     G.m = metrics();
     renderShell();
     loadNotice().then(showNotice);
+    loadMarks();
     var place = G.place && G.place.uid === uid && G.channels && !G.loadError ? G.place : null;
     G.place = null;
     if (place) {
@@ -670,11 +677,50 @@
   function fillProgs(rowEl, channelId) {
     var day = G.days[G.dayIndex];
     var list = G.progs[day.start] && G.progs[day.start][channelId];
-    rowEl.querySelector('.tg-progs').innerHTML = progsHtml(list, day, Date.now());
+    rowEl.querySelector('.tg-progs').innerHTML = progsHtml(list, day, Date.now(), channelId);
+  }
+
+  // ── What will record: a dot on the programme ──────────────────────
+  // Jellyfin's timers (Record, a series, and the ones Tentacle's teams and
+  // rules made) are red; a team's or rule's game still waiting for a free
+  // connection is amber; one a team or rule in preview would record, hollow.
+  // By channel and start, so it needs nothing from the programme request.
+
+  var MARK_RANK = { pv: 1, wait: 2, rec: 3 };
+  var MARK_TITLE = { rec: 'Will record', wait: 'Will record when a connection is free', pv: 'Preview: a team or rule would record this' };
+
+  function markKey(channelId, startMs) { return normId(channelId) + '|' + Math.round(startMs / 60000); }
+
+  function loadMarks() {
+    var uid = G.userId;
+    G.marksAt = Date.now();
+    return Promise.all([
+      apiGet('LiveTv/Timers', { IsActive: false }).catch(function () { return null; }),
+      apiGet('TentacleDiscover/Recordings/marks', { userId: uid }).catch(function () { return null; }),
+    ]).then(function (r) {
+      var marks = {};
+      var put = function (ch, start, kind) {
+        var t = Date.parse(start);
+        if (!ch || isNaN(t)) return;
+        var k = markKey(ch, t);
+        if (!marks[k] || MARK_RANK[kind] > MARK_RANK[marks[k]]) marks[k] = kind;
+      };
+      ((r[0] && r[0].Items) || []).forEach(function (t) {
+        if (t.Status === 'New' || t.Status === 'InProgress') put(t.ChannelId, t.StartDate, 'rec');
+      });
+      ((r[1] && r[1].marks) || []).forEach(function (m) {
+        put(m.channel_id, m.start, m.state === 'preview' ? 'pv' : (m.state === 'booked' || m.state === 'recording' || m.state === 'covered') ? 'rec' : 'wait');
+      });
+      var before = JSON.stringify(G.marks);
+      G.marks = marks;
+      if (G.active && JSON.stringify(marks) !== before) {
+        Object.keys(G.mounted).forEach(function (id) { fillProgs(G.mounted[id], id); });
+      }
+    });
   }
 
   // One channel's programmes for `day` (undefined = still loading).
-  function progsHtml(list, day, now) {
+  function progsHtml(list, day, now, channelId) {
     if (!list) return '<div class="tg-prog tg-wait" style="left:0;width:100%"></div>';
     if (!list.length) {
       return '<div class="tg-prog tg-none" style="left:0;width:' + Math.round(x(day.end, day)) + 'px"><span class="tg-sticky">No guide information</span></div>';
@@ -688,12 +734,14 @@
       if (e <= s) continue;
       drawn = e;
       var left = Math.round(x(s, day)), w = Math.round(x(e, day)) - left;
-      var cls = 'tg-prog' + (p.e <= now ? ' past' : (p.s <= now ? ' live' : ''));
+      var mark = channelId && p.e > now ? G.marks[markKey(channelId, p.s)] : '';
+      var cls = 'tg-prog' + (p.e <= now ? ' past' : (p.s <= now ? ' live' : '')) + (mark ? ' tg-mark-' + mark : '');
       var prog = p.e > p.s && p.s <= now && now < p.e ? (now - p.s) / (p.e - p.s) * 100 : 0;
       html += '<div class="' + cls + '" data-action="prog" data-id="' + esc(p.id) + '" data-s="' + p.s + '" data-e="' + p.e + '"' +
         ' style="left:' + left + 'px;width:' + Math.max(0, w - 2) + 'px" title="' + escAttr(p.name + (p.ov ? '\n\n' + p.ov : '')) + '">' +
         '<span class="tg-sticky">' +
-          '<span class="tg-prog-name">' + (p.s < day.start ? '‹ ' : '') + esc(p.name) + '</span>' +
+          '<span class="tg-prog-name">' + (mark ? '<i class="tg-recdot" title="' + escAttr(MARK_TITLE[mark]) + '"></i>' : '') +
+            (p.s < day.start ? '‹ ' : '') + esc(p.name) + '</span>' +
           (w > 96 ? '<span class="tg-prog-time">' + esc(fmtRange(p.s, p.e)) + '</span>' : '') +
         '</span>' +
         (prog ? '<i class="tg-bar" style="width:' + prog.toFixed(1) + '%"></i>' : '') +
@@ -746,6 +794,7 @@
   function onTick() {
     if (!G.active) return;
     placeNow();
+    if (Date.now() - G.marksAt >= 60000) loadMarks();
     var today = startOfDay(Date.now());
     if (G.days.length && G.days[0].start !== today) { applyView(true); return; }
     Object.keys(G.mounted).forEach(function (id) { fillProgs(G.mounted[id], id); });
@@ -861,6 +910,11 @@
     if (e.target !== G.socket) return;
     var msg;
     try { msg = JSON.parse(e.data); } catch (x) { return; }
+    if (msg && (/^(Series)?Timer(Created|Cancelled)$/.test(msg.MessageType || '') || (msg.MessageType === 'RefreshProgress'
+        && msg.Data && msg.Data.ItemId === 'tentacle' && String(msg.Data.Tentacle || '').split(',').indexOf('recordings') >= 0))) {
+      if (G.active) setTimeout(loadMarks, 500);   // a recording set or cancelled, here or in Tentacle
+      return;
+    }
     if (!msg || (msg.MessageType !== 'UserDataChanged' && msg.MessageType !== 'LibraryChanged')) return;
     var copy = { MessageType: msg.MessageType, Data: msg.MessageType === 'UserDataChanged' ? msg.Data : null };
     if (relay) { try { relay.postMessage(copy); } catch (x) { } }
