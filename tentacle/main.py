@@ -790,7 +790,7 @@ def setup_scheduler(db):
     scheduler.add_job(
         _livetv_sync,
         IntervalTrigger(hours=1),
-        kwargs={"reason": "hourly check"},
+        kwargs={"reason": "hourly check", "check": True},
         id="livetv_setup",
         replace_existing=True,
         max_instances=1,
