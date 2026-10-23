@@ -423,8 +423,8 @@
   function placeResults() {
     var c = document.getElementById('tentacleSearchResults');
     var inp = SEARCH.nativeInput;
-    if (!c || !inp) return;
-    var box = inp.closest('.searchFields') || inp;
+    if (!c || !inp || !inp.getBoundingClientRect) return;
+    var box = (inp.closest && inp.closest('.searchFields')) || inp;
     var r = box.getBoundingClientRect();
     if (!r.height) return;
     c.style.top = Math.round(r.bottom + 4) + 'px';
@@ -543,12 +543,15 @@
 
     if (titles === null) {
       html += loading;
+    } else if (SEARCH.error) {
+      // Tentacle couldn't answer (refused, unreachable): say why, under any channels
+      html += '<div class="tentacle-search-empty">' + esc(SEARCH.error) + '</div>';
     } else if (titles.length) {
       html += '<div class="ts-section">' +
         (filter === 'all' && chans && chans.length ? '<div class="ts-section-head"><span class="ts-section-title">Movies &amp; Shows</span></div>' : '') +
         titlesGrid(titles) + '</div>';
     } else if (chans !== null && !(filter === 'all' && chans.length)) {
-      html += '<div class="tentacle-search-empty">' + (SEARCH.error ? esc(SEARCH.error) : 'No results for “' + esc(query) + '”') + '</div>';
+      html += '<div class="tentacle-search-empty">' + 'No results for \u201c' + esc(query) + '\u201d' + '</div>';
     }
     grid.innerHTML = html;
   }
@@ -612,7 +615,8 @@
         var ratingHtml = item.rating
           ? '<span class="ts-card-meta-rating">\u2605 ' + esc(String(item.rating)) + '</span>'
           : '';
-        var yearHtml = item.year ? esc(String(item.year)) : '\u2014';
+        var year = parseInt(item.year, 10);   // "0" = unknown, as TVDB-only shows send it
+        var yearHtml = year > 0 ? String(year) : '\u2014';
         var sep = item.rating ? ' \u00b7 ' : '';
 
         return '<div class="ts-card" data-tmdb="' + escAttr(item.tmdb_id || 0) + '" data-tvdb="' + escAttr(item.tvdb_id || 0) + '" data-type="' + escAttr(item.media_type || 'movie') + '">' +

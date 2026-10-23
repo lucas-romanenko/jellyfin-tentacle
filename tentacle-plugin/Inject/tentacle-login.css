@@ -29,6 +29,11 @@
 #loginPage.tentacle-login .tentacle-login-brand { display: block; height: 72px; width: auto; margin: 0 auto 28px; }
 body:has(#loginPage.tentacle-login:not(.hide)) .headerHomeButton,
 body:has(#loginPage.tentacle-login:not(.hide)) .pageTitleWithDefaultLogo { visibility: hidden; }
+/* With nothing left in it, the header was an empty dark strip over the page */
+body:has(#loginPage.tentacle-login:not(.hide)) .skinHeader {
+  background: transparent !important;
+  box-shadow: none !important;
+}
 
 #loginPage.tentacle-login .tentacle-login-head {
   display: flex;

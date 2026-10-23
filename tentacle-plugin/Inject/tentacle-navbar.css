@@ -513,3 +513,32 @@ body.moonfin-navbar-active .cardOverlayContainer {
         padding: 8px 10px;
     }
 }
+
+/* Phones: icons only. With the open page's label ("Favorites", "Search")
+   and the back button the pill ran past the screen's edge and its last
+   button couldn't be reached; the open page keeps its highlight. */
+@media (max-width: 480px) {
+    .moonfin-expandable-btn .moonfin-expand-label,
+    .moonfin-expandable-btn.active .moonfin-expand-label {
+        max-width: 0;
+        opacity: 0;
+        margin-left: 0;
+    }
+
+    .moonfin-expandable-btn.active,
+    .moonfin-expandable-btn.active:hover,
+    .moonfin-expandable-btn.active:focus {
+        padding: 8px 10px;
+    }
+}
+
+/* Small phones (360 px): a little less room around each icon */
+@media (max-width: 380px) {
+    .moonfin-nav-btn,
+    .moonfin-expandable-btn.active,
+    .moonfin-expandable-btn:hover,
+    .moonfin-expandable-btn:focus {
+        padding: 8px 7px;
+        min-width: 36px;
+    }
+}
