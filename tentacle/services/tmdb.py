@@ -587,19 +587,18 @@ class TMDBService:
             except (json.JSONDecodeError, TypeError):
                 return None
 
+        self._tl.failed = False
         data = self._request(f"find/{tvdb_id}", {"external_source": "tvdb_id"})
-        if not data:
-            self._cache_set(cache_key, "")
-            return None
-
         for key in ("tv_results", "movie_results"):
-            results = data.get(key, [])
+            results = (data or {}).get(key, [])
             if results:
                 result = {"poster": results[0].get("poster_path"), "backdrop": results[0].get("backdrop_path")}
                 self._cache_set(cache_key, result)
                 return result
 
-        self._cache_set(cache_key, "")
+        # A failed request says nothing about the show: not cached (#795).
+        if not self._lookup_failed():
+            self._cache_set(cache_key, "", ttl_seconds=self.NEGATIVE_TTL_SECONDS)
         return None
 
     def find_by_tvdb_id(self, tvdb_id: int) -> Optional[int]:
@@ -620,6 +619,7 @@ class TMDBService:
             except (ValueError, TypeError):
                 return None
 
+        self._tl.failed = False
         data = self._request(f"find/{tvdb_id}", {"external_source": "tvdb_id"})
         if data:
             for key in ("tv_results", "movie_results"):
@@ -629,7 +629,11 @@ class TMDBService:
                     self._cache_set(cache_key, str(tmdb_id))
                     return tmdb_id
 
-        self._cache_set(cache_key, "")
+        # A 5xx, 429, refused key or timeout says nothing about the show:
+        # not cached, asked again next time; lookup_failed() tells the caller
+        # (#795). A real no-match is asked again after NEGATIVE_TTL_SECONDS.
+        if not self._lookup_failed():
+            self._cache_set(cache_key, "", ttl_seconds=self.NEGATIVE_TTL_SECONDS)
         return None
 
     def get_tvdb_id(self, tmdb_id: int) -> Optional[int]:

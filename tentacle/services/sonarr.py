@@ -747,6 +747,8 @@ def _scan_sonarr_library(db: Session) -> dict:
     series_tvdb_by_tmdb: dict = {}
     # Every show with episode files, by its resolved tmdb id.
     resolved_tmdb_ids: set = set()
+    # Shows with files TMDB failed to resolve this scan (not "no match") (#795).
+    unresolved = 0
     stats["strm_only"] = 0
     stats["strm_only_released"] = 0
     owned_tags = None
@@ -761,16 +763,21 @@ def _scan_sonarr_library(db: Session) -> dict:
         # cross-reference (Sonarr is TVDB-native, so tvdbId is always present), then
         # fall back to a fuzzy title search. This recovers TVDB-first shows that TMDB
         # only listed later — otherwise they sit in the library with no metadata.
+        lookup_failed = False
         if not tmdb_id and tmdb:
             sonarr_tvdb_id = show.get("tvdbId") or 0
             if sonarr_tvdb_id:
                 tmdb_id = tmdb.find_by_tvdb_id(sonarr_tvdb_id) or 0
+                lookup_failed = tmdb.lookup_failed()
             if not tmdb_id and title:
                 details = tmdb.search_series(title, year)
+                lookup_failed = lookup_failed or tmdb.lookup_failed()
                 if details:
                     tmdb_id = details.get("tmdb_id", 0)
 
         if not tmdb_id:
+            if lookup_failed:
+                unresolved += 1
             logger.debug(f"Sonarr: skipping '{title}' — no TMDB ID (tvdb:{show.get('tvdbId')})")
             continue
         resolved_tmdb_ids.add(tmdb_id)
@@ -968,6 +975,14 @@ def _scan_sonarr_library(db: Session) -> dict:
             f"Sonarr still lists but reports as having no episode files. That many at once looks "
             f"like Sonarr's media storage being unavailable, not a clean-up. Rows kept; if the "
             f"files really are gone, remove the series from Sonarr.")
+    # A row Sonarr doesn't list by tmdbId may be a show TMDB failed to
+    # resolve this scan: kept until a scan can tell (#795).
+    if unresolved:
+        unsure = {r.tmdb_id for r in rows if r.tmdb_id not in listed_tmdb_ids}
+        if unsure:
+            logger.warning(f"Sonarr scan: TMDB couldn't resolve {unresolved} show(s) Sonarr lists; "
+                           f"{len(unsure)} row(s) that may be one of them kept until a scan can tell")
+            keep |= unsure
     removed = 0
     released = 0
     owned = None
