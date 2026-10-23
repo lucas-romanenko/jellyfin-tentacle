@@ -648,7 +648,10 @@ def fetch_categories(provider_id: int, db: Session = Depends(get_db)):
 
     try:
         read = {}
-        vod_cats, series_cats, vod_counts, series_counts = fetch_provider_categories(p, read)
+        if (p.provider_type or "xtream") in ("m3u_url", "m3u_file"):
+            vod_cats, series_cats, vod_counts, series_counts = fetch_provider_categories(p, read)
+        else:
+            vod_cats, series_cats, vod_counts, series_counts = fetch_provider_categories(p)
         # An M3U playlist that listed anything at all (a live-only one lists no films)
         m3u_read_entries = bool(read.get("entries"))
     except Exception as e:
