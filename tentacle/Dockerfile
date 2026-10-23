@@ -61,10 +61,16 @@ RUN find . -type f \( -name '*.py' -o -name '*.js' -o -name '*.html' -o -name '*
 
 # Stamped by CI so a running container can say what it is (/api/version).
 # After COPY, so changing these does not invalidate the layers above.
+# TENTACLE_VERSION: the release tag (v1.23.0), or for a build of main
+# `git describe --tags --match 'v[0-9]*'` (v1.23.0-3-gee28fde, shown as
+# v1.23.0+3). Without it the server asks GitHub which release its commit
+# follows (services/versions.py).
 ARG TENTACLE_COMMIT=unknown
 ARG TENTACLE_BUILD_DATE=unknown
+ARG TENTACLE_VERSION=
 ENV TENTACLE_COMMIT=$TENTACLE_COMMIT
 ENV TENTACLE_BUILD_DATE=$TENTACLE_BUILD_DATE
+ENV TENTACLE_VERSION=$TENTACLE_VERSION
 
 # Ensure the data dir exists. Runs as root so writes to bind-mounted /data and
 # /media/* volumes work without the operator having to chown host directories —

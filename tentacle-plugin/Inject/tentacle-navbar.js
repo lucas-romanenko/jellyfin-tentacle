@@ -115,6 +115,7 @@
         currentUser: null,
         librariesExpanded: false,
         librariesTimeout: null,
+        _librariesHoverOpened: false,   // opened by hover/focus: the next click keeps it open
         _onViewShow: null,
         _navObserver: null,
         _lastHash: '',
@@ -389,6 +390,7 @@
             this.container.className = 'moonfin-navbar';
             this.container.innerHTML = [
                 '<div class="moonfin-navbar-left">',
+                '    <img class="tentacle-nav-brand" src="/Tentacle/Assets/brand-mark-small.svg" alt="" aria-hidden="true">',
                 '    <button class="moonfin-user-btn" title="User Menu">',
                 '        <div class="moonfin-user-avatar">',
                 '            ' + this.getFallbackUserIconSvg(),
@@ -557,16 +559,28 @@
         },
 
         positionLibrariesDropdown: function () {
-            if (this.isMobile()) return;
+            // Phones too: without a top/left the fixed list falls back to its
+            // place at the end of <body>, far below the screen, and a tap
+            // seems to do nothing.
             var btn = this.container ? this.container.querySelector('.moonfin-libraries-btn') : null;
             if (!btn || !this.librariesDropdown) return;
 
             var rect = btn.getBoundingClientRect();
+            var width = this.librariesDropdown.offsetWidth;
+            var left = Math.min(rect.left, window.innerWidth - width - 8);
             this.librariesDropdown.style.top = (rect.bottom + 8) + 'px';
-            this.librariesDropdown.style.left = rect.left + 'px';
+            this.librariesDropdown.style.left = Math.max(8, left) + 'px';
         },
 
         toggleLibraries: function () {
+            // A mouse already opened it on hover: the click keeps it open
+            // instead of closing it under the pointer.
+            if (this.librariesExpanded && this._librariesHoverOpened) {
+                this._librariesHoverOpened = false;
+                this.positionLibrariesDropdown();
+                return;
+            }
+            this._librariesHoverOpened = false;
             this.librariesExpanded = !this.librariesExpanded;
             this.applyLibrariesExpanded();
 
@@ -589,6 +603,7 @@
                 clearTimeout(this.librariesTimeout);
             }
             this.librariesTimeout = setTimeout(function () {
+                self._librariesHoverOpened = false;
                 self.librariesExpanded = false;
                 self.applyLibrariesExpanded();
             }, 150);
@@ -638,23 +653,28 @@
                 });
             }
 
-            // Libraries dropdown hover/focus behavior
+            // Libraries dropdown hover/focus behavior. Hover means a real mouse:
+            // a tap also sends mouseenter (a tablet or a phone held sideways is
+            // wider than isMobile), and the click right after it would close
+            // the list it had just opened.
             var librariesGroup = this.container.querySelector('.moonfin-libraries-group');
             if (librariesGroup) {
-                librariesGroup.addEventListener('mouseenter', function () {
-                    if (!self.isMobile()) {
+                librariesGroup.addEventListener('pointerenter', function (e) {
+                    if (e.pointerType === 'mouse' && !self.isMobile()) {
                         self.cancelCollapseLibraries();
+                        if (!self.librariesExpanded) self._librariesHoverOpened = true;
                         self.librariesExpanded = true;
                         self.applyLibrariesExpanded();
                         self.positionLibrariesDropdown();
                     }
                 });
-                librariesGroup.addEventListener('mouseleave', function () {
-                    if (!self.isMobile()) self.collapseLibraries();
+                librariesGroup.addEventListener('pointerleave', function (e) {
+                    if (e.pointerType === 'mouse' && !self.isMobile()) self.collapseLibraries();
                 });
                 librariesGroup.addEventListener('focusin', function () {
                     if (!self.isMobile()) {
                         self.cancelCollapseLibraries();
+                        if (!self.librariesExpanded) self._librariesHoverOpened = true;
                         self.librariesExpanded = true;
                         self.applyLibrariesExpanded();
                         self.positionLibrariesDropdown();
@@ -669,11 +689,11 @@
 
             // Dropdown is a separate element on document.body — needs its own hover listeners
             if (this.librariesDropdown) {
-                this.librariesDropdown.addEventListener('mouseenter', function () {
-                    if (!self.isMobile()) self.cancelCollapseLibraries();
+                this.librariesDropdown.addEventListener('pointerenter', function (e) {
+                    if (e.pointerType === 'mouse' && !self.isMobile()) self.cancelCollapseLibraries();
                 });
-                this.librariesDropdown.addEventListener('mouseleave', function () {
-                    if (!self.isMobile()) self.collapseLibraries();
+                this.librariesDropdown.addEventListener('pointerleave', function (e) {
+                    if (e.pointerType === 'mouse' && !self.isMobile()) self.collapseLibraries();
                 });
                 // Handle clicks on library buttons inside the dropdown
                 this.librariesDropdown.addEventListener('click', function (e) {
@@ -682,6 +702,20 @@
                     self.handleNavigation(btn.dataset.action, btn);
                 });
             }
+
+            // A tap or click anywhere else closes an open libraries list
+            // (touch has no mouseleave to do it)
+            document.addEventListener('pointerdown', function (e) {
+                if (!self.librariesExpanded) return;
+                if (librariesGroup && librariesGroup.contains(e.target)) return;
+                if (self.librariesDropdown && self.librariesDropdown.contains(e.target)) return;
+                self._librariesHoverOpened = false;
+                self.librariesExpanded = false;
+                self.applyLibrariesExpanded();
+            }, true);
+            window.addEventListener('resize', function () {
+                if (self.librariesExpanded) self.positionLibrariesDropdown();
+            });
 
             // Track active view — multiple detection methods for Jellyfin SPA
             this._onViewShow = function () {
@@ -900,6 +934,9 @@
                 prev[i].style.display = '';
                 prev[i].removeAttribute('data-tentacle-tab-ancestor');
             }
+            // Set again below once the tabs are found: the CSS moves Jellyfin's
+            // tab bar (and the page under it) below Tentacle's header
+            document.body.classList.remove('tentacle-page-tabs');
 
             // Only show page tabs on pages that actually need them (Live TV, library views)
             // Do NOT show on home page — those "Home/Favorites/Discover" tabs are replaced by Tentacle navbar
@@ -925,6 +962,7 @@
                 el.setAttribute('data-tentacle-tab-ancestor', '');
                 el = el.parentElement;
             }
+            document.body.classList.add('tentacle-page-tabs');
         },
 
         updateActiveState: function () {

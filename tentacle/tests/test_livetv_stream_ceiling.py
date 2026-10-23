@@ -116,6 +116,14 @@ class RefusalIsVisible(_Base):
         self.addCleanup(lambda: (setattr(livetv, "_stream_slots", orig),
                                  setattr(livetv, "_SLOT_WAIT_SECONDS", orig_wait)))
 
+        # A viewer is told on the player (test_livetv_nothing_on); without a
+        # slate (no ffmpeg) the refusal is all there is
+        from unittest import mock
+        from services import livetv_slate
+        p = mock.patch.object(livetv_slate, "picture", mock.AsyncMock(return_value=None))
+        p.start()
+        self.addCleanup(p.stop)
+
         async def go():
             await slots.acquire(1, 0)      # the house is full
             with self.assertLogs("routers.livetv", level="ERROR") as logs:

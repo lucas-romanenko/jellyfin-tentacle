@@ -53,6 +53,16 @@ The code wins where they differ.
   colons/hyphens normalized (new downloads can show "Alien (1979)" with no
   year until identified, so also try without a year).
 - **The `Tags` filter** (`/Items?Tags=`) does work server-side.
+- **Deleting a user** (`DELETE /Users/{id}`, 10.11): revokes their tokens,
+  then `RemovePlaylistsAsync` hands a shared playlist to the first share,
+  keeps an open-access one, and deletes the rest from the library with
+  `DeleteFileLocation = false`: the folder and its `playlist.xml` stay in
+  `data/playlists/`, and the next scan of the playlists folder resolves them
+  again. Seen on 10.11.8 after a refresh of the playlists folder: it rewrote
+  their `playlist.xml` with no owner and no entries, open access, so every
+  user saw them (empty "Drama", "Ann's Downloads1"). `DELETE /Items/{id}`
+  removes the folder too. The plugin removes the leftover folders on
+  `UserDeletedEventArgs` (plugin.md).
 - **Playlist items**: `POST /Playlists/{id}/Items?EntryIds=…` hits 414 on
   big lists: send `{"Ids": [...]}` as the body with `?UserId=`, in chunks of
   50; removals as EntryIds in chunks of 50.
@@ -70,8 +80,129 @@ The code wins where they differ.
   (query on PlaybackInfo and on the HLS URLs) re-encodes and the segments
   match the playlist; the plugin sets it for Tentacle VOD. The user policy
   EnablePlaybackRemuxing does not stop the copy.
+- **Who reads a .strm besides the player** (10.11.8, read in the source and
+  measured Oct 2026): an embedded text subtitle delivered External, Hls or
+  burnt in (Encode) is first extracted by `SubtitleEncoder` with one ffmpeg
+  over the WHOLE file (`-map 0:N … -c:s copy` per text track). It is not
+  cancelled with the request or the playback (the token is `None`; only a
+  30 min timeout), so it reads on after the player stopped; it is cached
+  per media source id in `data/subtitles/xx/<id>/<index>.srt` for good,
+  and judged only by the files being non-empty: an ffmpeg that saw its
+  input end early exits 0 with part of the cues and is logged "extraction
+  completed". After a body that ends short, ffmpeg (7.1) asks once for the
+  rest (`Range: bytes=<where it was>-`); an error answer ends it. The web
+  player waits for that request (no subtitles until
+  the whole file was read). Embed delivery (direct play into a container
+  that carries them, the TV app with SRT) extracts nothing. Every
+  PlaybackInfo of a `.strm` probes it (a full metadata refresh with
+  `EnableRemoteContentProbe`, a short read before the stream starts):
+  `MediaSourceManager.GetPlaybackMediaSources` checks the `.strm` path
+  alone, not whether the streams are known (they are saved by the first
+  probe). For a provider film that was ~3.4 s of range requests before
+  PlaybackInfo answered; the plugin (`VodProbeOncePatch`) passes
+  `allowMediaProbe=false` for a Tentacle VOD item that has a video stream.
+  Trickplay, chapter images and the keyframe task skip shortcuts; a
+  library scan does not probe them. Jellyfin Web in Chrome direct-plays a
+  remote mkv itself: the browser fetches the .strm address from its own
+  address while the extraction comes from Jellyfin's.
 - **API key**: Jellyfin → Dashboard → API Keys; Tentacle checks it at
   startup and logs a warning if it's invalid. Invalid key = no playlists.
+- **Plugin updates** (10.11's source): every installed plugin's
+  `meta.json` has `autoUpdate` (default true; no API sets it, `/Plugins`
+  doesn't show it), and the scheduled task "Update Plugins" (at start-up and
+  every 24 h) installs the newest compatible version from the catalogues in
+  `/Repositories` for each plugin with it on and not disabled. The new
+  version is listed with Status `Restart` and runs only after Jellyfin
+  restarts. A plugin installed by hand (no catalogue listed) is never updated.
+
+### Live TV per person (proven on 10.11.8, Oct 2026)
+
+What was proven for per-person tuners (v1.11-1.12); since 21 Oct 2026 the
+same tags hide non-kids channels from kids on one lineup.
+
+- M3U channel id: `m3u_` + MD5(tuner URL) + MD5(stream URL) (`M3UTunerHost`,
+  `M3uParser.cs:104`); `string.GetMD5()` is MD5 of the UTF-16LE text read
+  as a .NET Guid. Item id = MD5("MediaBrowser.Controller.LiveTv.LiveTvChannel"
+  + lower("Emby" + external id + "4")). The number is only `tvg-chno`:
+  renumbering keeps favourites and timers. HDHomeRun keys on `hdhr_<n>`.
+- M3U stream lines must be http(s)/rtsp: a file path is skipped.
+- XMLTV programme ids get `_<channel id>` appended (`ListingsManager`), so
+  one guide serves any number of tuners mapping the same feed channel.
+- BlockedTags: channels are filtered in the database query (own tags).
+  Programmes are not (they don't carry the channel's tag), but every list
+  goes through `DtoService.GetBaseItemDtos` → `IsVisible` (inherited tags
+  walk up to the channel), so nobody sees them; pages come back short and
+  TotalRecordCount counts everyone's. The plugin copies the tag onto the
+  programme (Harmony on `GuideManager.GetProgram`) to fix that. Programme
+  ids of another person's channel: 0 items. `/Items/{id}` of another's
+  channel: 404. `/Items?ids=` *without* userId is unfiltered.
+- `GuideManager.GetChannel` keeps a channel's tags when the tuner gives
+  none (M3U never does) and only adds "Kids". Live TV items raise no
+  `ItemAdded` (`SourceType.LiveTV` is skipped).
+- Timers and series timers have no owner: `/LiveTv/Timers` lists all to
+  everyone with Live TV. Recording needs `EnableLiveTvManagement`.
+  Recordings are one library; a tag on a recording item hides it like a
+  channel (survives scans; recording NFOs are locked).
+- Saving a tuner or listing provider cancels a running RefreshGuide and
+  queues a new one. XMLTV programmes have no etag: every refresh re-saves
+  every programme.
+- Changing a user's policy inside the `UserCreatedEventArgs` consumer makes
+  `POST /Users/New` fail (DbUpdateConcurrencyException, 500): do it later.
+- Favourite (`POST /UserFavoriteItems/{id}?userId=`) on a channel the user
+  can't see: 404.
+- **How long a live channel takes to start (measured 21 Oct 2026, 10.11.8,
+  Jellyfin Web).** PlaybackInfo with AutoOpenLiveStream opens the tuner
+  stream (SharedHttpStream: Tentacle + the provider's redirect, 0.5-0.9 s),
+  then `LiveStreamHelper.AddMediaInfoWithProbe`: cached per channel in
+  `/cache/mediainfo` (key = the open token, so per channel item and stream
+  URL), else a fixed **3 s sleep** and ffprobe (~0.1 s on a provider that
+  sends its buffer at once). Then ffmpeg remuxes to HLS (`-hls_time 3`); the
+  tuner's **Read at native frame rate** adds `-re`, so the first segment
+  needs 3 s of real time and more (11 s on a 60 fps channel with odd audio
+  timestamps). Before: 4.9-6.8 s, 15.9 s on Sportsnet One. Tentacle switches
+  `-re` off on its tuner (once) and the plugin drops the 3 s sleep for
+  Tentacle's channels (`LiveTvProbePatch`): about 1.5 s. The M3U channel
+  list is cached per tuner (`BaseTunerHost`), read once after a restart.
+- **Many M3U tuners make the guide refresh quadratic (measured Oct 2026,
+  10.11.8).** `BaseTunerHost.GetChannels` builds every M3U tuner's channel
+  list and de-duplicates them against each other with a list scan, and
+  `GuideManager` calls it once per channel while refreshing. One tuner of
+  5,669 channels: 2 m 10 s (20 ms/channel). 7 tuners × 1,734 channels (one
+  per person): 358 ms/channel, ≈73 min per refresh (stopped at 20 min);
+  a Harmony prefix with a hash-set merge brought that to 10.5 min (67 ms/
+  channel, DB 212 MB), still 5× one lineup, and it would be a patch on
+  Jellyfin internals. So Tentacle has **one M3U tuner** (the household's
+  lineup) and per-person tuners are gone (Decisions, 21 Oct 2026). The
+  prototype patch is not shipped.
+- One tuner, two tags: lineup channels carry `tentacle-livetv-all`, the
+  household's kids channels `tentacle-livetv-kids`; kids profiles block
+  `-all`. The plugin tags a new channel with its tuner's tag (`-all`) in
+  `GuideManager.GetChannel`, and keeps `-kids` on a channel that has it
+  (`WithTag(..., keepKids: true)`), so a kid never sees a channel before an
+  admin makes it a kids channel; programmes always take their channel's
+  tag. Only one `tentacle-livetv-*` tag per channel survives the plugin, so
+  people's places have their own prefix: `tentacle-notlocal-<place>` on a
+  channel people at <place> don't see (they block it); the plugin keeps
+  them on channels (it strips only `tentacle-livetv-*`) and copies them
+  onto the programmes with the tuner tag (`ProgramTags`).
+- Everything a person has on a channel (favourite, timers) hangs on the
+  channel item id, so on the tuner URL and the stream URL: a channel whose
+  stream address changes (a pool key `c123` folded into network `n7`:
+  `/api/live/stream/123` → `/api/live/net/7`) is a new channel to Jellyfin.
+  The guide refresh (`GuideManager.CleanDatabase`) deletes the channels a
+  tuner no longer lists, and with them what `/LiveTv/Channels?isFavorite=true`
+  can report, so the sync reads favourites *before* the refresh and sets
+  them on the new channel after it; schedules are made again from the new
+  channel's guide (exact title) and the old ones cancelled. The same moves
+  people off per-person tuners of before (v1.11-1.12) and the old
+  HDHomeRun tuner: favourites read while they still see the old channels,
+  then their BlockedTags change, then the favourites are set on the
+  lineup's channels (the 404 above).
+- A guide refresh renames an existing channel to the M3U's name, but sets
+  its Primary image from `tvg-logo` only while it has none
+  (`GuideManager.GetChannelAsync`: `if (!item.HasImage(ImageType.Primary))`,
+  10.11 source). A new logo reaches Jellyfin only after
+  `DELETE /Items/{id}/Images/Primary` (admin key) and the next refresh.
 
 ## Radarr and Sonarr
 

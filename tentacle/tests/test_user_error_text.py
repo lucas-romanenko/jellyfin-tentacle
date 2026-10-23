@@ -15,6 +15,7 @@ They now name the failure (and the error type); the full text goes to the
 log. Admins still see the problems' detail.
 """
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 import requests
@@ -79,7 +80,7 @@ class LoginText(_Db):
         from routers import auth
         mdb.set_setting(self.db, "jellyfin_url", f"http://{ADDR}:8096")
         with mock.patch.object(auth.requests, "get", side_effect=ERR), self.assertRaises(HTTPException) as ctx:
-            auth.get_jellyfin_users(db=self.db)
+            auth.get_jellyfin_users(SimpleNamespace(client=SimpleNamespace(host="192.168.1.5"), headers={}), db=self.db)
         self.assertNotIn(ADDR, ctx.exception.detail)
         with mock.patch.object(auth.requests, "post", side_effect=ERR), self.assertRaises(HTTPException) as ctx:
             auth.login(auth.LoginRequest(username="u", password="p"), response=mock.Mock(), request=mock.Mock(), db=self.db)

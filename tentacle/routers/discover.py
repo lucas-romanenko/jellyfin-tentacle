@@ -13,6 +13,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from typing import Optional
 import httpx
@@ -25,7 +26,19 @@ from services.tmdb import TMDBService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/discover", tags=["discover"])
+def _not_on_kids_profiles(request: Request, db: Session = Depends(get_db)):
+    """Discover is TMDB's whole catalogue, whatever its rating: not on a kids
+    profile (their navbar has no Discover either: services/family.py). Callers
+    that aren't signed in get the route's own answer."""
+    try:
+        user = get_user_from_request(request, db)
+    except HTTPException:
+        return
+    if getattr(user, "kids_level", None):
+        raise HTTPException(403, "Discover isn't available on a kids profile.")
+
+
+router = APIRouter(prefix="/api/discover", tags=["discover"], dependencies=[Depends(_not_on_kids_profiles)])
 
 TMDB_UNREACHABLE = "TMDB could not be reached: showing what is available."
 
@@ -360,6 +373,7 @@ def get_discover(
     type: str = "movies",
     db: Session = Depends(get_db),
     user: TentacleUser = Depends(get_user_from_request),
+    request: Request = None,
 ):
     """Return discover sections based on media type.
     Movies: Popular, Now Playing, Upcoming, From Your Lists
@@ -451,9 +465,20 @@ def get_discover(
             "items": missing,
         })
 
+    _watch_links(db, request, sections, user)
     if tmdb_down:
         return {"sections": sections, "warning": TMDB_UNREACHABLE}
     return {"sections": sections}
+
+
+def _watch_links(db: Session, request: Request, sections: list, user=None) -> None:
+    """▶ Play / Open in Jellyfin on the cards that are in the library, for
+    this person (services/watch_links.py). Items are copied: TMDB answers
+    are shared through caches."""
+    from services import watch_links
+    links = watch_links.linker(db, request, user)
+    for section in sections:
+        section["items"] = links.attach(section.get("items") or [], only_in_library=True)
 
 
 def _get_missing_from_lists(db: Session, known_ids: dict, type_filter: str, user: TentacleUser = None,
@@ -599,6 +624,14 @@ def get_discover_detail(
         if _caller_can_open(db, request, resolved_id):
             details["jellyfin_item_id"] = resolved_id
             details["jellyfin_url"] = _jellyfin_web_url(db, resolved_id)
+            # ▶ Play / Open in Jellyfin (services/watch_links.py): not while
+            # a download of it is still being got ready.
+            from services import watch_links
+            from services.download_readiness import held_back
+            if not held_back("series" if media_type == "series" else "movie", tmdb_id):
+                links = watch_links.linker(db, request).links_for_item(resolved_id)
+                if links:
+                    details["jellyfin"] = links
         if db_item is not None and getattr(db_item, "jellyfin_item_id", None) != resolved_id:
             try:
                 db_item.jellyfin_item_id = resolved_id
@@ -667,6 +700,19 @@ def get_discover_detail(
             ).first())
         except HTTPException:
             pass
+
+    # request: this viewer's request waiting for an admin, or answered lately
+    # ({"status": "pending" | "declined" | ...}), and whether theirs wait
+    # at all ("ask") — the button then reads "Request" (services/approvals.py).
+    details["request"] = None
+    details["request_mode"] = "direct"
+    try:
+        from services import approvals
+        user = get_user_from_request(request, db)
+        details["request"] = approvals.status_for(db, user, media_type, tmdb_id)
+        details["request_mode"] = approvals.request_mode(db, user)["mode"]
+    except Exception:
+        pass  # never breaks the detail itself
 
     return details
 
@@ -782,17 +828,200 @@ def _radarr_lookup_to_items(results: list) -> list:
     return items
 
 
+# ── Search: answer while the user types ────────────────────────────────────
+# The TV app searches on every keystroke ("t", "ts", "tsn"). Each request used
+# to wait on Radarr's and Sonarr's text lookups, which ask the internet
+# metadata services and took up to their 15 s timeout ("ts"): past the
+# plugin's own 15 s, so the TV showed "Tentacle is busy" (2026-10-21). Now
+# TMDB gives the results; the lookups (TheTVDB titles TMDB lacks) get a short
+# wait and never hold the answer; "In Library" / "Requested" come from the
+# cached id maps; each query's lookups are shared and kept for a few minutes.
+SEARCH_CACHE_TTL = 300      # seconds a query's results are reused
+SEARCH_CACHE_MAX = 300      # queries kept; the oldest go first
+SEARCH_MIN_CHARS = 2        # shorter queries search Live TV channels only
+SEARCH_ARR_MIN_CHARS = 3    # shorter queries skip the Radarr/Sonarr lookups
+SEARCH_TMDB_WAIT = 8.0      # TMDB answers in well under a second; stay below the plugin's 15 s
+SEARCH_ARR_WAIT = 2.0       # the lookups and a first id-map fetch get this much
+_search_cache: dict = {}    # (query, media type) -> {"ts", "tmdb", "sonarr", "radarr"} futures
+_search_lock = threading.Lock()
+_search_pools: dict = {}
+_search_pools_lock = threading.Lock()
+_id_refreshes: dict = {}    # id map name -> refresh future running in the background
+_id_refreshes_lock = threading.Lock()
+# Threads per kind of work, so lookups stuck on a slow metadata service never
+# queue the next keystroke's TMDB search (or an id-map refresh) behind them.
+_SEARCH_POOL_SIZES = {"tmdb": 6, "arr": 4, "ids": 3}
+
+
+def _search_executor(kind: str):
+    """Threads shared by all searches. A lookup that outlives its request
+    finishes here (and fills the cache) instead of holding the request."""
+    with _search_pools_lock:
+        pool = _search_pools.get(kind)
+        if pool is None:
+            from concurrent.futures import ThreadPoolExecutor
+            pool = ThreadPoolExecutor(max_workers=_SEARCH_POOL_SIZES[kind],
+                                      thread_name_prefix=f"discover-search-{kind}")
+            _search_pools[kind] = pool
+        return pool
+
+
+def _normalize_query(q: str) -> str:
+    return " ".join((q or "").split()).lower()
+
+
+def clear_search_cache():
+    with _search_lock:
+        _search_cache.clear()
+
+
+def _tmdb_search_job(tmdb: TMDBService, q: str, media_type: str) -> list:
+    tmdb._tl.failed = False
+    results = tmdb.search_multi_results(q, media_type)
+    if tmdb._lookup_failed():
+        # Not an answer: raise so this query is not cached as "nothing found".
+        raise TMDBConnectionError("TMDB search did not complete")
+    return results
+
+
+def _arr_lookup_job(kind: str, url: str, key: str, q: str) -> list:
+    if kind == "sonarr":
+        from services.sonarr import SonarrService
+        return SonarrService(url, key).lookup_by_term(q)
+    from services.radarr import RadarrService
+    return RadarrService(url, key).lookup_by_term(q)
+
+
+def _search_entry(norm: str, media_type: str, tmdb, arr: dict) -> dict:
+    """The cached (or newly started) searches for one query. Requests for the
+    same query while it runs share it, so a lookup is never started twice."""
+    import time as _time
+    now = _time.time()
+    with _search_lock:
+        entry = _search_cache.get((norm, media_type))
+        if entry and now - entry["ts"] < SEARCH_CACHE_TTL:
+            return entry
+        entry = {"ts": now, "tmdb": None, "sonarr": None, "radarr": None}
+        if tmdb:
+            entry["tmdb"] = _search_executor("tmdb").submit(_tmdb_search_job, tmdb, norm, media_type)
+        if len(norm) >= SEARCH_ARR_MIN_CHARS:
+            for kind, (url, key) in arr.items():
+                entry[kind] = _search_executor("arr").submit(_arr_lookup_job, kind, url, key, norm)
+        if not tmdb:
+            return entry    # not kept: TMDB set up a minute later must be used
+        if len(_search_cache) >= SEARCH_CACHE_MAX:
+            for old in sorted(_search_cache, key=lambda k: _search_cache[k]["ts"])[:SEARCH_CACHE_MAX // 4]:
+                del _search_cache[old]
+        _search_cache[(norm, media_type)] = entry
+
+    def _drop_if_failed(fut, k=(norm, media_type), e=entry):
+        # A failed TMDB search is asked again by the next request, not reused.
+        if fut.exception() is not None:
+            with _search_lock:
+                if _search_cache.get(k) is e:
+                    del _search_cache[k]
+    if entry["tmdb"] is not None:
+        entry["tmdb"].add_done_callback(_drop_if_failed)
+    return entry
+
+
+def _future_result(fut, timeout: float, what: str) -> list:
+    """A search's result within the time left, else nothing (it keeps running)."""
+    if fut is None:
+        return []
+    from concurrent.futures import TimeoutError as _FutureTimeout
+    try:
+        return [dict(i) for i in (fut.result(timeout=max(0.0, timeout)) or [])]
+    except _FutureTimeout:
+        logger.info(f"Discover search: {what} still running, answering without it")
+    except Exception as e:
+        logger.warning(f"Discover search: {what} failed: {e}")
+    return []
+
+
+def _refresh_in_background(name: str, fn):
+    """At most one background refresh per id map; returns its future."""
+    with _id_refreshes_lock:
+        fut = _id_refreshes.get(name)
+        if fut is None or fut.done():
+            fut = _search_executor("ids").submit(fn)
+            _id_refreshes[name] = fut
+        return fut
+
+
+def _search_jellyfin_ids(media_type: str, deadline: float) -> dict:
+    """The Jellyfin in-library map without waiting on Jellyfin: a stale map is
+    used while a fresh one is fetched in the background. Only before the first
+    fetch ever, wait for it until the deadline."""
+    import time as _time
+    key = "series" if media_type == "series" else "movie"
+    cached = _jf_ids_cache[key]
+    fresh = cached is not None and _time.time() - _jf_ids_cache["ts"][key] < JF_IDS_TTL
+    if fresh:
+        return cached
+    fut = _refresh_in_background(f"jellyfin-{key}", lambda: _get_jellyfin_tmdb_items(key))
+    if cached is not None:
+        return cached
+    return _future_dict(fut, deadline - _time.time())
+
+
+def _search_arr_ids(deadline: float) -> dict:
+    """The Radarr/Sonarr id sets for "Requested", the same way: stale while a
+    refresh runs, a first fetch waited for until the deadline only."""
+    import time as _time
+    cached = _arr_ids_cache["data"]
+    if cached is not None and _time.time() - _arr_ids_cache["ts"] < ARR_IDS_TTL:
+        return cached
+    fut = _refresh_in_background("arr", _get_arr_tmdb_ids)
+    if cached is not None:
+        return cached
+    return _future_dict(fut, deadline - _time.time()) or {"movie": set(), "series": set()}
+
+
+def _future_dict(fut, timeout: float) -> dict:
+    try:
+        return fut.result(timeout=max(0.0, timeout)) or {}
+    except Exception:
+        return {}
+
+
+def _mark_search_items(items: list, known_ids: dict, deadline: float) -> None:
+    """in_library and requested, as _is_in_library / _mark_requested decide
+    them, from Tentacle's tables and the cached Jellyfin and *arr id maps."""
+    jf = {}
+    arr = None
+    for item in items:
+        tid = item.get("tmdb_id")
+        mt = "series" if item.get("media_type") == "series" else "movie"
+        if not tid:
+            item["in_library"] = False
+            item["requested"] = False
+            continue
+        if mt not in jf and tid not in known_ids[mt]:
+            jf[mt] = _search_jellyfin_ids(mt, deadline)
+        item["in_library"] = tid in known_ids[mt] or tid in jf.get(mt, {})
+        if item["in_library"]:
+            item["requested"] = False
+            continue
+        if arr is None:
+            arr = _search_arr_ids(deadline)
+        item["requested"] = tid in arr.get(mt, set())
+
+
 @router.get("/search", dependencies=[Depends(get_user_from_request)])
 def search_discover(
     q: str = "",
     type: str = "all",
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    request: Request = None,
 ):
-    """Search TMDB for movies/series, supplemented by Sonarr/Radarr lookup for TheTVDB coverage."""
+    """Live TV channels first, then TMDB movies/series, supplemented by
+    Sonarr/Radarr lookups (TheTVDB coverage) when they answer in time."""
+    import time as _time
     if not q or not q.strip():
         return {"items": []}
-
-    tmdb = _get_tmdb(db)
+    started = _time.time()
+    norm = _normalize_query(q)
 
     media_type = "all"
     if type == "movies":
@@ -800,120 +1029,75 @@ def search_discover(
     elif type == "series":
         media_type = "series"
 
-    # Search TMDB + Sonarr + Radarr in parallel for speed
     items = []
-    known_ids = _known_tmdb_ids(db)
+    if type != "channels" and len(norm) >= SEARCH_MIN_CHARS:
+        # Settings and tables are read here (SQLAlchemy sessions aren't thread-safe)
+        arr = {}
+        if media_type in ("all", "series"):
+            url, key = get_setting(db, "sonarr_url"), get_setting(db, "sonarr_api_key")
+            if url and key:
+                arr["sonarr"] = (url, key)
+        if media_type in ("all", "movie"):
+            url, key = get_setting(db, "radarr_url"), get_setting(db, "radarr_api_key")
+            if url and key:
+                arr["radarr"] = (url, key)
+        tmdb = _get_tmdb(db)
+        known_ids = _known_tmdb_ids(db)
+        entry = _search_entry(norm, media_type, tmdb, arr)
+        # Start any id-map refresh now, next to the searches (no wait here)
+        for mt in (("movie", "series") if media_type == "all" else (media_type,)):
+            _search_jellyfin_ids(mt, deadline=0)
+        _search_arr_ids(deadline=0)
 
-    if type != "channels":
-        from concurrent.futures import ThreadPoolExecutor
+        arr_deadline = started + SEARCH_ARR_WAIT
+        tmdb_results = _future_result(entry["tmdb"], started + SEARCH_TMDB_WAIT - _time.time(), "TMDB")
+        sonarr_results = _future_result(entry["sonarr"], arr_deadline - _time.time(), "Sonarr lookup")
+        radarr_results = _future_result(entry["radarr"], arr_deadline - _time.time(), "Radarr lookup")
 
-        # Read settings in main thread (SQLAlchemy sessions aren't thread-safe)
-        sonarr_url = get_setting(db, "sonarr_url") if media_type in ("all", "series") else None
-        sonarr_key = get_setting(db, "sonarr_api_key") if sonarr_url else None
-        radarr_url = get_setting(db, "radarr_url") if media_type in ("all", "movie") else None
-        radarr_key = get_setting(db, "radarr_api_key") if radarr_url else None
-
-        def _tmdb_search():
-            if not tmdb:
-                return []
-            return tmdb.search_multi_results(q, media_type)
-
-        def _sonarr_search():
-            if not sonarr_url or not sonarr_key:
-                return []
-            from services.sonarr import SonarrService
-            try:
-                return SonarrService(sonarr_url, sonarr_key).lookup_by_term(q.strip())
-            except Exception as e:
-                logger.warning(f"Sonarr lookup supplement failed: {e}")
-                return []
-
-        def _radarr_search():
-            if not radarr_url or not radarr_key:
-                return []
-            from services.radarr import RadarrService
-            try:
-                return RadarrService(radarr_url, radarr_key).lookup_by_term(q.strip())
-            except Exception as e:
-                logger.warning(f"Radarr lookup supplement failed: {e}")
-                return []
-
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            tmdb_future = pool.submit(_tmdb_search)
-            sonarr_future = pool.submit(_sonarr_search)
-            radarr_future = pool.submit(_radarr_search)
-
-            try:
-                tmdb_results = tmdb_future.result(timeout=15)
-            except Exception as e:
-                logger.warning(f"TMDB search failed: {e}")
-                tmdb_results = []
-            try:
-                sonarr_results = sonarr_future.result(timeout=15)
-            except Exception as e:
-                logger.warning(f"Sonarr search failed: {e}")
-                sonarr_results = []
-            try:
-                radarr_results = radarr_future.result(timeout=15)
-            except Exception as e:
-                logger.warning(f"Radarr search failed: {e}")
-                radarr_results = []
-
-        # TMDB results first
-        items = _dedup_and_mark(tmdb_results, known_ids)
-
-        # Supplement with Sonarr/Radarr (TheTVDB coverage)
-        seen_tmdb = {item["tmdb_id"] for item in items if item.get("tmdb_id")}
-        seen_tvdb = set()
-
-        for item in _sonarr_lookup_to_items(sonarr_results):
-            tmdb_id = item.get("tmdb_id")
-            tvdb_id = item.get("tvdb_id")
-            if tmdb_id and tmdb_id in seen_tmdb:
+        # TMDB results first (deduplicated), then Sonarr/Radarr titles TMDB lacks
+        seen_tmdb, seen_tvdb = set(), set()
+        for item in tmdb_results:
+            tid = item.get("tmdb_id")
+            if not tid or tid in seen_tmdb:
                 continue
-            if tvdb_id and tvdb_id in seen_tvdb:
+            seen_tmdb.add(tid)
+            items.append(item)
+        for item in _sonarr_lookup_to_items(sonarr_results) + _radarr_lookup_to_items(radarr_results):
+            tmdb_id, tvdb_id = item.get("tmdb_id"), item.get("tvdb_id")
+            if (tmdb_id and tmdb_id in seen_tmdb) or (tvdb_id and tvdb_id in seen_tvdb):
                 continue
             if tmdb_id:
                 seen_tmdb.add(tmdb_id)
-                item["in_library"] = _is_in_library(item, known_ids)
-            else:
-                item["in_library"] = False
-            _mark_requested(item)
             if tvdb_id:
                 seen_tvdb.add(tvdb_id)
             items.append(item)
-
-        for item in _radarr_lookup_to_items(radarr_results):
-            tmdb_id = item.get("tmdb_id")
-            if tmdb_id and tmdb_id in seen_tmdb:
-                continue
-            if tmdb_id:
-                seen_tmdb.add(tmdb_id)
-                item["in_library"] = _is_in_library(item, known_ids)
-            else:
-                item["in_library"] = False
-            _mark_requested(item)
-            items.append(item)
+        _mark_search_items(items, known_ids, arr_deadline)
 
     # Rewrite TVDB image URLs to go through proxy
     items = [_rewrite_item_images(item) for item in items]
 
     # Search Live TV channels — prepend to items list
     if type in ("all", "channels"):
+        from routers.livetv import _is_separator
+        term = f"%{q.strip()}%"
         channel_rows = db.query(LiveChannel).filter(
             LiveChannel.enabled == True,
-            LiveChannel.name.ilike(f"%{q.strip()}%"),
-        ).order_by(LiveChannel.sort_order).limit(20).all()
+            or_(LiveChannel.name.ilike(term), LiveChannel.custom_name.ilike(term)),
+        ).order_by(LiveChannel.sort_order).limit(40).all()
+        # Separator rows ("####### SPORTSNET PPV #######") are no channel.
+        channel_rows = [ch for ch in channel_rows if not _is_separator(ch.guide_name)][:20]
         channel_items = [{
             "media_type": "channel",
-            "title": ch.name,
+            "title": ch.guide_name,
             "channel_id": ch.id,
-            "logo_url": ch.logo_url,
+            "logo_url": ch.guide_logo,
             "group_title": ch.group_title,
         } for ch in channel_rows]
         items = channel_items + items
 
-    return {"items": items}
+    out = {"items": items}
+    _watch_links(db, request, [out])
+    return out
 
 
 # ── New on Streaming Services ──────────────────────────────────────────────
@@ -980,7 +1164,7 @@ def get_discover_genres(type: str = "movies", db: Session = Depends(get_db)):
 
 @router.get("/genre", dependencies=[Depends(get_user_from_request)])
 def get_discover_by_genre(genre_id: int, type: str = "movies", mode: str = "top_rated",
-                          db: Session = Depends(get_db)):
+                          db: Session = Depends(get_db), request: Request = None):
     """Titles in a genre. mode='top_rated' (all-time best) or 'new' (recent). Marked."""
     if mode not in ("top_rated", "new"):
         mode = "top_rated"
@@ -990,11 +1174,14 @@ def get_discover_by_genre(genre_id: int, type: str = "movies", mode: str = "top_
     media_type = "series" if type == "series" else "movie"
     items = tmdb.get_by_genre(media_type, genre_id, mode=mode)
     known_ids = _known_tmdb_ids(db)
-    return {"genre_id": genre_id, "mode": mode, "items": _dedup_and_mark(items, known_ids)}
+    out = {"genre_id": genre_id, "mode": mode, "items": _dedup_and_mark(items, known_ids)}
+    _watch_links(db, request, [out])
+    return out
 
 
 @router.get("/streaming", dependencies=[Depends(get_user_from_request)])
-def get_new_on_streaming(provider: str, type: str = "movies", db: Session = Depends(get_db)):
+def get_new_on_streaming(provider: str, type: str = "movies", db: Session = Depends(get_db),
+                         request: Request = None):
     """Recently released movies or TV on one streaming service, newest first.
 
     In-library and already-requested titles are marked the same way as the rest
@@ -1010,8 +1197,10 @@ def get_new_on_streaming(provider: str, type: str = "movies", db: Session = Depe
     media_type = "series" if type == "series" else "movie"
     items = tmdb.get_new_on_provider(media_type, prov["id"], region=region)
     known_ids = _known_tmdb_ids(db)
-    return {"provider": provider, "name": prov["name"],
-            "items": _dedup_and_mark(items, known_ids)}
+    out = {"provider": provider, "name": prov["name"],
+           "items": _dedup_and_mark(items, known_ids)}
+    _watch_links(db, request, [out])
+    return out
 
 
 @router.get("/config")

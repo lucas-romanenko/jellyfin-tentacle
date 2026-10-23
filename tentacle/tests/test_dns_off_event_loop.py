@@ -117,6 +117,8 @@ class VodRequest(unittest.TestCase):
         livetv._stream_slots = livetv._StreamSlots()
         self.addCleanup(lambda: setattr(livetv, "_stream_slots", livetv._StreamSlots()))
         self.addCleanup(vod._playbacks.clear)
+        vod._targets.clear()
+        self.addCleanup(vod._targets.clear)
         engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db",
                                connect_args={"check_same_thread": False})
         mdb.Base.metadata.create_all(engine)

@@ -34,6 +34,17 @@ router = APIRouter(prefix="/api/library", tags=["library"])
 _JELLYFIN_ID_RE = re.compile(r"\A[0-9a-fA-F]{32}\Z|\A[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\Z")
 
 
+def _sees_only_some(db, user) -> bool:
+    """A kids profile, or someone an admin gave only some libraries (People):
+    Tentacle's Library then lists only what Jellyfin lets them open."""
+    if user.kids_level:
+        return True
+    if user.is_admin:
+        return False
+    from services.person_access import library_limited
+    return library_limited(db, user)
+
+
 def _validate_jellyfin_item_id(item_id: str) -> str:
     if not _JELLYFIN_ID_RE.match(item_id or ""):
         raise HTTPException(400, "Invalid Jellyfin item id")
@@ -66,6 +77,7 @@ def get_library_items(
     list_status: Optional[str] = None,
     limit: int = 48,
     offset: int = 0,
+    request: Request = None,
     db: Session = Depends(get_db),
     user: TentacleUser = Depends(get_user_from_request),
 ):
@@ -78,6 +90,8 @@ def get_library_items(
         if not user.is_admin:
             owned = owned.filter(ListSubscription.user_id == user.id)
         if owned.first() is None:
+            raise HTTPException(404, "List not found")
+        if user.kids_level:
             raise HTTPException(404, "List not found")
         return _get_list_items(list_id, search, sort, list_status, limit, offset, db)
 
@@ -174,8 +188,17 @@ def get_library_items(
             if tag:
                 breakdown[tag] = breakdown.get(tag, 0) + 1
 
+    if _sees_only_some(db, user):
+        # A kids profile or a few libraries (People): only what Jellyfin lets
+        # this person open, and no per-source counts that would hint at the rest.
+        from services.family import visible_titles
+        allowed = visible_titles(db, user)
+        items = [i for i in items if (i["media_type"], i["tmdb_id"]) in allowed]
+        breakdown = {}
+
     total = len(items)
-    paginated = items[offset:offset + limit]
+    from services import watch_links
+    paginated = watch_links.linker(db, request, user).attach(items[offset:offset + limit])
 
     return {"total": total, "items": paginated, "source_breakdown": breakdown}
 
@@ -287,12 +310,17 @@ def _get_list_items(list_id: int, search: Optional[str], sort: Optional[str],
 def get_item_detail(
     media_type: str,
     tmdb_id: int,
+    request: Request = None,
     db: Session = Depends(get_db),
     user: TentacleUser = Depends(get_user_from_request),
 ):
     """Library item detail. Requires a session (#74): the response carries the
     on-disk .strm path and the playlist tags for the title. The dashboard
     sends its cookie and the plugin forwards the caller's token."""
+    if _sees_only_some(db, user):
+        from services.family import visible_titles
+        if (("series" if media_type == "series" else "movie"), tmdb_id) not in visible_titles(db, user):
+            raise HTTPException(404, "Not found")
     if media_type == "movie":
         item = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
         if not item:
@@ -357,7 +385,42 @@ def get_item_detail(
             ).first()
             result["can_delete"] = bool(has_request)
 
+    # ▶ Play / Open in Jellyfin (services/watch_links.py)
+    from services import watch_links
+    links = watch_links.linker(db, request, user).links(media_type, tmdb_id, item.jellyfin_item_id)
+    if links:
+        result["jellyfin"] = links
     return result
+
+
+@router.get("/watch/series/{tmdb_id}/season/{season}")
+def get_episode_links(tmdb_id: int, season: int, request: Request, db: Session = Depends(get_db),
+                      user: TentacleUser = Depends(get_user_from_request)):
+    """▶ Play / Open in Jellyfin for each episode of a season the caller can
+    watch: {"episodes": {"<number>": {"play", "open"}}}. Jellyfin is asked as
+    the caller, so it lists only what they may open."""
+    from services import watch_links
+    from services.family import FamilyError, dashed, jellyfin
+    links = watch_links.linker(db, request, user)
+    series_id = links.item_id("series", tmdb_id)
+    if not series_id or not user.jellyfin_user_id:
+        return {"episodes": {}}
+    try:
+        res = jellyfin(db).get(f"/Shows/{series_id}/Episodes", userId=dashed(user.jellyfin_user_id),
+                               season=season, EnableImages="false",
+                               EnableUserData="false") or {}
+    except (FamilyError, requests.RequestException) as e:
+        logger.info(f"Episode links for tmdb:{tmdb_id} S{season} not read from Jellyfin: {e}")
+        return {"episodes": {}}
+    out = {}
+    for ep in res.get("Items") or []:
+        num = ep.get("IndexNumber")
+        if num is None or ep.get("ParentIndexNumber") not in (None, season) or str(num) in out:
+            continue
+        if ep.get("LocationType") == "Virtual":
+            continue
+        out[str(num)] = links.links_for_item(ep.get("Id"))
+    return {"episodes": {k: v for k, v in out.items() if v}}
 
 
 def _get_followers_for_series(db, tmdb_id: int) -> list:
@@ -820,7 +883,8 @@ def get_tmdb_detail(
 
 
 @router.get("/following")
-def get_following_series(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def get_following_series(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request),
+                         request: Request = None):
     """Return series being followed for new episodes by the current user."""
     # Get TMDB IDs this user has requested (their downloads)
     user_tmdb_ids = {
@@ -840,7 +904,8 @@ def get_following_series(db: Session = Depends(get_db), user: TentacleUser = Dep
     if not user.is_admin:
         series = [s for s in series if s.tmdb_id in user_tmdb_ids]
 
-    return [
+    from services import watch_links
+    return watch_links.linker(db, request, user).attach([
         {
             "tmdb_id": s.tmdb_id,
             "title": s.title,
@@ -854,9 +919,10 @@ def get_following_series(db: Session = Depends(get_db), user: TentacleUser = Dep
             "date_added": s.date_added,
             "following": True,
             "status": s.status,
+            "jellyfin_item_id": s.jellyfin_item_id,
         }
         for s in series
-    ]
+    ])
 
 
 class StrmManagedBody(BaseModel):

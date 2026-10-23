@@ -80,7 +80,7 @@ def _recreate(jf_url: str, headers: dict, path: str, same: list[dict]) -> None:
             logger.info(f"[LiveTV] Deleted old Tentacle XMLTV listing provider {lp['Id']}")
 
 
-def refresh_jellyfin_guide(jf_url: str, jf_key: str) -> None:
+def refresh_jellyfin_guide(jf_url: str, jf_key: str, then_tag: bool = False) -> None:
     """Re-create Tentacle's XMLTV listing provider, then run RefreshGuide.
 
     Two steps because of a Jellyfin quirk: re-POSTing a listing provider with
@@ -93,6 +93,9 @@ def refresh_jellyfin_guide(jf_url: str, jf_key: str) -> None:
          with no listing provider.
       3. One provider per Path is kept: copies left by an earlier failure are
          deleted, not re-created, and refreshes never overlap (#274).
+
+    then_tag: afterwards, have services/livetv_tuners.py tag the channels
+    the refresh creates (which person may see them) once it is done.
 
     Raises requests.RequestException if Jellyfin cannot be reached, and
     GuideRefreshError if it has no RefreshGuide task.
@@ -113,3 +116,9 @@ def refresh_jellyfin_guide(jf_url: str, jf_key: str) -> None:
         resp = requests.post(f"{jf_url}/ScheduledTasks/Running/{guide_task['Id']}",
                              headers=headers, timeout=10)
         resp.raise_for_status()
+
+    if then_tag:
+        # Channels the refresh creates get their tuner's tag (who may see
+        # them) as soon as it is done: services/livetv_tuners.py.
+        from services.livetv_tuners import schedule_sync
+        schedule_sync("guide refreshed")

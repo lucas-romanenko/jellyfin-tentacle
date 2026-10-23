@@ -469,6 +469,11 @@ _RAW_MARK_EVERY = 5.0
 # A connection that delivered this long is a stream that works (#335): it
 # ends a raw re-dial's outage, and tells provider health (#652).
 _HEALTHY_AFTER = 10.0
+# A raw stream goes out in ~128 KB pieces (fewer, larger writes for every
+# client), but not its start: the provider's opening burst is passed on as it
+# comes until this much has gone out, so Jellyfin's tuner, probe and ffmpeg
+# begin at once (a 2 Mbit/s channel took half a second to fill one piece).
+_FAST_START_BYTES = 2 * 1024 * 1024
 # For a recording, a 404/410 counts toward _MAX_RERESOLVE only after this long
 # of unbroken 404/410 (a panel blip is seconds); viewers keep the 3-try rule.
 _GONE_GRACE = 180.0
@@ -597,6 +602,11 @@ async def tuner_refusal_handler(request, exc: "_TunerRefusal") -> Response:
     })
 
 
+# The start of the 502 detail a channel open fails with when the provider
+# didn't deliver (refused, timed out, no data)
+_PROVIDER_FAILED = "Failed to connect to stream"
+
+
 class _PlaceholderRefusal(_TunerRefusal):
     """The 503 a channel open answers when the provider served a placeholder."""
 
@@ -604,6 +614,42 @@ class _PlaceholderRefusal(_TunerRefusal):
 async def _refuse_placeholder(channel_id: int, segment: str):
     await _note_placeholder(channel_id, segment)
     raise _PlaceholderRefusal(f"Channel unavailable: the provider served a placeholder ({segment})")
+
+
+def _placeholder_lines(ch) -> tuple:
+    from services import livetv_slate
+    return livetv_slate.unavailable(_channel_event(ch), ch.guide_name if ch is not None else "")
+
+
+async def _placeholder_picture(ch) -> "bytes | None":
+    from services import livetv_slate
+    return await livetv_slate.picture(_placeholder_lines(ch))
+
+
+def _channel_event(ch):
+    """livetv_events' reading of the channel's name (cached), None for most channels."""
+    if ch is None:
+        return None
+    from services.livetv_catalog import _event_for
+    return _event_for(ch.name, ch.group_title)
+
+
+async def _nothing_on_response(channel_id: int, lines: tuple,
+                               reason: str = "nothing on right now") -> "StreamingResponse | None":
+    """A viewer's answer when a channel has nothing on (or can't be had): a
+    short stream that says so (services/livetv_slate.py), or None when it
+    can't be made."""
+    from services import livetv_slate
+    data = await livetv_slate.picture(lines)
+    if not data:
+        return None
+    logger.info(f"[LiveTV] Channel {channel_id}: {reason} ({' '.join(lines).strip()}) "
+                f"-- the viewer is told so")
+    return StreamingResponse(livetv_slate.paced(data), media_type="video/mp2t", headers={
+        "Connection": "close",
+        "Cache-Control": "no-cache, no-store",
+        "X-Tentacle-Reason": reason,
+    })
 
 
 def _media_segments(playlist_text: str, base_url: str) -> list:
@@ -962,6 +1008,9 @@ class _StreamSlots:
 
         `provider_id` / `provider_limit`: the account this pull is on and how
         many streams it carries at once (0: no limit of its own)."""
+        # The background stream checker never holds a connection anyone
+        # wants: its check in flight is stopped (and closed) first.
+        await _preempt_checker(f"{kind} '{owner}' is opening")
         prio = _LEASE_PRIORITY.get(kind, _LEASE_PRIORITY["live"])
         pid, plimit = provider_id, provider_limit
         if self.protect:
@@ -1041,6 +1090,16 @@ class _StreamSlots:
 
 
 _stream_slots = _StreamSlots()
+
+
+async def _preempt_checker(reason: str) -> None:
+    """Stop the background stream checker's test stream before a real one
+    opens (services/livetv_checker.py); never fails the open."""
+    try:
+        from services import livetv_checker
+        await livetv_checker.preempt(reason)
+    except Exception as e:
+        logger.debug(f"[LiveTV] stream checker pre-empt failed: {e}")
 
 
 def _max_concurrent_streams(db) -> int:
@@ -2698,6 +2757,8 @@ def _sync_groups(provider_id: int, categories: list[dict], db: Session, channel_
     for cat in categories:
         cats.setdefault(str(cat.get("category_id", "")), cat.get("category_name", ""))
 
+    first_setup = not by_name
+    created = []
     claimed = set()
     assigned = {}
     for cat_id, name in cats.items():
@@ -2721,6 +2782,7 @@ def _sync_groups(provider_id: int, categories: list[dict], db: Session, channel_
                 g = LiveChannelGroup(provider_id=provider_id, name=candidate,
                                      category_id=cat_id, enabled=False)
                 db.add(g)
+                created.append(g)
                 by_name[candidate] = g
             elif candidate in claimed or (candidate != name and g.category_id != cat_id):
                 continue
@@ -2732,6 +2794,11 @@ def _sync_groups(provider_id: int, categories: list[dict], db: Session, channel_
     for cat_id, g in assigned.items():
         if update_counts or g.channel_count is None:
             g.channel_count = channel_counts.get(cat_id, 0)
+    if created:
+        # New from the provider: waiting for the admin's review (not on a
+        # provider's first list, its setup).
+        from services import provider_new
+        provider_new.note_created(db, created, first_setup)
     db.flush()
 
 
@@ -2767,6 +2834,25 @@ def _is_separator(name: str) -> bool:
     off even in an enabled group (#158): it plays nothing, and Jellyfin would
     list it. "#1 Hits", "C-SPAN" and "***Premium*** Movies" are channels."""
     return bool(_SEPARATOR_RE.match(name or ""))
+
+
+def _shown_channels(db: Session) -> list:
+    """The switched-on channels, in the tuner's order, minus separator rows:
+    what Jellyfin, the guide, My Channels and search carry. A separator
+    switched on before #158 (or with its whole group) plays nothing and
+    would sit among the channels as "####### SPORTSNET PPV #######"; one the
+    admin gave a name of their own is a channel."""
+    rows = (db.query(LiveChannel)
+            .filter(LiveChannel.enabled == True)  # noqa: E712
+            .order_by(LiveChannel.sort_order, LiveChannel.channel_number, LiveChannel.name)
+            .all())
+    return [ch for ch in rows if not _is_separator(ch.guide_name)]
+
+
+def _hidden_separators(db: Session) -> list:
+    """Ids of the switched-on separator rows _shown_channels() leaves out."""
+    rows = db.query(LiveChannel).filter(LiveChannel.enabled == True).all()  # noqa: E712
+    return sorted(ch.id for ch in rows if _is_separator(ch.guide_name))
 
 
 def _enabled_group_names(db: Session, provider_id: int) -> set:
@@ -3125,13 +3211,15 @@ def _upsert_channels_from_m3u(
         g.name: g
         for g in db.query(LiveChannelGroup).filter(LiveChannelGroup.provider_id == provider_id).all()
     }
+    created = []
     for name in groups:
         if name not in existing_groups:
-            db.add(LiveChannelGroup(
-                provider_id=provider_id,
-                name=name,
-                enabled=False,
-            ))
+            g = LiveChannelGroup(provider_id=provider_id, name=name, enabled=False)
+            db.add(g)
+            created.append(g)
+    if created:
+        from services import provider_new
+        provider_new.note_created(db, created, first_setup=not existing_groups)
 
     db.flush()
     _update_group_counts(provider_id, db)
@@ -3440,14 +3528,16 @@ def _sync_epg_once(provider_data: dict):
 
             # Insert into DB
             _set_sync_status(pid, {"phase": "epg", "status": "running", "progress": 90, "message": f"Saving {len(programs)} programs..."})
+            # One schedule per guide id: a feed that merges several guide
+            # sources under one id overlaps itself (services/xmltv.one_schedule).
+            from services.xmltv import one_schedule
+            programs, trimmed = one_schedule(programs)
+            if trimmed:
+                logger.info(f"[LiveTV] EPG: {trimmed} programme(s) left out or shortened "
+                            f"where the feed's schedules overlap")
             inserted = 0
-            seen_epg = set()
             batch = []
             for prog in programs:
-                key = (prog["channel_id"], prog["start"])
-                if key in seen_epg:
-                    continue
-                seen_epg.add(key)
                 batch.append(EPGProgram(
                     channel_id=prog["channel_id"],
                     title=prog["title"] or "",
@@ -3717,6 +3807,8 @@ def list_channels(
                 "stream_id": ch.stream_id,
                 "stream_url": ch.stream_url,
                 "logo_url": ch.logo_url,
+                "custom_logo_url": ch.custom_logo_url,
+                "guide_logo": ch.guide_logo,
                 "group_title": ch.group_title,
                 "epg_channel_id": ch.epg_channel_id,
                 "epg_id_override": ch.epg_id_override,
@@ -3765,7 +3857,16 @@ def update_channel(channel_id: int, update: ChannelUpdate, db: Session = Depends
 
     ch.updated_at = datetime.utcnow()
     db.commit()
+    if update.enabled is not None or update.custom_name is not None or update.sort_order is not None:
+        _pool_changed(f"channel '{ch.guide_name}' changed")
     return {"success": True}
+
+
+def _pool_changed(what: str) -> None:
+    """The channels the household has changed: the lineup's tuner in
+    Jellyfin follows (services/livetv_tuners.py, a few seconds later)."""
+    from services.livetv_tuners import schedule_sync
+    schedule_sync(what, refresh=True)
 
 
 # SQLite caps host parameters per statement (SQLITE_MAX_VARIABLE_NUMBER, 999 on
@@ -3791,6 +3892,7 @@ def bulk_update_channels(update: BulkChannelUpdate, db: Session = Depends(get_db
             LiveChannel.id.in_(chunk)
         ).update({LiveChannel.enabled: update.enabled}, synchronize_session=False)
     db.commit()
+    _pool_changed("channels switched on or off")
     return {"success": True, "updated": count}
 
 
@@ -3810,6 +3912,7 @@ def bulk_update_channels_by_filter(update: BulkChannelFilter, db: Session = Depe
             q = q.filter(guide_id.is_(None))
     count = q.update({LiveChannel.enabled: update.enabled}, synchronize_session=False)
     db.commit()
+    _pool_changed("channels switched on or off")
     return {"success": True, "updated": count}
 
 
@@ -3866,6 +3969,8 @@ def bulk_update_groups(update: BulkGroupUpdate, db: Session = Depends(get_db)):
             ).update({LiveChannel.enabled: update.enabled}, synchronize_session=False)
 
     db.commit()
+    if changing_names:
+        _pool_changed("channel groups switched on or off")
     return {"success": True, "updated": len(groups)}
 
 
@@ -3884,6 +3989,7 @@ def update_group(group_id: int, update: GroupUpdate, db: Session = Depends(get_d
     ).update({LiveChannel.enabled: update.enabled}, synchronize_session=False)
 
     db.commit()
+    _pool_changed("a channel group switched on or off")
     return {"success": True}
 
 
@@ -3994,7 +4100,7 @@ def refresh_jellyfin_guide(db: Session = Depends(get_db)):
 
     try:
         from services.jellyfin_guide import GuideRefreshError, refresh_jellyfin_guide
-        refresh_jellyfin_guide(jf_url, jf_key)
+        refresh_jellyfin_guide(jf_url, jf_key, then_tag=True)
         msg = "Jellyfin guide refresh triggered"
         if epg_resynced:
             msg = "EPG data synced for new channels + Jellyfin guide refresh triggered"
@@ -4169,12 +4275,7 @@ def hdhr_lineup(request: Request, db: Session = Depends(get_db)):
     """HDHomeRun channel lineup — only enabled channels.
     URLs point to our stream proxy which handles UA spoofing, 302 redirect
     following, and HLS playlist rewriting."""
-    channels = (
-        db.query(LiveChannel)
-        .filter(LiveChannel.enabled == True)
-        .order_by(LiveChannel.sort_order, LiveChannel.channel_number, LiveChannel.name)
-        .all()
-    )
+    channels = _shown_channels(db)
 
     # Build base URL same way as discover.json
     base_url = get_setting(db, "hdhr_base_url", "").strip()
@@ -4200,8 +4301,8 @@ def hdhr_lineup(request: Request, db: Session = Depends(get_db)):
             "GuideName": ch.guide_name,
             "URL": f"{base_url}/api/live/stream/{ch.id}",
         }
-        if ch.logo_url:
-            entry["LogoUrl"] = ch.logo_url
+        if ch.guide_logo:
+            entry["LogoUrl"] = ch.guide_logo
         lineup.append(entry)
 
     # YouTube channels the user exposed to Live TV. They aren't LiveChannel rows
@@ -4400,6 +4501,9 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
 
 async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.Future"):
     """Open the upstream for a channel this request is the first to ask for."""
+    # Free the provider from the stream checker now, not after the recording
+    # lookup below (acquire_lease asks again: harmless).
+    await _preempt_checker(f"channel {channel_id} is opening")
     # Cap concurrent upstream pulls (see _StreamSlots). A refusal here is how a
     # scheduled recording silently becomes a zero-byte file -- Jellyfin shows the
     # timer as having run -- so it is logged as an error, by channel name, and
@@ -4428,6 +4532,14 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
     if protect_decides and not certain:
         logger.warning(f"[LiveTV] Recording protection: Jellyfin did not say in time what is being "
                        f"recorded — channel {channel_id} is opened as a {kind} and no viewer is stopped for it")
+    if kind == "live":
+        # An event that starts later: the provider would answer slowly with its
+        # placeholder. Say so at once, without a connection.
+        from services import livetv_slate
+        lines = livetv_slate.early(_channel_event(ch))
+        slate = await _nothing_on_response(channel_id, lines) if lines else None
+        if slate is not None:
+            return slate
     try:
         lease = await _stream_slots.acquire_lease(limit, _SLOT_WAIT_SECONDS, kind, f"channel:{channel_id}",
                                                   stream_key=guide_number(ch, _offsets(db)) if ch else None,
@@ -4448,6 +4560,13 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
         logger.error(f"[LiveTV] At capacity ({where} streams) — REFUSED {kind} '{name}' (channel {channel_id}). "
                      f"If this was a recording it is lost. Raise the provider's \"Streams at once\" on its "
                      f"card (Sources) if its account can carry more.")
+        if kind == "live":
+            # A viewer is told, on the player, that the connections are taken
+            from services import livetv_slate
+            slate = await _nothing_on_response(channel_id, livetv_slate.connection_in_use(shown),
+                                               "connection in use")
+            if slate is not None:
+                return slate
         raise _TunerRefusal(f"Too many concurrent live streams (limit {shown})")
     sem = _stream_slots
     # Ownership of the release is handed to the streaming generator on the
@@ -4495,7 +4614,8 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
                                              is_recording=lambda: lease.kind == "recording",
                                              rival_delivering=lambda: _rival_delivering(lease),
                                              refresh_recordings=_refresh_recordings_bounded,
-                                             fallback_url=fallback_url)
+                                             fallback_url=fallback_url,
+                                             nothing_on=lambda: _placeholder_picture(ch))
         if lease.preempted:
             # A recording took this slot while the open was still in flight
             # (there was no pump yet to stop). Going on would run one more
@@ -4525,6 +4645,32 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
         if not pending.done():
             pending.set_result(shared)
         return _SubscriberResponse(shared, q)
+    except _PlaceholderRefusal:
+        _release_sem()
+        slate = await _nothing_on_response(channel_id, _placeholder_lines(ch)) if lease.kind == "live" else None
+        if slate is None:
+            raise
+        return slate
+    except HTTPException as e:
+        _release_sem()
+        if lease.kind != "live" or e.status_code != 502 or not str(e.detail).startswith(_PROVIDER_FAILED):
+            raise
+        # The provider didn't deliver: the viewer is told so on the player
+        # (not a spinner, then "playback error"). While another stream of
+        # this provider runs here, its refusal is most likely the account's
+        # connection limit. Asked afresh whether it's a recording ("Record
+        # now" may be younger than the cached answer): a recording keeps the
+        # refusal, so Jellyfin retries it instead of recording the slate.
+        if channel_id in await _recording_channel_ids(db, force=True):
+            raise
+        from services import livetv_slate
+        others = _stream_slots.provider_active(ch.provider_id if ch else None)
+        lines, reason = ((livetv_slate.connection_in_use(provider_limit or limit), "connection in use") if others
+                         else (livetv_slate.not_coming_through(), "provider not delivering"))
+        slate = await _nothing_on_response(channel_id, lines, reason)
+        if slate is None:
+            raise
+        return slate
     except BaseException:
         _release_sem()
         raise
@@ -4533,7 +4679,7 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
 async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str, _release_sem,
                               guard=None, failure_budget: float = _DEFAULT_RECONNECT_BUDGET,
                               is_recording=None, rival_delivering=None, refresh_recordings=None,
-                              fallback_url=None):
+                              fallback_url=None, nothing_on=None):
     """Inner stream proxy logic. `_release_sem()` is called when the concurrency
     slot can be freed: immediately on early-exit paths, or by the streaming
     generator's `finally` once the long-lived stream ends.
@@ -4559,7 +4705,12 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
 
     `fallback_url`, when given, is opened instead if `stream_url` is refused
     with a status that will not fix itself (a panel that does not serve the
-    channel as .ts: see _live_open_urls); the stream then runs on it."""
+    channel as .ts: see _live_open_urls); the stream then runs on it.
+
+    `nothing_on`, when given, makes the "Nothing on right now" picture
+    (bytes, or None): a viewer's raw stream that meets the provider's
+    placeholder before it delivered anything plays it and ends, instead of
+    waiting the placeholder out."""
     guard = guard or is_safe_url
 
     def _budget_spent(waited: float, extra: float = 0.0) -> bool:
@@ -4669,7 +4820,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                            if isinstance(e, httpx.HTTPStatusError) else type(e).__name__)
                     if isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (401, 403):
                         _tell_provider_health(channel_id, False, e.response.status_code)
-                    raise HTTPException(502, f"Failed to connect to stream: {why}")
+                    raise HTTPException(502, f"{_PROVIDER_FAILED}: {why}")
                 if (not open_reresolved and open_url != stream_url and rival_delivering is not None
                         and isinstance(e, httpx.HTTPStatusError)
                         and e.response.status_code in _REFUSAL_STATUS
@@ -4785,6 +4936,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             dropped_at = None   # while re-dialling: when the data stopped
             redialled = False   # this connection came from a re-dial, not yet delivering
             splicer = _ReplaySplicer(channel_id, health)   # #368: a re-dial's replay goes out once
+            sent_bytes = 0      # batching starts after _FAST_START_BYTES: the first picture waits for nothing
             try:
                 while True:
                     opened_at = loop.time()
@@ -4842,11 +4994,12 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                 failing_since, slept, backoff, backoff_cap = None, 0.0, 1.0, _BACKOFF_CAP
                                 denied_at = None
                             pending += splicer.feed(piece, loop.time())
-                            if len(pending) >= 131072:
+                            if len(pending) >= (131072 if sent_bytes >= _FAST_START_BYTES else 188):
                                 cut = len(pending) - (len(pending) % 188) if align else len(pending)
                                 out, pending = pending[:cut], pending[cut:]
                                 if align:
                                     splicer.sent(out)
+                                sent_bytes += len(out)
                                 yield out
                     except httpx.HTTPError as e:
                         reason = str(e) or type(e).__name__
@@ -4906,6 +5059,16 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             reason = str(e)
                             backoff_cap = _REFUSAL_BACKOFF_CAP
                             await _note_placeholder(channel_id, e.segment)
+                            if (sent_bytes == 0 and nothing_on is not None
+                                    and not (is_recording is not None and is_recording())):
+                                from services import livetv_slate
+                                data = await nothing_on()
+                                if data:
+                                    logger.info(f"[LiveTV] Channel {channel_id}: nothing on right now "
+                                                f"-- the viewer is told so")
+                                    async for piece in livetv_slate.paced(data):
+                                        yield piece
+                                    return
                             continue
                         except HTTPException as e:
                             logger.error(f"[LiveTV] Raw stream for channel {channel_id} cannot be "
@@ -5743,18 +5906,13 @@ def _m3u_text(text) -> str:
 def live_playlist_m3u(request: Request, db: Session = Depends(get_db)):
     """Generate M3U playlist for Jellyfin M3U tuner import.
     All stream URLs point to our local proxy (like Threadfin's direct mode)."""
-    channels = (
-        db.query(LiveChannel)
-        .filter(LiveChannel.enabled == True)
-        .order_by(LiveChannel.sort_order, LiveChannel.channel_number, LiveChannel.name)
-        .all()
-    )
+    channels = _shown_channels(db)
 
     base_url = str(request.base_url).rstrip("/")
     lines = ["#EXTM3U"]
     for ch, number in _unique_numbers(db, channels):
         epg_id = ch.guide_epg_id or f"tentacle-{ch.id}"
-        logo = f' tvg-logo="{_m3u_text(ch.logo_url)}"' if ch.logo_url else ""
+        logo = f' tvg-logo="{_m3u_text(ch.guide_logo)}"' if ch.guide_logo else ""
         group = f' group-title="{_m3u_text(ch.group_title)}"' if ch.group_title else ""
         lines.append(
             f'#EXTINF:-1 tvg-id="{_m3u_text(epg_id)}" tvg-chno="{_m3u_text(number)}"{logo}{group},'
@@ -5778,6 +5936,39 @@ def live_playlist_m3u(request: Request, db: Session = Depends(get_db)):
         media_type="audio/x-mpegurl",
         headers={"Content-Disposition": "inline; filename=tentacle.m3u"},
     )
+
+
+def _tuner_m3u(request: Request, entries: list, tuner_url: str) -> Response:
+    """A tuner's M3U. The streams sit under the address the tuner was given,
+    not the one this request came in on: Jellyfin keys every channel on the
+    tuner URL and the stream URL, so they must stay the same whatever it
+    calls."""
+    from services import livetv_lineups
+    base = livetv_lineups.tuner_base(tuner_url) if tuner_url else str(request.base_url).rstrip("/")
+    return Response(content=livetv_lineups.m3u(entries, base), media_type="audio/x-mpegurl",
+                    headers={"Content-Disposition": "inline; filename=tentacle.m3u"})
+
+
+@router.get("/api/live/tuner/all.m3u")
+def live_tuner_all(request: Request, db: Session = Depends(get_db)):
+    """The household's lineup: Jellyfin's one Tentacle tuner, numbered 1..N
+    in the admin's order (services/livetv_lineups.py). Like the playlist it
+    has no login (Jellyfin reads it as a tuner)."""
+    from services import livetv_lineups
+    from services.livetv_tuners import all_tuner_url
+    return _tuner_m3u(request, livetv_lineups.lineup(db), all_tuner_url(db))
+
+
+@router.get("/api/live/users/{user_id}/tuner.m3u")
+def live_tuner_user(user_id: str, request: Request, db: Session = Depends(get_db)):
+    """A person's own tuner of before (v1.11-1.12): their saved list, still
+    answered while the sync moves them onto the lineup and removes it."""
+    from services import livetv_lineups
+    if not re.fullmatch(r"[0-9a-fA-F-]{32,36}", user_id or ""):
+        raise HTTPException(404, "No such tuner")
+    row = livetv_lineups.lineup_row(db, user_id)
+    entries = livetv_lineups.legacy_lineup(db, user_id) if row else []
+    return _tuner_m3u(request, entries, row.tuner_url if row else "")
 
 
 def _emit_sub_titles(db) -> bool:
@@ -5831,12 +6022,7 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
     from services.xmltv import iter_xmltv
 
     # Get enabled channels with EPG IDs
-    channels = (
-        db.query(LiveChannel)
-        .filter(LiveChannel.enabled == True)
-        .order_by(LiveChannel.sort_order, LiveChannel.channel_number, LiveChannel.name)
-        .all()
-    )
+    channels = _shown_channels(db)
 
     # Use stream_id as stable channel ID (same as lineup.json GuideNumber)
     # This ensures IDs never shift when channels are added/removed.
@@ -5845,18 +6031,29 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
     # One EPG ID can map to multiple channels (e.g. CP24 HD + CP24 HD BACKUP)
     epg_id_to_guide_numbers: dict[str, list[str]] = {}
     guide_number_group: dict[str, str] = {}
-    for ch, guide_number in _unique_numbers(db, channels):
+    numbered = _unique_numbers(db, channels)
+    # A folded network's variant shows the network's guide, which may be a
+    # sibling's: "CA EN: TLC" is tagged "TLC.rs" (Serbian), "CA: TLC CANADA"
+    # has "tlc.ca" (livetv_catalog.network_guides).
+    try:
+        from services.livetv_catalog import variant_guides
+        network_guide = variant_guides(db)
+    except Exception as e:  # the guide must never fail on the catalog
+        logger.warning(f"[LiveTV] XMLTV: network guides left out: {e}")
+        network_guide = {}
+    for ch, guide_number in numbered:
         xmltv_channels.append({
             "id": guide_number,
             "name": ch.guide_name,
-            "logo_url": ch.logo_url,
+            "logo_url": ch.guide_logo,
         })
         # Channel group feeds the category inference below when a programme
         # title says nothing about its genre.
         guide_number_group[guide_number] = ch.group_title
-        if ch.guide_epg_id:
-            epg_ids.add(ch.guide_epg_id)
-            epg_id_to_guide_numbers.setdefault(ch.guide_epg_id, []).append(guide_number)
+        gid = network_guide.get(ch.id) or ch.guide_epg_id
+        if gid:
+            epg_ids.add(gid)
+            epg_id_to_guide_numbers.setdefault(gid, []).append(guide_number)
 
     # YouTube Live TV channels, with their own guide ids.
     for yt in youtube_livetv.live_channels(db):
@@ -5878,8 +6075,6 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
     provider_hosts = _provider_hosts(db, channels)
 
     def programs():
-        if not epg_ids:
-            return
         inferred_categories = 0
         rows = (
             db.query(EPGProgram.channel_id, EPGProgram.title, EPGProgram.sub_title,
@@ -5918,6 +6113,16 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
                 f"[LiveTV] XMLTV: inferred a category for {inferred_categories} programme(s) "
                 f"the provider sent none for"
             )
+        # Event / PPV channels with no guide of their own: the event their
+        # name carries ("NHL | 02 - 7:30pm Panthers at Senators"), one
+        # programme each (services/livetv_events.py).
+        try:
+            from services.livetv_catalog import event_programmes
+            events = event_programmes(db, numbered)
+        except Exception as e:  # the guide must never fail on a channel name
+            logger.warning(f"[LiveTV] XMLTV: event programmes left out: {e}")
+            events = []
+        yield from events
 
     # Written to a file first, then sent: the database is read only while the
     # guide is written (one snapshot, as before), never for as long as a slow

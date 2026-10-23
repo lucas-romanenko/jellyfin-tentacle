@@ -152,6 +152,13 @@ class ProviderCategory(Base):
     # to hold titles. title_count keeps its last non-zero value throughout, so a
     # multi-night outage can't be mistaken for a genuinely emptied category.
     consecutive_empty_syncs = Column(Integer, default=0)
+    # New from the provider (services/provider_new.py): review_state "new" /
+    # "dismissed" / "reviewed" (NULL = there before reviews existed, or part
+    # of the provider's first setup), when it first appeared and when the
+    # admin dismissed or reviewed it.
+    review_state = Column(String, nullable=True)
+    first_seen_at = Column(DateTime, nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
 
     provider = relationship("Provider", back_populates="categories")
     snapshots = relationship("CategorySnapshot", back_populates="category", cascade="all, delete-orphan")
@@ -390,6 +397,23 @@ class YouTubeVideo(Base):
     channel = relationship("YouTubeChannel", back_populates="videos")
 
 
+class YouTubeFollow(Base):
+    """Someone follows a YouTube channel: its videos and its Live TV channel
+    are theirs to see (services/youtube/follows.py). The channel is fetched
+    once for all its followers; when the last one leaves it is removed."""
+    __tablename__ = "youtube_follows"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    channel_fk = Column(Integer, ForeignKey("youtube_channels.id"), nullable=False, index=True)
+    jellyfin_user_id = Column(String, nullable=False, index=True)   # no dashes
+    # The admin who added it for them (a kid's channels), else None: their own.
+    added_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("channel_fk", "jellyfin_user_id", name="uq_youtube_follow"),
+    )
+
+
 # ─── Duplicates ───────────────────────────────────────────────────────────────
 
 class Duplicate(Base):
@@ -559,6 +583,29 @@ class TentacleUser(Base):
     # under, so a copy of a cookie stops working when its owner logs out.
     session_version = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Family (services/family.py). A kids profile is an age level ("young",
+    # "kids", "teens"); None = no limit. The Jellyfin policy fields it changes
+    # are saved first (JSON) and put back when it's switched off.
+    kids_level = Column(String, nullable=True)
+    kids_saved_policy = Column(Text, nullable=True)
+    # Requests from this person wait for an admin ("ask") or go straight to
+    # Radarr/Sonarr/Lidarr ("direct"). Admins' own always go straight through.
+    request_mode = Column(String, nullable=True, default="ask")
+    invited_by = Column(String, nullable=True)   # the admin's name, for an account made in Tentacle
+    invited_at = Column(DateTime, nullable=True)
+    # Where they watch Live TV from (services/livetv_locations.py, a place's
+    # slug: "vancouver"); None = the household's place. Set by an admin.
+    livetv_location = Column(String, nullable=True)
+    # An admin took Live TV away from them (People). Jellyfin's
+    # EnableLiveTvAccess says it for grown-ups; a kid's follows the kids
+    # channels too, so the admin's choice is kept here.
+    live_tv_off = Column(Boolean, default=False)
+    # When they finished (or skipped) the welcome shown at their first
+    # sign-in; None = not yet. People from before the welcome count as welcomed.
+    welcomed_at = Column(DateTime, nullable=True)
+    # Admins: other people's downloads in their Activity and messages ("for
+    # Sam"). Off = only their own (and what nobody in Tentacle asked for).
+    show_others_downloads = Column(Boolean, default=True)
 
 
 # ─── Notifications ───────────────────────────────────────────────────────────
@@ -575,6 +622,12 @@ class Notification(Base):
     jellyfin_item_id = Column(String, nullable=True)  # For click-to-play navigation
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     dismissed_at = Column(DateTime, nullable=True)
+    # "download" (ready to watch), "request" (asked for / approved / declined)
+    # or "problem" (admins only: services/admin_alerts.py).
+    kind = Column(String, nullable=True, default="download")
+    # Whose download it is, when the message went to an admin about someone
+    # else's ("for Sam"); None = the reader's own.
+    for_user_id = Column(Integer, nullable=True)
 
     user = relationship("TentacleUser", backref="notifications")
 
@@ -594,6 +647,46 @@ class DownloadRequest(Base):
     __table_args__ = (
         UniqueConstraint("tmdb_id", "media_type", name="uq_download_request"),
     )
+
+
+# ─── Requests waiting for an admin (services/approvals.py) ────────────────────
+
+class MediaRequest(Base):
+    """A family member's request that waits for an admin's yes or no. `payload`
+    is the original request body (JSON), replayed as that person on approval."""
+    __tablename__ = "media_requests"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("tentacle_users.id"), nullable=False, index=True)
+    kind = Column(String, nullable=False)           # movie | series | album
+    tmdb_id = Column(Integer, nullable=True, index=True)
+    tvdb_id = Column(Integer, nullable=True)
+    title = Column(String, nullable=False, default="")
+    year = Column(String, nullable=True)
+    poster_path = Column(String, nullable=True)
+    payload = Column(Text, nullable=False, default="{}")
+    status = Column(String, nullable=False, default="pending", index=True)  # pending | approved | declined | failed
+    note = Column(String, nullable=True)            # the admin's reason, or why the approved add failed
+    decided_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    decided_at = Column(DateTime, nullable=True)
+
+    user = relationship("TentacleUser", backref="media_requests")
+
+
+# ─── Problems the admin was told about (services/admin_alerts.py) ─────────────
+
+class AdminAlert(Base):
+    """One problem, told to the admins once when it starts and once when it's over."""
+    __tablename__ = "admin_alerts"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    key = Column(String, nullable=False, unique=True)   # e.g. "disk:/media/movies", "livetv:setup"
+    area = Column(String, nullable=False)               # livetv | library | requests | downloads | server
+    title = Column(String, nullable=False)
+    message = Column(String, nullable=False)
+    active = Column(Boolean, default=True, index=True)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    last_seen_at = Column(DateTime, default=datetime.utcnow)
+    resolved_at = Column(DateTime, nullable=True)
 
 
 class MusicArtist(Base):
@@ -832,6 +925,9 @@ class LiveChannel(Base):
 
     # Metadata
     logo_url = Column(String, nullable=True)
+    # The admin's own logo (a URL): channel syncs rewrite `logo_url` from the
+    # provider and never touch this, so it wins (a provider's wrong logo).
+    custom_logo_url = Column(String, nullable=True)
     group_title = Column(String, nullable=True)  # Category/group from provider
     epg_channel_id = Column(String, nullable=True)  # tvg-id for EPG matching
     # The admin's own guide id for the channel. Channel syncs never touch it,
@@ -846,6 +942,14 @@ class LiveChannel(Base):
     enabled = Column(Boolean, default=False)  # User must enable channels
     sort_order = Column(Integer, default=0)
 
+    # The background stream checker (services/livetv_checker.py): "works" /
+    # "broken" (two failed checks in a row) / NULL = not checked yet; when it
+    # last got a verdict (UTC), failed checks in a row, and the last outcome.
+    check_state = Column(String, nullable=True)
+    check_at = Column(DateTime, nullable=True)
+    check_fails = Column(Integer, nullable=True)
+    check_detail = Column(String, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -859,6 +963,11 @@ class LiveChannel(Base):
     def guide_name(self) -> str:
         """The name Jellyfin's guide shows: the user's name, else the provider's."""
         return (self.custom_name or "").strip() or self.name
+
+    @property
+    def guide_logo(self):
+        """The logo people see: the admin's, else the provider's."""
+        return (self.custom_logo_url or "").strip() or self.logo_url or None
 
     @property
     def guide_epg_id(self):
@@ -887,10 +996,109 @@ class LiveChannelGroup(Base):
     category_id = Column(String, nullable=True)  # Provider's internal category ID
     enabled = Column(Boolean, default=False)  # Enable/disable entire group
     channel_count = Column(Integer, default=0)
+    # New from the provider (services/provider_new.py): review_state "new" /
+    # "dismissed" / "reviewed" (NULL = there before reviews existed, or part
+    # of the provider's first setup), first_seen_at, reviewed_at, looked_at
+    # (the admin ticked it to look at its channels: the checker tries them
+    # first) and channels_read_at (its channels last read from the provider).
+    review_state = Column(String, nullable=True)
+    first_seen_at = Column(DateTime, nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    looked_at = Column(DateTime, nullable=True)
+    channels_read_at = Column(DateTime, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("provider_id", "name", name="uq_live_group"),
     )
+
+
+class LiveUserLineup(Base):
+    """One person's Live TV: everything the household has (the shared "All
+    channels" tuner), or a list of their own (a tuner of their own in
+    Jellyfin). No row = all channels."""
+    __tablename__ = "live_user_lineups"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    jellyfin_user_id = Column(String, unique=True, nullable=False, index=True)  # no dashes
+    own_list = Column(Boolean, default=False)
+    # The address Jellyfin was given for this person's tuner, kept as it was
+    # first given: Jellyfin keys every channel (and so its favourites and
+    # recordings) on the tuner's URL, so it must never change by itself.
+    tuner_url = Column(String, nullable=True)
+    # What Jellyfin was last set up with (own_list as of the last sync), so a
+    # switch is noticed and the person's favourites are carried across.
+    synced_own_list = Column(Boolean, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class LiveUserChannel(Base):
+    """A channel on someone's own list, in their order (their numbers are
+    1, 2, 3... in this order). `channel_key` is "c<live_channels.id>" or
+    "y<youtube_channels.id>"."""
+    __tablename__ = "live_user_channels"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    jellyfin_user_id = Column(String, nullable=False, index=True)
+    channel_key = Column(String, nullable=False)
+    position = Column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("jellyfin_user_id", "channel_key", name="uq_live_user_channel"),
+    )
+
+
+class LiveNetwork(Base):
+    """One network the provider lists many times (per city, quality or time
+    zone feed): one pool entry, key "n<id>", streaming the variant the admin
+    chose (services/livetv_catalog.py). Kept when it empties, so its key and
+    Jellyfin channel stay the same if its channels come back."""
+    __tablename__ = "live_networks"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, nullable=False)
+    # What the channels' names reduce to (services/livetv_names.fold_key);
+    # NULL for a network the admin made by merging.
+    fold_key = Column(String, nullable=True, index=True)
+    # The admin's choice of variant; NULL = the default (auto_channel_id).
+    chosen_channel_id = Column(Integer, ForeignKey("live_channels.id", ondelete="SET NULL"), nullable=True)
+    # The default variant, chosen at every refresh.
+    auto_channel_id = Column(Integer, ForeignKey("live_channels.id", ondelete="SET NULL"), nullable=True)
+    # Merged into another network: its channels and key went there.
+    merged_into = Column(Integer, ForeignKey("live_networks.id", ondelete="SET NULL"), nullable=True)
+    name_set = Column(Boolean, default=False)    # the admin named it: refreshes keep the name
+    excluded = Column(Boolean, default=False)    # the admin took it out of the pool
+    dissolved = Column(Boolean, default=False)   # split up: never folded again
+    types = Column(String, nullable=True)        # comma-separated, the admin's (NULL = automatic)
+    custom_logo_url = Column(String, nullable=True)  # the admin's logo (NULL = the variants')
+
+
+class LiveChannelCatalog(Base):
+    """A channel's place in the catalog: the network it folds into (NULL =
+    on its own)."""
+    __tablename__ = "live_channel_catalog"
+    channel_id = Column(Integer, ForeignKey("live_channels.id", ondelete="CASCADE"), primary_key=True)
+    network_id = Column(Integer, ForeignKey("live_networks.id", ondelete="SET NULL"), nullable=True, index=True)
+    pinned = Column(Boolean, default=False)      # the admin split or merged it: folding leaves it where it is
+    types = Column(String, nullable=True)        # comma-separated, the admin's (NULL = automatic)
+    # The pool key it was last served under, so a change leaves an alias
+    # (NULL = never served under another key than c<channel_id>).
+    pool_key = Column(String, nullable=True)
+
+
+class LiveKeyAlias(Base):
+    """A pool key that stopped being one (folded, merged, split) and the key
+    it became: people's lists, favourites and recordings follow it."""
+    __tablename__ = "live_key_aliases"
+    old_key = Column(String, primary_key=True)
+    new_key = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class LivePoolArrival(Base):
+    """Every key the pool has had and when it joined (services/livetv_catalog.py
+    _mark_new): My channels marks the ones that joined lately New. added_at
+    is NULL for the keys there when the record started, and for a key that
+    took over a known one (folding)."""
+    __tablename__ = "live_pool_arrivals"
+    key = Column(String, primary_key=True)
+    added_at = Column(DateTime, nullable=True)
 
 
 class EPGProgram(Base):
@@ -946,19 +1154,49 @@ def log_deletion(db, kind: str, name: str, media_type: str = None,
 
 def create_notification(db, user_id: int, tmdb_id: int, media_type: str,
                         title: str, message: str, poster_path: str = None,
-                        jellyfin_item_id: str = None):
-    """Create a notification for a user if they have notifications enabled."""
+                        jellyfin_item_id: str = None, kind: str = "download",
+                        force: bool = False, for_user_id: int = None):
+    """Create a notification for a user if they have notifications enabled.
+    `force`: an admin's request or problem message, which their own
+    "download notifications" switch doesn't turn off."""
     user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
-    if not user or not user.notifications_enabled:
+    if not user or not (user.notifications_enabled or force):
         return None
     notif = Notification(
         user_id=user_id, tmdb_id=tmdb_id, media_type=media_type,
         title=title, message=message, poster_path=poster_path,
-        jellyfin_item_id=jellyfin_item_id,
+        jellyfin_item_id=jellyfin_item_id, kind=kind, for_user_id=for_user_id,
     )
     db.add(notif)
     db.commit()
+    from services import live_updates
+    live_updates.changed("notifications", user_ids=[user_id], clients=True)
     return notif
+
+
+def sees_others_downloads(user) -> bool:
+    """An admin who wants other people's downloads in their Activity (the
+    default). Never anyone else."""
+    return bool(user is not None and user.is_admin and user.show_others_downloads is not False)
+
+
+def tell_admins_ready(db, requester_id: int, tmdb_id: int, media_type: str, title: str,
+                      message: str, poster_path: str = None, jellyfin_item_id: str = None,
+                      already: set = ()) -> None:
+    """Someone's download is ready: the admins who follow other people's
+    downloads get the message too, marked whose it is. Never raises."""
+    try:
+        admins = db.query(TentacleUser).filter(TentacleUser.is_admin == True,  # noqa: E712
+                                               TentacleUser.id != requester_id).all()
+        for admin in admins:
+            if admin.id in already or not sees_others_downloads(admin):
+                continue
+            create_notification(db, admin.id, tmdb_id, media_type, title, message,
+                                poster_path=poster_path, jellyfin_item_id=jellyfin_item_id,
+                                for_user_id=requester_id)
+    except Exception:
+        db.rollback()
+        logger.warning("Could not tell the admins about a download", exc_info=True)
 
 
 # Settings whose readers parse or compare the stored value and need one: an
@@ -1117,6 +1355,8 @@ def _migrate_columns():
     # user_id column and nothing else (#295).
     _migrate_home_row_order(cursor, conn)
     _migrate_auto_playlist_toggles(cursor, conn)
+    _migrate_welcomed(cursor, conn)
+    _migrate_youtube_follows(cursor, conn)
     for table, column, col_type in migrations:
         existing = _existing_columns(cursor, table)
         if not existing:
@@ -1162,6 +1402,7 @@ def _migrate_columns():
             _backfill_default(cursor, conn, table_name, col)
 
     _migrate_list_items_key(conn)
+    _migrate_live_catalog_data(conn)
     _drop_retired_tables(cursor, conn)
     _reset_guessed_made_for_kids(cursor, conn)
     conn.close()
@@ -1295,6 +1536,76 @@ def _migrate_list_items_key(conn):
         logger.error(f"[migrate] Could not rebuild list_items with a key per film/show: {e}")
 
 
+# What the first Live TV catalog build (Plan B) kept in a JSON `data` column,
+# and the plain column each value moved to: {table: {key: (column, kind)}}.
+_LIVE_CATALOG_DATA = {
+    "live_networks": {"name_set": ("name_set", "bool"), "auto_channel_id": ("auto_channel_id", "int"),
+                      "excluded": ("excluded", "bool"), "dissolved": ("dissolved", "bool"),
+                      "types": ("types", "list")},
+    "live_channel_catalog": {"pinned": ("pinned", "bool"), "types": ("types", "list"),
+                             "key": ("pool_key", "str")},
+    "live_key_aliases": {"at": ("created_at", "datetime")},
+}
+
+
+def _live_catalog_value(value, kind):
+    if value is None:
+        return None
+    if kind == "bool":
+        return 1 if value else 0
+    if kind == "int":
+        return int(value)
+    if kind == "list":
+        return ",".join(str(v) for v in value) or None
+    if kind == "datetime":
+        return datetime.fromisoformat(str(value)).strftime("%Y-%m-%d %H:%M:%S.%f")
+    return str(value)
+
+
+def _migrate_live_catalog_data(conn):
+    """Move the Live TV catalog's JSON `data` values into plain columns.
+
+    The first catalog build kept its flags, default variant, types, last
+    pool key and alias times in a JSON `data` column per row. The generic
+    pass has added the plain columns by now; each table's values are copied
+    and its `data` column dropped in one transaction, so a table that still
+    has `data` is one not migrated yet. A key this code doesn't know keeps
+    the column (nothing is lost) and is logged.
+    """
+    import json
+    cursor = conn.cursor()
+    for table, keys in _LIVE_CATALOG_DATA.items():
+        cols = _existing_columns(cursor, table)
+        if "data" not in cols:
+            continue  # migrated, a fresh install, or no table yet
+        pk = [c.name for c in Base.metadata.tables[table].primary_key.columns][0]
+        conn.commit()
+        try:
+            cursor.execute("BEGIN IMMEDIATE")
+            rows = cursor.execute(f"SELECT {pk}, data FROM {table} WHERE data IS NOT NULL").fetchall()
+            unknown, copied = set(), 0
+            for row_id, raw in rows:
+                d = json.loads(raw) if isinstance(raw, str) else (raw or {})
+                d = d if isinstance(d, dict) else {}
+                unknown |= set(d) - set(keys)
+                values = {col: _live_catalog_value(d.get(k), kind) for k, (col, kind) in keys.items() if k in d}
+                if values:
+                    sets = ", ".join(f"{c} = ?" for c in values)
+                    cursor.execute(f"UPDATE {table} SET {sets} WHERE {pk} = ?", (*values.values(), row_id))
+                    copied += 1
+            if unknown:
+                conn.commit()
+                logger.error(f"[migrate] {table}.data holds keys with no column ({', '.join(sorted(unknown))}): "
+                             f"values copied, data kept")
+                continue
+            cursor.execute(f"ALTER TABLE {table} DROP COLUMN data")
+            conn.commit()
+            logger.info(f"[migrate] {table}: moved data into plain columns ({copied} row(s))")
+        except (sqlite3.Error, ValueError, TypeError) as e:
+            conn.rollback()
+            logger.error(f"[migrate] Could not move {table}.data into plain columns: {e}")
+
+
 def _migrate_home_row_order(cursor, conn):
     """Recreate home_row_order with id PK + user_id column."""
     _recreate_per_user_table(conn, "home_row_order", "_home_row_order_old",
@@ -1387,6 +1698,46 @@ def seed_defaults(db):
 # as `youtube_base_url` (Settings → Services, "Tentacle's address"); the
 # others were filled in by older dashboards and the setup wizard.
 _OLD_ADDRESS_KEYS = ("vod_base_url", "hdhr_base_url", "external_url", "webhook_host", "sonarr_webhook_host")
+
+
+def _migrate_welcomed(cursor, conn):
+    """The first-sign-in welcome is for people who join from now on: everyone
+    already here counts as welcomed when the column arrives."""
+    existing = _existing_columns(cursor, "tentacle_users")
+    if not existing or "welcomed_at" in existing:
+        return
+    cursor.execute("ALTER TABLE tentacle_users ADD COLUMN welcomed_at DATETIME")
+    cursor.execute("UPDATE tentacle_users SET welcomed_at = CURRENT_TIMESTAMP")
+    conn.commit()
+
+
+YOUTUBE_FOLLOWS_MIGRATED = "youtube_follows_migrated"
+
+
+def _migrate_youtube_follows(cursor, conn):
+    """YouTube channels were the whole household's until follows (Oct 2026):
+    once, every channel becomes followed by the household's admin only (the
+    one who added them; services/family.admin_of), so nobody else sees them.
+    Waits for a start with an admin when there is none yet."""
+    cursor.execute("SELECT value FROM settings WHERE key = ?", (YOUTUBE_FOLLOWS_MIGRATED,))
+    if cursor.fetchone():
+        return
+    cursor.execute("SELECT id FROM youtube_channels")
+    channels = [r[0] for r in cursor.fetchall()]
+    if channels:
+        cursor.execute("SELECT value FROM settings WHERE key = 'jellyfin_user_id'")
+        row = cursor.fetchone()
+        owner = ((row[0] if row else "") or "").replace("-", "")
+        cursor.execute("SELECT jellyfin_user_id FROM tentacle_users WHERE is_admin = 1 ORDER BY id")
+        admins = [r[0] for r in cursor.fetchall()]
+        if not admins:
+            return
+        admin = owner if owner in admins else admins[0]
+        for cid in channels:
+            cursor.execute("INSERT OR IGNORE INTO youtube_follows (channel_fk, jellyfin_user_id, created_at) "
+                           "VALUES (?, ?, CURRENT_TIMESTAMP)", (cid, admin))
+    cursor.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (YOUTUBE_FOLLOWS_MIGRATED, "true"))
+    conn.commit()
 
 
 def tentacle_address(db) -> str:

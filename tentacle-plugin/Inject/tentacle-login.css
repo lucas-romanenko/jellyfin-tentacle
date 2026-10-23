@@ -1,0 +1,287 @@
+/* Tentacle Login — Jellyfin's login page in Tentacle's look (tentacle-login.js
+   adds the heading, the initials and the words). Everything is scoped to
+   #loginPage.tentacle-login, so no other page changes. */
+
+/* The brand's colours (tentacle/static/brand/tokens.css), as on Tentacle's own sign-in and the TV app */
+#loginPage.tentacle-login {
+  --tl-accent: #6f5ce6;        /* fills under white text, 4.8:1 */
+  --tl-accent-hover: #6450dc;
+  --tl-accent-text: #8b80ff;   /* the TV app's accent, as text and focus */
+  --tl-bg2: #1b1830;
+  --tl-bg3: #231f3d;
+  --tl-border: rgba(255, 255, 255, 0.12);
+  --tl-text: #ebe9f5;
+  --tl-text2: #9b97b6;
+  background:
+    radial-gradient(1200px 600px at 50% -10%, rgba(111, 92, 230, 0.18), transparent 70%),
+    #0f0d1a !important;
+  color: var(--tl-text);
+}
+
+#loginPage.tentacle-login .backdropContainer,
+#loginPage.tentacle-login .backgroundContainer { display: none; }
+
+/* ── Who's watching? ── */
+#loginPage.tentacle-login .visualLoginForm > h1 { display: none; }
+
+/* The mark and wordmark over "Who's watching?", as on Tentacle's sign-in;
+   the header's small logo stands back while this page shows */
+#loginPage.tentacle-login .tentacle-login-brand { display: block; height: 72px; width: auto; margin: 0 auto 28px; }
+body:has(#loginPage.tentacle-login:not(.hide)) .headerHomeButton,
+body:has(#loginPage.tentacle-login:not(.hide)) .pageTitleWithDefaultLogo { visibility: hidden; }
+
+#loginPage.tentacle-login .tentacle-login-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 1.5em 0 2em;
+}
+
+#loginPage.tentacle-login .tentacle-login-title {
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 8px;
+}
+
+#loginPage.tentacle-login .tentacle-login-sub {
+  color: var(--tl-text2);
+  font-size: 14px;
+  margin: 0;
+}
+
+/* Wraps to as many rows as there are people; the page scrolls. */
+#loginPage.tentacle-login #divUsers {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 28px 20px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+#loginPage.tentacle-login #divUsers .card {
+  width: 132px !important;
+  margin: 0 !important;
+  padding: 0;
+  background: none;
+  border: none;
+  outline: none;
+}
+
+#loginPage.tentacle-login #divUsers .cardBox {
+  margin: 0;
+  background: none !important;
+  box-shadow: none !important;
+  border: none !important;
+}
+
+#loginPage.tentacle-login #divUsers .cardScalable {
+  width: 112px;
+  height: 112px;
+  margin: 0 auto;
+  border-radius: 50%;
+  overflow: visible;
+  box-shadow: none;
+  background: none;
+}
+
+#loginPage.tentacle-login #divUsers .cardPadder { display: none; }
+
+#loginPage.tentacle-login #divUsers .cardContent {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  overflow: hidden;
+  outline: 3px solid transparent;
+  outline-offset: 4px;
+  transition: transform 0.15s, outline-color 0.15s;
+}
+
+#loginPage.tentacle-login #divUsers .cardImage,
+#loginPage.tentacle-login #divUsers .cardImageContainer {
+  border-radius: 50%;
+  background-size: cover;
+  background-position: center;
+}
+
+#loginPage.tentacle-login #divUsers .cardImageIcon { display: none; }
+
+#loginPage.tentacle-login .tentacle-initial {
+  font-size: 42px;
+  font-weight: 600;
+  color: #fff;
+  line-height: 1;
+}
+
+#loginPage.tentacle-login #divUsers .card:hover .cardContent { transform: scale(1.05); }
+
+#loginPage.tentacle-login #divUsers .card:focus-visible .cardContent,
+#loginPage.tentacle-login #divUsers .card.show-focus:focus .cardContent {
+  outline-color: var(--tl-accent);
+  transform: scale(1.05);
+}
+
+/* Jellyfin's own focus/hover tile effects (the scaled box, the bright square) */
+#loginPage.tentacle-login #divUsers .card:focus .cardBox,
+#loginPage.tentacle-login #divUsers .card.show-focus:focus .cardBox { transform: none; }
+#loginPage.tentacle-login #divUsers .card .cardOverlayContainer { display: none; }
+
+#loginPage.tentacle-login #divUsers .cardFooter {
+  margin-top: 12px;
+  padding: 0;
+  background: none !important;
+}
+
+#loginPage.tentacle-login #divUsers .cardText {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--tl-text2);
+  padding: 0;
+}
+
+#loginPage.tentacle-login #divUsers .card:hover .cardText,
+#loginPage.tentacle-login #divUsers .card:focus .cardText { color: var(--tl-text); }
+
+/* ── Another account / a code / forgot ── */
+#loginPage.tentacle-login .readOnlyContent {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  max-width: 640px;
+  margin: 40px auto 1em !important;
+}
+
+#loginPage.tentacle-login .readOnlyContent .emby-button {
+  width: auto;
+  margin: 0;
+  padding: 0.7em 1.2em;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 6px;
+  background: var(--tl-bg3);
+  color: var(--tl-text);
+  border: 1px solid var(--tl-border);
+}
+
+#loginPage.tentacle-login .readOnlyContent .emby-button:hover,
+#loginPage.tentacle-login .readOnlyContent .emby-button:focus {
+  border-color: var(--tl-accent);
+  color: #fff;
+}
+
+#loginPage.tentacle-login .readOnlyContent .btnForgotPassword {
+  flex-basis: 100%;
+  width: auto;
+  background: none;
+  border: none;
+  color: var(--tl-text2);
+  font-size: 13px;
+}
+
+#loginPage.tentacle-login .readOnlyContent .btnForgotPassword:hover,
+#loginPage.tentacle-login .readOnlyContent .btnForgotPassword:focus { color: var(--tl-text); border: none; }
+
+#loginPage.tentacle-login .loginDisclaimerContainer { flex-basis: 100%; }
+
+/* ── The password form ── */
+#loginPage.tentacle-login .manualLoginForm {
+  max-width: 320px;
+  margin-top: 2em;
+}
+
+#loginPage.tentacle-login .manualLoginForm .sectionTitle {
+  font-size: 30px;
+  font-weight: 600;
+  margin: 0.3em 0 0.6em;
+}
+
+#loginPage.tentacle-login .manualLoginForm.tentacle-picked .sectionTitle { display: none; }
+
+#loginPage.tentacle-login .tentacle-login-who {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+#loginPage.tentacle-login .tentacle-login-who:empty { display: none; }
+
+#loginPage.tentacle-login .tentacle-face {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 36px;
+  font-weight: 600;
+  color: #fff;
+  background-size: cover;
+  background-position: center;
+}
+
+#loginPage.tentacle-login .tentacle-face-name {
+  font-size: 22px;
+  font-weight: 600;
+  margin-bottom: 1em;
+}
+
+#loginPage.tentacle-login .manualLoginForm .emby-input {
+  background: var(--tl-bg2);
+  border: 1px solid var(--tl-border);
+  border-radius: 6px;
+  font-size: 15px;
+}
+
+#loginPage.tentacle-login .manualLoginForm .emby-input:focus { border-color: var(--tl-accent); }
+#loginPage.tentacle-login .manualLoginForm .inputLabelFocused { color: var(--tl-accent-text); }
+#loginPage.tentacle-login .manualLoginForm .emby-checkbox:checked + span + .checkboxOutline,
+#loginPage.tentacle-login .manualLoginForm .emby-checkbox:focus + span + .checkboxOutline {
+  background-color: var(--tl-accent);
+  border-color: var(--tl-accent);
+}
+
+#loginPage.tentacle-login .manualLoginForm .button-submit {
+  background: var(--tl-accent);
+  color: #fff;
+  border-radius: 6px;
+  font-weight: 600;
+}
+
+#loginPage.tentacle-login .manualLoginForm .button-submit:hover,
+#loginPage.tentacle-login .manualLoginForm .button-submit:focus { background: var(--tl-accent-hover); }
+
+#loginPage.tentacle-login .manualLoginForm .btnCancel {
+  background: none;
+  color: var(--tl-text2);
+  box-shadow: none;
+}
+
+#loginPage.tentacle-login .manualLoginForm .btnCancel:hover,
+#loginPage.tentacle-login .manualLoginForm .btnCancel:focus { color: var(--tl-text); }
+
+#loginPage.tentacle-login .tentacle-hide { display: none !important; }
+
+/* ── Phone ── */
+@media (max-width: 600px) {
+  #loginPage.tentacle-login .tentacle-login-head { margin: 1em 0 1.5em; }
+  #loginPage.tentacle-login .tentacle-login-title { font-size: 24px; }
+  #loginPage.tentacle-login #divUsers { gap: 22px 14px; }
+  #loginPage.tentacle-login #divUsers .card { width: 96px !important; }
+  #loginPage.tentacle-login #divUsers .cardScalable { width: 84px; height: 84px; }
+  #loginPage.tentacle-login .tentacle-initial { font-size: 32px; }
+  #loginPage.tentacle-login #divUsers .cardText { font-size: 14px; }
+  #loginPage.tentacle-login .readOnlyContent .emby-button { flex: 1 1 100%; }
+}
+
+/* ── TV-sized screens, seen from the sofa ── */
+@media (min-width: 1700px) {
+  #loginPage.tentacle-login .tentacle-login-title { font-size: 40px; }
+  #loginPage.tentacle-login #divUsers .card { width: 168px !important; }
+  #loginPage.tentacle-login #divUsers .cardScalable { width: 144px; height: 144px; }
+  #loginPage.tentacle-login .tentacle-initial { font-size: 54px; }
+  #loginPage.tentacle-login #divUsers .cardText { font-size: 18px; }
+  #loginPage.tentacle-login .readOnlyContent .emby-button { font-size: 17px; }
+}

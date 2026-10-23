@@ -32,6 +32,7 @@ public class TentacleController : ControllerBase
     private readonly ISessionManager _sessionManager;
     private readonly ILibraryManager _libraryManager;
     private readonly IPlaylistManager _playlistManager;
+    private readonly IUserManager _userManager;
     private readonly IAuthorizationContext _authContext;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<TentacleController> _logger;
@@ -41,6 +42,7 @@ public class TentacleController : ControllerBase
         ISessionManager sessionManager,
         ILibraryManager libraryManager,
         IPlaylistManager playlistManager,
+        IUserManager userManager,
         IAuthorizationContext authContext,
         IHttpClientFactory httpClientFactory,
         ILogger<TentacleController> logger)
@@ -49,6 +51,7 @@ public class TentacleController : ControllerBase
         _sessionManager = sessionManager;
         _libraryManager = libraryManager;
         _playlistManager = playlistManager;
+        _userManager = userManager;
         _authContext = authContext;
         _httpClientFactory = httpClientFactory;
         _logger = logger;
@@ -76,16 +79,28 @@ public class TentacleController : ControllerBase
     /// only the home caches, for that user, and tells only that user's clients; ratings,
     /// TMDB and Discover stay cached and nobody else reloads.
     /// <paramref name="homeVersion"/> goes into the message (see <see cref="HomeVersionMarker"/>).
+    /// With <paramref name="scope"/> "livetv" (Tentacle set Live TV up: channels came or
+    /// went, someone's access changed) no cache is cleared and every connected user gets a
+    /// LibraryChanged carrying "tentacle-livetv:&lt;version&gt;", so open guides read their
+    /// channel list again. An older plugin ignores the scope and does the full refresh.
     /// </summary>
     /// <param name="userId">The user whose home was saved; absent means everything.</param>
     /// <param name="homeVersion">The home version the save made (Tentacle sends it; 0 = none).</param>
+    /// <param name="scope">"livetv" for a Live TV lineup change; absent otherwise.</param>
     [HttpPost("Refresh")]
     // Admin only: the Tentacle server calls this with the server API key, which
     // satisfies the policy. A bare [Authorize] let any signed-in account, a child
     // profile included, wipe every cache and reload every client in a loop (#79).
     [Authorize(Policy = "RequiresElevation")]
-    public async Task<ActionResult> Refresh([FromQuery] Guid? userId = null, [FromQuery] long homeVersion = 0)
+    public async Task<ActionResult> Refresh([FromQuery] Guid? userId = null, [FromQuery] long homeVersion = 0, [FromQuery] string? scope = null)
     {
+        if (string.Equals(scope, "livetv", StringComparison.OrdinalIgnoreCase))
+        {
+            var told = await BroadcastLibraryChanged(null, new[] { LiveTvVersionMarker(homeVersion) }).ConfigureAwait(false);
+            _logger.LogInformation("Tentacle Live TV changed — told {Count} connected user(s)", told);
+            return Ok(new { status = "ok", message = "Live TV change sent", broadcastedTo = told, homeOnly = false });
+        }
+
         var homeOnly = userId is { } one && one != Guid.Empty;
         _logger.LogInformation(
             "Tentacle refresh triggered — {Scope}",
@@ -119,43 +134,13 @@ public class TentacleController : ControllerBase
         // Step 3: Send LibraryChanged to the connected WebSocket clients (the user's own,
         // or everyone's). This triggers instant home screen refresh on Android TV and
         // Jellyfin web; the marker lets the TV app remember the version it was told of.
-        int broadcastCount = 0;
-        try
+        var marker = homeVersion > 0
+            ? new[] { HomeVersionMarker(homeOnly ? userId : null, homeVersion) }
+            : Array.Empty<string>();
+        int broadcastCount = await BroadcastLibraryChanged(homeOnly ? userId : null, marker).ConfigureAwait(false);
+        if (broadcastCount > 0)
         {
-            var userIds = homeOnly
-                ? new List<Guid> { userId!.Value }
-                : _sessionManager.Sessions
-                    .Where(s => s.UserId != Guid.Empty)
-                    .Select(s => s.UserId)
-                    .Distinct()
-                    .ToList();
-
-            if (userIds.Count > 0)
-            {
-                var marker = homeVersion > 0
-                    ? new[] { HomeVersionMarker(homeOnly ? userId : null, homeVersion) }
-                    : Array.Empty<string>();
-                await _sessionManager.SendMessageToUserSessions(
-                    userIds,
-                    SessionMessageType.LibraryChanged,
-                    () => new
-                    {
-                        ItemsAdded = Array.Empty<string>(),
-                        ItemsUpdated = Array.Empty<string>(),
-                        ItemsRemoved = Array.Empty<string>(),
-                        CollectionFolders = marker,
-                        FoldersAddedTo = Array.Empty<string>(),
-                        FoldersRemovedFrom = Array.Empty<string>(),
-                        IsEmpty = true
-                    },
-                    CancellationToken.None);
-                broadcastCount = userIds.Count;
-                _logger.LogInformation("Broadcast WebSocket refresh to {Count} connected user(s)", broadcastCount);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to broadcast WebSocket update");
+            _logger.LogInformation("Broadcast WebSocket refresh to {Count} connected user(s)", broadcastCount);
         }
 
         _logger.LogInformation("Tentacle refresh complete — {Playlists} playlists refreshed, caches cleared, {Broadcast} users notified", playlistCount, broadcastCount);
@@ -171,6 +156,68 @@ public class TentacleController : ControllerBase
     }
 
     /// <summary>
+    /// Tells these people's Jellyfin clients (Jellyfin Web's Tentacle scripts, the Tentacle
+    /// TV app) that their requests, activity or notifications changed, so an open screen reads
+    /// them again at once instead of at its next poll. Called by the Tentacle server (API key).
+    /// The message is a RefreshProgress whose ItemId is "tentacle" (no item has that id, so
+    /// Jellyfin's own pages ignore it) and whose "Tentacle" field lists the topics. Not a
+    /// LibraryChanged: older TV apps reload Home on every one of those.
+    /// </summary>
+    /// <param name="userIds">Jellyfin user ids, comma separated (dashes optional).</param>
+    /// <param name="topics">"requests", "activity", "notifications", comma separated.</param>
+    [HttpPost("Notify")]
+    [Authorize(Policy = "RequiresElevation")]
+    public async Task<ActionResult> Notify([FromQuery] string? userIds = null, [FromQuery] string? topics = null)
+    {
+        var ids = (userIds ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(s => Guid.TryParse(s, out var g) ? g : Guid.Empty)
+            .Where(g => g != Guid.Empty)
+            .Distinct()
+            .ToList();
+        var known = new HashSet<string>(StringComparer.Ordinal) { "requests", "activity", "notifications" };
+        var what = string.Join(",", (topics ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(known.Contains)
+            .Distinct());
+        if (ids.Count == 0 || what.Length == 0)
+        {
+            return BadRequest(new { error = "userIds and topics are required" });
+        }
+
+        var connected = _sessionManager.Sessions
+            .Where(s => s.UserId != Guid.Empty)
+            .Select(s => s.UserId)
+            .ToHashSet();
+        ids = ids.Where(connected.Contains).ToList();
+        if (ids.Count == 0)
+        {
+            return Ok(new { told = 0 });
+        }
+
+        try
+        {
+            await _sessionManager.SendMessageToUserSessions(
+                ids,
+                SessionMessageType.RefreshProgress,
+                () => new Dictionary<string, string>
+                {
+                    ["ItemId"] = "tentacle",
+                    ["Progress"] = "0",
+                    ["Tentacle"] = what,
+                },
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to tell clients about Tentacle changes");
+            return Ok(new { told = 0 });
+        }
+
+        return Ok(new { told = ids.Count });
+    }
+
+    /// <summary>
     /// The home version in a LibraryChanged message: one CollectionFolders entry
     /// "tentacle-home:&lt;user id, no dashes, or *&gt;:&lt;version&gt;". It rides in a field
     /// every client already parses as a list of strings (the Jellyfin SDK drops unknown
@@ -178,6 +225,56 @@ public class TentacleController : ControllerBase
     /// </summary>
     internal static string HomeVersionMarker(Guid? userId, long homeVersion) =>
         $"tentacle-home:{(userId is { } id ? id.ToString("N") : "*")}:{homeVersion}";
+
+    /// <summary>
+    /// The Live TV marker in a LibraryChanged message: "tentacle-livetv:&lt;version&gt;"
+    /// (Tentacle's number, or the time in ms when it sent none).
+    /// </summary>
+    internal static string LiveTvVersionMarker(long version) =>
+        $"tentacle-livetv:{(version > 0 ? version : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())}";
+
+    /// <summary>
+    /// Sends an empty LibraryChanged (with <paramref name="markers"/> in CollectionFolders)
+    /// to one user's sessions, or to every connected user's. Returns how many users.
+    /// </summary>
+    private async Task<int> BroadcastLibraryChanged(Guid? userId, string[] markers)
+    {
+        try
+        {
+            var userIds = userId is { } one
+                ? new List<Guid> { one }
+                : _sessionManager.Sessions
+                    .Where(s => s.UserId != Guid.Empty)
+                    .Select(s => s.UserId)
+                    .Distinct()
+                    .ToList();
+            if (userIds.Count == 0)
+            {
+                return 0;
+            }
+
+            await _sessionManager.SendMessageToUserSessions(
+                userIds,
+                SessionMessageType.LibraryChanged,
+                () => new
+                {
+                    ItemsAdded = Array.Empty<string>(),
+                    ItemsUpdated = Array.Empty<string>(),
+                    ItemsRemoved = Array.Empty<string>(),
+                    CollectionFolders = markers,
+                    FoldersAddedTo = Array.Empty<string>(),
+                    FoldersRemovedFrom = Array.Empty<string>(),
+                    IsEmpty = true
+                },
+                CancellationToken.None).ConfigureAwait(false);
+            return userIds.Count;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to broadcast WebSocket update");
+            return 0;
+        }
+    }
 
     /// <summary>
     /// Moves one entry of a user's playlist to a new position, in-process.
@@ -475,11 +572,15 @@ public class TentacleController : ControllerBase
     }
 
     /// <summary>
-    /// Lists playlists with no owner (OwnerUserId empty), with their entry counts (#120).
+    /// Lists playlists with no owner (OwnerUserId empty), with their entry counts (#120),
+    /// and playlists whose owner is no longer a Jellyfin user (<c>ownerGone</c>).
     /// Jellyfin's own API never says who owns a playlist, and an ownerless one is
     /// hidden from — or, with open access, shown to — every user alike, so the
     /// Tentacle server cannot tell it apart from a shared playlist and its
-    /// duplicate clean-up leaves it alone. The server decides what to delete.
+    /// duplicate clean-up leaves it alone. Deleting a user removes their playlists
+    /// from the library but leaves the folders (RemovePlaylistsAsync,
+    /// DeleteFileLocation = false), so the next scan brings them back owned by
+    /// nobody who exists. The server decides what to delete.
     /// </summary>
     [HttpGet("Playlists/Ownerless")]
     [Authorize(Policy = "RequiresElevation")]
@@ -491,10 +592,11 @@ public class TentacleController : ControllerBase
                 Recursive = true,
             })
             .OfType<Playlist>()
-            .Where(p => p.OwnerUserId.Equals(Guid.Empty))
+            .Where(p => p.OwnerUserId.Equals(Guid.Empty) || _userManager.GetUserById(p.OwnerUserId) is null)
             .Select(p => new
             {
                 id = p.Id.ToString("N", CultureInfo.InvariantCulture),
+                ownerGone = !p.OwnerUserId.Equals(Guid.Empty),
                 name = p.Name,
                 entries = p.LinkedChildren.Length,
                 openAccess = p.OpenAccess,

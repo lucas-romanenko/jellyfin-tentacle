@@ -670,14 +670,17 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                         # not a new download, no second "ready to watch".
                         logger.info(f"[Radarr webhook] '{db_movie.title}' quality upgrade: requester not notified again")
                     elif dr:
+                        message = (f"A new copy of {db_movie.title} is ready to watch" if replaced
+                                   else f"{db_movie.title} has completed and is ready to watch")
                         create_notification(
                             db, user_id=dr.user_id, tmdb_id=tmdb_id, media_type="movie",
-                            title=db_movie.title,
-                            message=(f"A new copy of {db_movie.title} is ready to watch" if replaced
-                                     else f"{db_movie.title} has completed and is ready to watch"),
+                            title=db_movie.title, message=message,
                             poster_path=db_movie.poster_path,
                             jellyfin_item_id=db_movie.jellyfin_item_id,
                         )
+                        from models.database import tell_admins_ready
+                        tell_admins_ready(db, dr.user_id, tmdb_id, "movie", db_movie.title, message,
+                                          db_movie.poster_path, db_movie.jellyfin_item_id)
                 except Exception as e:
                     logger.warning(f"[Radarr webhook] Notification creation failed: {e}")
             ready = bool(jf_item)

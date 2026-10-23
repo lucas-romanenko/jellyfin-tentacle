@@ -89,9 +89,14 @@ Plugin (details in plugin.md, plugin-api.md):
 ## Test
 
 ```
-make check       # = scripts/check: the full unit suite (about 4 min), as CI (tests.yml) runs it on every push and PR; venv cached in ~/.cache/jellyfin-tentacle
+make check       # = scripts/check: the full unit suite in up to 4 parallel shards (about 2.5 min; -j 1 = one process, about 10 min), as CI (tests.yml) runs it on every push and PR; venv cached in ~/.cache/jellyfin-tentacle
 ```
 
+- Shards are whole test modules balanced by `tests/durations.json`
+  (`tests/shards.py`; CI runs 4, about 4 min, and its final `unit` job is the
+  required check). Module-level state must not depend on another module having
+  run first. `scripts/check --shard K/N` runs one shard; when CI's shards drift
+  apart, refresh durations.json from a run's artifacts (shards.py says how).
 - Hermetic (`tests/hermetic.py`: no DNS, loopback only, no proxy): mock the
   service in the test (TMDB: `no_tmdb(self)`). A test that truly needs the
   network is `@live` and runs only with `TENTACLE_LIVE_TESTS=1`, never in

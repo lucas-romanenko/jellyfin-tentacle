@@ -72,7 +72,10 @@ class _Base(unittest.TestCase):
         self.db = sessionmaker(bind=engine)()
         self.addCleanup(self.db.close)
         self.admin = TentacleUser(id=1, jellyfin_user_id="a1", display_name="admin", is_admin=True)
-        self.nora = TentacleUser(id=2, jellyfin_user_id="n2", display_name="nora", is_admin=False)
+        # Her requests go straight through (no admin approval), so they reach
+        # the *arr and its refusals: those messages are what is tested here.
+        self.nora = TentacleUser(id=2, jellyfin_user_id="n2", display_name="nora", is_admin=False,
+                                 request_mode="direct")
         self.db.add_all([self.admin, self.nora])
         self.db.commit()
         for k, v in (("radarr_url", url), ("radarr_api_key", "k"),
@@ -194,7 +197,7 @@ class DashboardTexts(unittest.TestCase):
         # Nobody is signed in on the sign-in screen, so nobody can open Settings.
         src = ESC + functions("app.js", ["showLoginOverlay"])
         setup = ("async function fetch() { return {ok: false, status: 502, json: async () => ({})}; }\n"
-                 "function loginShowManual() {}")
+                 "function loginShowManual() {}\nfunction loginStep() {}\nvar state = {};")
         text = Page(render(src, setup, "await showLoginOverlay()")["login-user-grid"][-1]).text
         self.assertIn("Cannot connect to Jellyfin", text)
         self.assertNotIn("Settings", text, f"the sign-in screen sends people to Settings: {text!r}")

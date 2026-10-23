@@ -17,7 +17,7 @@ from fastapi.routing import APIRoute
 ROUTER_MODULES = [
     "auth", "settings", "providers", "sync", "library", "duplicates", "lists",
     "widget", "radarr", "sonarr", "tags", "collections", "smartlists",
-    "discover", "activity", "livetv", "notifications", "health", "youtube", "vod", "music",
+    "discover", "activity", "livetv", "livetv_checker", "my_livetv", "family", "notifications", "health", "youtube", "vod", "music",
 ]
 
 # (METHOD, path) -> reason. Keep this list short and justified.
@@ -25,6 +25,8 @@ ALLOW = {
     ("GET", "/api/auth/users"): "login picker, before anyone is signed in",
     ("POST", "/api/auth/login"): "login",
     ("POST", "/api/auth/logout"): "logout",
+    ("POST", "/api/auth/quick-connect"): "sign in with a code: asks Jellyfin for one",
+    ("GET", "/api/auth/quick-connect/{handle}"): "sign in with a code: polls it by an unguessable handle",
     ("GET", "/api/discover/config"): "constant feature flag",
     ("GET", "/api/discover/image-proxy/{cache_key}"): "<img> tags cannot send auth; guarded by cache_key (#37)",
     ("POST", "/api/radarr/webhook"): "authenticates in body (_check_webhook_auth)",
@@ -36,6 +38,8 @@ ALLOW = {
                                                             "or confirmed by Jellyfin in the handler (#139)",
     ("GET", "/api/live/stream/{channel_id}"): "HDHomeRun tuner, Jellyfin cannot send credentials",
     ("GET", "/api/live/playlist.m3u"): "M3U tuner",
+    ("GET", "/api/live/tuner/all.m3u"): "M3U tuner Tentacle gives Jellyfin (everyone's channels)",
+    ("GET", "/api/live/users/{user_id}/tuner.m3u"): "M3U tuner Tentacle gives Jellyfin (one person's channels)",
     ("GET", "/api/live/xmltv.xml"): "XMLTV guide for Jellyfin",
     ("GET", "/api/youtube/v/{video_id}/master.m3u8"): ".strm playback",
     ("GET", "/api/youtube/v/{video_id}/r/{token}"): ".strm playback, opaque token",
@@ -134,6 +138,7 @@ class MainAppRoutes(unittest.TestCase):
             ("DELETE", "/api/library/item/{media_type}/{tmdb_id}"),
             ("POST", "/api/auth/login"),
             ("POST", "/api/auth/logout"),
+            ("POST", "/api/auth/quick-connect"),
             ("POST", "/api/music/webhook"),
             ("POST", "/api/radarr/webhook"),
             ("POST", "/api/sonarr/webhook"),

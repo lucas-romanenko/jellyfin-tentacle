@@ -233,7 +233,8 @@ when its turn comes, under `_sync_lock`: one deleted or switched off since
 the job started is skipped, #517); 3. Radarr
 scan; 4. Sonarr scan (and Following state for every series); 5. recently
 added tags; 6. Jellyfin pipeline (scan, push tags, refresh playlists);
-7. clean the TMDB cache; 8. `sweep_orphaned_downloads()`; 9. per user:
+7. clean the TMDB cache; 8. `sweep_orphaned_downloads()`; 9. forget people
+no longer in Jellyfin (`gone_people.forget_gone`), then per user:
 `migrate_global_smartlists_to_user()` (one-time), `sync_smartlists()`,
 `write_home_config()`; 10. playlist artwork; 11. `POST /Tentacle/Refresh` to
 clear the plugin's caches.
@@ -272,8 +273,10 @@ read that row.
   check, and the sweep deleted every title not written back. A root that
   holds none of the recorded titles' files counts as unmounted too
   (`_vod_root_holds_none()`, #698): in a merged setup a Radarr/Sonarr import
-  onto the bare mount point makes it non-empty. The sync and the sweep both
-  check it. A new install (no rows) syncs; a library emptied on purpose (a
+  onto the bare mount point makes it non-empty. A show counts only when its
+  folder holds a `.strm` (`_holds_own_file()`): Sonarr re-creates the show's
+  own folder when it imports into it (vod_root layout, or one folder for
+  both). The sync and the sweep both check it. A new install (no rows) syncs; a library emptied on purpose (a
   new disk) needs an empty `.tentacle-library` file in the root
   (`VOD_LIBRARY_MARKER`).
   `_repair_movie_strm()` and the show-folder rebuild check the root too.
@@ -344,6 +347,10 @@ read that row.
 |---|---|---|
 | Version polling | Jellyfin web (`tentacle-home.js`) | polls `GET /api/smartlists/version`; a new number re-fetches and redraws the rows |
 | WebSocket + home version | Android TV (`SocketHandler`, `HomeRowsFragment.kt`, navbars) | the plugin's `LibraryChanged` push carries the user's home version (`tentacle-home:<user\|*>:<v>` in `CollectionFolders`); the app keeps the newest one and, on Home, the navbar, a return to the front or a WebSocket reconnect, compares it with what it shows and refreshes only if it moved; no polling |
+| WebSocket (Jellyfin's own + Tentacle's Live TV push) | Jellyfin web Live TV guide (`tentacle-livetv.js`) | UserDataChanged (favourites, sent by Jellyfin to the person's sessions whoever made the change) updates stars and Favorites rows in place; LibraryChanged (e.g. `tentacle-livetv:<v>` from `livetv_tuners.tell_clients()` after every Live TV setup run) re-reads the channel list and redraws only what differs; tabs relay to each other (`BroadcastChannel`) since Jellyfin talks to one socket per browser |
+| Live channel (`GET /api/updates`, server-sent events) | Tentacle's dashboard (`static/js/live.js`) | `services/live_updates.py`: one channel per signed-in tab; `publish(topic, user_ids=, admins=, everyone=)` sends a "this changed" note (requests, activity, notifications, people, me, health, home, livetv, mychannels, groups, library, settings) and the tab re-reads only what its open page shows; a (re)connect, also after the tab was hidden a minute, re-reads everything. Radarr/Sonarr send no grab or progress webhook, so a watcher reads their queues every 3 s while a tab is open (15 s otherwise) and says "activity" to the title's requester and the admins (progress alone: dashboards only, `{"progress": true}`) |
+| Plugin notify (`POST /Tentacle/Notify`) | Jellyfin web (`tentacle-notifications.js` → `tentacle-changed` window event → Activity overlay, navbar badge), Android TV | `live_updates.changed(..., clients=True)` / `tell_clients()` for requests, activity and notifications: gathered 0.3 s, then one `RefreshProgress` message (ItemId "tentacle") per person's sessions; the clients read again at once, and poll slowly as a safety net |
+| WebSocket (Jellyfin's own) | Jellyfin web Favorites tab (`tentacle-favorites.js`) | UserDataChanged with an IsFavorite of this person re-reads the three lists (~150 ms later), LibraryChanged after 1.5 s; only rows whose cards changed are redrawn; relayed between tabs on `BroadcastChannel('tentacle-favorites')`; no socket: every 10 s; what's on now: every minute |
 | Plugin cache clear | the plugin | `POST /Tentacle/Refresh` after the nightly sync and Settings saves (everything, every user), or `?userId=&homeVersion=` after a save of one user's home or toolbar (that user's home caches and clients only) |
 
 The home version (`services/smartlists.py`: `get_home_version`,

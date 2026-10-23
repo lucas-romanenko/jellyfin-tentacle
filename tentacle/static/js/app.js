@@ -52,8 +52,15 @@ async function postLoginInit() {
   }
   // Music module: show its tabs and search only when it is on.
   if (typeof loadMusicConfig === 'function') loadMusicConfig();
+  // Family: how this person's requests work, the plain-words banner, and
+  // the admins' count of requests waiting (family.js).
+  if (typeof famInit === 'function') famInit();
+  // Live updates: what changes elsewhere shows here within a second or two (live.js).
+  if (typeof liveStart === 'function') liveStart();
   // The page in the address, else Library
   showRouteFromHash();
+  // Someone's first sign-in: what Tentacle is, in five short steps (welcome.js).
+  if (typeof welcomeCheck === 'function') welcomeCheck();
 }
 
 // ── Radarr/Sonarr problems banner (admins) ────────────────────────────────
@@ -157,12 +164,41 @@ function renderHealthBadge() {
 function loadHealthAlerts() {
   if (typeof loadLibStats === 'function') loadLibStats();
   if (typeof _updateDupBadges === 'function') _updateDupBadges();
-  if (typeof checkNewContentNotice === 'function') checkNewContentNotice();
+  if (typeof nfpLoadCounts === 'function') nfpLoadCounts();
   if (typeof loadMatchSuspects === 'function') loadMatchSuspects();
   if (typeof checkStaleFiles === 'function') checkStaleFiles();
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────
+// Three steps on one overlay: the people picker (only at home: the server
+// sends names to the home network only), the password form (for a picked
+// person, or a typed name), and a Quick Connect code.
+
+const LOGIN_COLORS = ['#6c63ff', '#e0607e', '#2bb6a3', '#e3913b', '#4f8fe8', '#a35ee0', '#5bb05f', '#d0574a'];
+
+// A person's colour: the same name always gets the same one.
+function loginColor(name) {
+  let h = 0;
+  for (const ch of String(name || '')) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+  return LOGIN_COLORS[h % LOGIN_COLORS.length];
+}
+
+function loginAvatar(u) {
+  const initial = escHtml((Array.from(String(u.name || '?').trim())[0] || '?').toUpperCase());
+  // The initial sits under the photo, so a photo that fails to load leaves it.
+  const img = u.image_tag
+    ? `<img src="${escHtml(`${u.jellyfin_url}/Users/${u.id}/Images/Primary?tag=${u.image_tag}&quality=90&maxWidth=300`)}" alt="" onerror="this.remove()">`
+    : '';
+  return `<div class="user-avatar" style="background:${loginColor(u.name)}" aria-hidden="true">${initial}${img}</div>`;
+}
+
+// Which step shows: 'people', 'form' or 'code'.
+function loginStep(step) {
+  document.getElementById('login-step-people').style.display = step === 'people' ? 'flex' : 'none';
+  document.getElementById('login-password-form').style.display = step === 'form' ? 'flex' : 'none';
+  document.getElementById('login-code').style.display = step === 'code' ? 'flex' : 'none';
+  if (step !== 'code') loginStopCode();
+}
 
 async function showLoginOverlay() {
   const overlay = document.getElementById('login-overlay');
@@ -176,8 +212,9 @@ async function showLoginOverlay() {
   const shell = document.querySelector('.app');
   if (shell) shell.setAttribute('inert', '');
   const grid = document.getElementById('login-user-grid');
-  grid.innerHTML = '<div style="color:var(--text3)">Loading users...</div>';
-  document.getElementById('login-password-form').style.display = 'none';
+  grid.innerHTML = '<div class="login-note">Loading…</div>';
+  state._loginPeople = [];
+  loginStep('people');
 
   try {
     const resp = await fetch('/api/auth/users');
@@ -195,54 +232,59 @@ async function showLoginOverlay() {
       } else {
         // Connection error (bad API key, unreachable, etc.). Nobody is signed
         // in here, so nobody can open Settings.
-        grid.innerHTML = '<div style="color:var(--red)">Cannot connect to Jellyfin right now. Check that Jellyfin is running, then try again.</div>';
+        grid.innerHTML = '<div class="login-note" style="color:var(--red)">Cannot connect to Jellyfin right now. Check that Jellyfin is running, then try again.</div>';
       }
       return;
     }
-    const users = await resp.json();
+    const d = await resp.json();
+    const users = d.people || [];
+    state._loginPeople = users;
+    state._loginCodes = !!d.quick_connect;
+    document.getElementById('login-code-link').style.display = d.quick_connect ? '' : 'none';
     if (!users.length) {
-      // Jellyfin only lists users that are NOT "hidden from login screens", and
-      // hidden is its default for new accounts -- an empty list is normal, not a
-      // connection problem. Without a way to type a name nobody could sign in.
-      grid.innerHTML = '<div style="color:var(--text2)">No users are shown on Jellyfin\'s login screen. Sign in with your Jellyfin username.</div>';
+      // Away from home (names stay private), or nobody is shown on the
+      // sign-in screen (Jellyfin hides new accounts unless an admin shows
+      // them on the People page): type a name instead.
       loginShowManual();
       return;
     }
-    grid.innerHTML = users.map(u => {
-      const avatarUrl = u.image_tag
-        ? `${u.jellyfin_url}/Users/${u.id}/Images/Primary?tag=${u.image_tag}&quality=90&maxWidth=150`
-        : '';
-      const avatarContent = avatarUrl
-        ? `<img src="${escHtml(avatarUrl)}" alt="${escHtml(u.name)}">`
-        : escHtml(u.name.charAt(0).toUpperCase());
-      // The payload is escaped after JSON encoding, so a name containing the
-      // literal "&quot;" cannot decode back into a quote and break out.
-      return `<div class="user-card" tabindex="0" onclick="selectLoginUser(${escHtml(JSON.stringify(u))},this)" onkeydown="if(event.key==='Enter')this.click()">
-        <div class="user-avatar">${avatarContent}</div>
+    grid.innerHTML = users.map((u, i) =>
+      // Cards carry an index, never the user's name: display names are
+      // attacker-settable and this page is shown before anyone signs in.
+      `<button type="button" class="user-card" onclick="loginPick(${i},this)">
+        ${loginAvatar(u)}
         <div class="user-card-name">${escHtml(u.name)}</div>
-      </div>`;
-    }).join('');
+      </button>`).join('');
   } catch (e) {
-    grid.innerHTML = `<div style="color:var(--red)">Failed to load users: ${escHtml(e.message)}</div>`;
+    grid.innerHTML = `<div class="login-note" style="color:var(--red)">Failed to load: ${escHtml(e.message)}</div>`;
   }
+}
+
+function loginPick(i, el) {
+  const user = (state._loginPeople || [])[i];
+  if (user) selectLoginUser(user, el);
 }
 
 function selectLoginUser(user, el) {
   state._loginSelectedUser = user;
   state._loginManual = false;
-  document.getElementById('login-manual-link').style.display = '';
-  document.getElementById('login-username').style.display = 'none';
   document.querySelectorAll('.user-card').forEach(c => c.classList.remove('selected'));
-  el.classList.add('selected');
+  if (el) el.classList.add('selected');
 
   if (!user.has_password) {
     // No password — login immediately
     doLogin(user.name, '');
     return;
   }
-  // Show password form
-  const form = document.getElementById('login-password-form');
-  form.style.display = 'flex';
+  // Show password form, with who is signing in
+  loginStep('form');
+  document.getElementById('login-who').innerHTML = `${loginAvatar(user)}<div class="login-who-name">${escHtml(user.name)}</div>`;
+  document.getElementById('login-who').style.display = 'flex';
+  document.getElementById('login-form-title').style.display = 'none';
+  document.getElementById('login-form-note').style.display = 'none';
+  document.getElementById('login-username').style.display = 'none';
+  document.getElementById('login-back-link').style.display = '';
+  document.getElementById('login-form-code-link').style.display = 'none';
   document.getElementById('login-error').textContent = '';
   const input = document.getElementById('login-password');
   input.value = '';
@@ -256,7 +298,7 @@ async function submitLogin() {
   if (state._loginManual) {
     const name = document.getElementById('login-username').value.trim();
     if (!name) {
-      document.getElementById('login-error').textContent = 'Enter your Jellyfin username';
+      document.getElementById('login-error').textContent = 'Type your name first';
       return;
     }
     await doLogin(name, pw);
@@ -266,14 +308,19 @@ async function submitLogin() {
   await doLogin(state._loginSelectedUser.name, pw);
 }
 
-// Type a username instead of picking a card: for accounts Jellyfin hides from
-// its login screen, which /Users/Public (rightly) does not list.
+// Type a name instead of picking a card: away from home, or for accounts not
+// shown on the sign-in screen, which /Users/Public (rightly) does not list.
 function loginShowManual() {
   state._loginManual = true;
   state._loginSelectedUser = null;
-  document.getElementById('login-manual-link').style.display = 'none';
   document.querySelectorAll('.user-card').forEach(c => c.classList.remove('selected'));
-  document.getElementById('login-password-form').style.display = 'flex';
+  loginStep('form');
+  const nobody = !(state._loginPeople || []).length;
+  document.getElementById('login-who').style.display = 'none';
+  document.getElementById('login-form-title').style.display = '';
+  document.getElementById('login-form-note').style.display = '';
+  document.getElementById('login-back-link').style.display = nobody ? 'none' : '';
+  document.getElementById('login-form-code-link').style.display = nobody && state._loginCodes ? '' : 'none';
   document.getElementById('login-error').textContent = '';
   const name = document.getElementById('login-username');
   name.style.display = '';
@@ -298,13 +345,17 @@ async function doLogin(username, password) {
     });
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
-      errEl.textContent = err.detail || 'Login failed';
+      errEl.textContent = r.status === 401
+        ? (state._loginManual ? 'That name and password don’t match. Check both and try again.' : 'Wrong password. Try again.')
+        : (err.detail || 'Signing in didn’t work. Try again.');
+      const pw = document.getElementById('login-password');
+      if (pw && r.status === 401) { pw.value = ''; pw.focus(); }
       return;
     }
     // Full page reload to clear all cached SPA state from previous user session
     window.location.reload();
   } catch (e) {
-    errEl.textContent = e.message;
+    errEl.textContent = 'Tentacle can’t be reached. Check your connection and try again.';
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -313,10 +364,65 @@ async function doLogin(username, password) {
 function loginBackToUsers() {
   state._loginSelectedUser = null;
   state._loginManual = false;
-  document.getElementById('login-manual-link').style.display = '';
   document.getElementById('login-username').style.display = 'none';
-  document.getElementById('login-password-form').style.display = 'none';
   document.querySelectorAll('.user-card').forEach(c => c.classList.remove('selected'));
+  if (!(state._loginPeople || []).length) { loginShowManual(); return; }
+  loginStep('people');
+}
+
+// ── Sign in with a code (Jellyfin's Quick Connect, through Tentacle) ──
+function loginStopCode() {
+  if (state._loginCodeTimer) clearTimeout(state._loginCodeTimer);
+  state._loginCodeTimer = null;
+  state._loginCodeHandle = null;
+}
+
+async function loginShowCode() {
+  loginStep('code');
+  const val = document.getElementById('login-code-value');
+  const err = document.getElementById('login-code-error');
+  const wait = document.getElementById('login-code-wait');
+  const again = document.getElementById('login-code-new');
+  val.textContent = '······';
+  err.textContent = '';
+  wait.style.display = '';
+  again.style.display = 'none';
+  try {
+    const r = await fetch('/api/auth/quick-connect', { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || 'No code right now. Try again.');
+    val.textContent = String(d.code).replace(/^(\d{3})(\d{3})$/, '$1 $2');
+    state._loginCodeHandle = d.handle;
+    loginPollCode(d.handle);
+  } catch (e) {
+    val.textContent = '—';
+    wait.style.display = 'none';
+    err.textContent = e.message;
+    again.style.display = '';
+  }
+}
+
+async function loginPollCode(handle) {
+  if (state._loginCodeHandle !== handle) return;   // left, or a newer code
+  let r;
+  try {
+    r = await fetch(`/api/auth/quick-connect/${encodeURIComponent(handle)}`);
+  } catch (e) {
+    r = null;  // a dropped request: keep waiting
+  }
+  if (state._loginCodeHandle !== handle) return;
+  if (r && r.ok) {
+    const d = await r.json().catch(() => ({}));
+    if (d.approved) { window.location.reload(); return; }
+  } else if (r) {
+    const d = await r.json().catch(() => ({}));
+    document.getElementById('login-code-wait').style.display = 'none';
+    document.getElementById('login-code-error').textContent = d.detail || 'This code didn’t work. Get a new one.';
+    document.getElementById('login-code-new').style.display = '';
+    state._loginCodeHandle = null;
+    return;
+  }
+  state._loginCodeTimer = setTimeout(() => loginPollCode(handle), 2500);
 }
 
 function applyUserRole() {
@@ -326,6 +432,8 @@ function applyUserRole() {
   document.querySelectorAll('[data-admin-only]').forEach(el => {
     el.style.display = isAdmin ? '' : 'none';
   });
+  // My Channels in the sidebar once the household has Live TV
+  if (typeof mychCheckNav === 'function') mychCheckNav();
   // Show user name in sidebar
   const userEl = document.getElementById('sidebar-user');
   if (userEl) {
@@ -350,8 +458,8 @@ function stopAllPolling() {
   if (state._syncPollInterval) { clearInterval(state._syncPollInterval); state._syncPollInterval = null; }
   if (state._runNowTimer) { clearInterval(state._runNowTimer); state._runNowTimer = null; }
   for (const fn of ['stopActivityPolling', 'stopDownloadPolling', 'stopHealthPolling',
-                    'stopYouTubePolling', 'stopLivePolling',
-                    'disconnectLibraryStream', 'stopLogStream']) {
+                    'stopYouTubePolling', 'stopLivePolling', 'stopFamilyPolling',
+                    'stopLogStream', 'liveStop']) {
     if (typeof window[fn] === 'function') { try { window[fn](); } catch (_) {} }
   }
 }
@@ -389,7 +497,7 @@ async function checkSetup() {
 // so a link, a reload or the browser's Back button lands on the same place.
 // Server pages are the admins'; anyone else asking for one is sent to Library
 // (the API refuses them anyway; an empty page explained nothing).
-const ADMIN_PAGES = new Set(['sources', 'health', 'settings']);
+const ADMIN_PAGES = new Set(['people', 'requests', 'sources', 'health', 'settings']);
 // Pages that moved: old links and buttons still land where the thing now is.
 const PAGE_ALIASES = {
   vod: ['sources', 'providers'], 'live-tv': ['sources', 'live'], youtube: ['sources', 'youtube'],
@@ -399,9 +507,13 @@ const PAGE_TITLES = {
   library: ['Library', 'Everything you can watch'],
   discover: ['Discover', 'Find something new and add it'],
   jellyfin: ['My Home Screen', 'Your Jellyfin home rows and playlists'],
+  mychannels: ['My Channels', 'Your favourite Live TV channels'],
+  myyoutube: ['My YouTube', 'Your YouTube channels'],
+  people: ['People', 'Your household: accounts, age limits and TVs'],
+  requests: ['Requests', 'What your household asked for'],
   sources: ['Sources', 'Where the library comes from'],
   health: ['Health', 'Problems, downloads and what happened'],
-  settings: ['Settings', 'Services, schedule and users'],
+  settings: ['Settings', 'Services, schedule and more'],
 };
 const PAGE_HASH = { jellyfin: 'home' };
 
@@ -428,10 +540,10 @@ function showPage(name, tab) {
   if (PAGE_ALIASES[name]) { const [n, t] = PAGE_ALIASES[name]; name = n; tab = tab || t; }
   if (!document.getElementById(`page-${name}`)) { name = 'library'; tab = null; }
   if (ADMIN_PAGES.has(name) && !(state.currentUser && state.currentUser.is_admin)) { name = 'library'; tab = null; }
+  if (name === 'discover' && state.kidsProfile) { name = 'library'; tab = null; }
 
-  // Disconnect library SSE when leaving library page
+  // Stop the library page's download polling when leaving it
   if (state.currentPage === 'library' && name !== 'library') {
-    if (typeof disconnectLibraryStream === 'function') disconnectLibraryStream();
     if (typeof stopDownloadPolling === 'function') stopDownloadPolling();
   }
   // Stop health downloads polling when leaving health page
@@ -461,6 +573,10 @@ function showPage(name, tab) {
     if (name === 'library') { loadLibrary(); if (tab) showLibTab(tab); }
     if (name === 'discover') { loadDiscoverPage(); if (tab) showDiscoverTab(tab); }
     if (name === 'jellyfin') { loadJellyfinPage(); if (tab) showJellyfinTab(tab); }
+    if (name === 'mychannels' && typeof loadMyChannels === 'function') loadMyChannels();
+    if (name === 'myyoutube' && typeof loadMyYouTube === 'function') loadMyYouTube();
+    if (name === 'people') loadPeople();
+    if (name === 'requests') { loadRequests(); famReqTab(tab === 'decided' ? 'decided' : 'pending'); }
     if (name === 'sources') showSourcesTab(tab || state.sourcesTab || 'providers');
     if (name === 'health') loadHealthPage();
   } finally {
@@ -478,20 +594,29 @@ window.addEventListener('hashchange', () => {
   if (want !== state.currentPage || tab) showRouteFromHash();
 });
 
-// The sidebar shows the build that is running, not a number typed into the page.
+// The sidebar shows the release that is running ("v1.23.0", or "v1.23.0 + 3
+// changes" for a build of main after it); the commit is in the tooltip.
+function versionLabel(v) {
+  const commit = (v.commit && v.commit !== 'unknown') ? v.commit.slice(0, 7) : '';
+  const m = /^(v[^+]+)(?:\+(\d+))?$/.exec(v.version || '');
+  if (!m) return commit ? `build ${commit}` : 'development build';
+  const n = Number(m[2] || 0);
+  return n ? `${m[1]} + ${n} change${n === 1 ? '' : 's'}` : m[1];
+}
+
 async function loadVersionLabel() {
   const el = document.getElementById('logo-version');
   if (!el) return;
   try {
     const v = await (await fetch('/api/version')).json();
-    const commit = (v.commit && v.commit !== 'unknown') ? v.commit.slice(0, 7) : '';
     let built = '';
     if (v.built && v.built !== 'unknown') {
       const d = new Date(v.built);
       if (!isNaN(d)) built = d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
     }
-    el.textContent = commit ? `build ${commit}` : 'development build';
-    el.title = [commit && `Commit ${v.commit}`, built && `built ${built}`].filter(Boolean).join(', ');
+    const commit = v.commit && v.commit !== 'unknown' ? v.commit : '';
+    el.textContent = versionLabel(v);
+    el.title = [commit && `Commit ${commit.slice(0, 7)}`, built && `built ${built}`].filter(Boolean).join(', ');
   } catch (e) { el.textContent = ''; }
 }
 
@@ -537,7 +662,7 @@ function showDiscoverTab(tab) {
   document.getElementById('discover-tab-activity').style.display = tab === 'activity' ? '' : 'none';
   if (tab === 'browse') loadDiscover();
   if (tab === 'lists') loadLists();
-  if (tab === 'activity') { startActivityPolling(); renderActivity(); }
+  if (tab === 'activity') { startActivityPolling(); renderActivity(); if (typeof famLoadMyRequests === 'function') famLoadMyRequests(); }
   else stopActivityPolling();
   setRoute('discover', tab === 'browse' ? null : tab);
 }
@@ -545,11 +670,13 @@ function showDiscoverTab(tab) {
 // Settings sections that moved, by their old names (old links still work).
 const SETTINGS_ALIASES = {
   connections: 'services', integrations: 'services', paths: 'advanced',
-  'playlists-info': 'services', providers: null, music: null,
+  'playlists-info': 'services', providers: null, music: null, users: null,
 };
 function showSettingsSection(name) {
   if (name in SETTINGS_ALIASES) {
     // Providers and Music are Sources now
+    // Users is People now
+    if (name === 'users') { showPage('people'); return; }
     if (SETTINGS_ALIASES[name] === null) { showPage('sources', name === 'music' ? 'music' : 'providers'); return; }
     name = SETTINGS_ALIASES[name];
   }
@@ -559,8 +686,87 @@ function showSettingsSection(name) {
   document.querySelectorAll('.settings-nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById(`section-${name}`)?.classList.add('active');
   document.querySelector(`.settings-nav-item[data-section="${name}"]`)?.classList.add('active');
-  if (name === 'users') loadUsers();
   if (state.currentPage === 'settings') setRoute('settings', name);
+  if (name === 'signin' && typeof famLoadServer === 'function') famLoadServer();
+  if (name === 'about') loadAbout();
+}
+
+// ── Settings → About: which versions run (GET /api/about) ──────────────────
+
+async function loadAbout() {
+  const el = document.getElementById('about-versions');
+  if (!el) return;
+  let d;
+  try {
+    d = await api('/api/about');
+  } catch (e) {
+    el.innerHTML = `<div class="fam-error">Couldn’t read the versions: ${escHtml(e.message)}</div>`;
+    return;
+  }
+  el.innerHTML = _aboutRender(d);
+}
+
+function _aboutRow(label, value, extra = '') {
+  return `<div class="about-row"><div class="about-label">${label}</div><div><div class="about-value">${value}</div>${extra}</div></div>`;
+}
+
+function _aboutRender(d) {
+  const ok = '<span class="about-ok">&#10003; up to date</span>';
+  const s = d.server || {};
+  const built = s.built ? new Date(s.built) : null;
+  const sub = [s.commit && `commit ${escHtml(s.commit.slice(0, 7))}`,
+               built && !isNaN(built) && `built ${built.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}`]
+    .filter(Boolean).join(', ');
+  let serverNote = '';
+  if (s.update) {
+    serverNote = `<div class="fam-note warn"><span>New version available: <strong>${escHtml(s.latest.version)}</strong>. Pull the new image to update.</span>
+      <a class="fam-link" href="${escHtml(s.latest.page)}" target="_blank" rel="noopener">Release notes</a></div>`;
+  } else if (!s.latest) {
+    serverNote = `<div class="fam-hint">GitHub couldn’t be asked for the newest release just now. <a class="fam-link" href="${escHtml(s.releases)}" target="_blank" rel="noopener">Releases</a></div>`;
+  }
+  let html = _aboutRow('Tentacle server',
+    `${escHtml(versionLabel(s))}${s.update || !s.latest || !s.version ? '' : ok}${sub ? `<span class="about-sub">${sub}</span>` : ''}`,
+    serverNote);
+
+  if (d.problem) {
+    return html + `<div class="fam-error" style="padding:12px 0">${escHtml(d.problem)}</div>`;
+  }
+  const p = d.plugin || {};
+  let pluginNote = '';
+  if (!p.version) {
+    pluginNote = `<div class="fam-note warn"><span>The Tentacle plugin isn’t installed in Jellyfin: Jellyfin’s home screen, Discover and live updates need it. Install it from Jellyfin’s catalogue (Dashboard → Plugins).</span></div>`;
+  } else if (p.too_old) {
+    const fix = p.restart_for
+      ? `${escHtml(p.restart_for)} is installed already: restart Jellyfin to run it.`
+      : 'Update it in Jellyfin (Dashboard → Plugins → Catalog → Tentacle), then restart Jellyfin.';
+    pluginNote = `<div class="fam-note warn"><span><strong>This plugin is older than this server needs</strong> (${escHtml(p.minimum)} or newer): parts of Jellyfin’s home screen and Live TV may not work. ${fix}</span></div>`;
+  } else if (p.restart_for) {
+    pluginNote += `<div class="fam-hint">${escHtml(p.restart_for)} is installed and runs after Jellyfin restarts.</div>`;
+  }
+  if (p.version && p.catalog === false) {
+    pluginNote += `<div class="fam-hint">Jellyfin updates the plugin itself only from Tentacle’s catalogue, which isn’t in its list: add <span class="mono">${escHtml(p.catalog_url)}</span> under Dashboard → Plugins → Repositories.</div>`;
+  } else if (p.version) {
+    pluginNote += `<div class="fam-hint">Jellyfin updates it from Tentacle’s catalogue by itself (Scheduled tasks → Update Plugins, daily); a new version runs after Jellyfin restarts.</div>`;
+  }
+  html += _aboutRow('Jellyfin plugin',
+    p.version ? `${escHtml(p.version)}${p.too_old ? '' : `<span class="about-sub">needs ${escHtml(p.minimum)} or newer</span>`}` : 'Not installed',
+    pluginNote);
+
+  const j = d.jellyfin || {};
+  html += _aboutRow('Jellyfin', escHtml(j.version || 'unknown'));
+
+  const newest = d.tv_latest && d.tv_latest.version;
+  const tvs = (d.tv_apps || []).map(t => {
+    const state = t.up_to_date || !newest ? '<span class="about-ok">&#10003;</span>'
+      : `<span class="fam-warn-text" title="The TV offers the new version the next time Tentacle opens">${escHtml(newest)} waiting</span>`;
+    const waiting = (t.waiting || []).length
+      ? `<div class="fam-hint fam-warn-text">Needs a newer Tentacle server or plugin for: ${t.waiting.map(escHtml).join('; ')}</div>` : '';
+    return `<div class="about-tv"><span>${escHtml(t.name)}</span><span style="color:var(--text3)">${escHtml(t.version)}</span>${state}</div>${waiting}`;
+  }).join('');
+  html += _aboutRow('TV app',
+    newest ? `Newest ${escHtml(newest)}` : 'Tentacle Android TV',
+    tvs ? `<div style="margin-top:6px">${tvs}</div>` : '<div class="fam-hint">Nobody has signed in on the Tentacle TV app yet.</div>');
+  return html;
 }
 
 // Escape text before it is interpolated into an innerHTML string. Jellyfin
@@ -573,65 +779,6 @@ function escHtml(str) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-async function loadUsers() {
-  const el = document.getElementById('users-list');
-  try {
-    const users = await api('/api/auth/managed-users');
-    if (!users.length) {
-      el.innerHTML = '<div style="color:var(--text3)">No users found.</div>';
-      return;
-    }
-    const jfUrl = state.currentUser?.jellyfin_url || '';
-    el.innerHTML = users.map(u => {
-      const avatarUrl = u.image_tag
-        ? `${jfUrl}/Users/${u.id}/Images/Primary?tag=${u.image_tag}&quality=90&maxWidth=80`
-        : '';
-      const avatar = avatarUrl
-        ? `<img alt="" src="${escHtml(avatarUrl)}" style="width:36px;height:36px;border-radius:50%;object-fit:cover">`
-        : `<div style="width:36px;height:36px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;color:var(--text2)">${escHtml(u.name.charAt(0).toUpperCase())}</div>`;
-      const ownerBadge = u.is_owner ? ' <span style="font-size:10px;padding:2px 6px;background:var(--accent-dim);color:var(--accent);border-radius:4px;font-weight:500">OWNER</span>' : '';
-      const badge = u.is_admin
-        ? '<span style="font-size:10px;padding:2px 6px;background:var(--green-dim);color:var(--green);border-radius:4px;font-weight:500">ADMIN</span>' + ownerBadge
-        : '<span style="font-size:10px;padding:2px 6px;background:var(--bg3);color:var(--text3);border-radius:4px">USER</span>';
-      const loginStatus = u.has_logged_in
-        ? ''
-        : ' <span style="font-size:10px;color:var(--text3)">(never logged in)</span>';
-      const toggleDisabled = u.is_owner
-        ? ' disabled title="Owner — admin cannot be removed"'
-        : u.id === state.currentUser?.jellyfin_user_id
-          ? ' disabled title="Cannot change your own admin status"'
-          : '';
-      const toggleChecked = u.is_admin ? ' checked' : '';
-      return `<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
-        ${avatar}
-        <div style="flex:1;min-width:0">
-          <div style="font-size:13px;font-weight:500">${escHtml(u.name)}${loginStatus}</div>
-          <div style="margin-top:2px">${badge}</div>
-        </div>
-        <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text3);cursor:pointer">
-          Admin
-          <input type="checkbox"${toggleChecked}${toggleDisabled} onchange="toggleUserAdmin('${escapeJS(u.id)}', this.checked)">
-        </label>
-      </div>`;
-    }).join('');
-  } catch (e) {
-    el.innerHTML = `<div style="color:var(--red)">Failed to load users: ${escHtml(e.message)}</div>`;
-  }
-}
-
-async function toggleUserAdmin(jellyfinUserId, isAdmin) {
-  try {
-    await api('/api/auth/set-admin', {
-      method: 'POST',
-      body: { jellyfin_user_id: jellyfinUserId, is_admin: isAdmin },
-    });
-    loadUsers();
-  } catch (e) {
-    alert('Failed to update admin status: ' + e.message);
-    loadUsers();
-  }
-}
-
 // ── API Helper ────────────────────────────────────────────────────────────
 async function api(url, options = {}) {
   const defaults = { headers: { 'Content-Type': 'application/json' } };
@@ -639,6 +786,7 @@ async function api(url, options = {}) {
   if (merged.body && typeof merged.body === 'object') {
     merged.body = JSON.stringify(merged.body);
   }
+  if (merged.method && merged.method !== 'GET' && typeof live !== 'undefined') live.lastWrite = Date.now();
   const r = await fetch(url, merged);
   if (r.status === 401) {
     if (!state.sessionExpired) {
@@ -1304,7 +1452,7 @@ async function previewSync(providerId) {
 const SETTINGS_TEXT_FIELDS = [
   'tmdb_bearer_token', 'mdblist_api_key', 'radarr_url', 'radarr_api_key',
   'sonarr_url', 'sonarr_api_key',
-  'jellyfin_url', 'jellyfin_api_key', 'jellyfin_public_url',
+  'jellyfin_url', 'jellyfin_api_key', 'jellyfin_public_url', 'tentacle_public_url',
   'recently_added_days', 'tmdb_match_threshold',
   'trakt_client_id', 'logodev_api_key',
   'pushover_app_token', 'pushover_user_key',
@@ -1492,8 +1640,8 @@ function applyMusicVisibility() {
   if (status) {
     const lidarr = document.getElementById('lidarr_url')?.value.trim();
     status.innerHTML = !on ? ''
-      : lidarr ? 'Lidarr and your player are set in <a href="#" onclick="showSettingsSection(\'connections\');return false" style="color:var(--accent)">Connections</a>.'
-      : 'Next: connect Lidarr in <a href="#" onclick="showSettingsSection(\'connections\');return false" style="color:var(--accent)">Connections</a>.';
+      : lidarr ? 'Lidarr and your player are set in <a href="#" onclick="showSettingsSection(\'connections\');return false" style="color: var(--accent-text)">Connections</a>.'
+      : 'Next: connect Lidarr in <a href="#" onclick="showSettingsSection(\'connections\');return false" style="color: var(--accent-text)">Connections</a>.';
   }
   if (on) {
     loadServicePickers('lidarr');

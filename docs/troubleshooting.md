@@ -309,7 +309,7 @@ If it's an authorization problem instead, the plugin passes the Jellyfin user ID
 for admin verification:
 
 1. Make sure you're logged in as an admin user in Jellyfin
-2. Check that the user has admin permissions in Tentacle (Settings → Users)
+2. Check that the user has admin permissions in Tentacle (People)
 3. Verify Radarr/Sonarr connections in Tentacle Settings
 
 !!! tip "A slow *arr is no longer reported as a failure"

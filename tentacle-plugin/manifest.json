@@ -9,6 +9,126 @@
     "imageUrl": "https://raw.githubusercontent.com/lucas-romanenko/jellyfin-tentacle/main/tentacle-plugin/logo.png",
     "versions": [
       {
+        "version": "2.287.0.0",
+        "changelog": "Release v2.287.0",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v2.287.0/tentacle-plugin-v2.287.0.zip",
+        "checksum": "b0deef26b6932790b742800785e86294",
+        "timestamp": "2026-10-23T01:09:53Z"
+      },
+      {
+        "version": "2.286.0.0",
+        "changelog": "Release v2.286.0",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v2.286.0/tentacle-plugin-v2.286.0.zip",
+        "checksum": "4df7f13b54f8c40d92063e9bc0fbf465",
+        "timestamp": "2026-10-22T23:38:48Z"
+      },
+      {
+        "version": "2.285.0.0",
+        "changelog": "Release v2.285.0",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v2.285.0/tentacle-plugin-v2.285.0.zip",
+        "checksum": "75d0787c8d2fe61712fd66bdd2920282",
+        "timestamp": "2026-10-22T22:46:05Z"
+      },
+      {
+        "version": "2.284.1.0",
+        "changelog": "Release v2.284.1",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v2.284.1/tentacle-plugin-v2.284.1.zip",
+        "checksum": "09ef781c3967b5c5d5c1d9f99ad455df",
+        "timestamp": "2026-10-22T20:07:57Z"
+      },
+      {
+        "version": "2.284.0.0",
+        "changelog": "Release v2.284.0",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v2.284.0/tentacle-plugin-v2.284.0.zip",
+        "checksum": "d284ce857ed7c0a5b665aa0c640c3255",
+        "timestamp": "2026-10-22T18:16:54Z"
+      },
+      {
+        "version": "2.283.0.0",
+        "changelog": "Release v2.283.0",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v2.283.0/tentacle-plugin-v2.283.0.zip",
+        "checksum": "02ca6ef0587f878f191412afd00377ca",
+        "timestamp": "2026-10-22T02:04:06Z"
+      },
+      {
+        "version": "2.282.0.0",
+        "changelog": "Release v2.282.0",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v2.282.0/tentacle-plugin-v2.282.0.zip",
+        "checksum": "79b924c19587201552d5b212cb8eb140",
+        "timestamp": "2026-10-22T01:09:02Z"
+      },
+      {
+        "version": "2.281.0.0",
+        "changelog": "Release v2.281.0",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v2.281.0/tentacle-plugin-v2.281.0.zip",
+        "checksum": "9208baf2fcc7cab4bf39804282f9e9c5",
+        "timestamp": "2026-10-22T00:53:52Z"
+      },
+      {
+        "version": "2.280.1.0",
+        "changelog": "Release v2.280.1",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v2.280.1/tentacle-plugin-v2.280.1.zip",
+        "checksum": "0068c180309dd1fcef338e45cf124e4f",
+        "timestamp": "2026-10-22T00:16:39Z"
+      },
+      {
+        "version": "2.280.0.0",
+        "changelog": "Release v2.280.0",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v2.280.0/tentacle-plugin-v2.280.0.zip",
+        "checksum": "84fa0396c16f79cf5c1715659e6b4f38",
+        "timestamp": "2026-10-21T23:50:01Z"
+      },
+      {
+        "version": "2.279.0.0",
+        "changelog": "Release v2.279.0",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v2.279.0/tentacle-plugin-v2.279.0.zip",
+        "checksum": "4a761c0b833f0d85cd4d5b141d52ec83",
+        "timestamp": "2026-10-21T22:51:07Z"
+      },
+      {
+        "version": "2.277.0.0",
+        "changelog": "Release v2.277.0",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v2.277.0/tentacle-plugin-v2.277.0.zip",
+        "checksum": "1e0ebea72f33476b8166db222bbd7aff",
+        "timestamp": "2026-10-21T13:42:32Z"
+      },
+      {
+        "version": "2.276.0.0",
+        "changelog": "Release v2.276.0",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v2.276.0/tentacle-plugin-v2.276.0.zip",
+        "checksum": "fb8731b942a6fdcd92e5c006dc07667c",
+        "timestamp": "2026-10-20T23:00:22Z"
+      },
+      {
+        "version": "2.275.0.0",
+        "changelog": "Release v2.275.0",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v2.275.0/tentacle-plugin-v2.275.0.zip",
+        "checksum": "3466a019d2d2478f00db3343d11106b9",
+        "timestamp": "2026-10-20T20:32:42Z"
+      },
+      {
+        "version": "2.274.0.0",
+        "changelog": "Release v2.274.0",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v2.274.0/tentacle-plugin-v2.274.0.zip",
+        "checksum": "e32bb9656368b0aa04d6a33aa263ee37",
+        "timestamp": "2026-10-20T19:38:03Z"
+      },
+      {
         "version": "2.273.0.0",
         "changelog": "Release v2.273.0",
         "targetAbi": "10.11.0.0",

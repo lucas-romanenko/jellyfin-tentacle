@@ -110,6 +110,53 @@ class ImportOntoUnmountedRoot(NightlyHarness):
                          "written onto the unmounted shows root")
         self.assertEqual([], [d.kind for d in self.db.query(DeletionLog).all()])
 
+    def test_a_sonarr_import_into_a_recorded_show_folder_on_the_unmounted_shows_root(self):
+        """vod_root layout, or one folder for VOD and Sonarr: Sonarr imports an
+        episode of a show Tentacle also serves into that show's own folder, so
+        the recorded folder exists again on the bare mount point. A folder
+        without a .strm is not one of Tentacle's titles being there."""
+        self.add_category("11", type_="series")
+        self.add_category("12", type_="series")
+        self.catalogue_series("11", ["Heat Show"], first_tmdb=5000)
+        self.catalogue_series("12", ["Ronin Show"], first_tmdb=6000)
+        self.night()
+        heat = pathlib.Path(self.series_row(5000).strm_path).relative_to(self.vod / "shows")
+        self._unmount("shows")
+        self._arr_import("shows", heat / "Season 02", "Heat Show S02E01.mkv")
+        self.client.raise_for = {"12"}
+        self._unmounted_night("series")
+        self._unmounted_night("series")
+        self.assertIsNotNone(self.series_row(6000), "Ronin Show deleted while the shows folder was unmounted")
+        self.assertEqual([], [p for p in _files(self.vod / "shows") if p.endswith(".strm")],
+                         "written onto the unmounted shows root")
+        self.assertEqual([], [d.kind for d in self.db.query(DeletionLog).all()])
+
+    def test_a_mounted_library_whose_shows_hold_strm_files_still_syncs(self):
+        """The other side: show folders holding .strm files are Tentacle's titles,
+        so a mounted library with a Sonarr import in it syncs as before."""
+        self.add_category("11", type_="series")
+        self.catalogue_series("11", ["Heat Show", "Ronin Show"], first_tmdb=5000)
+        self.night()
+        heat = pathlib.Path(self.series_row(5000).strm_path)
+        (heat / "Season 02").mkdir(parents=True, exist_ok=True)
+        (heat / "Season 02" / "Heat Show S02E01.mkv").write_bytes(b"video")
+        run = sync.sync_provider(self.provider, "series", self.db)
+        self.assertNotEqual("failed", run.status, run.error_message)
+
+    def test_an_unreadable_show_folder_is_not_counted_as_there(self):
+        self.add_category("11", type_="series")
+        self.catalogue_series("11", ["Heat Show"], first_tmdb=5000)
+        self.night()
+        heat = pathlib.Path(self.series_row(5000).strm_path)
+        real = pathlib.Path.rglob
+
+        def stale(path, pattern):
+            if path == heat:
+                raise OSError(116, "Stale file handle")
+            return real(path, pattern)
+        with mock.patch.object(pathlib.Path, "rglob", stale):
+            self.assertTrue(sync._vod_root_holds_none(self.db, sync.Series, self.vod / "shows"))
+
     def test_a_library_emptied_on_purpose_syncs_with_the_marker(self):
         """The way out for a new disk: an empty .tentacle-library file in the root."""
         self.add_category("1")

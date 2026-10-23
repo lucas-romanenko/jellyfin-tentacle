@@ -296,12 +296,26 @@ class AlbumRequest(BaseModel):
     release_id: Optional[str] = None
 
 
+def _album_title(db: Session, rgid: str) -> str:
+    """An album's "Artist — Title" for the request list, from what Tentacle
+    already knows, else MusicBrainz' cache; "" when neither says."""
+    row = db.query(MusicAlbum).filter(MusicAlbum.mbid == _mbid(rgid)).first()
+    if row is not None and row.title:
+        artist = getattr(row, "artist_name", "") or ""
+        return f"{artist} — {row.title}" if artist else row.title
+    return ""
+
+
 @webhook_router.post("/request")
 def music_request(body: AlbumRequest, request: Request, db: Session = Depends(get_db),
                   user: TentacleUser = Depends(music_user)):
     """Request an album. Goes through the single request path (services.media_requests)."""
     from services.media_requests import RequestRefused, request_album
     choice = {"release_id": body.release_id} if body.release_id else ({"tracks": body.tracks} if body.tracks else None)
+    from services import approvals
+    if approvals.needs_approval(user):
+        return approvals.hold(db, user, "album", {"mbid": body.mbid, "choice": choice},
+                              title=(body.title or "")[:300] or _album_title(db, body.mbid))
     try:
         return request_album(db, body.mbid, user_id=user.id if user else None, via=_via(request), choice=choice)
     except RequestRefused as e:

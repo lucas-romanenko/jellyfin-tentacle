@@ -6,11 +6,11 @@
  *   - /static/* assets: cache-first (URLs are version-busted, so safe).
  * Bump CACHE to force all clients to re-fetch the shell after a deploy.
  */
-const CACHE = 'tentacle-shell-v2';
+const CACHE = 'tentacle-shell-v3';
 const SHELL = [
   '/',
   '/static/site.webmanifest',
-  '/static/favicon.svg',
+  '/static/brand/mark-small.svg',
   '/static/web-app-manifest-192x192.png',
   '/static/web-app-manifest-512x512.png',
 ];

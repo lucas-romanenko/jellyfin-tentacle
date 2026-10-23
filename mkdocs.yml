@@ -7,13 +7,15 @@ repo_name: lucas-romanenko/jellyfin-tentacle
 # notes for coding agents (linked from CLAUDE.md), not part of the site
 exclude_docs: |
   agents/
+  overrides/
 
 theme:
   name: material
+  custom_dir: docs/overrides
   palette:
     scheme: slate
-    primary: deep purple
-    accent: purple
+    primary: custom
+    accent: custom
   font:
     text: Inter
     code: JetBrains Mono
@@ -30,8 +32,11 @@ theme:
     - toc.follow
   icon:
     repo: fontawesome/brands/github
-  logo: images/banner.png
-  favicon: images/banner.png
+  logo: assets/brand/mark-small.svg
+  favicon: assets/brand/mark-small.svg
+
+extra_css:
+  - stylesheets/tentacle.css
 
 extra:
   social:

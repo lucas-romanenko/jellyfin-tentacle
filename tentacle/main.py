@@ -351,7 +351,19 @@ def _run_scheduled_sync():
         logger.info("Syncing per-user playlists and home configs")
         try:
             from models.database import TentacleUser
-            from services.smartlists import sync_smartlists, write_home_config, migrate_global_smartlists_to_user, refresh_smartlist_playlists
+            from services.smartlists import sync_smartlists, write_home_config, migrate_global_smartlists_to_user, refresh_smartlist_playlists, get_home_config
+            # Nobody's playlists are rebuilt for an account deleted in Jellyfin.
+            try:
+                from services import gone_people
+                from services.livetv_tuners import jellyfin_for
+                jf = jellyfin_for(db)
+                if jf is not None:
+                    forgot = gone_people.forget_gone(db, jf.get("/Users") or [])
+                    if forgot:
+                        logger.info(f"[Nightly] Forgot {len(forgot)} person(s) no longer in Jellyfin: {', '.join(forgot)}")
+            except Exception as e:
+                _rollback(db)
+                logger.warning(f"[Nightly] Checking for people removed from Jellyfin failed: {e}")
             users = db.query(TentacleUser).all()
             for user in users:
                 try:
@@ -372,6 +384,11 @@ def _run_scheduled_sync():
                         _rollback(db)
                         logger.warning(f"[Nightly] Duplicate playlist cleanup failed for user {user.id}: {e}")
                     write_home_config(db, user_id=user.id)
+                    # Someone on the default home gets today's default
+                    # (new sources, the admin's latest layout)
+                    from services import default_home
+                    if default_home.follows_default(get_home_config(db, user_id=user.id)):
+                        default_home.apply_default(db, user, build=True)
                     logger.info(
                         f"[Nightly] Playlists rebuilt for user {user.id}: "
                         f"{stats.get('processed', 0)} processed, {stats.get('created', 0)} created, "
@@ -607,6 +624,21 @@ def _resume_youtube_channels() -> None:
         logger.warning(f"[YouTube] Could not resume unfinished channels: {e}")
 
 
+def _youtube_follows() -> None:
+    """Everyone's YouTube blocked tags as their follows say (services/youtube/
+    follows.py): also people made in Jellyfin since, who follow nothing."""
+    from models.database import SessionLocal
+    from services.youtube import follows
+    db = SessionLocal()
+    try:
+        follows.apply_everyone(db)
+        follows.drop_old_playlists(db)
+    except Exception as e:
+        logger.warning(f"[YouTube] Could not update who sees which channels: {e}")
+    finally:
+        db.close()
+
+
 def _resume_provider_relinks() -> None:
     from services.provider_relink import resume_pending
     try:
@@ -653,6 +685,20 @@ def setup_scheduler(db):
     )
     logger.info("Download health check scheduled: every 5 min")
 
+    # Problems go to the admin (a message in Jellyfin, Pushover if set up),
+    # plain words to the family (services/admin_alerts.py).
+    from services.admin_alerts import run_check as run_admin_alerts
+    scheduler.add_job(
+        run_admin_alerts,
+        IntervalTrigger(minutes=10),
+        id="admin_alerts",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now() + timedelta(minutes=3),
+    )
+    logger.info("Problem alerts for admins scheduled: every 10 min")
+
     # Release checks: why titles in Activity → Searching haven't downloaded.
     # A couple per run, only for titles searching 45+ min, each at most every 12 h
     # (an interactive search queries every indexer).
@@ -688,18 +734,25 @@ def setup_scheduler(db):
     # Provider health: log in to each provider and open one test stream every
     # hour; a confirmed failure shows on the dashboard and goes to Pushover
     # (services/provider_health.py). Once shortly after start, so the state is
-    # fresh after a restart.
-    from services.provider_health import run_provider_health
+    # fresh after a restart, unless the last check is under an hour old: then
+    # the hourly run comes an hour after that one ("Check now" still runs).
+    from services.provider_health import run_provider_health, next_due, MIN_GAP_SECONDS
+    due = next_due(db)
     scheduler.add_job(
         run_provider_health,
-        IntervalTrigger(hours=1),
+        IntervalTrigger(hours=1, start_date=due) if due else IntervalTrigger(hours=1),
         id="provider_health",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
     )
-    schedule_once(run_provider_health, 120, "provider_health_first")
-    logger.info("Provider health check scheduled: hourly")
+    if due is None:
+        schedule_once(run_provider_health, 120, "provider_health_first")
+        logger.info("Provider health check scheduled: hourly")
+    else:
+        last = due - timedelta(seconds=MIN_GAP_SECONDS)
+        logger.info(f"Provider health check scheduled: hourly; start-up check skipped "
+                    f"(last check {last.strftime('%H:%M')}), next at {due.strftime('%H:%M')}")
 
     # Live TV guide: a nightly download that failed, or a feed that reaches
     # only a day or so ahead, left an empty guide until the next night. The
@@ -722,11 +775,36 @@ def setup_scheduler(db):
     # A channel whose first index a restart cut short is picked up a minute
     # after start-up, background checks or not (#288).
     schedule_once(_resume_youtube_channels, 60, "youtube_resume_first_index")
+    # Who sees which YouTube channels: soon after start-up (a migrated
+    # install's channels become the admin's only), then hourly.
+    from apscheduler.triggers.interval import IntervalTrigger as _Every
+    scheduler.add_job(_youtube_follows, _Every(hours=1, start_date=datetime.now() + timedelta(seconds=30)),
+                      id="youtube_follows", replace_existing=True)
     # A provider save's .strm rewrite a restart cut short (#149)
     schedule_once(_resume_provider_relinks, 60, "provider_relink_resume")
     # VOD through Tentacle (the default): existing .strm files move to the
     # /api/vod route (or back, for an install that opted out) without a sync
     schedule_once(_start_vod_route_relink, 90, "vod_route_relink")
+    # Live TV per person: Tentacle keeps Jellyfin's tuners, tags and blocked
+    # tags in line (services/livetv_tuners.py). Hourly catches people added
+    # in Jellyfin; once after start-up moves an install off the old tuner.
+    from services.livetv_tuners import enable as _livetv_enable, run_sync as _livetv_sync
+    _livetv_enable()
+    scheduler.add_job(
+        _livetv_sync,
+        IntervalTrigger(hours=1),
+        kwargs={"reason": "hourly check"},
+        id="livetv_setup",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    schedule_once(lambda: _livetv_sync("start-up"), 150, "livetv_setup_first")
+    # The welcome's "You now have access to N movies, N TV shows and N live TV
+    # channels" for everyone it is still due for, kept counted (services/welcome.py).
+    from services.welcome import warm_everyone_due as _welcome_counts
+    scheduler.add_job(_welcome_counts, IntervalTrigger(hours=1, start_date=datetime.now() + timedelta(seconds=180)),
+                      id="welcome_counts", replace_existing=True, max_instances=1, coalesce=True)
     # Music module: the daily reconcile (checks the setting itself when it runs),
     # and any request a restart interrupted before its pin and search.
     reschedule_music_reconcile()
@@ -778,6 +856,21 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning(f"SmartLists migration failed for {_u.display_name}: {e}")
 
+        # Once: homes still on the old starter rows (Jellyfin's own sections)
+        # follow the default home from now on; nobody's own layout is touched
+        try:
+            from services import default_home
+            if default_home.migrate_existing_homes(db):
+                default_home.apply_to_followers_soon("homes moved to the default")
+        except Exception as e:
+            logger.warning(f"Default home migration failed: {e}")
+
+        # Everyone but admins locks after a few wrong passwords (Jellyfin's
+        # default never does), once Jellyfin answers
+        if get_setting(db, "jellyfin_url"):
+            from services import person_access
+            person_access.ensure_lockout_soon()
+
         # Validate Jellyfin connection
         jf_url = get_setting(db, "jellyfin_url")
         jf_key = get_setting(db, "jellyfin_api_key")
@@ -796,8 +889,20 @@ async def lifespan(app: FastAPI):
     setup_sse_logging()
 
     scheduler.start()
+    # Live TV: the background stream checker (one channel at a time, only
+    # while nobody watches or records; any stream open pre-empts it).
+    from services import livetv_checker
+    livetv_checker.start()
+    # Live updates: Radarr/Sonarr queue changes reach open screens (services/live_updates.py)
+    from services import live_updates
+    live_updates.start()
+    # An image without a release stamp asks GitHub which release it follows
+    from services import versions
+    versions.derive_in_background(BUILD_COMMIT)
     logger.info("Tentacle ready")
     yield
+    live_updates.stop()
+    livetv_checker.stop()
     scheduler.shutdown(wait=False)
     logger.info("Tentacle shutting down")
 
@@ -869,6 +974,20 @@ app.include_router(smartlists_router.router)
 app.include_router(discover_router.router)
 app.include_router(activity_router.router)
 app.include_router(livetv_router.router)
+from routers import my_livetv as my_livetv_router
+app.include_router(my_livetv_router.router)
+from routers import my_youtube as my_youtube_router
+app.include_router(my_youtube_router.router)
+from routers import livetv_checker as livetv_checker_router
+app.include_router(livetv_checker_router.router)
+from routers import livetv_catalog as livetv_catalog_router
+app.include_router(livetv_catalog_router.router)
+app.include_router(livetv_catalog_router.stream_router)
+from routers import provider_new as provider_new_router
+app.include_router(provider_new_router.router)
+from routers import family as family_router
+app.include_router(family_router.router)
+app.include_router(family_router.tv_router)
 # A refused tuner open answers 503 with no body: Jellyfin's tuner copies any
 # body as if it were the stream (#140).
 app.add_exception_handler(livetv_router._TunerRefusal, livetv_router.tuner_refusal_handler)
@@ -878,6 +997,10 @@ app.include_router(vod_router.router)
 # exception uvicorn would log as a crash (#285).
 logging.getLogger("uvicorn.error").addFilter(vod_router.EarlyRangeEndFilter())
 app.include_router(notifications_router.router)
+from routers import updates as updates_router  # noqa: E402
+app.include_router(updates_router.router)
+from routers import about as about_router  # noqa: E402
+app.include_router(about_router.router)
 app.include_router(health_router.router)
 app.include_router(youtube_router.router)
 app.include_router(music_router.router)
@@ -946,6 +1069,8 @@ app.add_middleware(NoCacheStatic)
 # being there.
 BUILD_COMMIT = (os.environ.get("TENTACLE_COMMIT") or "").strip() or "unknown"
 BUILD_DATE = (os.environ.get("TENTACLE_BUILD_DATE") or "").strip() or "unknown"
+# The release version ("v1.23.0", or "v1.23.0+3" for a build of main 3
+# commits after it): services/versions.py.
 
 
 @app.get("/api/health")
@@ -1000,8 +1125,12 @@ def version():
     """What this container is. Unauthenticated on purpose: it is the first
     thing to check when something is missing, and needing to log in to find
     out you are on an old build is the wrong way round. Reports no
-    configuration and no data — a commit, a date, and which API paths exist."""
+    configuration and no data — a version, a commit, a date, and which API
+    paths exist."""
+    from services import versions
     return {
+        # None when the image has no stamp and GitHub hasn't said (yet).
+        "version": versions.current(),
         "commit": BUILD_COMMIT,
         "built": BUILD_DATE,
         "assets": _asset_version(),

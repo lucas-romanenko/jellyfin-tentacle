@@ -21,11 +21,24 @@ The URL is `/api/vod/{movie|series}/{provider}.{stream_id}.{sig}.{ext}`
 presents no session; the signature is what makes it serve only what the
 sync wrote. HLS is not involved: Xtream VOD is one file, and that is what
 is streamed.
+
+One person watching is one provider connection. Jellyfin pulls a title for
+more than the picture: a browser direct-plays the file from its own address
+while Jellyfin's ffmpeg extracts its subtitles from Jellyfin's, and that
+extraction reads the whole file, for minutes after the player stopped. So a
+title's requests share one playback (one connection, time-shared) unless
+Jellyfin says more people are watching it than there are playbacks, and a
+playback is closed a few seconds after the last Jellyfin session playing it
+stopped (`_watch_viewers`). Within a playback the viewer's own requests
+come first: a client Jellyfin lists as the session's address (a browser or
+TV playing the file itself) takes the connection back whenever it wants
+data, and Jellyfin's work for the title reads while the player does not.
 """
 import asyncio
 import logging
 import random
 import re
+import time
 from typing import Optional
 
 import httpx
@@ -53,6 +66,10 @@ RECONNECT_ATTEMPTS = 6          # per request, reset by a connection that lasts 
 # budget: the provider cuts every 5-20 s after 60-160 MB, so a film is dozens
 # of drops, each one a fresh start.
 PROGRESS_RESET_BYTES = 8 << 20
+# The first resume after a drop waits this long (then doubling, at most 5 s):
+# the provider closes a film's connection every few minutes when several
+# streams are open, and a player's buffer covers a second, not ten.
+RESUME_FIRST_DELAY = 0.5
 # While another request of the same playback waits, the holder keeps the one
 # provider connection this long, then hands it over (time-sharing). Well under
 # what ffmpeg and Jellyfin wait for data.
@@ -61,6 +78,35 @@ QUANTUM_SECONDS = 8.0
 # much past its quantum (a paused player blocks the holder's body).
 PREEMPT_GRACE_SECONDS = 2.0
 CLOSE_SETTLE_SECONDS = 2.0
+# While a playback runs, Jellyfin's sessions are asked this often who is
+# watching which title. A playback whose viewer has gone (stopped, or moved
+# on to the next episode) for VIEWER_GONE_SECONDS is closed: what still pulls
+# it then is Jellyfin's own work for the title, not a person.
+VIEWER_CHECK_SECONDS = 2.0
+VIEWER_GONE_SECONDS = 4.0
+# An older answer says nothing about who is watching now.
+VIEWERS_FRESH_SECONDS = 15.0
+# After a title was closed for having no viewer, a request that carries on
+# reading it (a Range past byte 0, nothing of the title running) is refused
+# for this long unless Jellyfin shows a viewer again: ffmpeg answers a body
+# that ended early by asking for the rest at once (measured, ffmpeg 7.1:
+# "Stream ends prematurely", then `Range: bytes=<where it was>-`). A player
+# starting the title reads its start first (byte 0), which lifts it.
+GONE_REFUSE_SECONDS = 60.0
+# How long a Jellyfin item's VOD address is remembered (a relink rewrites it).
+ITEM_TITLES_SECONDS = 600.0
+# How long a title's redirect target (the provider's edge address its panel
+# URL redirects to) is reused before the panel is asked again. Every request
+# of a play (Jellyfin's probe, the player's open, each seek) used to pay the
+# panel's 302 plus a new edge's DNS and connect: 0.5-0.8 s to first bytes,
+# against 0.15 s straight to the edge (measured Oct 2026). A target that
+# fails (an expired token: 403/404, a refused or broken connection) is
+# forgotten and the panel asked again at once, so a short life is only a
+# bound on how stale it can get.
+TARGET_SECONDS = 300.0
+# Idle connections to the provider are kept this briefly: long enough for the
+# next range of the same play, short of a connection the provider might count.
+KEEPALIVE_SECONDS = 5.0
 _UA_DEFAULT = "TiviMate/4.7.0 (Linux; Android 12)"
 _RANGE_RE = re.compile(r"^bytes=(\d+)-(\d*)$")
 
@@ -136,22 +182,32 @@ class _Reader:
     subtitle extraction next to it, a second transcode, the range a seek
     left. Only the playback's `holder` has a provider connection (`resp`);
     the others wait, parked, for their turn."""
-    __slots__ = ("turn", "resp", "since")
+    __slots__ = ("turn", "resp", "since", "client", "last_chunk", "waiting")
 
-    def __init__(self):
+    def __init__(self, client: str = ""):
         self.turn = asyncio.Event()
         self.resp = None
         self.since = 0.0
+        self.client = client
+        # When it last passed bytes on (loop time): a holder whose player
+        # stopped reading (paused, buffer full) passes nothing.
+        self.last_chunk = 0.0
+        # Asking for the connection right now (opening, or parked and its
+        # player wants bytes) -- as opposed to parked while its player is
+        # not reading, which wants nothing.
+        self.waiting = True
 
 
 class _Playback:
     """One title being played: its lease and when it was last asked for."""
-    __slots__ = ("token", "owner", "client", "lease", "last_used", "started", "idle", "stopped",
+    __slots__ = ("token", "title", "owner", "client", "lease", "last_used", "started", "idle", "stopped",
                  "active_bodies", "opening", "generation", "upstream", "holder", "waiters",
-                 "closing", "open_lock", "size", "content_type")
+                 "closing", "open_lock", "size", "content_type", "watched_at")
 
-    def __init__(self, token: str, owner: str, lease, idle: float, client: str = ""):
+    def __init__(self, token: str, owner: str, lease, idle: float, client: str = "", title: str = ""):
         self.token = token
+        # `movie/<token file>`: the same for every client of the title (token is title@client)
+        self.title = title or token.rsplit("@", 1)[0]
         self.owner = owner
         self.client = client
         self.lease = lease
@@ -190,6 +246,9 @@ class _Playback:
         # playback is answered from them instead of a provider connection.
         self.size = None
         self.content_type = None
+        # When Jellyfin last listed a session playing this title (loop time);
+        # None until it has.
+        self.watched_at = None
 
     def touch(self):
         self.last_used = asyncio.get_running_loop().time()
@@ -227,20 +286,21 @@ class _Playback:
 
     def hand_on(self, reader: "_Reader") -> None:
         """`reader` is done (finished, or its player left): the request
-        that has waited longest gets the connection."""
+        that has waited longest gets the connection, one that is asking for
+        it before one whose player is not reading."""
         if reader in self.waiters:
             self.waiters.remove(reader)
         if self.holder is reader:
             self.holder = None
             self.upstream = None
             if self.waiters and not self.stopped.is_set():
-                self.take(self.waiters[0])
+                self.take(next((r for r in self.waiters if r.waiting), self.waiters[0]))
 
-    def stop(self):
-        """Called by the broker when a recording or viewer takes the slot."""
+    def stop(self, why: str = "a recording or live stream needed its connection slot"):
+        """Called by the broker when a recording or viewer takes the slot,
+        and when nobody is watching the title any more."""
         if not self.stopped.is_set():
-            logger.warning(f"[VOD] {self.owner}: playback stopped — a recording or live stream needed "
-                           f"its connection slot")
+            logger.warning(f"[VOD] {self.owner}: playback stopped — {why}")
             self.stopped.set()
             if self.upstream is not None:
                 self.close_upstream(self.upstream)
@@ -260,7 +320,62 @@ class _Playback:
 
 _playbacks: "dict[str, _Playback]" = {}
 _sweeper: "asyncio.Task | None" = None
+_viewer_watch: "asyncio.Task | None" = None
+# What Jellyfin said last: {"titles": {title: [the address of each session
+# playing it]} or None (unknown: no Jellyfin connection, an error), "at":
+# loop time}.
+_viewers: dict = {"titles": None, "at": 0.0}
+# The Jellyfin server to ask, from the settings when a playback starts.
+_jellyfin: dict = {"url": "", "key": ""}
+# Jellyfin item id -> (monotonic time, the VOD titles its media sources play)
+_item_titles: "dict[str, tuple]" = {}
+# title -> loop time it was closed for having no viewer (GONE_REFUSE_SECONDS)
+_gone: "dict[str, float]" = {}
 _pending_releases: "set[asyncio.Task]" = set()
+# provider URL of a title -> (its redirect target, monotonic time it expires)
+_targets: "dict[str, tuple]" = {}
+# The one provider client (connection pool) VOD requests share: (event loop,
+# client factory, client). Per loop, because a client's connections belong to
+# the loop that opened them.
+_shared: dict = {"loop": None, "factory": None, "client": None}
+
+
+def _client() -> httpx.AsyncClient:
+    """The pooled client every VOD request uses (keep-alive to the provider,
+    no new client and TLS/DNS per seek). It never follows redirects itself:
+    _open does, re-validating each hop. Pooling adds no connection: a
+    playback still has at most one open (open_lock, settle), and a body cut
+    off mid-way closes its connection rather than returning it to the pool."""
+    loop = asyncio.get_running_loop()
+    factory = httpx.AsyncClient
+    if _shared["client"] is None or _shared["loop"] is not loop or _shared["factory"] is not factory:
+        _shared["client"] = factory(
+            follow_redirects=False,
+            timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
+            limits=httpx.Limits(max_connections=None, max_keepalive_connections=4,
+                                keepalive_expiry=KEEPALIVE_SECONDS))
+        _shared["loop"], _shared["factory"] = loop, factory
+    return _shared["client"]
+
+
+def _cached_target(url: str) -> Optional[str]:
+    hit = _targets.get(url)
+    if hit is None:
+        return None
+    if time.monotonic() >= hit[1]:
+        del _targets[url]
+        return None
+    return hit[0]
+
+
+def _remember_target(url: str, target: str) -> None:
+    if len(_targets) > 1000:
+        _targets.clear()
+    _targets[url] = (target, time.monotonic() + TARGET_SECONDS)
+
+
+def _forget_target(url: str) -> None:
+    _targets.pop(url, None)
 
 
 def _release(pb: _Playback):
@@ -268,12 +383,6 @@ def _release(pb: _Playback):
         del _playbacks[pb.token]
     livetv._stream_slots.release_lease(pb.lease)
     logger.info(f"[VOD] {pb.owner}: playback ended, slot released")
-
-
-def _close_later_client(client) -> None:
-    task = asyncio.get_running_loop().create_task(client.aclose())
-    _pending_releases.add(task)
-    task.add_done_callback(_pending_releases.discard)
 
 
 def _release_soon(pb: _Playback, generation: int) -> None:
@@ -312,16 +421,183 @@ async def _sweep():
 
 
 def _ensure_sweeper():
-    global _sweeper
+    global _sweeper, _viewer_watch
     if _sweeper is None or _sweeper.done():
         _sweeper = asyncio.get_running_loop().create_task(_sweep())
+    if _viewer_watch is None or _viewer_watch.done():
+        _viewer_watch = asyncio.get_running_loop().create_task(_watch_viewers())
 
 
-async def _playback_for(db, token: str, owner: str, client: str = "") -> _Playback:
-    pb = _playbacks.get(token)
-    if pb is not None and not pb.stopped.is_set():
+def _address(endpoint) -> str:
+    """A session's RemoteEndPoint as a request's client address."""
+    text = str(endpoint or "").strip()
+    return text[7:] if text.lower().startswith("::ffff:") else text
+
+
+def _jellyfin_watched_titles(url: str, key: str) -> Optional[dict]:
+    """{title: [the address of each Jellyfin session playing it]} for the
+    Tentacle VOD titles being played now; None when Jellyfin can't say (not
+    set up, not answering). Blocking: run in a worker thread."""
+    if not url or not key:
+        return None
+    import requests
+    headers = {"X-Emby-Token": key}
+    try:
+        r = requests.get(f"{url}/Sessions", params={"activeWithinSeconds": 960}, headers=headers, timeout=5)
+        r.raise_for_status()
+        playing = [(str(s["NowPlayingItem"]["Id"]), _address(s.get("RemoteEndPoint"))) for s in r.json()
+                   if isinstance(s, dict) and (s.get("NowPlayingItem") or {}).get("Id")]
+        ids = [i for i, _ in playing]
+        now = time.monotonic()
+        missing = sorted({i for i in ids if i not in _item_titles
+                          or now - _item_titles[i][0] > ITEM_TITLES_SECONDS})
+        if missing:
+            # A session's item carries no media sources; the item's do (its .strm address).
+            r = requests.get(f"{url}/Items", params={"Ids": ",".join(missing), "Fields": "MediaSources"},
+                             headers=headers, timeout=10)
+            r.raise_for_status()
+            found = {str(it.get("Id")): frozenset(t for ms in (it.get("MediaSources") or [])
+                                                  if (t := vod_tokens.title_in_url(ms.get("Path") or "")))
+                     for it in r.json().get("Items") or []}
+            if len(_item_titles) > 5000:
+                _item_titles.clear()
+            for i in missing:
+                _item_titles[i] = (now, found.get(i, frozenset()))
+        watched: dict = {}
+        for i, address in playing:
+            for title in _item_titles.get(i, (0, frozenset()))[1]:
+                watched.setdefault(title, []).append(address)
+        return watched
+    except Exception as e:
+        # The error type only: a requests error's text can carry the address.
+        logger.info(f"[VOD] Jellyfin sessions unknown ({type(e).__name__}): playbacks are left running")
+        return None
+
+
+def _fresh_viewers() -> Optional[dict]:
+    titles, at = _viewers["titles"], _viewers["at"]
+    if titles is None or asyncio.get_running_loop().time() - at > VIEWERS_FRESH_SECONDS:
+        return None
+    return titles
+
+
+def _viewer_count(title: str) -> Optional[int]:
+    """How many Jellyfin sessions are playing `title`, per the last fresh
+    answer; None when unknown."""
+    titles = _fresh_viewers()
+    return None if titles is None else len(titles.get(title) or ())
+
+
+def _is_viewer(title: str, client: str) -> bool:
+    """Whether requests from `client` are the viewer's own: Jellyfin lists a
+    session playing `title` from that address (a browser or TV playing the
+    file itself). Jellyfin's ffmpeg comes from Jellyfin's address."""
+    titles = _fresh_viewers()
+    return bool(titles and client and client in (titles.get(title) or ()))
+
+
+def _next_turn(pb: "_Playback", holder: "_Reader", now: float) -> "Optional[_Reader]":
+    """Who the holder hands the connection to now, if anyone: a viewer that
+    wants data at once when the holder is Jellyfin's own work; otherwise the
+    longest waiting after a quantum -- but a viewer that keeps reading is
+    never timed out for Jellyfin's work (that reads while the player doesn't)."""
+    if not pb.waiters:
+        return None
+    holder_is_viewer = _is_viewer(pb.title, holder.client)
+    viewers = [r for r in pb.waiters if r.waiting and _is_viewer(pb.title, r.client)]
+    if viewers and not holder_is_viewer:
+        return viewers[0]
+    if now - holder.since < QUANTUM_SECONDS:
+        return None
+    if holder_is_viewer:
+        return viewers[0] if viewers else None
+    return pb.waiters[0]
+
+
+def _enforce_viewers(titles: Optional[dict], now: float) -> int:
+    """Close the playbacks whose Jellyfin viewer has gone. A playback no
+    session has played yet is left alone (the player reports playing only
+    after Jellyfin probed and started the title, and a client that never
+    reports is still a person), and so is everything while Jellyfin can't say."""
+    if titles is None:
+        return 0
+    n = 0
+    for pb in list(_playbacks.values()):
+        if pb.stopped.is_set():
+            continue
+        if titles.get(pb.title):
+            pb.watched_at = now
+        elif pb.watched_at is not None and now - pb.watched_at >= VIEWER_GONE_SECONDS:
+            pb.stop("nobody is watching it in Jellyfin any more (what still read it was Jellyfin's own "
+                    "work for the title, such as a subtitle extraction)")
+            _release(pb)
+            _gone[pb.title] = now
+            n += 1
+    return n
+
+
+async def _watch_viewers():
+    """While any playback runs: ask Jellyfin who is watching, close what
+    nobody watches any more."""
+    loop = asyncio.get_running_loop()
+    while _playbacks:
+        try:
+            titles = None
+            if _jellyfin["url"] and _jellyfin["key"]:
+                titles = await asyncio.to_thread(_jellyfin_watched_titles, _jellyfin["url"], _jellyfin["key"])
+            now = loop.time()
+            _viewers["titles"], _viewers["at"] = titles, now
+            _enforce_viewers(titles, now)
+        except Exception as e:   # the watch must outlive any one bad answer
+            logger.error(f"[VOD] viewer check failed: {e}")
+        await asyncio.sleep(VIEWER_CHECK_SECONDS)
+
+
+def _refuse_continuation(title: str, start: int) -> bool:
+    """Whether this request is Jellyfin's own work coming back for a title
+    that was closed for having no viewer: it carries on from past byte 0,
+    nothing of the title runs, and Jellyfin shows nobody watching it."""
+    gone = _gone.get(title)
+    if gone is None:
+        return False
+    loop = asyncio.get_running_loop()
+    if loop.time() - gone > GONE_REFUSE_SECONDS or start == 0:
+        del _gone[title]                # a player (re)starting the title reads its start first
+        return False
+    if any(pb.title == title and not pb.stopped.is_set() for pb in _playbacks.values()):
+        return False
+    viewers = _viewer_count(title)
+    if viewers:
+        del _gone[title]
+    return viewers == 0
+
+
+def _shared_playback(title: str, token: str) -> "Optional[_Playback]":
+    """The running playback a request for `title` from this client joins:
+    its own, else another client's of the same title while Jellyfin shows
+    no more people watching the title than there are playbacks of it (the
+    browser that direct-plays a film and Jellyfin's subtitle extraction of
+    it are one person, one connection). Unknown viewers: per client, as before."""
+    own = _playbacks.get(token)
+    if own is not None and not own.stopped.is_set():
+        return own
+    others = [pb for pb in _playbacks.values() if pb.title == title and not pb.stopped.is_set()]
+    if not others:
+        return None
+    viewers = _viewer_count(title)
+    if viewers is None or viewers > len(others):
+        return None
+    return max(others, key=lambda pb: pb.last_used)
+
+
+async def _playback_for(db, title: str, owner: str, client: str = "") -> _Playback:
+    token = f"{title}@{client}"
+    pb = _shared_playback(title, token)
+    if pb is not None:
         pb.touch()
         return pb
+    _jellyfin["url"] = (get_setting(db, "jellyfin_url", "") or "").rstrip("/")
+    _jellyfin["key"] = get_setting(db, "jellyfin_api_key", "") or ""
     limit = livetv.overall_stream_limit(db)
     # owner is vod:<kind>:<provider id>:<stream id> (_resolve)
     try:
@@ -343,14 +619,14 @@ async def _playback_for(db, token: str, owner: str, client: str = "") -> _Playba
                        f"a recording or live stream")
         raise HTTPException(503, "The provider is busy: a recording or live stream has the connection. "
                                  "Try again in a minute.")
-    existing = _playbacks.get(token)
-    if existing is not None and not existing.stopped.is_set():
+    existing = _shared_playback(title, token)
+    if existing is not None:
         # A concurrent first request for the same title got there while we
         # waited for the slot: one playback, one lease -- give this one back.
         livetv._stream_slots.release_lease(lease)
         existing.touch()
         return existing
-    pb = _Playback(token, owner, lease, idle_seconds(db), client)
+    pb = _Playback(token, owner, lease, idle_seconds(db), client, title)
     lease.on_preempt = pb.stop
     _playbacks[token] = pb
     _ensure_sweeper()
@@ -379,12 +655,27 @@ def _range_start(range_header: Optional[str]) -> int:
 
 
 async def _open(client: httpx.AsyncClient, method: str, url: str, headers: dict, guard) -> httpx.Response:
-    """One request, redirects followed by hand and re-validated (services.ssrf)."""
+    """One request, redirects followed by hand and re-validated (services.ssrf).
+    The title's last redirect target is tried first (TARGET_SECONDS); one that
+    does not answer 200/206 is forgotten and the panel asked again, in the same
+    call (one connection at a time: the failed answer is closed first)."""
+    target = _cached_target(url)
+    if target is not None:
+        try:
+            resp = await client.send(client.build_request(method, target, headers=headers), stream=True)
+            if resp.status_code in (200, 206):
+                return resp
+            await resp.aclose()
+        except httpx.TransportError:
+            pass
+        _forget_target(url)
     current = url
     for _ in range(livetv._MAX_STREAM_REDIRECTS):
         req = client.build_request(method, current, headers=headers)
         resp = await client.send(req, stream=True)
         if resp.status_code not in (301, 302, 303, 307, 308):
+            if current != url and resp.status_code in (200, 206):
+                _remember_target(url, current)
             return resp
         location = resp.headers.get("location")
         await resp.aclose()
@@ -474,8 +765,8 @@ async def vod_head(kind: str, token_file: str, request: Request, db: Session = D
     knows: a second connection is what makes the provider cut the first."""
     url, guard, ua, owner = await asyncio.to_thread(_resolve, db, kind, token_file)
     who = request.client.host if request is not None and request.client else "unknown"
-    pb = _playbacks.get(f"{kind}/{token_file}@{who}")
-    if pb is not None and not pb.stopped.is_set() and pb.size is not None:
+    pb = _shared_playback(f"{kind}/{token_file}", f"{kind}/{token_file}@{who}")
+    if pb is not None and pb.size is not None:
         pb.touch()
         return Response(status_code=200, headers={"content-length": str(pb.size), "accept-ranges": "bytes",
                                                   "content-type": pb.content_type or "video/mp4"})
@@ -486,8 +777,7 @@ async def vod_head(kind: str, token_file: str, request: Request, db: Session = D
             slots._refuse_protected("vod", f"{owner} (HEAD)")
         except livetv.RecordingProtected:
             raise HTTPException(503, livetv.PROTECTED_REFUSAL_DETAIL)
-    client = httpx.AsyncClient(follow_redirects=False,
-                               timeout=httpx.Timeout(connect=10.0, read=20.0, write=10.0, pool=10.0))
+    client = _client()
     try:
         resp = await _open(client, "HEAD", url, {"User-Agent": ua}, guard)
         try:
@@ -500,8 +790,6 @@ async def vod_head(kind: str, token_file: str, request: Request, db: Session = D
         # The error type only: an httpx error's text can carry the request
         # URL, whose path holds the provider account.
         raise HTTPException(502, f"The provider did not answer: {type(e).__name__}")
-    finally:
-        await client.aclose()
 
 
 _SIZE_RE = re.compile(r"/(\d+)\s*$")
@@ -512,17 +800,40 @@ async def _wait_turn(pb: _Playback, reader: _Reader) -> bool:
     A holder that keeps it past its quantum (a paused player blocks its body
     where it cannot notice) is parked from here. False once the playback was
     stopped."""
+    loop = asyncio.get_running_loop()
     while pb.holder is not reader:
         if pb.stopped.is_set():
             return False
         reader.turn.clear()
+        holder = pb.holder
+        me_viewer = _is_viewer(pb.title, reader.client)
+        holder_viewer = holder is not None and _is_viewer(pb.title, holder.client)
+        # Between a viewer and Jellyfin's work, the one waiting looks again
+        # soon: a viewer to take over from a holder that cannot hand over (its
+        # consumer stopped reading), Jellyfin's work to read while the viewer's
+        # player is not reading.
+        wait = PREEMPT_GRACE_SECONDS if holder is not None and me_viewer != holder_viewer \
+            else QUANTUM_SECONDS + PREEMPT_GRACE_SECONDS
         try:
-            await asyncio.wait_for(reader.turn.wait(), QUANTUM_SECONDS + PREEMPT_GRACE_SECONDS)
+            await asyncio.wait_for(reader.turn.wait(), wait)
         except asyncio.TimeoutError:
             async with pb.open_lock:
                 holder = pb.holder
-                if holder is not reader and not pb.stopped.is_set() and \
-                        (holder is None or asyncio.get_running_loop().time() - holder.since >= QUANTUM_SECONDS):
+                if holder is reader or pb.stopped.is_set():
+                    continue
+                now = loop.time()
+                if holder is None:
+                    pb.take(reader)
+                elif _is_viewer(pb.title, holder.client) and not _is_viewer(pb.title, reader.client):
+                    # The viewer's player has stopped reading for a while (or
+                    # was handed the connection and has not asked for it):
+                    # read meanwhile. Not while it is (re)opening its connection.
+                    idle = now - max(holder.last_chunk, holder.since) >= PREEMPT_GRACE_SECONDS
+                    if idle and (holder.resp is not None or not holder.waiting):
+                        pb.take(reader)
+                elif _is_viewer(pb.title, reader.client) and not _is_viewer(pb.title, holder.client):
+                    pb.take(reader)         # Jellyfin's work did not hand over: its consumer is stuck
+                elif now - holder.since >= QUANTUM_SECONDS:
                     pb.take(reader)
     return not pb.stopped.is_set()
 
@@ -534,25 +845,31 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
     or ends short, counted and ranked against live TV and recordings, and
     one provider connection per playback however many requests share it."""
     url, guard, ua, owner = await asyncio.to_thread(_resolve, db, kind, token_file)
-    # One playback per title PER CLIENT: two TVs on the same film are two
+    # One playback per title per PERSON: two TVs on the same film are two
     # playbacks (two provider connections, two slots), not one that they
-    # keep taking from each other.
+    # keep taking from each other; a second client of a title only one
+    # person watches (Jellyfin's subtitle extraction next to a browser that
+    # plays the file itself) joins the playback (_shared_playback).
     who = request.client.host if request.client else "unknown"
-    pb = await _playback_for(db, f"{kind}/{token_file}@{who}", owner, who)
     range_header = request.headers.get("range")
     start, end = _range_bounds(range_header)
+    if _refuse_continuation(f"{kind}/{token_file}", start):
+        logger.info(f"[VOD] {owner}: refused a pull from byte {start} of a title nobody watches any more "
+                    f"(Jellyfin's own work coming back for the rest, such as a subtitle extraction)")
+        raise HTTPException(503, "Nobody is watching this title any more")
+    pb = await _playback_for(db, f"{kind}/{token_file}", owner, who)
     headers = {"User-Agent": ua}
     if range_header:
         headers["Range"] = range_header
-    client = httpx.AsyncClient(follow_redirects=False,
-                               timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0))
+    client = _client()
+
     async def player_left() -> bool:
         try:
             return await request.is_disconnected()
         except RuntimeError:            # no receive channel (a test, or an unusual server)
             return False
 
-    reader = _Reader()
+    reader = _Reader(who)
     pb.opening += 1
     try:
         async with pb.open_lock:
@@ -565,11 +882,11 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
                                           stopped=pb.stopped.is_set)
             reader.resp = resp
             reader.since = asyncio.get_running_loop().time()
+            reader.waiting = False
             pb.upstream = resp
     except BaseException:
         pb.opening -= 1
         pb.hand_on(reader)
-        await client.aclose()
         # The player has gone (or the provider refused for good): nothing is
         # streaming for this playback, so give the slot back now instead of
         # holding it for the idle window.
@@ -586,18 +903,23 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
     # range (`bytes=-500`) has no start until the provider names it, and a
     # provider that answers a Range request with 200 is sending byte 0 and
     # cannot be asked to resume from anywhere.
+    # Either way the byte a drop stopped at is known, so a drop is always
+    # resumed with a Range request; only a 206 that starts at exactly that
+    # byte is spliced in (a provider that ignores ranges ends the body
+    # instead of replaying bytes the player already has). The provider
+    # behind this answers a request from byte 0 with a 200 that names no
+    # Accept-Ranges, then serves `bytes=N-` with a 206: such a film used to
+    # "give up" at its first drop, every few minutes with several streams open.
     length = resp.headers.get("content-length", "")
     if status == 206:
         cr_start, cr_end = _content_range(resp.headers.get("content-range"))
         start = cr_start if cr_start is not None else start
         end = cr_end if cr_end is not None else end
-        resumable = True
         m = _SIZE_RE.search(resp.headers.get("content-range") or "")
         if m:
             pb.size = int(m.group(1))
     else:
         start, end = 0, None
-        resumable = not range_header and resp.headers.get("accept-ranges", "").lower() == "bytes"
         if length.isdigit():
             pb.size = int(length)
     pb.content_type = content_type
@@ -628,7 +950,6 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
         if reader.resp is not None:
             pb.close_upstream(reader.resp)
             reader.resp = None
-        _close_later_client(client)
         pb.hand_on(reader)
         # Replaced by a newer request (a seek), or the end of the range: the
         # player is still there and will ask again -- keep the slot for the
@@ -643,12 +964,14 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
         loop = asyncio.get_running_loop()
         opened_at = loop.time()
         since_open = 0
+        resumed_from = None
         try:
             while True:
                 if pb.stopped.is_set():
                     return
                 if reader.resp is None:
                     # Parked (another request had the connection), or after a drop.
+                    reader.waiting = True
                     if not await _wait_turn(pb, reader):
                         return
                     if end is not None and start + sent > end:
@@ -668,13 +991,20 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
                         except HTTPException as e:
                             logger.error(f"[VOD] {owner}: could not resume: {e.detail}")
                             return
-                        if again.status_code != 206:
+                        got = _content_range(again.headers.get("content-range"))[0]
+                        if again.status_code != 206 or got not in (None, start + sent):
                             pb.close_upstream(again)
+                            answer = again.status_code if again.status_code != 206 else f"206 from byte {got}"
                             logger.error(f"[VOD] {owner}: the provider would not resume from byte {start + sent} "
-                                         f"(answered {again.status_code})")
+                                         f"(answered {answer})")
                             return
+                        if resumed_from is not None:
+                            logger.info(f"[VOD] {owner}: resumed from byte {resumed_from} after the provider "
+                                        f"dropped the connection")
+                            resumed_from = None
                         reader.resp = again
-                        reader.since = loop.time()
+                        reader.since = reader.last_chunk = loop.time()
+                        reader.waiting = False
                         pb.upstream = again
                         opened_at, since_open = loop.time(), 0
                 resp = reader.resp
@@ -693,11 +1023,15 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
                         since_open += len(chunk)
                         pb.touch()
                         yield chunk
-                        if pb.waiters and pb.holder is reader and loop.time() - reader.since >= QUANTUM_SECONDS:
+                        reader.last_chunk = loop.time()
+                        if pb.waiters and pb.holder is reader:
                             # Time-share: another request of this playback is
-                            # waiting; it gets the connection for a while.
-                            pb.take(pb.waiters[0])
-                            break
+                            # waiting; it gets the connection for a while (a
+                            # viewer at once, _next_turn).
+                            nxt = _next_turn(pb, reader, reader.last_chunk)
+                            if nxt is not None:
+                                pb.take(nxt)
+                                break
                     else:
                         if last is None or start + sent > last:
                             state["complete"] = True
@@ -718,16 +1052,17 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
                     pb.upstream = None
                 if since_open >= PROGRESS_RESET_BYTES or loop.time() - opened_at >= 30.0:
                     attempts = 0                # a connection that lasted or delivered resets the budget
-                if not resumable or attempts >= RECONNECT_ATTEMPTS:
+                if attempts >= RECONNECT_ATTEMPTS:
                     logger.error(f"[VOD] {owner}: stream lost after {sent} bytes, giving up: {reason}")
                     return
                 if end is not None and start + sent > end:
                     state["complete"] = True
                     return                  # the requested range was delivered in full
                 attempts += 1
-                delay = min(5.0, 2 ** (attempts - 1)) * (0.8 + random.random() * 0.4)
+                delay = min(5.0, RESUME_FIRST_DELAY * 2 ** (attempts - 1)) * (0.8 + random.random() * 0.4)
+                resumed_from = start + sent
                 logger.warning(f"[VOD] {owner}: upstream dropped after {sent} bytes; resuming from byte "
-                               f"{start + sent} in {delay:.0f}s: {reason}")
+                               f"{start + sent} in {delay:.1f}s: {reason}")
                 await asyncio.sleep(delay)
         finally:
             finish()

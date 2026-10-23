@@ -196,8 +196,8 @@ function renderCategoryChart() {
         {
           label: 'Total',
           data: totals,
-          backgroundColor: 'rgba(108,99,255,0.2)',
-          borderColor: 'rgba(108,99,255,0.6)',
+          backgroundColor: 'rgba(139,128,255,0.2)',
+          borderColor: 'rgba(139,128,255,0.7)',
           borderWidth: 1,
           type: 'line',
           tension: 0.3,
@@ -228,7 +228,6 @@ function renderCategoryChart() {
 }
 
 // ── LIBRARY PAGE ──────────────────────────────────────────────────────────
-let _libEventSource = null;
 let _libRefreshTimer = null;
 
 function _debouncedLibRefresh() {
@@ -245,58 +244,20 @@ function _debouncedLibRefresh() {
   }, 2000);
 }
 
-function connectLibraryStream() {
-  if (_libEventSource) return;
-  _libEventSource = new EventSource('/api/library/stream');
-
-  _libEventSource.addEventListener('movie_added', () => _debouncedLibRefresh());
-  _libEventSource.addEventListener('series_added', () => _debouncedLibRefresh());
-
-  _libEventSource.addEventListener('movie_removed', (e) => {
-    const data = JSON.parse(e.data);
-    const grid = document.getElementById('lib-grid');
-    if (!grid) return;
-    const card = grid.querySelector(`[data-tmdb-id="${data.tmdb_id}"]`);
-    if (card) {
-      card.classList.add('lib-card-exit');
-      card.addEventListener('animationend', () => card.remove());
-      pages.lib.items = pages.lib.items.filter(i => i.tmdb_id !== data.tmdb_id);
-      pages.lib.total = Math.max(0, pages.lib.total - 1);
-    }
-  });
-
-  _libEventSource.addEventListener('series_removed', (e) => {
-    const data = JSON.parse(e.data);
-    const grid = document.getElementById('lib-grid');
-    if (!grid) return;
-    const card = grid.querySelector(`[data-tmdb-id="${data.tmdb_id}"]`);
-    if (card) {
-      card.classList.add('lib-card-exit');
-      card.addEventListener('animationend', () => card.remove());
-      pages.lib.items = pages.lib.items.filter(i => i.tmdb_id !== data.tmdb_id);
-      pages.lib.total = Math.max(0, pages.lib.total - 1);
-    }
-  });
-
-  _libEventSource.onerror = () => {
-    _libEventSource.close();
-    _libEventSource = null;
-    // Reconnect after 5s if still on library page
-    setTimeout(() => {
-      if (state.currentPage === 'library' && !state.sessionExpired) connectLibraryStream();
-    }, 5000);
-  };
-}
-
-function disconnectLibraryStream() {
-  if (_libEventSource) {
-    _libEventSource.close();
-    _libEventSource = null;
+// A title left the library (live.js: the live channel's "library" notes).
+function libRemoveCard(tmdbId) {
+  const grid = document.getElementById('lib-grid');
+  if (!grid) return;
+  const card = grid.querySelector(`[data-tmdb-id="${CSS.escape(String(tmdbId))}"]`);
+  if (card) {
+    card.classList.add('lib-card-exit');
+    card.addEventListener('animationend', () => card.remove());
+    pages.lib.items = pages.lib.items.filter(i => i.tmdb_id !== tmdbId);
+    pages.lib.total = Math.max(0, pages.lib.total - 1);
   }
 }
 
 async function loadLibrary() {
-  connectLibraryStream();
   pages.lib.offset = 0;
   pages.lib.items = [];
   loadLibListPills();
@@ -716,46 +677,6 @@ async function checkStaleFiles() {
   } catch (e) { /* ignore */ }
 }
 
-// ── New provider content notice (nightly discovery) ──
-async function checkNewContentNotice() {
-  if (!state.currentUser?.is_admin) return;
-  try {
-    const n = await api('/api/sync/new-content-notice');
-    const banner = document.getElementById('new-content-banner');
-    if (!banner) return;
-    if (typeof setHealthAlert === 'function') setHealthAlert('newContent', n.exists ? 1 : 0, false);
-    if (!n.exists) { banner.style.display = 'none'; return; }
-
-    const parts = [];
-    const vodNames = n.vod || [];
-    const liveNames = n.live || [];
-    const vodTotal = n.vod_total || vodNames.length;
-    const liveTotal = n.live_total || liveNames.length;
-    if (vodTotal) {
-      const shown = vodNames.slice(0, 4).join(', ');
-      const extra = vodTotal > 4 ? ` and ${vodTotal - 4} more` : '';
-      parts.push(`${vodTotal} new movie and series categor${vodTotal !== 1 ? 'ies' : 'y'} (${shown}${extra})`);
-    }
-    if (liveTotal) {
-      const shown = liveNames.slice(0, 4).join(', ');
-      const extra = liveTotal > 4 ? ` and ${liveTotal - 4} more` : '';
-      parts.push(`${liveTotal} new channel group${liveTotal !== 1 ? 's' : ''} (${shown}${extra})`);
-    }
-    document.getElementById('new-content-msg').textContent =
-      `Your providers added ${parts.join(' and ')}. They stay off until you choose them on the provider's card.`;
-    document.getElementById('new-content-vod-btn').style.display = vodTotal ? '' : 'none';
-    document.getElementById('new-content-live-btn').style.display = liveTotal ? '' : 'none';
-    banner.style.display = '';
-  } catch (e) { /* ignore */ }
-}
-
-async function dismissNewContentNotice() {
-  const banner = document.getElementById('new-content-banner');
-  if (banner) banner.style.display = 'none';
-  if (typeof setHealthAlert === 'function') setHealthAlert('newContent', 0, false);
-  try { await api('/api/sync/new-content-notice/dismiss', { method: 'POST' }); } catch {}
-}
-
 // The user's lists are a group in the Source dropdown ("list:<id>"): a list
 // shows the titles of it that are in the library.
 async function loadLibListPills() {
@@ -792,8 +713,25 @@ function setLibSort(value) {
   fetchLibraryPage();
 }
 
+function _libParams(offset, limit) {
+  const { type, src, sourceTag, listId, listStatus, sort } = pages.lib;
+  const params = new URLSearchParams({ limit, offset });
+  if (listId) {
+    params.set('list_id', listId);
+    if (listStatus) params.set('list_status', listStatus);
+  } else {
+    if (type !== 'all') params.set('media_type', type);
+    if (src !== 'all') params.set('source', src);
+    if (sourceTag) params.set('source_tag', sourceTag);
+  }
+  if (sort && sort !== 'date_desc') params.set('sort', sort);
+  const search = document.getElementById('lib-search')?.value.trim();
+  if (search) params.set('search', search);
+  return params;
+}
+
 async function fetchLibraryPage() {
-  const { type, src, sourceTag, listId, listStatus, sort, offset, limit } = pages.lib;
+  const { listId, sourceTag, offset, limit } = pages.lib;
   const el = document.getElementById('lib-grid');
 
   if (offset === 0) {
@@ -801,20 +739,7 @@ async function fetchLibraryPage() {
   }
 
   try {
-    const params = new URLSearchParams({ limit, offset });
-    if (listId) {
-      params.set('list_id', listId);
-      if (listStatus) params.set('list_status', listStatus);
-    } else {
-      if (type !== 'all') params.set('media_type', type);
-      if (src !== 'all') params.set('source', src);
-      if (sourceTag) params.set('source_tag', sourceTag);
-    }
-    if (sort && sort !== 'date_desc') params.set('sort', sort);
-    const search = document.getElementById('lib-search')?.value.trim();
-    if (search) params.set('search', search);
-
-    const data = await api(`/api/library/items?${params}`);
+    const data = await api(`/api/library/items?${_libParams(offset, limit)}`);
     pages.lib.total = data.total;
 
     if (offset === 0) {
@@ -837,12 +762,64 @@ async function fetchLibraryPage() {
 
     if (!data.items.length && offset === 0) {
       el.innerHTML = `<div class="empty-state" style="grid-column:1/-1">
-        <div class="empty-icon">◫</div>
+        <img class="empty-mark" src="/static/brand/mark-white.svg" alt="">
         <p>${listId ? 'No items found. Fetch the list first.' : 'No content yet. Run a sync to populate your library.'}</p>
       </div>`;
     }
   } catch (e) {
     if (offset === 0) el.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><p>Failed to load library</p></div>';
+  }
+}
+
+// ── ▶ Play / Open in Jellyfin ──
+// Titles that can be watched now carry `jellyfin: {play, open}`
+// (services/watch_links.py). Plain links into Jellyfin Web: on a phone an
+// ordinary tap, so Android opens the Jellyfin app (PWA) when it is installed;
+// on a computer a new tab, so Tentacle stays open. Play starts it in
+// Jellyfin (where the person stopped, or a show's next episode).
+const _WATCH_ICON_PLAY = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 5.5v13a1 1 0 0 0 1.5.86l10.4-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>';
+const _WATCH_ICON_OPEN = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>';
+function _watchTarget() {
+  const touch = window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+  return touch ? '' : ' target="_blank" rel="noopener"';
+}
+function _watchOk(links) {
+  return !!(links && /^https?:\/\//.test(links.play || '') && /^https?:\/\//.test(links.open || ''));
+}
+// Two buttons, for a details view or a card's row of actions.
+function watchButtons(links, cls = 'btn btn-sm') {
+  if (!_watchOk(links)) return '';
+  const t = _watchTarget();
+  return `<span class="watch-btns"><a class="${cls} btn-primary watch-play" href="${escapeAttr(links.play)}"${t} onclick="event.stopPropagation()">${_WATCH_ICON_PLAY}<span>Play</span></a>`
+    + `<a class="${cls} btn-secondary watch-open" href="${escapeAttr(links.open)}"${t} onclick="event.stopPropagation()" title="The title's page in Jellyfin">${_WATCH_ICON_OPEN}<span>Open in Jellyfin</span></a></span>`;
+}
+// Round buttons on a poster.
+function watchCardButtons(links, title = '') {
+  if (!_watchOk(links)) return '';
+  const t = _watchTarget();
+  const name = title ? ` ${title}` : '';
+  return `<div class="watch-card-btns"><a class="watch-card-play" href="${escapeAttr(links.play)}"${t} onclick="event.stopPropagation()" title="Play${escapeAttr(name)}" aria-label="Play${escapeAttr(name)}">${_WATCH_ICON_PLAY}</a>`
+    + `<a class="watch-card-open" href="${escapeAttr(links.open)}"${t} onclick="event.stopPropagation()" title="Open in Jellyfin" aria-label="Open${escapeAttr(name)} in Jellyfin">${_WATCH_ICON_OPEN}</a></div>`;
+}
+
+// A download became ready to watch (or went): the cards shown get ▶ Play /
+// Open in Jellyfin, or lose them, without redrawing the grid (live.js).
+async function libRefreshWatch() {
+  const grid = document.getElementById('lib-grid');
+  const shown = pages.lib.items.length;
+  if (!grid || !shown) return;
+  let data;
+  try { data = await api(`/api/library/items?${_libParams(0, shown)}`); } catch (_) { return; }
+  for (const item of data.items || []) {
+    const card = grid.querySelector(`.lib-card[data-tmdb-id="${CSS.escape(String(item.tmdb_id))}"][data-media-type="${CSS.escape(item.media_type || '')}"]`);
+    const poster = card && card.querySelector('.lib-card-poster');
+    if (!poster) continue;
+    const old = poster.querySelector('.watch-card-btns');
+    const was = old ? old.querySelector('.watch-card-play')?.getAttribute('href') || '' : '';
+    if (was === (_watchOk(item.jellyfin) ? item.jellyfin.play : '')) continue;
+    if (old) old.remove();
+    const html = watchCardButtons(item.jellyfin, item.title);
+    if (html) poster.insertAdjacentHTML('beforeend', html);
   }
 }
 
@@ -861,10 +838,11 @@ function renderLibCard(item) {
   const sourceBadge = badges ? `<div class="lib-card-source" style="display:flex;flex-direction:column;gap:3px;align-items:flex-end">${badges}</div>` : '';
 
   return `
-    <div class="lib-card" data-tmdb-id="${item.tmdb_id}" onclick="showMediaDetail(${item.tmdb_id}, '${escapeJS(item.media_type)}')">
+    <div class="lib-card" data-tmdb-id="${item.tmdb_id}" data-media-type="${escapeAttr(item.media_type || '')}" onclick="showMediaDetail(${item.tmdb_id}, '${escapeJS(item.media_type)}')">
       <div class="lib-card-poster">
         ${poster}
         ${sourceBadge}
+        ${watchCardButtons(item.jellyfin, item.title)}
       </div>
       <div class="lib-card-info">
         <div class="lib-card-title" title="${escapeAttr(item.title)}">${escapeAttr(item.title)}</div>
@@ -899,6 +877,20 @@ function _imgUrl(path, size) {
   return 'https://image.tmdb.org/t/p/' + size + path;
 }
 
+// What the add button says: family members whose requests wait for an admin
+// "Request" (services/approvals.py), everyone else "Add to Radarr/Sonarr".
+function _arrAddLabel(isSeries) {
+  return state.requestMode && state.requestMode.mode === 'ask' ? 'Request' : `Add to ${isSeries ? 'Sonarr' : 'Radarr'}`;
+}
+
+// A request that now waits for an admin: say so, as good news.
+function _arrPending(r) {
+  if (!r || !(r.pending > 0)) return false;
+  toast(r.detail || 'Sent for approval', 'success', 6000);
+  closeModal('modal-add-to-radarr');
+  return true;
+}
+
 async function showAddToRadarrModal(tmdbId, title, year, posterPath) {
   showAddToArrModal(tmdbId, title, year, posterPath, 'movie');
 }
@@ -912,7 +904,10 @@ async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType, tvd
   const isSeries = _addArrMediaType === 'series';
   const arrName = isSeries ? 'Sonarr' : 'Radarr';
 
-  document.getElementById('add-arr-modal-title').textContent = `Add to ${arrName}`;
+  document.getElementById('add-arr-modal-title').textContent = _arrAddLabel(isSeries);
+  // Family members don't pick quality: the admin's default is used.
+  const asking = state.requestMode && state.requestMode.mode === 'ask';
+  document.getElementById('add-radarr-quality-group').style.display = asking ? 'none' : '';
 
   const modalBox = document.getElementById('add-arr-modal-box');
   modalBox.className = 'modal modal-arr';
@@ -947,7 +942,7 @@ async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType, tvd
 
   const btn = document.getElementById('add-radarr-confirm-btn');
   btn.disabled = false;
-  btn.textContent = `Add to ${arrName}`;
+  btn.textContent = _arrAddLabel(isSeries);
   showModal('modal-add-to-radarr');
 }
 
@@ -970,7 +965,7 @@ async function confirmAddToArr() {
       if (selected.length === 0) {
         toast('Select at least one episode', 'error');
         btn.disabled = false;
-        btn.textContent = `Add to ${arrName}`;
+        btn.textContent = _arrAddLabel(isSeries);
         return;
       }
       body.monitor = 'none';
@@ -982,6 +977,7 @@ async function confirmAddToArr() {
   const endpoint = isSeries ? '/api/lists/add-to-sonarr' : '/api/lists/add-to-radarr';
   try {
     const r = await api(endpoint, { method: 'POST', body });
+    if (_arrPending(r)) return;
     if (r.added > 0) {
       if (r.release_date && new Date(r.release_date) > new Date()) {
         const rd = new Date(r.release_date);
@@ -999,12 +995,12 @@ async function confirmAddToArr() {
       // one — a bare "Failed to add" leaves the user nothing to act on.
       toast(r.detail || 'Failed to add', 'error', r.detail ? 8000 : undefined);
       btn.disabled = false;
-      btn.textContent = `Add to ${arrName}`;
+      btn.textContent = _arrAddLabel(isSeries);
     }
   } catch (e) {
     toast(e.message, 'error');
     btn.disabled = false;
-    btn.textContent = `Add to ${arrName}`;
+    btn.textContent = _arrAddLabel(isSeries);
   }
 }
 
@@ -1340,8 +1336,10 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
     : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
   info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${escapeAttr(title || 'Unknown')}</div><div style="color:var(--text2);font-size:14px">${escapeAttr(year || '')}</div></div>`;
 
-  // Show quality profile selector (needed for Sonarr add)
-  document.getElementById('add-radarr-quality').parentElement.style.display = '';
+  // Show quality profile selector (needed for Sonarr add), not to family
+  // members whose requests wait for an admin (the default profile is used).
+  document.getElementById('add-radarr-quality').parentElement.style.display =
+    state.requestMode && state.requestMode.mode === 'ask' ? 'none' : '';
   document.getElementById('sonarr-extra-fields').style.display = 'none';
 
   // Load Sonarr quality profiles
@@ -1379,7 +1377,7 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
 
   const btn = document.getElementById('add-radarr-confirm-btn');
   btn.disabled = false;
-  btn.textContent = 'Add to Sonarr';
+  btn.textContent = _arrAddLabel(true);
   btn.setAttribute('onclick', 'confirmDownloadMore()');
 
   showModal('modal-add-to-radarr');
@@ -1488,6 +1486,7 @@ async function confirmDownloadMore() {
         monitor_new: document.getElementById('dl-more-monitor-new')?.checked || false,
       },
     });
+    if (_arrPending(r)) return;
     if (r.added > 0) {
       const monitorMsg = document.getElementById('dl-more-monitor-new')?.checked ? ' + monitoring new episodes' : '';
       toast(`Added to Sonarr — downloading ${selected.length} episode${selected.length !== 1 ? 's' : ''}${monitorMsg}`);
@@ -1495,16 +1494,16 @@ async function confirmDownloadMore() {
     } else if (r.already_exists > 0) {
       toast('Already in Sonarr', 'error');
       btn.disabled = false;
-      btn.textContent = 'Add to Sonarr';
+      btn.textContent = _arrAddLabel(true);
     } else {
       toast(r.detail || 'Failed to add', 'error');
       btn.disabled = false;
-      btn.textContent = 'Add to Sonarr';
+      btn.textContent = _arrAddLabel(true);
     }
   } catch (e) {
     toast(e.message, 'error');
     btn.disabled = false;
-    btn.textContent = 'Add to Sonarr';
+    btn.textContent = _arrAddLabel(true);
   }
 }
 
@@ -1626,8 +1625,12 @@ function filterByTag(tag) {
 // replace an episode of the wrong show. Every opener takes a new number and
 // every await checks it.
 let _detailSeq = 0;
+// The Discover detail open now, for live.js to read again when its title's
+// state changes (asked, approved, downloading, declined); null for others.
+let _discoverDetailArgs = null;
 function _detailOpening() {
   _detailEpState = {};
+  _discoverDetailArgs = null;
   return ++_detailSeq;
 }
 
@@ -1647,6 +1650,7 @@ async function showMediaDetail(tmdbId, mediaType) {
         ${data.poster_path ? `<img alt="" src="${escapeAttr(_imgUrl(data.poster_path, 'w185'))}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
           <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(data.year || '—')} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${escapeAttr(data.rating || '—')}</div>
+          ${_watchOk(data.jellyfin) ? `<div class="watch-row">${watchButtons(data.jellyfin)}</div>` : ''}
           <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${escapeAttr(data.overview || 'No overview available.')}</p>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
             ${(data.genres||[]).map(g => `<span class="badge badge-gray">${escapeAttr(g)}</span>`).join('')}
@@ -2069,8 +2073,12 @@ async function detailToggleSeason(sn) {
 
   list.innerHTML = '<div style="padding:8px 12px;color:var(--text3);font-size:12px">Loading...</div>';
   try {
-    const data = await api(`/api/discover/season/${epState.tmdbId}/${sn}`);
+    const [data, watch] = await Promise.all([
+      api(`/api/discover/season/${epState.tmdbId}/${sn}`),
+      api(`/api/library/watch/series/${epState.tmdbId}/season/${sn}`).catch(() => ({})),
+    ]);
     if (seq !== _detailSeq || epState !== _detailEpState || !list.isConnected) return;
+    const epLinks = (watch && watch.episodes) || {};
     epState.loaded[sn] = true;
     const tmdbEps = data.episodes || [];
     const vodEps = epState.vodEps;
@@ -2106,7 +2114,12 @@ async function detailToggleSeason(sn) {
       if (isVod) badges.push('<span class="ep-dl-badge ep-badge-vod">VOD</span>');
       if (isDl) badges.push('<span class="ep-dl-badge ep-badge-dl">DL</span>');
 
+      const links = epLinks[String(epNum)];
+      const play = _watchOk(links)
+        ? `<a class="ep-play-btn" href="${escapeAttr(links.play)}"${_watchTarget()} title="Play episode ${epNum} in Jellyfin" aria-label="Play episode ${epNum}">${_WATCH_ICON_PLAY}</a>`
+        : (Object.keys(epLinks).length ? '<span class="ep-play-btn ep-play-none" aria-hidden="true"></span>' : '');
       rows += `<div class="detail-ep-row">
+        ${play}
         <span class="ep-num">${epNum}</span>
         <span class="detail-ep-name">${escapeAttr(nameMap[epNum] || '')}</span>
         ${badges.join('')}
@@ -2150,6 +2163,7 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
         ${data.poster_path ? `<img alt="" src="${escapeAttr(_imgUrl(data.poster_path, 'w185'))}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
           <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(data.year || '—')} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${escapeAttr(data.rating || '—')}</div>
+          ${_watchOk(data.jellyfin) ? `<div class="watch-row">${watchButtons(data.jellyfin)}</div>` : ''}
           <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${escapeAttr(data.overview || 'No overview available.')}</p>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
             ${(data.genres||[]).map(g => `<span class="badge badge-gray">${escapeAttr(g)}</span>`).join('')}
@@ -2359,33 +2373,33 @@ function onQuickListUrlInput() {
   if (urlLower.includes('imdb.com/chart/top')) {
     detectedName = 'IMDB TOP 250';
     hintEl.textContent = 'IMDb Top 250 chart';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.includes('imdb.com/chart/moviemeter')) {
     detectedName = 'IMDb Most Popular';
     hintEl.textContent = 'IMDb Most Popular Movies';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.includes('imdb.com/chart/bottom')) {
     detectedName = 'IMDb Bottom 100';
     hintEl.textContent = 'IMDb Bottom 100 chart';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.match(/imdb\.com\/user\/ur\d+/)) {
     detectedName = 'My IMDB Watchlist';
     hintEl.textContent = 'IMDb user watchlist detected';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.match(/imdb\.com\/list\/ls\d+/)) {
     detectedName = 'IMDB List';
     hintEl.textContent = 'IMDb custom list detected';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.includes('trakt.tv')) {
     const m = url.match(/\/lists\/([^/?]+)/);
     detectedName = m ? m[1].replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Trakt List';
     hintEl.textContent = 'Trakt list detected';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.includes('letterboxd.com')) {
     const m = url.match(/\/list\/([^/?]+)/);
     detectedName = m ? m[1].replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Letterboxd List';
     hintEl.textContent = 'Letterboxd list detected';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (url.trim()) {
     hintEl.textContent = 'Paste an IMDb, Trakt, or Letterboxd URL';
     hintEl.style.color = 'var(--text3)';
@@ -2710,22 +2724,22 @@ function onModalUrlInput() {
   // Update hint to confirm detection
   if (urlLower.includes('imdb.com/chart/top')) {
     hintEl.textContent = 'IMDb Top 250 chart';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.includes('imdb.com/chart/moviemeter')) {
     hintEl.textContent = 'IMDb Most Popular Movies';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.match(/imdb\.com\/user\/ur\d+/)) {
     hintEl.textContent = 'IMDb user watchlist';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.match(/imdb\.com\/list\/ls\d+/)) {
     hintEl.textContent = 'IMDb custom list';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.includes('trakt.tv')) {
     hintEl.textContent = 'Trakt list';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.includes('letterboxd.com')) {
     hintEl.textContent = 'Letterboxd list';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (url.trim()) {
     hintEl.textContent = 'Paste an IMDb, Trakt, or Letterboxd URL';
     hintEl.style.color = '';
@@ -3220,9 +3234,58 @@ async function loadTentacleAddress() {
   } catch { /* the YouTube page shows the same thing */ }
 }
 
+// Everyone a channel can be for (Sources → YouTube): GET /api/youtube/people.
+let _ytPeople = [];
+
+function _ytPeopleOptions() {
+  const sel = document.getElementById('yt-for');
+  if (!sel) return;
+  const was = sel.value;
+  sel.innerHTML = _ytPeople.map(p => `<option value="${escapeAttr(p.id)}">${escapeAttr(p.me ? `Me (${p.name})` : p.name)}${p.kids ? ' · kids' : ''}</option>`).join('');
+  if (was && _ytPeople.some(p => p.id === was)) sel.value = was;
+  else { const me = _ytPeople.find(p => p.me); if (me) sel.value = me.id; }
+}
+
+// Who sees a channel: its followers (only they have it in Jellyfin), each
+// removable, and anyone else can be given it.
+function _ytFollowers(c) {
+  const chips = (c.followers || []).map(f => `<span class="yt-follower">${escapeAttr(f.name)}${f.kids ? ' <span class="myt-dim">kids</span>' : ''}`
+    + `<button title="Take it away from ${escapeAttr(f.name)}" aria-label="Take ${escapeAttr(c.title)} away from ${escapeAttr(f.name)}" onclick="ytSetFollower(${c.id}, '${escapeJS(f.id)}', false)">✕</button></span>`).join('');
+  const others = _ytPeople.filter(p => !(c.followers || []).some(f => f.id === p.id));
+  const add = others.length
+    ? `<select class="form-input yt-follow-add" aria-label="Give ${escapeAttr(c.title)} to someone" onchange="if(this.value)ytSetFollower(${c.id}, this.value, true)">`
+      + `<option value="">+ Someone else</option>${others.map(p => `<option value="${escapeAttr(p.id)}">${escapeAttr(p.name)}${p.kids ? ' · kids' : ''}</option>`).join('')}</select>`
+    : '';
+  return `<div class="yt-followers"><span class="myt-dim">Seen by</span> ${chips || '<span class="myt-dim">nobody</span>'} ${add}</div>`;
+}
+
+async function ytSetFollower(id, person, on) {
+  const channels = state._ytChannels || [];
+  const c = channels.find(x => x.id === id);
+  if (!c) return;
+  const now = (c.followers || []).map(f => f.id);
+  const want = on ? [...new Set([...now, person])] : now.filter(p => p !== person);
+  if (!want.length && !confirm(`Nobody else has "${c.title}".\n\nRemove it from the server, with its videos, playlist and home rows?`)) {
+    loadYouTubeChannels();
+    return;
+  }
+  try {
+    const r = await api(`/api/youtube/channels/${id}/followers`, { method: 'PUT', body: { people: want } });
+    const name = (_ytPeople.find(p => p.id === person) || {}).name || 'them';
+    toast(r.removed ? `Removed ${c.title}` : on ? `${c.title} is ${name}'s now too` : `${c.title} is no longer ${name}'s`, 'success', 3000);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+  loadYouTubeChannels();
+}
+
 async function loadYouTubeChannels() {
   const box = document.getElementById('yt-channels');
-  const channels = await api('/api/youtube/channels');
+  const [channels, people] = await Promise.all([
+    api('/api/youtube/channels'), api('/api/youtube/people').catch(() => _ytPeople)]);
+  _ytPeople = people || [];
+  state._ytChannels = channels;
+  _ytPeopleOptions();
   if (!channels.length) {
     box.innerHTML = '<div class="empty-state"><p>No channels yet. Paste a channel URL above — its newest videos appear in Jellyfin and stream on demand.</p></div>';
     return;
@@ -3245,8 +3308,9 @@ async function loadYouTubeChannels() {
         <div style="font-size:12px;color:var(--text3)">${c.library_count} in library · keeps newest ${c.keep_count}${shorts}${replays} · checked ${escapeAttr(checked)}</div>
         ${err}
         ${ytSkipNote(c)}
+        ${_ytFollowers(c)}
       </div>
-      <button class="btn btn-secondary btn-sm" onclick="ytDeleteChannel(${c.id}, '${escapeJS(c.title)}')">Remove</button>
+      <button class="btn btn-secondary btn-sm" title="For everyone: its videos leave the server" onclick="ytDeleteChannel(${c.id}, '${escapeJS(c.title)}')">Remove for everyone</button>
     </div>`;
   }).join('');
 }
@@ -3294,11 +3358,13 @@ async function ytAddChannel() {
     keep_count: Math.max(1, Math.min(100, parseInt(document.getElementById('yt-keep').value) || 10)),
     include_shorts: document.getElementById('yt-inc-shorts').checked,
     live: document.getElementById('yt-live').checked,
+    people: document.getElementById('yt-for')?.value ? [document.getElementById('yt-for').value] : [],
   };
   const t = toast('Looking up channel…', 'loading', 0);
   try {
     const r = await api('/api/youtube/channels', { method: 'POST', body });
     t.remove();
+    if (r.existing) toast(`${r.title} was already on the server: it's theirs now too`, 'success', 5000);
     document.getElementById('yt-url').value = '';
     loadYouTubeChannels();
     // Indexing started on its own; the poll shows progress and says what to
@@ -3353,7 +3419,7 @@ async function ytDeleteChannel(id, title) {
   // One action, and it does the whole thing: the channel, its videos, its
   // playlist and its home rows all go. A channel half-removed — gone from the
   // list but still in Jellyfin — is the state that used to need explaining.
-  if (!confirm(`Remove "${title}"?\n\nIts videos, playlist and home row are removed from Jellyfin too.`)) return;
+  if (!confirm(`Remove "${title}" for everyone?\n\nIts videos, playlist and home rows are removed from Jellyfin too.`)) return;
   try {
     const r = await api(`/api/youtube/channels/${id}`, { method: 'DELETE' });
     toast(`Removed ${title}${r.files_deleted ? ` — ${r.files_deleted} file(s) cleaned up` : ''}`);
@@ -3443,19 +3509,104 @@ async function refreshTags() {
 // ── HOME SCREEN ──────────────────────────────────────────────────────────
 
 let homeRows = [];
+// Which home the page changes: 'mine', or for admins 'default', the home
+// everyone sees until they change their own (services/default_home.py).
+let homeScope = 'mine';
+let homeFollowsDefault = false;
+
+function homeUrl(path) {
+  return homeScope === 'default' ? `${path}${path.includes('?') ? '&' : '?'}scope=default` : path;
+}
+
+function setHomeScope(scope) {
+  homeScope = scope === 'default' && state.currentUser && state.currentUser.is_admin ? 'default' : 'mine';
+  for (const s of ['mine', 'default']) {
+    const b = document.getElementById(`home-scope-${s}`);
+    if (!b) continue;
+    b.classList.toggle('active', s === homeScope);
+    b.setAttribute('aria-checked', s === homeScope ? 'true' : 'false');
+  }
+  document.getElementById('jf-tab-home')?.classList.toggle('home-scope-default', homeScope === 'default');
+  hideAddHomeRow();
+  loadHomeScreen();
+}
+
+function renderHomeScopeNote(data) {
+  const note = document.getElementById('home-scope-note');
+  const actions = document.getElementById('home-scope-actions');
+  if (!note || !actions) return;
+  if (homeScope === 'default') {
+    const names = data.followers || [];
+    const who = names.length
+      ? `${names.length === 1 ? 'One person uses' : `${names.length} people use`} it now: ${names.join(', ')}.`
+      : 'Nobody uses it right now.';
+    note.textContent = `Everyone sees this home until they change their own, and new people start with it. Kids see only what their age limit allows. ${who}`;
+    actions.innerHTML = '<button class="btn btn-secondary btn-sm" onclick="defaultHomeFromMine()">Copy my home here</button>'
+      + (data.custom ? '<button class="btn btn-secondary btn-sm" onclick="defaultHomeSuggested()">Back to Tentacle’s suggestion</button>' : '');
+  } else if (homeFollowsDefault) {
+    note.textContent = 'You’re on the default home. Change anything below and it becomes your own.';
+    actions.innerHTML = '';
+  } else {
+    note.textContent = 'This is your own home.';
+    actions.innerHTML = '<button class="btn btn-secondary btn-sm" onclick="resetHomeToDefault()">Reset to default</button>';
+  }
+}
+
+// A change to your own rows or spotlight makes the home yours.
+function homeChangedByMe() {
+  if (homeScope === 'mine' && homeFollowsDefault) {
+    homeFollowsDefault = false;
+    renderHomeScopeNote({});
+  }
+}
+
+async function resetHomeToDefault() {
+  if (!confirm('Go back to the default home? Your own rows and spotlight are replaced by the default.')) return;
+  try {
+    await api('/api/smartlists/home/reset-to-default', { method: 'POST' });
+    toast('Your home is the default again');
+    loadHomeScreen();
+  } catch (e) {
+    toast('Could not reset: ' + e.message, 'error');
+  }
+}
+
+async function defaultHomeFromMine() {
+  if (!confirm('Make your home the default for everyone who hasn’t made their own? Your own lists and custom playlists are left out: nobody else has them.')) return;
+  try {
+    const r = await api('/api/smartlists/default-home/from-mine', { method: 'POST' });
+    toast(`Default home now has ${r.rows} rows — everyone on it sees them in a moment`);
+    loadHomeScreen();
+  } catch (e) {
+    toast('Could not copy your home: ' + e.message, 'error');
+  }
+}
+
+async function defaultHomeSuggested() {
+  if (!confirm('Go back to Tentacle’s suggested default home?')) return;
+  try {
+    await api('/api/smartlists/default-home/suggested', { method: 'POST' });
+    toast('Default home is Tentacle’s suggestion again');
+    loadHomeScreen();
+  } catch (e) {
+    toast('Could not change the default home: ' + e.message, 'error');
+  }
+}
 
 async function loadHomeScreen() {
   const listEl = document.getElementById('home-rows-list');
   const heroSelect = document.getElementById('home-hero-select');
 
   try {
-    const data = await api('/api/smartlists/home-config');
+    const data = await api(homeUrl('/api/smartlists/home-config'));
     const config = data.exists ? data.config : {};
+    homeFollowsDefault = data.follows_default === true;
+    renderHomeScopeNote(data);
     homeRows = (config.rows || []).sort((a, b) => a.order - b.order);
 
     // Populate hero dropdown from ALL available playlists, not just home rows
     try {
-      const allPlaylists = await api('/api/smartlists/all-playlists');
+      const allPlaylists = await api(homeUrl('/api/smartlists/all-playlists'));
       const playlists = (allPlaylists.playlists || []).sort((a, b) => a.name.localeCompare(b.name));
       heroSelect.innerHTML = '<option value="">-- disabled --</option>';
       for (const p of playlists) {
@@ -3506,7 +3657,7 @@ async function loadHomeScreen() {
     // Card focus previews: all / local_only / off (absent = local_only, androidtv#47)
 
     if (!homeRows.length) {
-      listEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text3);font-size:13px">No rows configured — the default Jellyfin home screen will be used.</div>';
+      listEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text3);font-size:13px">No rows yet — add one with + Add Row.</div>';
     } else {
       renderHomeRows();
     }
@@ -3672,7 +3823,7 @@ async function saveToolbarConfig() {
       method: 'POST',
       body: { buttons: toolbarButtons },
     });
-    if (r.success) pushHomeConfig();
+    if (r.success) pushHomeConfig(false);
     else toast(r.message || 'Failed to save toolbar', 'error');
   } catch (e) {
     toast('Failed to save toolbar config', 'error');
@@ -3689,7 +3840,8 @@ function renderHomeRows() {
   listEl.innerHTML = homeRows.map((row, i) => {
     const key = rowKey(row);
     const isBuiltin = row.type === 'builtin';
-    const badge = isBuiltin
+    // On Now is Tentacle's own row (favourite channels), not one of Jellyfin's
+    const badge = isBuiltin && row.section_id !== 'onnow'
       ? '<span style="font-size:9px;padding:2px 6px;border-radius:3px;background:var(--blue);color:#fff;white-space:nowrap">Jellyfin</span>'
       : '<span style="font-size:9px;padding:2px 6px;border-radius:3px;background:var(--purple);color:#fff;white-space:nowrap">Tentacle</span>';
     const maxItemsInput = isBuiltin ? '' : `
@@ -3735,7 +3887,7 @@ async function reorderHomeRows(fromIdx, toIdx) {
   for (let i = 0; i < homeRows.length; i++) homeRows[i].order = i + 1;
   renderHomeRows();
   try {
-    await api('/api/smartlists/reorder', {
+    await api(homeUrl('/api/smartlists/reorder'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ order: homeRows.map(r => rowKey(r)) }),
@@ -3749,7 +3901,7 @@ async function reorderHomeRows(fromIdx, toIdx) {
 async function updateHeroPick() {
   const heroSelect = document.getElementById('home-hero-select');
   try {
-    const r = await api('/api/smartlists/hero', {
+    const r = await api(homeUrl('/api/smartlists/hero'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ playlist_id: heroSelect.value }),
@@ -3770,7 +3922,7 @@ async function updateHeroSort() {
   const trailerAudio = document.getElementById('home-hero-trailer-audio')?.checked ?? false;
   const itemCount = parseInt(document.getElementById('home-hero-item-count')?.value) || 10;
   try {
-    const r = await api('/api/smartlists/hero-sort', {
+    const r = await api(homeUrl('/api/smartlists/hero-sort'), {
       method: 'POST',
       body: { sort_by: sortBy, sort_order: sortOrder, require_logo: requireLogo, require_trailer: requireTrailer, trailer_audio: trailerAudio, item_count: itemCount },
     });
@@ -3781,7 +3933,12 @@ async function updateHeroSort() {
   }
 }
 
-async function pushHomeConfig() {
+async function pushHomeConfig(layout = true) {
+  if (homeScope === 'default') {
+    toast('Saved — everyone on the default home sees it in a moment');
+    return;
+  }
+  if (layout) homeChangedByMe();
   try {
     const r = await api('/api/smartlists/notify', { method: 'POST' });
     if (r.notified) {
@@ -3797,7 +3954,7 @@ async function pushHomeConfig() {
 async function saveRowMaxItems(playlistId, val) {
   const v = Math.max(5, Math.min(100, parseInt(val) || 20));
   try {
-    await api('/api/smartlists/row-max-items', {
+    await api(homeUrl('/api/smartlists/row-max-items'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ playlist_id: playlistId, max_items: v }),
@@ -3813,13 +3970,14 @@ async function saveRowMaxItems(playlistId, val) {
 async function saveRowMaxItemsByKey(key, val) {
   const v = Math.max(5, Math.min(100, parseInt(val) || 20));
   try {
-    await api('/api/smartlists/row-max-items', {
+    await api(homeUrl('/api/smartlists/row-max-items'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ row_key: key, max_items: v }),
     });
     const row = homeRows.find(r => rowKey(r) === key);
     if (row) row.max_items = v;
+    homeChangedByMe();
     toast(`Row limit set to ${v}`);
   } catch (e) {
     toast('Failed to save: ' + e.message, 'error');
@@ -3828,13 +3986,14 @@ async function saveRowMaxItemsByKey(key, val) {
 
 async function saveRowShapeByKey(key, shape) {
   try {
-    const resp = await api('/api/smartlists/row-shape', {
+    const resp = await api(homeUrl('/api/smartlists/row-shape'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ row_key: key, shape }),
     });
     const row = homeRows.find(r => rowKey(r) === key);
     if (row) row.shape = shape;
+    homeChangedByMe();
     if (resp.notified === false) {
       // Saved, but clients that rely on the plugin broadcast (Android TV) won't see it.
       toast('Saved, but the Jellyfin plugin was not notified — ' + (resp.error || 'check the plugin is installed')
@@ -3856,8 +4015,8 @@ async function showAddHomeRow() {
 
   try {
     const [playlistData, builtinData] = await Promise.all([
-      api('/api/smartlists/available-playlists'),
-      api('/api/smartlists/builtin-sections'),
+      api(homeUrl('/api/smartlists/available-playlists')),
+      api(homeUrl('/api/smartlists/builtin-sections')),
     ]);
     const playlists = playlistData.playlists || [];
     const builtins = builtinData.sections || [];
@@ -3913,7 +4072,7 @@ async function confirmAddHomeRow() {
   }
 
   try {
-    const r = await api('/api/smartlists/add-row', {
+    const r = await api(homeUrl('/api/smartlists/add-row'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -3933,7 +4092,7 @@ async function confirmAddHomeRow() {
 
 async function removeHomeRow(playlistId) {
   try {
-    const r = await api('/api/smartlists/remove-row', {
+    const r = await api(homeUrl('/api/smartlists/remove-row'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ playlist_id: playlistId }),
@@ -3952,7 +4111,7 @@ async function removeHomeRow(playlistId) {
 
 async function removeHomeRowByKey(key) {
   try {
-    const r = await api('/api/smartlists/remove-row', {
+    const r = await api(homeUrl('/api/smartlists/remove-row'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ row_key: key }),
@@ -4806,7 +4965,8 @@ let _activityData = null;
 function startActivityPolling() {
   stopActivityPolling();
   _pollActivity();
-  _activityPollTimer = setInterval(_pollActivity, 3000);
+  // Live notes (live.js) redraw it as downloads move; this is the safety net.
+  _activityPollTimer = setInterval(_pollActivity, 30000);
 }
 
 // The tab polls every 3 s, but with a slow Radarr/Sonarr one answer can take a
@@ -5170,6 +5330,11 @@ function _activityCardOpen(e) {
   showDiscoverDetail(+tmdb, type, undefined, undefined, undefined, undefined, +tvdb);
 }
 
+// Whose it is, on an admin's Activity, when it's someone else's ("for Sam").
+function _actFor(item) {
+  return item && item.for ? `<span class="activity-requested-by">for ${escapeAttr(item.for)}</span>` : '';
+}
+
 function renderActivity(data) {
   const content = document.getElementById('activity-content');
   if (!content) return;
@@ -5208,7 +5373,7 @@ function renderActivity(data) {
       const etaLabel = dl.eta ? ' · ' + escapeAttr(dl.eta) : '';
       const sizeLabel = dl.size_remaining ? escapeAttr(dl.size_remaining) + ' left' : '';
       const qualityLabel = dl.quality ? escapeAttr(dl.quality) : '';
-      const reqByLabel = dl.requested_by ? `<span class="activity-requested-by">${escapeAttr(dl.requested_by)}</span>` : '';
+      const reqByLabel = _actFor(dl);
       const metaParts = [qualityLabel, sizeLabel].filter(Boolean).join(' · ');
       return `<div class="activity-card" data-morph-key="dl:${escapeAttr(String(dl.source || ''))}:${escapeAttr(String(dl.queue_id ?? dl.title ?? ''))}"${_actOpenAttrs(dl)}>
         <div class="activity-poster">${poster}</div>
@@ -5231,7 +5396,7 @@ function renderActivity(data) {
     html += searching.map(item => {
       const poster = _activityPoster(item.poster_path);
       const waited = _activityWaited(item.waiting_since);
-      const reqByLabel = item.requested_by ? `<span class="activity-requested-by">${escapeAttr(item.requested_by)}</span>` : '';
+      const reqByLabel = _actFor(item);
       const key = _actKey(item);
       const busy = _actBusy[key];
       const armed = !busy && (_actArmed[key] || 0) > Date.now();
@@ -5275,8 +5440,9 @@ function renderActivity(data) {
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)}${item.episode ? ' · ' + escapeAttr(item.episode) : ''}</div>
-          <div class="activity-meta">${item.year || ''} · Ready to watch</div>
+          <div class="activity-meta">${item.year || ''} · Ready to watch ${_actFor(item)}</div>
           ${hrs ? `<div class="activity-countdown" style="color:var(--green)">${hrs}</div>` : ''}
+          ${_watchOk(item.jellyfin) ? `<div class="activity-actions">${watchButtons(item.jellyfin, 'btn btn-xs')}</div>` : ''}
         </div>
       </div>`;
     }).join('');
@@ -5290,7 +5456,7 @@ function renderActivity(data) {
         <div class="activity-poster">${_activityPoster(item.poster_path)}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)} · ${escapeAttr(item.episode)}</div>
-          <div class="activity-meta">${escapeAttr(item.episode_title || '')}</div>
+          <div class="activity-meta">${escapeAttr(item.episode_title || '')} ${_actFor(item)}</div>
           <div class="coming-day">${escapeAttr(_airDay(item.air_date_utc))}</div>
         </div>
       </div>`).join('');
@@ -5312,7 +5478,7 @@ function renderActivity(data) {
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)}</div>
-          <div class="activity-meta">${item.year || ''} · ${escapeAttr(item.release_date || '')}</div>
+          <div class="activity-meta">${item.year || ''} · ${escapeAttr(item.release_date || '')} ${_actFor(item)}</div>
           ${daysUntil ? `<div class="activity-countdown">${escapeAttr(daysUntil)}</div>` : ''}
         </div>
       </div>`;
@@ -5604,16 +5770,17 @@ function renderDiscoverGrid(items) {
       badge = `<span class="badge badge-blue" style="font-size:9px;padding:1px 5px">In ${item.media_type === 'series' ? 'Sonarr' : 'Radarr'}</span>`;
     } else {
       badge = `<span class="badge" style="font-size:9px;padding:1px 5px;background:var(--bg3);color:var(--text3)">${item.media_type === 'movie' ? 'Movie' : 'Show'}</span>`;
-      addBtn = `<button onclick="event.stopPropagation();showAddToArrModal(${tmdbId},'${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}','${escapeJS(item.media_type)}',${tvdbId})" class="lib-card-add-btn" title="Add to ${item.media_type === 'series' ? 'Sonarr' : 'Radarr'}">+</button>`;
+      addBtn = `<button onclick="event.stopPropagation();showAddToArrModal(${tmdbId},'${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}','${escapeJS(item.media_type)}',${tvdbId})" class="lib-card-add-btn" title="${escapeAttr(_arrAddLabel(item.media_type === 'series'))}">+</button>`;
     }
     const clickHandler = `onclick="showDiscoverDetail(${tmdbId},'${escapeJS(item.media_type)}','${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}',${!!item.in_library},${tvdbId})"`;
-    const listTag = item.list_name ? `<div style="font-size:10px;color:var(--accent);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeAttr(item.list_name)}</div>` : '';
+    const listTag = item.list_name ? `<div style="font-size:10px;color: var(--accent-text);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeAttr(item.list_name)}</div>` : '';
     return `
       <div class="lib-card" ${clickHandler}>
         <div class="lib-card-poster">
           ${poster}
           <div class="lib-card-source">${badge}</div>
           ${addBtn}
+          ${item.in_library ? watchCardButtons(item.jellyfin, item.title) : ''}
         </div>
         <div class="lib-card-info">
           <div class="lib-card-title" title="${escapeAttr(item.title)}">${escapeAttr(item.title)}</div>
@@ -5624,11 +5791,14 @@ function renderDiscoverGrid(items) {
   }).join('');
 }
 
-async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, inLibrary, tvdbId) {
+async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, inLibrary, tvdbId, refresh) {
   const seq = _detailOpening();
-  showModal('modal-media-detail');
-  document.getElementById('detail-title').textContent = 'Loading...';
-  document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
+  _discoverDetailArgs = [tmdbId, mediaType, title, year, posterPath, inLibrary, tvdbId];
+  if (!refresh) {
+    showModal('modal-media-detail');
+    document.getElementById('detail-title').textContent = 'Loading...';
+    document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
+  }
 
   const isTvdbOnly = !tmdbId && tvdbId;
   try {
@@ -5649,16 +5819,15 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
     // "In Library" has to lead somewhere. VOD (.strm) titles used to show the
     // badge and offer only download-again actions, with no way to reach the
     // episodes the user already had.
-    const watchBtn = data.jellyfin_url
-      ? ` <a class="btn btn-primary btn-sm" style="margin-left:6px" href="${escapeAttr(data.jellyfin_url)}" target="_blank" rel="noopener">Watch in Jellyfin</a>`
-      : '';
+    const watchBtn = _watchOk(data.jellyfin) ? ` ${watchButtons(data.jellyfin)}` : '';
     let actionBtn;
     if (dlInfo) {
       const pct = (dlInfo.progress || 0).toFixed(0);
       const st = dlInfo.status === 'importing' ? 'Importing…' : dlInfo.status === 'queued' ? 'Queued' :
         dlInfo.status === 'stuck' ? 'Stuck' : dlInfo.status === 'import_blocked' ? 'Import blocked' : `Downloading ${pct}%`;
       const eta = dlInfo.eta ? ` · ETA ${escapeAttr(dlInfo.eta)}` : '';
-      actionBtn = `<span class="badge ${dlInfo.status === 'stuck' ? 'badge-red' : 'badge-accent'}" style="font-size:12px;padding:4px 10px">${st}${eta}</span>`;
+      // A copy that plays already (a VOD one, a show's earlier episodes) still plays.
+      actionBtn = `<span class="badge ${dlInfo.status === 'stuck' ? 'badge-red' : 'badge-accent'}" style="font-size:12px;padding:4px 10px">${st}${eta}</span>${watchBtn}`;
     } else if (isInLibrary && isSeries && data.library_source === 'sonarr') {
       actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span>${watchBtn} <button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showManageEpisodesModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Manage Episodes</button>`;
     } else if (isInLibrary && isSeries && data.library_source && data.library_source.startsWith('provider_')) {
@@ -5670,8 +5839,15 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
       actionBtn = `<span class="badge badge-amber" style="font-size:12px;padding:4px 10px">⏳ Awaiting Release</span> <span style="font-size:12px;color:var(--text3);margin-left:6px">${escapeAttr(ulLabel)}</span>`;
     } else if (data.requested) {
       actionBtn = `<span class="badge badge-blue" style="font-size:12px;padding:4px 10px">In ${isSeries ? 'Sonarr' : 'Radarr'} — searching for release</span>`;
+    } else if (data.request && data.request.status === 'pending') {
+      const who = (state.requestMode && state.requestMode.approver) || 'your admin';
+      actionBtn = `<span class="badge badge-amber" style="font-size:12px;padding:4px 10px">Asked · waiting for ${escapeAttr(who)}</span>`;
     } else {
-      actionBtn = `<button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}','${escapeJS(mediaType)}',${detailTvdbId})">Add to ${arrLabel}</button>`;
+      const addBtn = `<button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}','${escapeJS(mediaType)}',${detailTvdbId})">${data.request_mode === 'ask' ? 'Request' : `Add to ${arrLabel}`}</button>`;
+      const no = data.request && data.request.status === 'declined'
+        ? `<div style="font-size:12px;color:var(--text3);margin-bottom:8px">${escapeAttr(data.request.decided_by || 'Your admin')} said no last time${data.request.note ? ': ' + escapeAttr(data.request.note) : '.'}</div>`
+        : '';
+      actionBtn = no + addBtn;
     }
     document.getElementById('detail-title').textContent = data.title || title || 'Unknown';
     const detailPosterSrc = _imgUrl(data.poster_path, 'w185');
@@ -5815,7 +5991,9 @@ async function loadLiveTV() {
       renderLiveStats(data);
       await loadLiveGroups();
       await loadLiveChannels();
-      if (document.getElementById('live-panel-setup')?.classList.contains('active')) fillSetupUrls();
+      if (document.getElementById('live-panel-pool')?.classList.contains('active')) loadLivePool();
+      if (document.getElementById('live-panel-new')?.classList.contains('active')) loadNewGroups();
+      if (document.getElementById('live-panel-setup')?.classList.contains('active')) loadLiveSetup();
     } else {
       liveState.providerId = null;
       if (pick) pick.style.display = 'none';
@@ -5848,73 +6026,10 @@ function showLiveTab(name) {
   document.getElementById(`live-panel-${name}`)?.classList.add('active');
 
   if (name === 'channels') loadLiveChannels();
-  if (name === 'setup') fillSetupUrls();
-}
-
-// The tuner and guide addresses are Tentacle's own address (Settings →
-// Services) plus a path. Never http://localhost: in Docker that is Jellyfin
-// itself (#291). Not saved yet: the address Tentacle works out for itself,
-// then an older Live TV address, then this browser's, each said as such.
-async function fillSetupUrls() {
-  let base = '', note = '';
-  let settings = {};
-  try { settings = await api('/api/settings/raw'); } catch (e) { settings = {}; }
-  // The saved address is in the settings: no need for the status call, which
-  // checks the address over the network and can take a while.
-  // An address saved for Live TV before wins: it is what Jellyfin's tuner was
-  // set up with (often the LAN one, while Tentacle's address can be public).
-  // Saving Tentacle's address in Settings → Services replaces it.
-  if (settings['live_setup_host']) {
-    const port = settings['live_setup_port'] || '8888';
-    base = `${port === '443' ? 'https' : 'http'}://${settings['live_setup_host']}${port === '80' || port === '443' ? '' : ':' + port}`;
-  }
-  else if (settings['youtube_base_url']) base = settings['youtube_base_url'];
-  else try {
-    const st = await api('/api/youtube/status');
-    if (st && st.base_url) base = st.base_url;
-    else if (st && st.detected && st.detected.url) {
-      base = st.detected.url;
-      note = 'Worked out by Tentacle, not saved yet: save it in Settings → Services.';
-    }
-  } catch (e) {}
-  if (!base && location.hostname && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) {
-    base = `${location.protocol}//${location.host}`;
-    note = 'From this browser: set Tentacle\'s address in Settings → Services.';
-  }
-  liveState.setupBase = (base || '').replace(/\/+$/, '');
-  const shown = document.getElementById('live-setup-address-display');
-  if (shown) {
-    shown.textContent = liveState.setupBase || 'Not set';
-    shown.style.color = liveState.setupBase ? 'var(--green)' : 'var(--red)';
-  }
-  const hint = document.getElementById('live-setup-detected');
-  if (hint) hint.textContent = liveState.setupBase ? note : 'Set Tentacle\'s address in Settings → Services first.';
-  updateSetupUrls();
-}
-
-function getSetupBase() {
-  return liveState.setupBase || '';
-}
-
-function updateSetupUrls() {
-  const base = getSetupBase();
-  document.getElementById('live-setup-tuner-preview').textContent = base || '—';
-  document.getElementById('live-setup-xmltv-preview').textContent = base ? `${base}/hdhr/xmltv.xml` : '—';
-}
-
-async function copyLiveSetup(type, btn) {
-  const base = getSetupBase();
-  if (!base) { toast('Set Tentacle\'s address in Settings → Services first', 'error'); return; }
-  const url = type === 'tuner' ? base : `${base}/hdhr/xmltv.xml`;
-  try {
-    await navigator.clipboard.writeText(url);
-  } catch (_) {
-    toast('Copy failed — use HTTPS or copy manually', 'error');
-    return;
-  }
-  const orig = btn.textContent;
-  btn.textContent = 'Copied!';
-  setTimeout(() => btn.textContent = orig, 1500);
+  if (name === 'pool') loadLivePool();
+  if (name === 'setup') loadLiveSetup();
+  if (name === 'people') loadLivePeople();
+  if (name === 'new') loadNewGroups();
 }
 
 function renderLiveStats(data) {
@@ -6345,7 +6460,33 @@ async function loadNotificationState() {
     const enabled = data.notifications_enabled !== false;
     checkbox.checked = enabled;
     updateNotifSlider(enabled);
+    // Admins: other people's downloads (absent for everyone else).
+    const row = document.getElementById('notif-others-row');
+    if (row) row.style.display = 'show_others_downloads' in data ? 'flex' : 'none';
+    if ('show_others_downloads' in data) {
+      document.getElementById('notif-others-checkbox').checked = data.show_others_downloads;
+      _slider('notif-others-slider', data.show_others_downloads);
+    }
   } catch { checkbox.checked = true; updateNotifSlider(true); }
+}
+
+function _slider(id, on) {
+  const slider = document.getElementById(id);
+  const track = slider?.previousElementSibling;
+  if (slider) slider.style.transform = on ? 'translateX(18px)' : 'translateX(0)';
+  if (track) track.style.background = on ? 'var(--accent)' : 'var(--bg3)';
+}
+
+async function toggleOthersDownloads(checked) {
+  _slider('notif-others-slider', checked);
+  try {
+    await api('/api/notifications/others', { method: 'PUT', body: { show: checked } });
+    toast(checked ? 'Your Activity shows everyone’s downloads' : 'Your Activity shows only your own downloads');
+  } catch (e) {
+    _slider('notif-others-slider', !checked);
+    document.getElementById('notif-others-checkbox').checked = !checked;
+    toast(e.message, 'error');
+  }
 }
 
 function updateNotifSlider(enabled) {
@@ -6371,7 +6512,8 @@ function updateMergeContinueSlider(enabled) {
 async function saveMergeContinueWatching(checked) {
   updateMergeContinueSlider(checked);
   try {
-    await api('/api/smartlists/merge-continue-watching', { method: 'POST', body: { enabled: checked } });
+    await api(homeUrl('/api/smartlists/merge-continue-watching'), { method: 'POST', body: { enabled: checked } });
+    homeChangedByMe();
     toast(checked ? 'Continue Watching & Next Up combined' : 'Continue Watching & Next Up separated', 'success');
   } catch (e) {
     updateMergeContinueSlider(!checked);
@@ -7022,7 +7164,7 @@ function renderHealthLog() {
     loadJellyfinPage, loadAutoPlaylists, toggleAutoPlaylist, dismissAutoPlaylistBanner,
     showAddTagRule, editTagRule, deleteTagRule, saveTagRule, onContentSourceChange, toggleAdvancedFilters,
     addRuleCondition, updateCondOps, onCollectionNameInput, syncSmartLists, refreshTags, syncPlaylistsToJellyfin, resyncAllPlaylists, setPlaylistSort,
-    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, saveRowShapeByKey, toggleNotificationsFromCheckbox, saveMergeContinueWatching, dismissNewContentNotice, toggleCard, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
+    pushHomeConfig, setHomeScope, resetHomeToDefault, defaultHomeFromMine, defaultHomeSuggested, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, saveRowShapeByKey, toggleNotificationsFromCheckbox, toggleOthersDownloads, saveMergeContinueWatching, toggleCard, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
     showAddHomeRow, hideAddHomeRow, confirmAddHomeRow, removeHomeRow, removeHomeRowByKey,
     reorderHomeRows, rowKey,
     // Library
@@ -7034,7 +7176,7 @@ function renderHealthLog() {
     showManageEpisodesModal, confirmManageEpisodes,
     showDownloadMoreModal, confirmDownloadMore, detailToggleSeason, toggleFollow,
     // YouTube
-    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytStartPolling, ytDiagnose, ytSkipNote, ytReprobe, ytRefill, loadLiveYouTubeChannels, toggleLiveYouTube, ytSaveAddress, ytShowAddress, loadTentacleAddress, ytUseAddress, ytDetectAddress, ytLoadTraffic, ytSaveTraffic,
+    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytSetFollower, ytRefreshNow, ytStartPolling, ytDiagnose, ytSkipNote, ytReprobe, ytRefill, loadLiveYouTubeChannels, toggleLiveYouTube, ytSaveAddress, ytShowAddress, loadTentacleAddress, ytUseAddress, ytDetectAddress, ytLoadTraffic, ytSaveTraffic,
     // Following
     loadFollowing,
     toggleStrmManaged,
@@ -7065,7 +7207,7 @@ function renderHealthLog() {
     onDiscoverSearchInput, clearDiscoverSearch,
     // Live TV
     loadLiveTV, showLiveTab,
-    liveSyncChannels, liveSyncEpg, fillSetupUrls, updateSetupUrls, copyLiveSetup,
+    liveSyncChannels, liveSyncEpg,
     loadLiveChannels, toggleLiveChannel, renameLiveChannel, setLiveChannelGuideId, toggleAllChannels, saveLiveChannels, searchLiveChannels, filterLiveChannels, filterLiveChannelsByEpg, liveChPage,
   ];
   for (const fn of fns) {

@@ -3,34 +3,36 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#0c0c10">
+<meta name="theme-color" content="#0f0d1a">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Tentacle">
 <title>Tentacle</title>
 <link rel="icon" type="image/png" href="/static/favicon-96x96.png" sizes="96x96">
-<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="icon" type="image/svg+xml" href="/static/brand/mark-small.svg">
 <link rel="shortcut icon" href="/static/favicon.ico">
 <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
 <link rel="manifest" href="/static/site.webmanifest">
+<link rel="stylesheet" href="/static/brand/tokens.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg0: #0c0c10;
-  --bg1: #13131a;
-  --bg2: #1a1a24;
-  --bg3: #22222e;
+  /* the brand's colours, as on the TV app: the same values as static/brand/tokens.css (tests/test_brand.py) */
+  --bg0: #0f0d1a;
+  --bg1: #141226;
+  --bg2: #1b1830;
+  --bg3: #231f3d;
   --border: rgba(255,255,255,0.07);
   --border2: rgba(255,255,255,0.12);
-  --text: #e2e2ec;
-  --text2: #9090a8;
-  --text3: #82829c;  /* 4.6:1 on --bg2 (WCAG AA); #5a5a72 was 2.6:1 */
-  --accent: #6c63ff;
-  --accent-dim: rgba(108,99,255,0.15);
-  --accent-hover: #7d75ff;
-  --accent-text: #958fff;  /* accent as text on --accent-dim: 5.8:1 on --bg1, 5.3:1 on --bg2 (#6c63ff was 3.7:1) */
+  --text: #ebe9f5;
+  --text2: #9b97b6;
+  --text3: #8b87a8;  /* 4.6:1 on --bg3, 5.0:1 on --bg2 (WCAG AA) */
+  --accent: #6f5ce6;  /* fills under white text: 4.8:1 */
+  --accent-dim: rgba(111,92,230,0.18);
+  --accent-hover: #6450dc;
+  --accent-text: #8b80ff;  /* the TV app's accent, as text, icons, focus: 5.8:1 on --bg1, 5.0:1 on --accent-dim */
   --green: #4ade80;
   --green-dim: rgba(74,222,128,0.12);
   --red: #f87171;
@@ -103,18 +105,9 @@ body {
   gap: 10px;
 }
 
-.logo-icon {
-  width: 32px; height: 32px;
-  background: var(--accent);
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 16px;
-  flex-shrink: 0;
-}
-
-.logo-text { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+/* The brand: the jellyfish and the TENTACLE wordmark (static/brand/) */
+.logo-icon { width: 30px; height: 47px; flex-shrink: 0; display: block; }
+.logo-text { display: block; height: 12px; width: auto; }
 .logo-version { font-size: 10px; color: var(--text3); font-family: 'DM Mono', monospace; margin-top: 1px; }
 
 .sidebar-nav { padding: 12px 10px; flex: 1; overflow-y: auto; }
@@ -172,6 +165,7 @@ body {
 }
 
 .nav-badge-quiet { background: var(--bg3); color: var(--text2); }
+.nav-badge-accent { background: var(--accent); color: #fff; }
 
 .sidebar-footer {
   padding: 12px 10px 20px;
@@ -236,7 +230,9 @@ body {
 .login-overlay {
   position: fixed;
   inset: 0;
-  background: var(--bg0);
+  background:
+    radial-gradient(1200px 600px at 50% -10%, rgba(111,92,230,0.16), transparent 70%),
+    var(--bg0);
   z-index: 2000;
   display: flex;
   flex-direction: column;
@@ -248,114 +244,209 @@ body {
   justify-content: center;
   justify-content: safe center;
   overflow-y: auto;
-  padding: 24px;
+  padding: 32px 24px calc(32px + env(safe-area-inset-bottom));
 }
 
 .login-logo {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 48px;
+  margin-bottom: 40px;
 }
 
-.login-logo .logo-icon { width: 40px; height: 40px; font-size: 20px; }
-.login-logo .logo-text { font-size: 20px; }
+.login-logo .logo-icon { width: 46px; height: 73px; }
+.login-logo .logo-text { height: 20px; }
+
+.login-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: 1100px;
+}
+
+.login-title {
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 8px;
+  text-align: center;
+}
 
 .login-subtitle {
   color: var(--text2);
   font-size: 14px;
-  margin-bottom: 36px;
-  margin-top: -36px;
+  margin: 0 0 32px;
+  text-align: center;
+  max-width: 420px;
+  line-height: 1.5;
 }
 
+/* Wraps to as many rows as there are people; the overlay scrolls. */
 .user-grid {
   display: flex;
   flex-wrap: wrap;
-  gap: 24px;
+  gap: 28px 20px;
   justify-content: center;
-  max-width: 600px;
+  width: 100%;
 }
 
 .user-card {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   cursor: pointer;
-  padding: 16px 20px;
-  border-radius: var(--radius);
-  border: 1px solid transparent;
-  transition: all 0.15s;
-  min-width: 100px;
-}
-
-.user-card:hover, .user-card:focus {
-  background: var(--bg2);
-  border-color: var(--border2);
-}
-
-.user-card.selected {
-  border-color: var(--accent);
-  background: var(--accent-dim);
+  width: 132px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
 }
 
 .user-avatar {
-  width: 72px;
-  height: 72px;
+  width: 112px;
+  height: 112px;
   border-radius: 50%;
-  background: var(--bg3);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 28px;
+  font-size: 42px;
   font-weight: 600;
-  color: var(--text2);
+  color: #fff;
   overflow: hidden;
+  outline: 3px solid transparent;
+  outline-offset: 4px;
+  transition: transform 0.15s, outline-color 0.15s;
 }
 
+.user-avatar { position: relative; }
 .user-avatar img {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
+.user-card:hover .user-avatar { transform: scale(1.05); }
+.user-card:focus { outline: none; }
+.user-card:focus-visible .user-avatar,
+.user-card.selected .user-avatar { outline-color: var(--accent); transform: scale(1.05); }
+
 .user-card-name {
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 500;
-  color: var(--text);
+  color: var(--text2);
   text-align: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-card:hover .user-card-name,
+.user-card:focus-visible .user-card-name { color: var(--text); }
+
+.login-note {
+  color: var(--text2);
+  font-size: 14px;
+  text-align: center;
+  max-width: 380px;
+  line-height: 1.5;
+}
+
+.login-alt {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 40px;
 }
 
 .login-password-form {
-  margin-top: 24px;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 12px;
   width: 100%;
-  max-width: 280px;
+  max-width: 320px;
 }
 
-.login-password-form input {
-  width: 100%;
-  text-align: center;
+.login-who {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
 }
+
+.login-who .user-avatar { width: 96px; height: 96px; font-size: 36px; }
+.login-who-name { font-size: 22px; font-weight: 600; }
+
+.login-password-form .form-input {
+  width: 100%;
+  padding: 12px 14px;
+  font-size: 15px;
+}
+
+.login-password-form .btn,
+.login-code .btn { width: 100%; justify-content: center; padding: 11px 16px; font-size: 14px; }
 
 .login-error {
   color: var(--red);
-  font-size: 12px;
+  font-size: 13px;
   min-height: 18px;
+  text-align: center;
+  line-height: 1.4;
 }
 
 .login-back {
-  color: var(--text3);
-  font-size: 12px;
+  color: var(--text2);
+  font-size: 13px;
   cursor: pointer;
-  margin-top: 8px;
+  background: none;
+  border: none;
+  font-family: inherit;
+  padding: 6px 8px;
   text-decoration: none;
 }
 
-.login-back:hover { color: var(--text2); }
+.login-back:hover, .login-back:focus-visible { color: var(--text); }
+
+.login-code {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 380px;
+}
+
+.login-code-value {
+  font-size: 44px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  font-variant-numeric: tabular-nums;
+  padding: 14px 24px;
+  border-radius: var(--radius);
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  min-width: 260px;
+  text-align: center;
+}
+
+.login-code-wait { color: var(--text3); font-size: 13px; }
+
+@media (min-width: 1700px) {
+  /* TV-sized screens, seen from the sofa */
+  .login-title { font-size: 40px; }
+  .user-card { width: 168px; }
+  .user-avatar { width: 144px; height: 144px; font-size: 54px; }
+  .user-card-name { font-size: 18px; }
+  .login-alt .btn { font-size: 16px; padding: 11px 20px; }
+}
 .setup-pip.active { background: var(--accent); }
 .setup-pip.done { background: var(--green); }
 
@@ -481,7 +572,7 @@ body:not(.music-on) [data-music-only] { display: none !important; }
 .music-disc { font-size: 11px; color: var(--text3); margin: 12px 0 4px; text-transform: uppercase; letter-spacing: 0.05em; }
 .music-tracklist { margin-top: 8px; display: grid; }
 .music-track { display: flex; gap: 10px; padding: 5px 8px; font-size: 13px; border-radius: 4px; }
-.music-track.hl { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
+.music-track.hl { background: var(--accent-dim); color: var(--accent-text); font-weight: 600; }
 .music-track-n { width: 26px; color: var(--text3); font-family: 'DM Mono', monospace; font-size: 11px; flex-shrink: 0; padding-top: 1px; }
 .music-track-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .music-track-len { color: var(--text3); font-family: 'DM Mono', monospace; font-size: 11px; }
@@ -524,7 +615,7 @@ body:not(.music-on) [data-music-only] { display: none !important; }
 .btn-primary:hover:not(:disabled) { background: var(--accent-hover); transform: translateY(-1px); }
 
 .btn-secondary { background: var(--bg3); color: var(--text); border: 1px solid var(--border2); }
-.btn-secondary:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.btn-secondary:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-text); }
 
 .btn-danger { background: var(--red-dim); color: var(--red); border: 1px solid rgba(248,113,113,0.2); }
 .btn-danger:hover:not(:disabled) { background: rgba(248,113,113,0.2); }
@@ -560,7 +651,7 @@ body:not(.music-on) [data-music-only] { display: none !important; }
   white-space: nowrap;
 }
 
-.badge-accent { background: var(--accent-dim); color: var(--accent); }
+.badge-accent { background: var(--accent-dim); color: var(--accent-text); }
 .badge-green { background: var(--green-dim); color: var(--green); }
 .badge-red { background: var(--red-dim); color: var(--red); }
 .badge-amber { background: var(--amber-dim); color: var(--amber); }
@@ -637,6 +728,8 @@ td.primary { color: var(--text); font-weight: 500; }
 
 .empty-state { text-align: center; padding: 48px; color: var(--text3); }
 .empty-state .empty-icon { font-size: 32px; margin-bottom: 12px; }
+.empty-state .empty-mark { display: block; width: 38px; height: 60px; margin: 0 auto 14px; opacity: .45; }
+.setup-mark { display: block; width: 34px; height: 54px; margin-bottom: 16px; }
 .empty-state p { font-size: 13px; }
 
 /* ── Provider cards ── */
@@ -651,7 +744,7 @@ td.primary { color: var(--text); font-weight: 500; }
 }
 
 .provider-card:hover { border-color: var(--border2); }
-.provider-card.active-provider { border-color: rgba(108,99,255,0.4); }
+.provider-card.active-provider { border-color: rgba(111,92,230,0.4); }
 
 .provider-card-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; gap: 10px; }
 .provider-card-name { font-size: 14px; font-weight: 600; }
@@ -693,7 +786,7 @@ td.primary { color: var(--text); font-weight: 500; }
 .addr-word.green { color: var(--green); } .addr-word.amber { color: var(--amber); } .addr-word.red { color: var(--red); } .addr-word.gray { color: var(--text3); }
 .addr-list { display: flex; flex-direction: column; gap: 4px; }
 .addr-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
-.addr-row.in-use { border-color: rgba(108,99,255,0.4); }
+.addr-row.in-use { border-color: rgba(111,92,230,0.4); }
 .addr-row .dot { flex-shrink: 0; }
 .addr-main { flex: 1; min-width: 0; }
 .addr-url { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -702,7 +795,7 @@ td.primary { color: var(--text); font-weight: 500; }
 .addr-day { margin-left: 4px; white-space: nowrap; }
 .addr-pref { font-family: inherit; font-size: 11px; color: var(--text3); }
 .addr-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
-.addr-inuse { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); padding: 0 6px; }
+.addr-inuse { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--accent-text); padding: 0 6px; }
 .addr-remove { padding: 2px 8px; font-size: 18px; line-height: 1; color: var(--text3); background: none; border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; }
 .addr-remove:hover { color: var(--red); border-color: var(--border); }
 .addr-add { display: flex; gap: 8px; align-items: flex-start; margin-top: 10px; }
@@ -786,7 +879,7 @@ td.primary { color: var(--text); font-weight: 500; }
 }
 
 .cat-row:hover { border-color: var(--border2); }
-.cat-row.whitelisted { border-color: rgba(108,99,255,0.25); background: var(--accent-dim); }
+.cat-row.whitelisted { border-color: rgba(111,92,230,0.25); background: var(--accent-dim); }
 
 .cat-checkbox { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
 .cat-name { flex: 1; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -936,7 +1029,7 @@ body.modal-open { overflow: hidden; }
 .detail-follow-toggle { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; }
 .detail-follow-toggle input { accent-color: var(--accent); }
 .detail-follow-label { color: var(--text2); font-weight: 500; }
-.detail-follow-toggle input:checked + .detail-follow-label { color: var(--accent); }
+.detail-follow-toggle input:checked + .detail-follow-label { color: var(--accent-text); }
 
 /* ── Scrollbars ── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
@@ -1040,7 +1133,7 @@ body.modal-open { overflow: hidden; }
   padding: 2px 8px;
   color: var(--text2);
 }
-.run-cat-pill.has-new { border-color: rgba(108,99,255,0.3); background: var(--accent-dim); color: var(--accent); }
+.run-cat-pill.has-new { border-color: rgba(111,92,230,0.3); background: var(--accent-dim); color: var(--accent-text); }
 
 /* ── Duplicate rows ── */
 .dup-row {
@@ -1109,9 +1202,9 @@ body.modal-open { overflow: hidden; }
   background: var(--bg3); color: var(--text2); border: 1px solid var(--border); transition: all .15s;
 }
 .genre-chip:hover { border-color: var(--text3); }
-.genre-chip.selected { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); font-weight: 500; }
+.genre-chip.selected { background: var(--accent-dim); color: var(--accent-text); border-color: var(--accent); font-weight: 500; }
 .match-count { font-size: 12px; color: var(--text3); margin-top: 8px; font-family: 'DM Mono', monospace; transition: opacity .2s; }
-.match-count .count-num { color: var(--accent); font-weight: 600; }
+.match-count .count-num { color: var(--accent-text); font-weight: 600; }
 
 /* ── Log viewer ── */
 .log-panel {
@@ -1171,6 +1264,26 @@ body.modal-open { overflow: hidden; }
 }
 .lib-card:hover .lib-card-add-btn { opacity: 1; }
 
+/* ── ▶ Play / Open in Jellyfin (pages.js watchButtons / watchCardButtons) ── */
+.watch-btns { display: inline-flex; gap: 6px; flex-wrap: wrap; vertical-align: middle; }
+.watch-btns .btn { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
+.watch-row { margin: -4px 0 14px; }
+.btn.btn-xs { padding: 3px 10px; font-size: 11px; border-radius: 5px; }
+.btn.btn-xs svg { width: 12px; height: 12px; }
+.watch-card-btns { position: absolute; left: 6px; bottom: 6px; display: flex; gap: 6px; opacity: 0; transition: opacity 0.12s; }
+.lib-card:hover .watch-card-btns, .lib-card:focus-within .watch-card-btns { opacity: 1; }
+.watch-card-btns a { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  color: #fff; text-decoration: none; box-shadow: 0 2px 8px rgba(0,0,0,.45); }
+.watch-card-play { background: var(--accent); }
+.watch-card-play svg { width: 15px; height: 15px; margin-left: 2px; }
+.watch-card-open { background: rgba(15, 15, 20, .78); border: 1px solid rgba(255,255,255,.18); }
+.watch-card-btns a:hover { filter: brightness(1.15); }
+.watch-card-btns a:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.ep-play-btn { flex: 0 0 22px; width: 22px; height: 22px; margin-left: -26px; border-radius: 50%; display: inline-flex;
+  align-items: center; justify-content: center; color: var(--accent-text); text-decoration: none; }
+.ep-play-btn svg { width: 12px; height: 12px; margin-left: 1px; }
+a.ep-play-btn:hover { background: var(--accent); color: #fff; }
+
 /* Inline-styled flex rows inside headers and forms wrap instead of pushing past the edge
    (no effect while they fit; matters on phones and on tablets with the sidebar open) */
 .page-header-row > [style*="display:flex"], .card-header > [style*="display:flex"],
@@ -1180,7 +1293,8 @@ body.modal-open { overflow: hidden; }
 
 /* Touch screens have no hover: show the add buttons that hover reveals, drop hover lifts */
 @media (hover: none) {
-  .lib-card .lib-card-add-btn, .coverage-card .card-add-btn { opacity: 1; }
+  .lib-card .lib-card-add-btn, .coverage-card .card-add-btn, .watch-card-btns { opacity: 1; }
+  .ep-play-btn { flex-basis: 28px; width: 28px; height: 28px; margin-left: -30px; }
   .lib-card:hover { transform: none; box-shadow: none; }
 }
 button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .live-ch-row, .nav-item {
@@ -1283,6 +1397,402 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
   margin-bottom: 14px;
 }
 
+/* ── Home Screen: own home or the default for everyone ── */
+.card.home-scope { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; margin-bottom: 16px; }
+.home-scope-switch { align-self: flex-start; }
+.home-scope-switch .filter-btn { padding: 8px 14px; font-size: 13px; }
+.home-scope-row { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; }
+.home-scope-note { flex: 1; min-width: 220px; margin: 0; font-size: 13px; color: var(--text2); line-height: 1.5; }
+.home-scope-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.home-scope-actions:empty { display: none; }
+#jf-tab-home.home-scope-default .home-personal { display: none; }
+
+/* ── My channels ── */
+.card.mych-head { display: flex; align-items: center; gap: 8px 20px; flex-wrap: wrap; margin-bottom: 16px; }
+.mych-head-text { flex: 1; min-width: 240px; }
+.mych-title { font-size: 16px; font-weight: 600; }
+.mych-total { font-weight: 400; color: var(--text3); font-size: 13px; margin-left: 6px; }
+.mych-sub { font-size: 13px; color: var(--text2); margin-top: 4px; max-width: 720px; }
+.mych-count { opacity: .75; font-family: 'DM Mono', monospace; font-size: 11px; margin-left: 4px; }
+.mych-status { width: 100%; font-size: 12px; color: var(--text3); }
+.mych-status:empty { display: none; }
+.mych-status.ok { color: var(--green); }
+.mych-status.busy { color: var(--amber); }
+.card.mych-picks-card { margin-bottom: 16px; }
+.mych-step-title { font-size: 14px; font-weight: 600; }
+.mych-picks { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.mych-pick { display: inline-flex; align-items: baseline; gap: 6px; padding: 8px 12px; font-size: 13px; font-weight: 500; font-family: 'DM Sans', sans-serif;
+  color: var(--text); background: var(--bg2); border: 1px solid var(--border2); border-radius: 3px; cursor: pointer; }
+.mych-pick:hover { border-color: var(--accent); }
+.mych-pick .n { font-size: 11px; color: var(--text3); font-weight: 400; }
+.mych-pick.on { background: var(--accent-dim); border-color: var(--accent); }
+.mych-pick.on .n { color: var(--accent-text); }
+.mych-pick.more { display: none; color: var(--accent-text); }
+.mych-name .via { font-size: 11px; color: var(--text3); margin-left: 8px; }
+.mych-pick .star { color: var(--text3); }
+.mych-pick.on .star { color: var(--amber); }
+.mych-own { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.live-tabs.mych-phone-tabs { display: none; margin-bottom: 0; }
+.card.mych-panel { padding: 0; overflow: hidden; border-radius: 3px; }
+.mych-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.mych-panel-head > div:first-child { flex: 1 1 220px; min-width: 0; }
+.mych-panel-head .card-title { margin-bottom: 2px; }
+.mych-hint { font-size: 12px; color: var(--text3); }
+.mych-filters { display: flex; gap: 8px; flex-wrap: wrap; }
+.mych-search { width: 200px; max-width: 100%; padding: 6px 10px; font-size: 13px; }
+.mych-type { width: 130px; padding: 6px 8px; font-size: 13px; }
+.mych-list { max-height: calc(100vh - 330px); min-height: 160px; overflow-y: auto; }
+.mych-row { display: flex; align-items: center; gap: 10px; padding: 7px 12px 7px 14px; border-bottom: 1px solid var(--border); font-size: 13px; background: var(--bg1); }
+.mych-row:last-child { border-bottom: none; }
+.mych-row.starred { background: linear-gradient(90deg, var(--accent-dim), transparent 60%); }
+#mych-fav-list .mych-row.starred { background: var(--bg1); }
+.mych-row.broken .mych-name { color: var(--text2); }
+.mych-num { width: 34px; text-align: right; font-family: 'DM Mono', monospace; font-size: 12px; color: var(--text3); flex-shrink: 0; }
+.mych-logo { width: 34px; height: 22px; object-fit: contain; flex-shrink: 0; }
+.mych-logo.none { background: var(--bg3); border-radius: 2px; }
+.mych-text { flex: 1; min-width: 0; }
+.mych-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mych-meta { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 11px; color: var(--text3); margin-top: 2px; }
+.mych-meta .ok { color: var(--green); }
+.mych-meta .bad { color: var(--red); }
+.mych-meta .ev { color: var(--accent-text); }
+.mych-meta .via { color: var(--text2); }
+.mych-icon { background: none; border: none; color: var(--text3); cursor: pointer; font-size: 15px; padding: 4px 6px; border-radius: 2px; line-height: 1; }
+.mych-icon:hover { color: var(--text); background: var(--bg3); }
+.mych-icon:disabled { opacity: .25; cursor: default; background: none; }
+.mych-star { font-size: 17px; }
+.mych-star.on { color: var(--amber); }
+.mych-none { padding: 28px 16px; text-align: center; font-size: 13px; color: var(--text3); }
+.mych-more { display: block; width: 100%; padding: 10px; background: var(--bg2); border: none; border-top: 1px solid var(--border); color: var(--accent-text); cursor: pointer; font-size: 13px; }
+@media (max-width: 760px) {
+  .mych-own { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .live-tabs.mych-phone-tabs { display: flex; }
+  .mych-picks:not(.all) .mych-pick.extra { display: none; }
+  .mych-pick.more { display: inline-flex; }
+  .mych-sub { font-size: 12px; }
+  .mych-own.tab-list #mych-all-panel, .mych-own.tab-all #mych-fav-panel { display: none; }
+  .mych-panel-head .card-title { display: none; }
+  .mych-list { max-height: none; }
+  .mych-filters { width: 100%; }
+  .mych-search { flex: 1 1 0; width: auto; min-width: 0; }
+  .mych-row { gap: 8px; padding-left: 10px; padding-right: 8px; }
+  .mych-num { width: 22px; }
+  .mych-picks { display: grid; grid-template-columns: 1fr 1fr; }
+  .mych-pick { justify-content: center; padding: 9px 8px; }
+}
+
+/* ── Sources → YouTube: who sees a channel (pages.js) ── */
+.yt-followers { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; }
+.yt-follower { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 8px; background: var(--bg2); border: 1px solid var(--border2); border-radius: 3px; }
+.yt-follower button { background: none; border: none; color: var(--text3); cursor: pointer; font-size: 11px; padding: 0 3px; }
+.yt-follower button:hover { color: var(--red); }
+.yt-follow-add { width: auto; padding: 2px 6px; font-size: 12px; height: auto; }
+
+/* ── My YouTube (myyoutube.js) ── */
+.myt-add { display: flex; gap: 8px; margin-top: 12px; }
+.myt-add .form-input { flex: 1; min-width: 0; }
+.myt-live { display: block; margin-top: 10px; font-size: 13px; color: var(--text2); }
+.myt-dim { color: var(--text3); }
+.myt-list { max-height: none; min-height: 0; }
+.myt-row { padding-top: 10px; padding-bottom: 10px; }
+.myt-avatar { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
+.myt-avatar.none { background: var(--bg3); }
+.myt-row .mych-name { font-size: 14px; }
+@media (max-width: 760px) {
+  .myt-row .btn { padding: 6px 10px; }
+}
+
+/* ── Sources → Live TV → Channels: the pool (mychannels.js) ── */
+.pool-checker { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; font-size: 12px; color: var(--text2); padding: 10px 14px; margin-bottom: 12px;
+  background: var(--bg1); border: 1px solid var(--border); border-radius: 3px; }
+.pool-checker .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: var(--text3); vertical-align: middle; }
+.pool-checker .dot.on { background: var(--green); }
+.pool-checker .dot.paused { background: var(--amber); }
+.pool-count { font-size: 12px; color: var(--text2); margin-bottom: 4px; }
+.pool-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.pool-tools .form-input { padding: 5px 10px; font-size: 12px; }
+.pool-tools .grow { flex: 1; }
+.pool-row { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.pool-row:last-child { border-bottom: none; }
+.pool-row.out { opacity: .55; }
+.pool-row input[type=checkbox] { width: 15px; height: 15px; flex-shrink: 0; cursor: pointer; }
+.pool-name { font-weight: 500; }
+.pool-types { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.pool-type { font-size: 10px; padding: 1px 6px; border-radius: 2px; background: var(--bg3); color: var(--text2); border: none; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+.pool-type.set { background: var(--blue-dim); color: var(--blue); }
+.pool-variant { width: 260px; max-width: 100%; padding: 4px 8px; font-size: 12px; }
+.pool-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.pool-detail { padding: 10px 14px 14px 52px; background: var(--bg2); border-bottom: 1px solid var(--border); font-size: 12px; }
+.pool-detail h4 { font-size: 12px; font-weight: 600; margin: 4px 0 6px; color: var(--text2); }
+.pool-typepick { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.pool-typepick label { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border: 1px solid var(--border2); border-radius: 2px; cursor: pointer; }
+.pool-var { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.pool-var .feeds { font-size: 10px; padding: 1px 6px; border-radius: 2px; background: var(--accent-dim); color: var(--accent-text); margin-right: 6px; }
+.pool-var span.n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pool-var-list { max-height: 240px; overflow-y: auto; margin-bottom: 8px; }
+.pool-namelogo { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 10px; }
+.pool-namelogo .form-input { width: 280px; max-width: 100%; padding: 4px 8px; font-size: 12px; }
+.pool-logos { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.pool-logo { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border: 1px solid var(--border2); border-radius: 2px; background: none; color: var(--text2); font-size: 11px; cursor: pointer; max-width: 260px; }
+.pool-logo.on { border-color: var(--accent); color: var(--text); }
+.pool-logo span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pool-region { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; color: var(--text3); padding: 10px 16px; border-top: 1px solid var(--border); }
+.pool-region .form-input { width: 280px; max-width: 100%; padding: 5px 10px; font-size: 12px; }
+@media (max-width: 760px) {
+  .pool-row { flex-wrap: wrap; padding: 10px 12px; }
+  .pool-row .mych-text { flex: 1 1 0; min-width: 0; }
+  .pool-row .mych-logo { display: none; }
+  .pool-actions { margin-left: auto; }
+  .pool-actions:has(select) { width: 100%; justify-content: flex-end; }
+  .pool-variant { flex: 1 1 0; width: auto; min-width: 0; }
+  .pool-var { flex-wrap: wrap; gap: 2px 8px; padding: 5px 0; }
+  .pool-var .feeds { font-size: 10px; padding: 1px 6px; border-radius: 2px; background: var(--accent-dim); color: var(--accent-text); margin-right: 6px; }
+.pool-var span.n { flex: 1 1 calc(100% - 30px); white-space: normal; }
+  .pool-var .mych-meta { padding-left: 25px; }
+  .pool-detail { padding-left: 14px; }
+  .pool-tools .grow { flex-basis: 100%; }
+  .pool-tools select.form-input { flex: 1 1 0; width: auto !important; min-width: 0; }
+  .pool-checker .note { display: none; }
+}
+
+/* ── Sources → Live TV → New from your provider, and new categories (newgroups.js) ── */
+.nfp-reading { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text2); padding: 10px 14px; margin-bottom: 12px;
+  background: var(--bg1); border: 1px solid var(--border); border-radius: 3px; }
+.nfp-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text2); cursor: pointer; white-space: nowrap; }
+.nfp-check input { width: 15px; height: 15px; cursor: pointer; }
+label.pool-row { cursor: pointer; }
+label.pool-row:hover { background: var(--bg2); }
+.pool-row.broken .pool-name { color: var(--text2); }
+.nfp-back { background: none; border: none; padding: 0; margin-bottom: 8px; color: var(--accent-text); font-size: 13px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+.nfp-ghead { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--bg2); border-bottom: 1px solid var(--border); font-size: 13px; position: sticky; top: 0; z-index: 1; }
+.nfp-foot { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px 14px; padding: 12px 16px; border-top: 1px solid var(--border);
+  position: sticky; bottom: 0; background: var(--bg1); font-size: 12px; color: var(--text2); }
+.mych-meta .new, .mych-new { display: inline-block; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 2px; background: var(--accent-dim); color: var(--accent-text); }
+.mych-new { margin-left: 8px; vertical-align: 1px; }
+.nfp-link { background: none; border: none; padding: 2px 0; color: var(--accent-text); font-size: 12px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+.nfp-link:hover { text-decoration: underline; }
+.nfp-sel { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text3); white-space: nowrap; }
+.nfp-sec-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; padding: 12px 16px 10px; border-bottom: 1px solid var(--border); }
+.nfp-sec-head .grow { flex: 1 1 220px; min-width: 0; }
+.nfp-sec-title { font-size: 14px; font-weight: 600; }
+.nfp-sec-sub { display: block; font-size: 12px; color: var(--text3); margin-top: 2px; }
+.nfp-mine { background: linear-gradient(180deg, var(--accent-dim), transparent 80px); border-bottom: 1px solid var(--border); }
+.nfp-label { padding: 14px 16px 6px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text3); }
+.nfp-fold { border-top: 1px solid var(--border); }
+.nfp-fold:last-of-type { border-bottom: 1px solid var(--border); }
+.nfp-fold > summary { display: flex; align-items: center; gap: 10px; padding: 11px 16px; cursor: pointer; list-style: none; font-size: 13px; }
+.nfp-fold > summary::-webkit-details-marker { display: none; }
+.nfp-fold > summary:hover { background: var(--bg2); }
+.nfp-fold[open] > summary { background: var(--bg2); border-bottom: 1px solid var(--border); }
+.nfp-flag { width: 22px; text-align: center; font-size: 17px; line-height: 1; flex-shrink: 0; }
+.nfp-fold-name { font-weight: 600; white-space: nowrap; }
+.nfp-fold-sub { flex: 1; min-width: 0; color: var(--text3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nfp-chev { width: 8px; height: 8px; border-right: 1.5px solid var(--text3); border-bottom: 1.5px solid var(--text3); transform: rotate(-45deg); transition: transform .15s; flex-shrink: 0; margin: 0 4px; }
+.nfp-fold[open] > summary .nfp-chev { transform: rotate(45deg); }
+.nfp-fold-acts { display: inline-flex; gap: 6px; flex-shrink: 0; }
+.nfp-fold:not([open]) [data-act=tick-all] { display: none; }
+/* The bar with what's ticked floats over the page bottom, wherever the list is scrolled. */
+.nfp-foot.nfp-float { position: fixed; bottom: 16px; left: calc(var(--sidebar-w) + (100vw - var(--sidebar-w)) / 2); transform: translateX(-50%);
+  width: min(760px, calc(100vw - var(--sidebar-w) - 48px)); z-index: 50; border: 1px solid var(--border2); border-radius: 6px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.45); background: var(--bg2); color: var(--text); font-size: 13px; }
+.nfp-foot.nfp-float span:first-child { margin-right: auto; }
+#nfp-step1, #nfp-step2 { padding-bottom: 76px; }
+.nfp-g { display: flex; align-items: flex-start; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.nfp-g:last-child { border-bottom: none; }
+.nfp-g:hover { background: var(--bg2); }
+.nfp-g.ticked { background: var(--accent-dim); }
+.nfp-g input[type=checkbox] { width: 16px; height: 16px; margin-top: 2px; flex-shrink: 0; cursor: pointer; }
+.nfp-g-main { flex: 1; min-width: 0; }
+.nfp-g-title { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; font-size: 14px; font-weight: 500; }
+.nfp-tag { font-size: 10px; font-weight: 500; padding: 1px 6px; border-radius: 2px; background: var(--bg3); color: var(--text2); }
+.nfp-tag.place { background: none; border: 1px solid var(--border2); color: var(--text2); }
+.nfp-tag.ev { background: var(--accent-dim); color: var(--accent-text); }
+.nfp-tag.empty { background: var(--amber-dim); color: var(--amber); }
+.nfp-samples { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; color: var(--text2); min-width: 0; }
+.nfp-samples img { width: 30px; height: 20px; object-fit: contain; flex-shrink: 0; background: rgba(255,255,255,.04); border-radius: 2px; }
+.nfp-samples .names { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.nfp-x { flex-shrink: 0; background: none; border: 1px solid transparent; color: var(--text3); font-size: 12px; padding: 4px 8px; border-radius: 3px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+.nfp-x:hover { color: var(--text); border-color: var(--border2); background: var(--bg3); }
+.nfp-g.out { cursor: default; }
+.nfp-g.out .nfp-g-main { opacity: .6; }
+.toast .nfp-undo { margin-left: 10px; background: none; border: 1px solid var(--border2); color: var(--accent-text); border-radius: 3px; padding: 2px 10px; cursor: pointer; font-size: 12px; }
+@media (max-width: 760px) {
+  .nfp-foot { justify-content: stretch; }
+  .nfp-foot .btn { flex: 1 1 0; }
+  .nfp-foot.nfp-float { left: 50%; width: calc(100vw - 20px); bottom: calc(10px + env(safe-area-inset-bottom)); padding: 10px 12px; }
+  #nfp-ch-sel { flex-basis: 100%; }
+  #nfp-ch-show { flex: 1 1 0; width: auto !important; }
+  .nfp-ghead { flex-wrap: wrap; padding: 10px 12px; }
+  .nfp-check { white-space: normal; }
+  #nfp-step1 .mych-panel-head .card-title, #nfp-step2 .mych-panel-head .card-title { display: block; }
+  .nfp-g { padding: 10px 12px; gap: 10px; }
+  .nfp-fold > summary { flex-wrap: wrap; padding: 11px 12px; gap: 4px 10px; }
+  .nfp-fold-sub { flex: 1 1 0; }
+  .nfp-fold[open] .nfp-fold-acts { order: 5; width: 100%; padding-left: 32px; }
+  .nfp-fold[open] > summary .nfp-chev { margin-left: auto; }
+  .nfp-sel { flex-wrap: wrap; white-space: normal; }
+  .nfp-sec-head { padding: 12px 12px 10px; }
+  .nfp-samples img:nth-of-type(n+4) { display: none; }
+  #nfp-dismiss-rest-btn { width: 100%; }
+}
+
+/* ── Family: People, Requests, invites (family.js) ── */
+.family-banner { margin: 0 0 16px; padding: 10px 14px; border-radius: var(--radius-sm); border: 1px solid rgba(251,191,36,.35);
+  background: var(--amber-dim); color: var(--text); font-size: 13px; line-height: 1.5; }
+.card.fam-head { display: flex; align-items: center; gap: 14px 20px; flex-wrap: wrap; margin-bottom: 16px; }
+.fam-head-text { flex: 1; min-width: 240px; }
+.fam-title { font-size: 16px; font-weight: 600; }
+.fam-sub { font-size: 13px; color: var(--text2); margin-top: 4px; max-width: 640px; }
+.fam-note { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; padding: 10px 14px; border-radius: var(--radius-sm); font-size: 13px; }
+.fam-note.warn { background: var(--amber-dim); border: 1px solid rgba(251,191,36,.3); }
+.fam-note span { flex: 1; min-width: 200px; }
+.card.fam-people { padding: 0; overflow: hidden; margin-bottom: 16px; }
+.fam-person { display: flex; align-items: center; gap: 12px 20px; flex-wrap: wrap; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.fam-person:last-child { border-bottom: none; }
+.fam-who { display: flex; align-items: center; gap: 12px; flex: 1 1 220px; min-width: 0; }
+.fam-avatar { width: 38px; height: 38px; border-radius: 50%; object-fit: cover; background: var(--bg3); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; font-weight: 600; color: var(--text2); }
+.fam-who-text { min-width: 0; }
+.fam-name { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.fam-name .badge { font-size: 10px; padding: 1px 6px; }
+.fam-meta { display: flex; flex-wrap: wrap; gap: 2px 12px; margin-top: 3px; font-size: 12px; color: var(--text3); }
+.fam-warn-text { color: var(--amber); }
+.fam-controls { display: flex; align-items: flex-end; gap: 10px 14px; flex-wrap: wrap; }
+.fam-ctl { display: flex; flex-direction: column; gap: 4px; }
+.fam-ctl-label { font-size: 11px; color: var(--text3); }
+.fam-select { padding: 6px 8px; font-size: 13px; width: 200px; }
+.fam-fixed { font-size: 13px; color: var(--text2); padding: 6px 0; width: 200px; }
+.fam-ctl-admin { align-items: center; }
+.fam-ctl-admin input { width: 16px; height: 16px; margin: 7px 0; cursor: pointer; }
+.fam-actions { display: flex; gap: 6px; min-width: 206px; justify-content: flex-end; }
+.fam-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.fam-hint { font-size: 12px; color: var(--text3); line-height: 1.5; margin: 6px 0 12px; }
+/* Settings → About (app.js loadAbout) */
+.about-row { display: grid; grid-template-columns: 150px 1fr; gap: 4px 16px; padding: 12px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.about-row:last-child { border-bottom: none; }
+.about-label { color: var(--text2); }
+.about-value { font-weight: 600; }
+.about-value .about-sub { font-weight: 400; color: var(--text3); font-size: 12px; margin-left: 6px; }
+.about-ok { color: var(--green); font-weight: 400; margin-left: 6px; }
+.about-row .fam-note { margin: 8px 0 0; }
+.about-row .fam-hint { margin: 4px 0 0; }
+.about-tv { display: flex; flex-wrap: wrap; gap: 2px 8px; padding: 2px 0; }
+@media (max-width: 600px) { .about-row { grid-template-columns: 1fr; } }
+.fam-box .form-group { margin-bottom: 12px; }
+.fam-copy { display: flex; align-items: center; gap: 8px; }
+.fam-copy code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-family: 'DM Mono', monospace; font-size: 13px; padding: 7px 10px; background: var(--bg3); border-radius: var(--radius-sm); }
+.fam-error { padding: 20px 16px; color: var(--red); font-size: 13px; }
+.fam-radio { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 4px 0; cursor: pointer; }
+.fam-card { border: 1px solid var(--border2); border-radius: var(--radius-sm); padding: 12px 14px; background: var(--bg2); }
+.fam-card-row { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
+.fam-card-row span { color: var(--text3); }
+.fam-card-row strong { font-family: 'DM Mono', monospace; font-weight: 500; overflow-wrap: anywhere; text-align: right; }
+.fam-card-steps { font-size: 13px; color: var(--text2); margin-top: 10px; line-height: 1.6; }
+/* The welcome at a first sign-in (welcome.js) */
+.welcome-box { max-width: 540px; }
+.welcome-box .modal-header { margin-bottom: 14px; align-items: flex-start; }
+.welcome-pips { flex: 1; margin: 0 12px 0 0; }
+.welcome-pips li { font-size: 0; gap: 0; padding-top: 0; }
+.welcome-title { font-size: 20px; margin-bottom: 10px; }
+.welcome-title-brand::before { content: ''; display: block; width: 34px; height: 54px; margin-bottom: 12px; background: url('/static/brand/mark.svg') no-repeat center / contain; }
+.welcome-body { font-size: 14px; line-height: 1.6; color: var(--text2); }
+.welcome-body p { margin: 0 0 12px; }
+.welcome-body strong { color: var(--text); }
+.welcome-body a { color: var(--accent-text); font-weight: 500; overflow-wrap: anywhere; }
+.welcome-body .form-group { margin: 10px 0 0; }
+.welcome-picks { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; }
+.welcome-rows { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 12px; padding: 0; list-style: none; }
+.welcome-rows li { background: var(--bg3); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 13px; color: var(--text); }
+.welcome-counts { font-size: 15px; line-height: 1.5; color: var(--text); }
+.welcome-counts strong { color: var(--accent-text); font-weight: 600; white-space: nowrap; }
+.welcome-counts:empty { display: none; }
+.welcome-where { border: 1px solid var(--border2); background: var(--bg2); border-radius: var(--radius-sm); padding: 12px 14px; margin-bottom: 12px; }
+.welcome-where .big { font-size: 16px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+/* Add someone: three steps (family.js) */
+.add-steps { display: flex; gap: 6px; list-style: none; padding: 0; margin: -6px 0 18px; counter-reset: none; }
+.add-steps li { flex: 1; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text3); padding-top: 8px; border-top: 3px solid var(--bg3); white-space: nowrap; min-width: 0; }
+.add-steps li span { width: 18px; height: 18px; border-radius: 50%; background: var(--bg3); color: var(--text2); font-size: 11px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.add-steps li.active { color: var(--text); border-top-color: var(--accent); font-weight: 600; }
+.add-steps li.active span { background: var(--accent); color: #fff; }
+.add-steps li.done { color: var(--text2); border-top-color: var(--green); }
+.add-steps li.done span { background: var(--green); color: #fff; }
+.add-seg { display: inline-flex; border: 1px solid var(--border2); border-radius: var(--radius-sm); overflow: hidden; }
+.add-seg label { display: flex; align-items: center; gap: 6px; padding: 7px 16px; font-size: 13px; cursor: pointer; }
+.add-seg label + label { border-left: 1px solid var(--border2); }
+.add-seg input { position: absolute; opacity: 0; pointer-events: none; }
+.add-seg label:has(input:checked) { background: var(--accent-dim, var(--bg3)); color: var(--accent-text, var(--text)); font-weight: 600; }
+.add-seg label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: -2px; }
+.add-pw { display: flex; gap: 8px; }
+.add-pw .form-input { flex: 1; min-width: 0; }
+.add-ask { border: 1px solid rgba(251,191,36,.3); background: var(--amber-dim); border-radius: var(--radius-sm); padding: 12px 14px; margin-top: 4px; }
+.add-ask .form-group { margin: 10px 0 0; }
+.add-message { width: 100%; font-size: 13px; line-height: 1.5; resize: vertical; white-space: pre-wrap; }
+.invite-brand { background: var(--tentacle-navy); border-radius: var(--radius-sm); padding: 14px 16px; margin-bottom: 12px; }
+.invite-brand img { display: block; height: 42px; width: auto; }
+.fam-card-steps ol, .fam-steps { padding-left: 20px; margin-top: 4px; }
+.fam-steps { font-size: 13px; color: var(--text2); line-height: 1.7; margin-bottom: 16px; }
+.fam-code { font-family: 'DM Mono', monospace; font-size: 22px; letter-spacing: .2em; text-align: center; }
+.fam-result { font-size: 13px; min-height: 18px; }
+.fam-result.good { color: var(--green); }
+.fam-result.bad { color: var(--red); }
+.fam-chlist { max-height: 50vh; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+.fam-ch { display: flex; align-items: center; gap: 8px; padding: 7px 10px; font-size: 13px; cursor: pointer; border-bottom: 1px solid var(--border); min-width: 0; }
+.fam-ch span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.req-list { display: flex; flex-direction: column; gap: 10px; }
+.card.my-requests { margin-bottom: 16px; }
+.my-req { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); font-size: 13px; }
+.my-req:first-of-type { border-top: none; }
+.my-req-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.my-req .fam-hint { margin: 2px 0 0; }
+.card.req-item { display: flex; align-items: center; gap: 14px; padding: 12px 14px; }
+.req-poster { width: 46px; height: 69px; object-fit: cover; border-radius: 4px; flex-shrink: 0; background: var(--bg3); }
+.req-poster.none { display: flex; align-items: center; justify-content: center; color: var(--text3); font-weight: 600; }
+.req-text { flex: 1; min-width: 0; }
+.req-title { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.req-what { font-size: 12px; color: var(--text2); margin-top: 2px; }
+.req-who { font-size: 12px; color: var(--text3); margin-top: 4px; }
+.req-note { font-size: 12px; color: var(--text2); margin-top: 4px; font-style: italic; }
+.req-note.bad { color: var(--red); font-style: normal; }
+.req-buttons { display: flex; gap: 6px; flex-shrink: 0; }
+.req-answer { text-align: right; flex-shrink: 0; }
+.req-answer .fam-hint { margin: 4px 0 0; }
+.fam-more span { font-size: 10px; margin-left: 2px; }
+.fam-access { flex: 1 1 100%; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px 24px;
+  padding: 14px 0 2px 50px; border-top: 1px dashed var(--border); }
+.fam-access-item .fam-hint { margin: 4px 0 0; }
+.fam-access-item .fam-select { width: 100%; max-width: 260px; margin-top: 4px; }
+.fam-check { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.fam-check input { width: 16px; height: 16px; margin: 0; cursor: pointer; flex-shrink: 0; }
+.fam-check input:disabled { cursor: default; }
+.fam-libs { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.fam-hours { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; color: var(--text2); }
+.fam-hours select { padding: 6px 8px; font-size: 13px; width: auto; }
+.fam-danger { color: var(--red); }
+.fam-link { color: var(--accent-text); text-decoration: none; font-weight: 500; }
+.fam-link:hover { text-decoration: underline; }
+.fam-access-off { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-top: 12px; border-top: 1px solid var(--border); }
+.fam-access-off .fam-hint { margin: 0; }
+@media (max-width: 760px) {
+  .fam-access { padding-left: 0; }
+  .fam-controls { width: 100%; }
+  .fam-ctl { flex: 1 1 140px; }
+  .fam-select, .fam-fixed { width: 100%; }
+  .fam-ctl-admin { flex: 1 1 100%; flex-direction: row; justify-content: flex-start; gap: 10px; }
+  .fam-ctl-admin input { margin: 0; }
+  .fam-actions { width: 100%; }
+  .fam-actions .btn { flex: 1; }
+  .card.req-item { flex-wrap: wrap; }
+  .req-buttons { width: 100%; }
+  .req-buttons .btn { flex: 1; padding: 9px 10px; }
+  .req-answer { width: 100%; text-align: left; }
+}
+
+.mych-people { width: 100%; border-collapse: collapse; font-size: 13px; }
+.mych-people th { text-align: left; font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: .05em; padding: 0 12px 8px 0; }
+.mych-people td { padding: 9px 12px 9px 0; border-top: 1px solid var(--border); }
+.mych-people .muted { color: var(--text3); }
+.mych-setup-status { font-size: 13px; line-height: 1.6; }
 /* Live TV tabs */
 .live-tabs {
   display: flex; gap: 2px; margin-bottom: 16px;
@@ -1295,7 +1805,7 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
   transition: color 0.15s, border-color 0.15s;
 }
 .live-tab:hover { color: var(--text); }
-.live-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.live-tab.active { color: var(--accent-text); border-bottom-color: var(--accent); }
 .live-tab-panel { display: none; }
 .live-tab-panel.active { display: block; }
 /* Tab strips: when there are more tabs than width they scroll sideways (no scrollbar) */
@@ -1512,7 +2022,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
   display: inline-flex; align-items: center; justify-content: center;
   cursor: help; position: relative;
 }
-.hero-config-hint:hover { background: var(--accent-dim); color: var(--accent); }
+.hero-config-hint:hover { background: var(--accent-dim); color: var(--accent-text); }
 .hero-config-checkbox:hover .hero-config-tooltip,
 .hero-config-checkbox.show .hero-config-tooltip { display: block; }
 .hero-config-checkbox:last-of-type .hero-config-tooltip { left: auto; right: 0; }
@@ -1569,7 +2079,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
   font-size: 11px; font-weight: 500; padding: 2px 8px;
   border-radius: 4px; white-space: nowrap;
 }
-.dl-item-status.downloading { background: var(--accent-dim); color: var(--accent); }
+.dl-item-status.downloading { background: var(--accent-dim); color: var(--accent-text); }
 .dl-item-status.importing { background: var(--green-dim); color: var(--green); }
 .dl-item-status.queued { background: var(--bg3); color: var(--text3); }
 .dl-item-status.stuck { background: var(--red-dim); color: var(--red); }
@@ -1589,6 +2099,8 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 }
 
 /* ── Mobile menu button + off-canvas backdrop (hidden on desktop) ── */
+/* Phones: the jellyfish by the menu button (the sidebar, with the brand, is a drawer there) */
+.topbar-mark { display: none; height: 30px; width: auto; flex-shrink: 0; }
 .mobile-menu-btn {
   display: none;
   background: none;
@@ -1632,6 +2144,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 /* ── Responsive: tablet & mobile (≤768px) ── */
 @media (max-width: 768px) {
   .mobile-menu-btn { display: inline-flex; align-items: center; justify-content: center; }
+  .topbar-mark { display: block; }
 
   /* Sidebar becomes an off-canvas drawer */
   .sidebar {
@@ -1766,8 +2279,13 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
   .cat-checkbox { width: 18px; height: 18px; }
 
   /* Login / setup overlays */
-  .user-grid { gap: 12px; }
-  .user-card { padding: 12px 14px; min-width: 88px; }
+  .login-logo { margin-bottom: 28px; }
+  .login-title { font-size: 24px; }
+  .user-grid { gap: 22px 14px; }
+  .user-card { width: 96px; gap: 8px; }
+  .user-avatar { width: 84px; height: 84px; font-size: 32px; }
+  .user-card-name { font-size: 14px; }
+  .login-code-value { font-size: 36px; min-width: 0; width: 100%; }
   .setup-card { padding: 24px 20px; }
   .setup-overlay { padding: 16px; align-items: flex-start; overflow-y: auto; }
 
@@ -1819,9 +2337,9 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
   <!-- Sidebar -->
   <aside class="sidebar">
     <div class="sidebar-logo">
-      <div class="logo-icon">◈</div>
+      <img class="logo-icon" src="/static/brand/mark-small.svg" alt="">
       <div>
-        <div class="logo-text">Tentacle</div>
+        <img class="logo-text" src="/static/brand/wordmark.svg" alt="Tentacle">
         <div class="logo-version" id="logo-version"></div>
       </div>
     </div>
@@ -1837,12 +2355,33 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <button class="nav-item" data-page="jellyfin">
           <span class="icon">◈</span> My Home Screen
         </button>
+        <!-- Shown once the household has Live TV channels (mychannels.js) -->
+        <button class="nav-item" data-page="mychannels" id="nav-mychannels" style="display:none">
+          <span class="icon">▤</span> My Channels
+        </button>
+        <!-- Everyone's own YouTube channels (myyoutube.js) -->
+        <button class="nav-item" data-page="myyoutube">
+          <span class="icon">▶</span> My YouTube
+        </button>
+        <!-- A dialog, not a page: type the code a TV shows (family.js) -->
+        <button class="nav-item" id="nav-tvcode" onclick="famShowTvCode(null)">
+          <span class="icon">▭</span> Sign in a TV
+        </button>
       </div>
       <!-- Server pages: what the admins run for everyone -->
       <div class="nav-section" data-admin-only>
         <div class="nav-section-label">Server</div>
+        <button class="nav-item" data-page="people">
+          <span class="icon">☺</span> People
+        </button>
+        <button class="nav-item" data-page="requests">
+          <span class="icon">✉</span> Requests
+          <!-- Requests waiting for an answer: accent, not red (nothing is broken) -->
+          <span class="nav-badge nav-badge-accent" id="requests-badge" style="display:none" title="Requests waiting for your answer">0</span>
+        </button>
         <button class="nav-item" data-page="sources">
           <span class="icon">◉</span> Sources
+          <span class="nav-badge nav-badge-accent" id="sources-badge" style="display:none" title="New from your provider: groups and categories to look at">0</span>
         </button>
         <button class="nav-item" data-page="health">
           <span class="icon">✚</span> Health
@@ -1878,12 +2417,15 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
     <!-- Top bar -->
     <div class="topbar">
       <button class="mobile-menu-btn" id="mobileMenuBtn" onclick="toggleSidebar()" aria-label="Toggle menu">☰</button>
+      <img class="topbar-mark" src="/static/brand/mark-small.svg" alt="">
       <div class="topbar-title" id="topbar-title">Library</div>
       <div class="topbar-sub" id="topbar-sub"></div>
     </div>
 
     <!-- Pages -->
     <div class="page-content">
+      <!-- Family: one plain line when something is down (admins see Health) -->
+      <div id="family-banner" class="family-banner" style="display:none" role="status"></div>
 
       <!-- Pages: Library, Discover, My Home Screen for everyone; Sources, Health, Settings for admins -->
 
@@ -1992,6 +2534,8 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         </div>
 
         <div id="discover-tab-activity" style="display:none">
+          <!-- Your requests waiting for an admin, or answered lately (family.js) -->
+          <div id="my-requests" class="card my-requests" style="display:none"></div>
           <div id="activity-content">
             <div class="activity-empty">Loading…</div>
           </div>
@@ -2009,6 +2553,18 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
         <!-- ── HOME SCREEN TAB ── -->
         <div id="jf-tab-home">
+          <!-- Whose home this is: your own, or the default everyone starts on -->
+          <div class="card home-scope">
+            <div class="filter-group home-scope-switch" role="radiogroup" aria-label="Which home you are changing" data-admin-only>
+              <button class="filter-btn active" id="home-scope-mine" role="radio" aria-checked="true" onclick="setHomeScope('mine')">My home</button>
+              <button class="filter-btn" id="home-scope-default" role="radio" aria-checked="false" onclick="setHomeScope('default')">Default for everyone</button>
+            </div>
+            <div class="home-scope-row">
+              <p class="home-scope-note" id="home-scope-note"></p>
+              <div class="home-scope-actions" id="home-scope-actions"></div>
+            </div>
+          </div>
+
           <!-- Hero picker -->
           <div class="card">
             <div class="card-header">
@@ -2089,7 +2645,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           </div>
 
           <!-- Toolbar buttons -->
-          <div class="card collapsible collapsed" id="card-toolbar-buttons" style="margin-top:16px">
+          <div class="card collapsible collapsed home-personal" id="card-toolbar-buttons" style="margin-top:16px">
             <div class="card-header" role="button" tabindex="0" aria-expanded="false" onclick="toggleCard(this)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleCard(this)}">
               <div class="card-title">Toolbar buttons <span class="card-sum" id="toolbar-buttons-sum"></span></div>
               <span class="card-chevron" aria-hidden="true">&#9662;</span>
@@ -2101,7 +2657,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           </div>
 
           <!-- Notifications -->
-          <div class="card" style="margin-top:16px">
+          <div class="card home-personal" style="margin-top:16px">
             <div class="card-header">
               <div class="card-title">Download notifications</div>
             </div>
@@ -2112,6 +2668,14 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                   <input type="checkbox" id="notif-enabled-checkbox" aria-label="Download notifications" onchange="toggleNotificationsFromCheckbox(this.checked)" style="opacity:0;width:0;height:0">
                   <span style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:var(--bg3);border-radius:11px;transition:.2s"></span>
                   <span id="notif-slider" style="position:absolute;height:16px;width:16px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.2s"></span>
+                </label>
+              </div>
+              <div id="notif-others-row" style="display:none;align-items:center;justify-content:space-between;gap:12px;margin-top:12px">
+                <div style="flex:1;font-size:12px;color:var(--text2)"><strong style="color:var(--text1)">Show other people&rsquo;s downloads in my Activity</strong><br>What others in your household download, marked who it&rsquo;s for, in your Activity here, in Jellyfin and on the TV app, with a message when it&rsquo;s ready. Off: only your own. Requests waiting for you stay in Requests either way.</div>
+                <label style="position:relative;display:inline-block;width:40px;height:22px;flex-shrink:0">
+                  <input type="checkbox" id="notif-others-checkbox" aria-label="Show other people's downloads in my Activity" onchange="toggleOthersDownloads(this.checked)" style="opacity:0;width:0;height:0">
+                  <span style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:var(--bg3);border-radius:11px;transition:.2s"></span>
+                  <span id="notif-others-slider" style="position:absolute;height:16px;width:16px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.2s"></span>
                 </label>
               </div>
             </div>
@@ -2160,6 +2724,155 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
       </div>
 
       <!-- ── SOURCES (admins): where the library comes from ── -->
+      <!-- ── MY CHANNELS: everyone stars their favourites from the household's lineup (mychannels.js) ── -->
+      <div class="page" id="page-mychannels">
+        <div class="card mych-head">
+          <div class="mych-head-text">
+            <div class="mych-title">My channels <span class="mych-total" id="mych-total"></span></div>
+            <p class="mych-sub" id="mych-sub">Everyone has the same channels. Star the ones you watch: your favourites come first in the guide&rsquo;s Favorites view and in every Jellyfin app.</p>
+            <p class="mych-sub" id="mych-new-line" style="display:none"></p>
+          </div>
+          <div class="mych-status" id="mych-status" aria-live="polite"></div>
+        </div>
+
+        <div id="mych-empty" class="empty-state" style="display:none"><p>Live TV isn&rsquo;t set up on this server yet.</p></div>
+
+        <div id="mych-body" style="display:none">
+          <!-- Quick picks: star or unstar a type's best-known channels at once -->
+          <div class="card mych-picks-card" id="mych-picks-card">
+            <div class="mych-step-title">Quick picks</div>
+            <p class="mych-hint">Tap a type to star its best-known channels (every other one is under All channels). Tap it again to unstar them.</p>
+            <div class="mych-picks" id="mych-picks"></div>
+          </div>
+
+          <div class="mych-phone-tabs live-tabs" id="mych-phone-tabs">
+            <button class="live-tab active" data-mychtab="list" onclick="mychPhoneTab('list')">My favourites <span class="mych-count" id="mych-tab-count"></span></button>
+            <button class="live-tab" data-mychtab="all" onclick="mychPhoneTab('all')"><span id="mych-all-tab">All channels</span> <span class="mych-count" id="mych-all-count"></span></button>
+          </div>
+          <div class="mych-own tab-list" id="mych-own">
+            <div class="card mych-panel" id="mych-fav-panel">
+              <div class="mych-panel-head">
+                <div>
+                  <div class="card-title">My favourites <span class="mych-count" id="mych-fav-count"></span></div>
+                  <div class="mych-hint">In the guide&rsquo;s order. Tap &#9733; to unstar one.</div>
+                </div>
+              </div>
+              <div class="mych-list" id="mych-fav-list"></div>
+            </div>
+            <div class="card mych-panel" id="mych-all-panel">
+              <div class="mych-panel-head">
+                <div>
+                  <div class="card-title" id="mych-all-title">All channels</div>
+                  <div class="mych-hint" id="mych-all-hint">Everything the household has, with the guide&rsquo;s numbers. Tap &#9734; to star one.</div>
+                </div>
+                <div class="mych-filters">
+                  <input class="form-input mych-search" id="mych-all-search" placeholder="Search channels" aria-label="Search channels" oninput="mychRenderAll()">
+                  <select class="form-input mych-type" id="mych-all-type" aria-label="Show one type" onchange="mychRenderAll()"><option value="">All types</option></select>
+                </div>
+              </div>
+              <div class="mych-list" id="mych-all-list"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── MY YOUTUBE: everyone's own YouTube channels, theirs alone in Jellyfin (myyoutube.js) ── -->
+      <div class="page" id="page-myyoutube">
+        <div class="card mych-head">
+          <div class="mych-head-text">
+            <div class="mych-title">My YouTube <span class="mych-total" id="myt-total"></span></div>
+            <p class="mych-sub" id="myt-sub">Paste a link to add a channel. Its newest videos come into your library and you can put it on your home screen. Nobody else sees your channels.</p>
+          </div>
+          <div class="mych-status" id="myt-status" aria-live="polite"></div>
+        </div>
+
+        <div class="card" id="myt-add-card" style="display:none;margin-bottom:16px">
+          <div class="mych-step-title">Add a channel</div>
+          <form class="myt-add" onsubmit="mytAdd(event)">
+            <input class="form-input" id="myt-url" type="text" placeholder="https://www.youtube.com/@channel" aria-label="YouTube channel or playlist link" autocomplete="off" spellcheck="false" inputmode="url">
+            <button class="btn btn-primary" id="myt-add-btn" type="submit">Add</button>
+          </form>
+          <label class="myt-live"><input type="checkbox" id="myt-live"> Also a Live TV channel <span class="myt-dim">&mdash; when it streams live, it&rsquo;s in your guide</span></label>
+          <p class="mych-hint" style="margin-top:8px">A channel or a playlist. Nothing is downloaded: videos play straight from YouTube.</p>
+        </div>
+
+        <div class="card mych-panel">
+          <div class="mych-panel-head">
+            <div>
+              <div class="card-title">Your channels <span class="mych-count" id="myt-count"></span></div>
+              <div class="mych-hint">Their newest videos are in your library. Put one on your home screen under <strong>My Home Screen</strong>.</div>
+            </div>
+          </div>
+          <div class="mych-list myt-list" id="myt-list"><div class="loading-state"><div class="spinner"></div></div></div>
+        </div>
+      </div>
+
+      <!-- ── PEOPLE (admins): the household's accounts (family.js) ── -->
+      <div class="page" id="page-people">
+        <div class="card fam-head">
+          <div class="fam-head-text">
+            <div class="fam-title">Your household</div>
+            <p class="fam-sub">Everyone who watches on this server. Add family, set an age limit for kids and choose whose requests you approve first.</p>
+          </div>
+          <button class="btn btn-primary" onclick="famShowInvite()">+ Add someone</button>
+        </div>
+        <div id="fam-qc-warning" class="fam-note warn" style="display:none">
+          <span>TV sign-in codes are off in Jellyfin, so a TV can only be signed in by typing a password.</span>
+          <button class="btn btn-secondary btn-sm" onclick="famTurnOnCodes()">Turn them on</button>
+        </div>
+        <div class="card fam-people" id="fam-people"><div class="loading-state"><div class="spinner"></div> Loading&hellip;</div></div>
+
+        <div class="fam-grid">
+          <div class="card fam-box">
+            <div class="card-title">New grown-ups start with</div>
+            <p class="fam-hint">Picked once, used for every grown-up you add. They can change their own afterwards.</p>
+            <div class="form-group">
+              <label class="form-label" for="fam-default-home">Home screen</label>
+              <select class="form-input" id="fam-default-home" onchange="famSaveDefaults()"></select>
+            </div>
+            <div class="form-group" id="fam-default-channels-group">
+              <label class="form-label" for="fam-default-channels">Live TV favourites</label>
+              <select class="form-input" id="fam-default-channels" onchange="famSaveDefaults()"></select>
+            </div>
+          </div>
+          <div class="card fam-box">
+            <div class="card-title">New kids start with</div>
+            <p class="fam-hint">Ready-made: Continue Watching, Kids Movies and Kids Shows, with the kids channels as favourites, all within each kid’s age limit. Picked once, used for every kid you add.</p>
+            <div class="form-group">
+              <label class="form-label" for="fam-kids-home">Home screen</label>
+              <select class="form-input" id="fam-kids-home" onchange="famSaveDefaults()"></select>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="fam-kids-channels">Live TV favourites</label>
+              <select class="form-input" id="fam-kids-channels" onchange="famSaveDefaults()">
+                <option value="kids">The kids channels</option>
+                <option value="none">None yet (they star their own)</option>
+              </select>
+            </div>
+          </div>
+          <div class="card fam-box" id="fam-kids-box">
+            <div class="card-title">Kids channels</div>
+            <p class="fam-hint" id="fam-kids-summary"></p>
+            <button class="btn btn-secondary btn-sm" onclick="famShowKidsChannels()">Choose kids channels</button>
+          </div>
+          <div class="card fam-box">
+            <div class="card-title">The TV app</div>
+            <p class="fam-hint">On each Android TV or Fire TV: install the free <strong>Downloader</strong> app from the store, open it and type this address. It installs Tentacle. After that the app offers every new version itself.</p>
+            <div class="fam-copy"><code id="fam-tv-address">&mdash;</code><button class="btn btn-secondary btn-sm" onclick="famCopy(document.getElementById('fam-tv-address').textContent)">Copy</button></div>
+            <p class="fam-hint" id="fam-tv-newest"></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── REQUESTS (admins): what family asked for (family.js) ── -->
+      <div class="page" id="page-requests">
+        <div class="tabs-bar" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
+          <button class="live-tab active" data-reqtab="pending" onclick="famReqTab('pending')">Waiting <span class="mych-count" id="req-count-pending"></span></button>
+          <button class="live-tab" data-reqtab="decided" onclick="famReqTab('decided')">Answered</button>
+        </div>
+        <div id="req-list" class="req-list"><div class="loading-state"><div class="spinner"></div> Loading&hellip;</div></div>
+      </div>
+
       <div class="page" id="page-sources">
         <div class="tabs-bar" id="sources-tabs" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
           <button class="live-tab active" data-sourcestab="providers" onclick="showSourcesTab('providers')">IPTV providers</button>
@@ -2176,6 +2889,27 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
             <button class="btn btn-secondary" id="migrate-btn" style="display:none" onclick="showMigrate()">&#8644; Move to another provider</button>
             <button class="btn btn-primary" onclick="showAddProvider()">+ Add provider</button>
           </div>
+        </div>
+        <div class="nfp-reading" id="nfp-live-note" style="display:none">
+          <span id="nfp-live-note-text" style="flex:1"></span>
+          <button class="btn btn-primary btn-sm" onclick="nfpOpenLive()">Look at them</button>
+        </div>
+        <!-- New categories from a provider: add to the library or dismiss (newgroups.js) -->
+        <div class="card mych-panel" id="nfp-vod" style="display:none;margin-bottom:16px">
+          <div class="mych-panel-head">
+            <div>
+              <div class="card-title">New categories from your provider</div>
+              <div class="pool-count" id="nfp-vod-count"></div>
+              <div class="mych-hint">Tick the ones you want and add them to the library: their movies and series come in with tonight&rsquo;s sync. <strong>Dismiss</strong> the rest: they won&rsquo;t show up here again (they stay on the provider&rsquo;s card).</div>
+            </div>
+          </div>
+          <div class="pool-tools">
+            <label class="nfp-check"><input type="checkbox" id="nfp-vod-dismissed" onchange="loadNewCategories()"> <span id="nfp-vod-dismissed-label">Show dismissed</span></label>
+            <span class="grow"></span>
+            <button class="btn btn-secondary btn-sm" id="nfp-vod-dismiss-btn" onclick="nfpVodDecide(false)" disabled>Dismiss</button>
+            <button class="btn btn-primary btn-sm" id="nfp-vod-add-btn" onclick="nfpVodDecide(true)" disabled>Add to the library</button>
+          </div>
+          <div id="nfp-vod-list"></div>
         </div>
         <div class="provider-list" id="provider-grid">
           <div class="loading-state"><div class="spinner"></div> Loading...</div>
@@ -2196,18 +2930,110 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
         <!-- Tab bar -->
         <div class="live-tabs">
-          <button class="live-tab active" data-livetab="channels" onclick="showLiveTab('channels')">Channels</button>
+          <button class="live-tab active" data-livetab="pool" onclick="showLiveTab('pool')">Channels</button>
+          <button class="live-tab" data-livetab="new" onclick="showLiveTab('new')">New from your provider <span class="nav-badge nav-badge-accent" id="live-new-badge" style="display:none;margin-left:6px">0</span></button>
+          <button class="live-tab" data-livetab="channels" onclick="showLiveTab('channels')">Provider list</button>
+          <button class="live-tab" data-livetab="people" onclick="showLiveTab('people')">People</button>
           <button class="live-tab" data-livetab="recordings" onclick="showLiveTab('recordings')">Recordings</button>
-          <button class="live-tab" data-livetab="setup" onclick="showLiveTab('setup')">Jellyfin setup</button>
+          <button class="live-tab" data-livetab="setup" onclick="showLiveTab('setup')">In Jellyfin</button>
         </div>
 
         <!-- No provider warning -->
         <div id="live-no-provider" style="display:none;padding:20px;text-align:center;color:var(--text3);font-size:13px">
-          No provider is used for Live TV. Switch on <strong>Use for Live TV</strong> on a provider&rsquo;s card in <a href="#" onclick="showSourcesTab('providers');return false" style="color:var(--accent)">IPTV providers</a>.
+          No provider is used for Live TV. Switch on <strong>Use for Live TV</strong> on a provider&rsquo;s card in <a href="#" onclick="showSourcesTab('providers');return false" style="color: var(--accent-text)">IPTV providers</a>.
         </div>
 
 
-        <div class="live-tab-panel active" id="live-panel-channels">
+        <!-- Tab: Channels -- the pool people pick from: folded networks, types, guide and works marks (mychannels.js) -->
+        <div class="live-tab-panel active" id="live-panel-pool">
+          <div class="pool-checker" id="pool-checker"></div>
+          <div class="card mych-panel">
+            <div class="mych-panel-head">
+              <div>
+                <div class="card-title">The household&rsquo;s channels</div>
+                <div class="pool-count" id="pool-count"></div>
+                <div class="mych-hint">The channel groups switched on for a provider, with the same network in many places or qualities shown once. This is the household&rsquo;s lineup: everyone gets these channels in Jellyfin, with the same numbers, and stars their favourites under <strong>My Channels</strong>.</div>
+              </div>
+            </div>
+            <div class="pool-tools">
+              <input class="form-input grow" id="pool-search" placeholder="Search channels" aria-label="Search channels" oninput="poolRender()">
+              <select class="form-input" id="pool-type" aria-label="Show one type" onchange="poolRender()" style="width:140px"><option value="">All types</option></select>
+              <select class="form-input" id="pool-show" aria-label="Show" onchange="poolRender()" style="width:170px">
+                <option value="">Everything</option>
+                <option value="networks">Networks (folded)</option>
+                <option value="broken">Not working</option>
+                <option value="noguide">No guide</option>
+                <option value="noevent">Event slots with no event</option>
+                <option value="out">Taken out</option>
+              </select>
+              <button class="btn btn-secondary btn-sm" id="pool-merge-btn" onclick="poolMerge()" disabled>Merge selected</button>
+            </div>
+            <div id="pool-list"><div class="loading-state"><div class="spinner"></div></div></div>
+            <div class="pool-region">
+              <label for="pool-region">Your region (picks each network&rsquo;s default place)</label>
+              <input class="form-input" id="pool-region" placeholder="e.g. CA: Toronto, Ontario, Buffalo">
+              <button class="btn btn-secondary btn-sm" onclick="poolSaveRegion()">Save</button>
+              <span id="pool-region-note"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab: New from your provider -- groups the provider added: tick, look at their channels, add (newgroups.js) -->
+        <div class="live-tab-panel" id="live-panel-new">
+          <div class="nfp-reading" id="nfp-reading" style="display:none"></div>
+          <div class="card mych-panel" id="nfp-step1">
+            <div class="mych-panel-head">
+              <div>
+                <div class="card-title nfp-title">New channel groups from your provider</div>
+                <div class="pool-count" id="nfp-count"></div>
+                <div class="mych-hint">Groups from the places you watch come first; the rest are folded by country. Tick groups to see their channels and pick the ones you want, or dismiss what you don&rsquo;t need: dismissed groups don&rsquo;t come back as new.</div>
+              </div>
+            </div>
+            <div class="pool-tools">
+              <input class="form-input grow" id="nfp-search" placeholder="Search groups or countries" aria-label="Search groups" oninput="nfpRenderGroups()">
+              <span class="nfp-sel"><button class="nfp-link" onclick="nfpSelectAll(true)">Select all</button><span aria-hidden="true">&middot;</span><button class="nfp-link" onclick="nfpSelectAll(false)">None</button></span>
+              <button class="btn btn-secondary btn-sm" id="nfp-dismiss-rest-btn" onclick="nfpDismissRest()" style="display:none"></button>
+            </div>
+            <div id="nfp-groups"><div class="loading-state"><div class="spinner"></div></div></div>
+            <details class="nfp-fold nfp-dismissed" id="nfp-dismissed" style="display:none" ontoggle="nfpDismissedToggle(this)">
+              <summary><span class="nfp-flag" aria-hidden="true">&#8634;</span><span class="nfp-fold-name" id="nfp-dismissed-label">Dismissed</span><span class="nfp-fold-sub">Bring one back to see it here again</span><span class="nfp-chev" aria-hidden="true"></span></summary>
+              <div id="nfp-dismissed-list"></div>
+            </details>
+            <div class="nfp-foot nfp-float" id="nfp-step1-foot" style="display:none">
+              <span id="nfp-ticked"></span>
+              <button class="nfp-link" onclick="nfpSelectAll(false)">Clear</button>
+              <button class="btn btn-secondary" id="nfp-dismiss-btn" onclick="nfpDismiss()">Dismiss</button>
+              <button class="btn btn-primary" id="nfp-look-btn" onclick="nfpLook()">Show their channels</button>
+            </div>
+          </div>
+          <div class="card mych-panel" id="nfp-step2" style="display:none">
+            <div class="mych-panel-head">
+              <div>
+                <button class="nfp-back" onclick="nfpBack()">&larr; Back to the new groups</button>
+                <div class="card-title" id="nfp-step2-title">Channels</div>
+                <div class="mych-hint">Tick the channels you want and add them: everyone gets them in Live TV, marked <strong>New</strong> on My Channels for two weeks. Channels you don&rsquo;t tick stay out. These groups then leave the new list.</div>
+              </div>
+            </div>
+            <div class="pool-tools">
+              <input class="form-input grow" id="nfp-ch-search" placeholder="Search channels" aria-label="Search channels" oninput="nfpRenderChannels()">
+              <span class="nfp-sel" id="nfp-ch-sel" title="Channels you already have stay unticked">Tick: <button class="nfp-link" onclick="nfpPickBulk('all')">All</button><span aria-hidden="true">&middot;</span><button class="nfp-link" onclick="nfpPickBulk('works')">Only working</button><span aria-hidden="true">&middot;</span><button class="nfp-link" onclick="nfpPickBulk('guide')">Only with a guide</button><span aria-hidden="true">&middot;</span><button class="nfp-link" onclick="nfpPickBulk('none')">None</button></span>
+              <select class="form-input" id="nfp-ch-show" aria-label="Show" onchange="nfpRenderChannels()" style="width:190px">
+                <option value="">All channels</option>
+                <option value="works">Works</option>
+                <option value="guide">Has a guide</option>
+                <option value="notin">Not in your channels yet</option>
+              </select>
+              <label class="nfp-check"><input type="checkbox" id="nfp-show-noevent" onchange="nfpRenderChannels()"> <span id="nfp-noevent-label">Show event slots with no event</span></label>
+            </div>
+            <div id="nfp-channels"></div>
+            <div class="nfp-foot nfp-float" id="nfp-step2-foot">
+              <span id="nfp-picked"></span>
+              <button class="btn btn-primary" id="nfp-add-btn" onclick="nfpAdd()">Add</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="live-tab-panel" id="live-panel-channels">
           <!-- YouTube channels are Live TV channels too. They come from the
                YouTube page, where Live TV is chosen when the channel is added;
                this is where they sit alongside everything else in the lineup,
@@ -2221,7 +3047,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           </div>
           <div class="card">
             <div class="card-header">
-              <div class="card-title">Channels <span id="live-ch-count" style="color:var(--text3);font-weight:400"></span></div>
+              <div class="card-title">The provider&rsquo;s channels <span id="live-ch-count" style="color:var(--text3);font-weight:400"></span></div>
               <div style="display:flex;gap:8px;align-items:center">
                 <input class="form-input" id="live-ch-search" placeholder="Search channels..." style="width:200px;padding:5px 10px;font-size:12px" oninput="searchLiveChannels()">
                 <select class="form-input" id="live-ch-group-filter" aria-label="Filter channels by group" style="width:160px;padding:5px 10px;font-size:12px" onchange="filterLiveChannels()">
@@ -2248,78 +3074,38 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           </div>
         </div>
 
+        <!-- Tab: People -- who sees which channels (mychannels.js) -->
+        <div class="live-tab-panel" id="live-panel-people">
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Who watches what</div>
+              <span style="font-size:12px;color:var(--text3)">Everyone has the same channels; each person stars their favourites under <strong>My Channels</strong>. Kids profiles see the kids channels only.</span>
+            </div>
+            <div id="live-people"></div>
+          </div>
+        </div>
+
         <!-- Tab: Recordings -->
         <div class="live-tab-panel" id="live-panel-recordings">
           <div class="card">
             <h3 style="margin-bottom:4px">Recordings</h3>
-            <p style="color:var(--text3);font-size:13px;margin-bottom:12px">You schedule and watch recordings in Jellyfin (Live TV &rarr; Guide &rarr; Record; they appear under Live TV &rarr; Recordings). Tentacle is the tuner they record from.</p>
+            <p style="color:var(--text3);font-size:13px;margin-bottom:12px">You schedule and watch recordings in Jellyfin (Live TV &rarr; Guide &rarr; Record; they appear under Live TV &rarr; Recordings). Tentacle is the tuner they record from. Recordings and recording schedules are the household&rsquo;s: everyone sees them, like a family recorder, whoever scheduled them.</p>
             <ul style="font-size:13px;color:var(--text2);line-height:1.7;margin:0 0 0 18px">
               <li>A recording keeps its connection to the provider: if the provider drops it, Tentacle reconnects and the recording carries on.</li>
-              <li>How many channels can record at once is <strong>Streams at once</strong> on each provider&rsquo;s card under <a href="#" onclick="showSourcesTab('providers');return false" style="color:var(--accent)">IPTV providers</a>.</li>
-              <li>Problems with a recording (a damaged file, a channel the provider replaced with a placeholder) are listed on the <a href="#" onclick="showPage('health');return false" style="color:var(--accent)">Health</a> page.</li>
+              <li>How many channels can record at once is <strong>Streams at once</strong> on each provider&rsquo;s card under <a href="#" onclick="showSourcesTab('providers');return false" style="color: var(--accent-text)">IPTV providers</a>.</li>
+              <li>Problems with a recording (a damaged file, a channel the provider replaced with a placeholder) are listed on the <a href="#" onclick="showPage('health');return false" style="color: var(--accent-text)">Health</a> page.</li>
             </ul>
           </div>
         </div>
 
-        <!-- Tab: Jellyfin Setup -->
+        <!-- Tab: In Jellyfin -- set up by Tentacle itself (services/livetv_tuners.py) -->
         <div class="live-tab-panel" id="live-panel-setup">
           <div class="card">
-            <h3 style="margin-bottom:4px">Jellyfin Live TV setup</h3>
-            <p style="color:var(--text3);font-size:13px;margin-bottom:20px">Add these URLs in Jellyfin to connect your IPTV channels.</p>
-
-            <!-- Server base URL: Tentacle's address (Settings → Services), shown, not asked again -->
-            <div style="margin-bottom:20px">
-              <div class="form-label">Tentacle&rsquo;s address</div>
-              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                <span id="live-setup-address-display" style="font-family:monospace;font-size:13px;padding:8px 12px;background:var(--bg2);border-radius:6px;flex:1;min-width:0;overflow-wrap:anywhere"></span>
-                <button class="btn btn-secondary" style="padding:5px 12px;font-size:12px" onclick="showPage('settings','services')">Change</button>
-              </div>
-              <p id="live-setup-detected" style="color:var(--amber);font-size:11px;margin-top:4px"></p>
-              <p style="color:var(--text3);font-size:11px;margin-top:4px">As your Jellyfin server reaches Tentacle. Set once, in Settings &rarr; Services.</p>
-            </div>
-
-            <!-- Connection limits are per provider (its card, Sources → IPTV providers) -->
-            <p style="color:var(--text3);font-size:12px;margin:-8px 0 24px">How many channels each provider lets you watch or record at once is <strong>Streams at once</strong> on its card under <a href="#" onclick="showSourcesTab('providers');return false" style="color:var(--accent)">IPTV providers</a>. Jellyfin gets that many tuners in all.</p>
-
-            <!-- Step 1: Tuner -->
-            <div style="margin-bottom:24px">
-              <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-                <span style="background:var(--accent);color:#fff;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">1</span>
-                <span style="font-weight:600;font-size:14px">Add Tuner</span>
-              </div>
-              <p style="color:var(--text3);font-size:13px;margin-bottom:8px">
-                Jellyfin Dashboard → Live TV → <strong>Add Tuner</strong> → Type: <strong>HD Homerun</strong>
-              </p>
-              <div style="display:flex;align-items:center;gap:8px">
-                <span id="live-setup-tuner-preview" style="flex:1;min-width:0;overflow-wrap:anywhere;font-family:monospace;font-size:13px;padding:8px 12px;background:var(--bg2);border-radius:6px;color:var(--text1)"></span>
-                <button class="btn btn-secondary" style="padding:5px 12px;font-size:12px" onclick="copyLiveSetup('tuner', this)">Copy</button>
-              </div>
-            </div>
-
-            <!-- Step 2: Guide -->
-            <div style="margin-bottom:24px">
-              <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-                <span style="background:var(--accent);color:#fff;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">2</span>
-                <span style="font-weight:600;font-size:14px">Add the TV guide</span>
-              </div>
-              <p style="color:var(--text3);font-size:13px;margin-bottom:8px">
-                Live TV → TV Guide Data Providers → <strong>Add</strong> → Type: <strong>XMLTV</strong>
-              </p>
-              <div style="display:flex;align-items:center;gap:8px">
-                <span id="live-setup-xmltv-preview" style="flex:1;min-width:0;overflow-wrap:anywhere;font-family:monospace;font-size:13px;padding:8px 12px;background:var(--bg2);border-radius:6px;color:var(--text1)"></span>
-                <button class="btn btn-secondary" style="padding:5px 12px;font-size:12px" onclick="copyLiveSetup('xmltv', this)">Copy</button>
-              </div>
-            </div>
-
-            <!-- Step 3: Map channels -->
-            <div>
-              <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-                <span style="background:var(--accent);color:#fff;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">3</span>
-                <span style="font-weight:600;font-size:14px">Map Channels</span>
-              </div>
-              <p style="color:var(--text3);font-size:13px">
-                After adding both, go to Live TV → <strong>Map Channels</strong> to match tuner channels with guide data. Jellyfin will auto-match most channels by name.
-              </p>
+            <h3 style="margin-bottom:4px">Live TV in Jellyfin</h3>
+            <p style="color:var(--text3);font-size:13px;margin-bottom:16px">Tentacle sets this up in Jellyfin itself: one tuner with the household&rsquo;s channels and one TV guide. Everyone&rsquo;s favourites (starred under <strong>My Channels</strong>) are Jellyfin&rsquo;s own, so every app shows them; kids profiles see the kids channels only.</p>
+            <div id="live-setup-status" class="mych-setup-status"></div>
+            <div style="display:flex;gap:8px;margin-top:16px">
+              <button class="btn btn-secondary btn-sm" onclick="liveSetupNow(this)">Set up again now</button>
             </div>
           </div>
         </div>
@@ -2344,6 +3130,10 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                 <label class="form-label">Keep newest</label>
                 <input type="number" id="yt-keep" class="form-input" value="10" min="1" max="100">
               </div>
+              <div style="width:170px">
+                <label class="form-label" for="yt-for">For</label>
+                <select id="yt-for" class="form-input"></select>
+              </div>
               <button class="btn btn-primary" onclick="ytAddChannel()">Add</button>
             </div>
             <div style="margin-top:12px;font-size:13px;color:var(--text2);display:flex;gap:24px;flex-wrap:wrap">
@@ -2351,8 +3141,10 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <label><input type="checkbox" id="yt-live"> Live TV channel <span style="color:var(--text3)">&mdash; its live and upcoming streams appear in Jellyfin&rsquo;s Live TV</span></label>
             </div>
             <p style="font-size:12px;color:var(--text3);margin:12px 0 0">
-              That&rsquo;s it. The channel&rsquo;s newest videos are added to your library and its playlist
+              That&rsquo;s it. The channel&rsquo;s newest videos are added to their library and its playlist
               is created; from then on it is checked every hour and always holds the newest ones.
+              Only the people it is for see it (each person adds their own under <strong>My YouTube</strong>;
+              a kid&rsquo;s are added here).
               Put it on your home screen from the <strong>Home Screen</strong> tab. Nothing is downloaded &mdash;
               videos stream from YouTube when played.
             </p>
@@ -2584,18 +3376,6 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           </div>
         </div>
 
-        <!-- New provider content notice (nightly discovery) -->
-        <div class="card" id="new-content-banner" style="display:none;margin-bottom:16px;border-left:3px solid var(--accent)">
-          <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
-            <strong style="color:var(--accent)">Your providers have something new</strong>
-            <p style="margin:4px 0 10px" id="new-content-msg"></p>
-            <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button class="btn btn-secondary btn-sm" id="new-content-vod-btn" style="display:none" onclick="showPage('sources','providers')">Choose categories</button>
-              <button class="btn btn-secondary btn-sm" id="new-content-live-btn" style="display:none" onclick="showPage('sources','providers')">Choose channel groups</button>
-              <button class="btn btn-secondary btn-sm" onclick="dismissNewContentNotice()">Dismiss</button>
-            </div>
-          </div>
-        </div>
         <!-- VOD titles that play a different film than their label -->
         <div class="card" id="wrong-match-card" style="display:none;margin-bottom:16px;border-left:3px solid var(--amber)">
           <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
@@ -2752,8 +3532,9 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           <div class="settings-nav">
             <button class="settings-nav-item active" data-section="services">Services</button>
             <button class="settings-nav-item" data-section="schedule">Schedule &amp; notifications</button>
-            <button class="settings-nav-item" data-section="users">Users</button>
+            <button class="settings-nav-item" data-section="signin">People &amp; sign-in</button>
             <button class="settings-nav-item" data-section="advanced">Advanced</button>
+            <button class="settings-nav-item" data-section="about">About</button>
           </div>
 
           <div>
@@ -2796,6 +3577,11 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                 <div id="settings-tentacle-address-status" style="font-size:12px;margin-top:4px;color:var(--text3)"></div>
                 <div id="settings-tentacle-address-vod" class="form-hint" style="display:none;color:var(--amber)"></div>
                 <div class="form-hint">Used everywhere Tentacle hands out its own address: YouTube and IPTV video files, the Live TV setup, and the Radarr, Sonarr and Lidarr webhooks (shown ready to copy under Sources). Saved with the Save button below.</div>
+              </div>
+              <div class="form-group" style="margin-top:12px">
+                <div class="form-label">Tentacle address for your browser (optional)</div>
+                <input class="form-input" id="tentacle_public_url" placeholder="https://tentacle.example.com">
+                <div class="form-hint">Where family open Tentacle away from home, given in the message when you add someone. Leave empty if the address above already works on the internet.</div>
               </div>
 
               <hr class="divider">
@@ -3062,15 +3848,12 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               </div>
             </div>
 
-            <!-- Users Section -->
-            <div class="settings-section card" id="section-users">
-              <h3>Users</h3>
-              <p class="section-desc">Manage Jellyfin user permissions. Admin users get full access to Tentacle. Non-admin users can only browse the library and customize their home screen.</p>
-              <div id="users-list" style="margin-top:16px">
-                <div style="color:var(--text3);font-size:13px">Loading users...</div>
-              </div>
+            <!-- People & sign-in: Jellyfin's server-wide settings an admin needs (family.js) -->
+            <div class="settings-section card" id="section-signin">
+              <h3>People &amp; sign-in</h3>
+              <p class="section-desc">Jellyfin&rsquo;s settings for everyone in your household, read from Jellyfin and saved there straight away.</p>
+              <div id="signin-settings"><div class="loading-state"><div class="spinner"></div> Loading&hellip;</div></div>
             </div>
-
 
             <!-- Advanced: the few things that really differ between installs -->
             <div class="settings-section card" id="section-advanced">
@@ -3102,6 +3885,13 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <div style="margin-top:20px">
                 <button class="btn btn-primary" onclick="saveSettings()">Save</button>
               </div>
+            </div>
+
+            <!-- About: which versions run, and what needs updating (app.js loadAbout) -->
+            <div class="settings-section card" id="section-about">
+              <h3>About</h3>
+              <p class="section-desc">Which versions run here. You update each of them; Tentacle installs nothing by itself.</p>
+              <div id="about-versions"><div class="loading-state"><div class="spinner"></div> Loading&hellip;</div></div>
             </div>
           </div>
         </div>
@@ -3519,6 +4309,170 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
   </div>
 </div>
 
+<!-- Invite someone (family.js) -->
+<div class="modal-overlay" id="modal-invite" style="display:none">
+  <div class="modal" style="max-width:520px">
+    <div class="modal-header">
+      <div class="modal-title" id="invite-title">Add someone</div>
+      <button class="modal-close" onclick="closeModal('modal-invite')" aria-label="Close">✕</button>
+    </div>
+    <ol class="add-steps" id="invite-steps" aria-label="Steps">
+      <li data-step="1" class="active"><span>1</span> Who</li>
+      <li data-step="2"><span>2</span> What they get</li>
+      <li data-step="3"><span>3</span> The message</li>
+    </ol>
+
+    <!-- Step 1: who -->
+    <div id="invite-step-1">
+      <div class="form-group">
+        <label class="form-label" for="invite-name">Their name</label>
+        <input class="form-input" id="invite-name" maxlength="64" autocomplete="off" placeholder="For example Grandma or Mia" oninput="famNameTyped()" onkeydown="if(event.key==='Enter')famAddNext()">
+        <div class="form-hint">The name they sign in with.</div>
+      </div>
+      <div class="form-group">
+        <div class="form-label" id="invite-who-label">Grown-up or kid</div>
+        <div class="add-seg" role="radiogroup" aria-labelledby="invite-who-label">
+          <label><input type="radio" name="invite-who" value="adult" checked onchange="famWhoChanged()"> Grown-up</label>
+          <label><input type="radio" name="invite-who" value="kid" onchange="famWhoChanged()"> Kid</label>
+        </div>
+      </div>
+      <div class="form-group" id="invite-kids-group" style="display:none">
+        <label class="form-label" for="invite-kids">Age limit</label>
+        <select class="form-input" id="invite-kids"></select>
+        <div class="form-hint">Movies, shows and Live TV above it are hidden from them, in every app.</div>
+      </div>
+      <div class="form-group" id="invite-location-group">
+        <label class="form-label" for="invite-location">Where they watch from</label>
+        <select class="form-input" id="invite-location"></select>
+        <div class="form-hint">Their local channels (CTV, Global, CBC, NBC…) come from there.</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="invite-password">Password</label>
+        <div class="add-pw">
+          <input class="form-input mono" id="invite-password" maxlength="128" autocomplete="off" spellcheck="false" oninput="fam.pwEdited = true">
+          <button class="btn btn-secondary" type="button" onclick="famNewSuggestion()">Another</button>
+        </div>
+        <div class="form-hint">Made from their name, easy to type on a TV remote. Change it if you like; they can pick their own when they first sign in.</div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('modal-invite')">Cancel</button>
+        <button class="btn btn-primary" onclick="famAddNext()">Next</button>
+      </div>
+    </div>
+
+    <!-- Step 2: what they get -->
+    <div id="invite-step-2" style="display:none">
+      <div class="form-group">
+        <label class="fam-check"><input type="checkbox" id="invite-livetv" checked onchange="famLiveTvChanged()"> <strong>Live TV</strong></label>
+        <div class="form-hint" id="invite-livetv-hint"></div>
+      </div>
+      <div class="form-group" id="invite-requests-group">
+        <div class="form-label">When they ask for a movie or show</div>
+        <label class="fam-radio"><input type="radio" name="invite-requests" value="ask" checked> Ask me first</label>
+        <label class="fam-radio"><input type="radio" name="invite-requests" value="direct"> It downloads straight away</label>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="invite-home">Home screen they start with</label>
+        <select class="form-input" id="invite-home"></select>
+        <div class="form-hint" id="invite-home-hint"></div>
+      </div>
+      <div class="form-group" id="invite-channels-group">
+        <label class="form-label" for="invite-channels">Favourite channels they start with</label>
+        <select class="form-input" id="invite-channels"></select>
+        <div class="form-hint">Their favourites come first in the guide. They can change them under My Channels.</div>
+      </div>
+      <div class="add-ask" id="invite-ask" style="display:none">
+        <div class="form-label">Check the addresses the message gives (asked once)</div>
+        <div class="form-hint" id="invite-ask-why"></div>
+        <div class="form-group">
+          <label class="form-label" for="invite-ask-tentacle">Tentacle</label>
+          <input class="form-input" id="invite-ask-tentacle" placeholder="https://tentacle.example.com">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="invite-ask-jellyfin">Jellyfin</label>
+          <input class="form-input" id="invite-ask-jellyfin" placeholder="https://jellyfin.example.com">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="famAddStep(1)">Back</button>
+        <button class="btn btn-primary" id="invite-go" onclick="famInvite()">Create account</button>
+      </div>
+    </div>
+
+    <!-- Step 3: the message -->
+    <div id="invite-step-card" style="display:none">
+      <div class="invite-brand"><img src="/static/brand/lockup.svg" alt="Tentacle"></div>
+      <p class="fam-hint" id="invite-card-lead"></p>
+      <textarea class="form-input add-message" id="invite-message" readonly rows="14" aria-label="The message to send"></textarea>
+      <div class="fam-hint" id="invite-card-note"></div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="famInviteTvCode()">Sign in their TV</button>
+        <button class="btn btn-secondary" id="invite-share" onclick="famShareInvite()" style="display:none">Share</button>
+        <button class="btn btn-secondary" onclick="famCopyInvite()">Copy</button>
+        <button class="btn btn-primary" onclick="closeModal('modal-invite')">Done</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- The welcome at someone's first sign-in (welcome.js) -->
+<div class="modal-overlay" id="modal-welcome" style="display:none">
+  <div class="modal welcome-box">
+    <div class="modal-header">
+      <ol class="add-steps welcome-pips" id="welcome-pips" aria-label="Steps"></ol>
+      <button class="modal-close" onclick="welcomeFinish()" aria-label="Skip the welcome">✕</button>
+    </div>
+    <div class="modal-title welcome-title" id="welcome-title"></div>
+    <div id="welcome-body" class="welcome-body"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" id="welcome-skip" onclick="welcomeSkip()">Skip</button>
+      <button class="btn btn-primary" id="welcome-next" onclick="welcomeNext()">Next</button>
+    </div>
+  </div>
+</div>
+
+<!-- Sign in a TV with the code it shows (family.js) -->
+<div class="modal-overlay" id="modal-tvcode" style="display:none">
+  <div class="modal" style="max-width:440px">
+    <div class="modal-header">
+      <div class="modal-title" id="tvcode-title">Sign in a TV</div>
+      <button class="modal-close" onclick="closeModal('modal-tvcode')">✕</button>
+    </div>
+    <ol class="fam-steps">
+      <li>On the TV, open <strong>Tentacle</strong>.</li>
+      <li>Choose <strong>Add account</strong> (or your server), then <strong>Use Quick Connect</strong>.</li>
+      <li>Type the code the TV shows here.</li>
+    </ol>
+    <div class="form-group">
+      <label class="form-label" for="tvcode-input">Code on the TV</label>
+      <input class="form-input fam-code" id="tvcode-input" inputmode="numeric" autocomplete="off" maxlength="12" placeholder="123456" onkeydown="if(event.key==='Enter')famSubmitTvCode()">
+    </div>
+    <div class="fam-result" id="tvcode-result" aria-live="polite"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-tvcode')">Close</button>
+      <button class="btn btn-primary" id="tvcode-go" onclick="famSubmitTvCode()">Sign in</button>
+    </div>
+  </div>
+</div>
+
+<!-- Kids channels (family.js) -->
+<div class="modal-overlay" id="modal-kidschannels" style="display:none">
+  <div class="modal modal-wide">
+    <div class="modal-header">
+      <div class="modal-title">Kids channels</div>
+      <button class="modal-close" onclick="closeModal('modal-kidschannels')">✕</button>
+    </div>
+    <p class="fam-hint">Kids see only these channels in Live TV. With none picked, kids have no Live TV.</p>
+    <input class="form-input" id="kidsch-search" placeholder="Search channels" aria-label="Search channels" oninput="famRenderKidsChannels()" style="margin-bottom:10px">
+    <div class="fam-chlist" id="kidsch-list"></div>
+    <div class="modal-footer">
+      <span class="fam-hint" id="kidsch-count" style="margin:0 auto 0 0"></span>
+      <button class="btn btn-secondary" onclick="closeModal('modal-kidschannels')">Cancel</button>
+      <button class="btn btn-primary" onclick="famSaveKidsChannels()">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- Add to Radarr/Sonarr modal -->
 <div class="modal-overlay" id="modal-add-to-radarr" style="display:none">
   <div class="modal" id="add-arr-modal-box">
@@ -3527,7 +4481,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
       <button class="modal-close" onclick="closeModal('modal-add-to-radarr')">&#10005;</button>
     </div>
     <div id="add-radarr-movie-info" style="display:flex;gap:16px;margin-bottom:20px"></div>
-    <div class="form-group">
+    <div class="form-group" id="add-radarr-quality-group">
       <div class="form-label">Quality Profile</div>
       <select class="form-input" id="add-radarr-quality"></select>
     </div>
@@ -3590,21 +4544,40 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 <!-- Toast container -->
 <div class="toast-container" id="toasts"></div>
 
-<!-- Login overlay -->
+<!-- Login overlay: pick yourself (at home), or type your name, or use a code -->
 <div class="login-overlay" id="login-overlay" style="display:none">
   <div class="login-logo">
-    <div class="logo-icon">🐙</div>
-    <div><div class="logo-text">Tentacle</div></div>
+    <img class="logo-icon" src="/static/brand/mark.svg" alt="">
+    <img class="logo-text" src="/static/brand/wordmark.svg" alt="Tentacle">
   </div>
-  <p class="login-subtitle">Who's watching?</p>
-  <div class="user-grid" id="login-user-grid"></div>
-  <a class="login-back" id="login-manual-link" tabindex="0" role="button" onclick="loginShowManual()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}">Sign in with a username</a>
+  <div class="login-step" id="login-step-people">
+    <h1 class="login-title">Who's watching?</h1>
+    <p class="login-subtitle" id="login-people-note">Pick yourself to sign in.</p>
+    <div class="user-grid" id="login-user-grid"></div>
+    <div class="login-alt">
+      <button class="btn btn-secondary" id="login-manual-link" onclick="loginShowManual()">Sign in with another account</button>
+      <button class="btn btn-secondary" id="login-code-link" onclick="loginShowCode()" style="display:none">Use a code</button>
+    </div>
+  </div>
   <div class="login-password-form" id="login-password-form" style="display:none">
-    <input type="text" class="form-input" id="login-username" placeholder="Jellyfin username" autocomplete="username" style="display:none">
-    <input type="password" class="form-input" id="login-password" placeholder="Enter password" autocomplete="current-password">
-    <button class="btn btn-primary" style="width:100%;justify-content:center" id="login-submit-btn" onclick="submitLogin()">Sign In</button>
-    <div class="login-error" id="login-error"></div>
-    <a class="login-back" tabindex="0" role="button" onclick="loginBackToUsers()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}">← Back</a>
+    <div class="login-who" id="login-who"></div>
+    <h1 class="login-title" id="login-form-title">Sign in</h1>
+    <p class="login-subtitle" id="login-form-note" style="display:none;margin-bottom:12px">Type the name and password you were given.</p>
+    <input type="text" class="form-input" id="login-username" placeholder="Your name" aria-label="Your name" autocomplete="username" autocapitalize="off" spellcheck="false" style="display:none">
+    <input type="password" class="form-input" id="login-password" placeholder="Password" aria-label="Password" autocomplete="current-password">
+    <button class="btn btn-primary" id="login-submit-btn" onclick="submitLogin()">Sign in</button>
+    <div class="login-error" id="login-error" role="alert"></div>
+    <button class="login-back" id="login-form-code-link" onclick="loginShowCode()" style="display:none">Use a code instead</button>
+    <button class="login-back" id="login-back-link" onclick="loginBackToUsers()">← Back</button>
+  </div>
+  <div class="login-code" id="login-code" style="display:none">
+    <h1 class="login-title">Sign in with a code</h1>
+    <p class="login-subtitle">On a phone or computer where you're already signed in, open Tentacle, choose <b>Sign in a TV</b> and type this code.</p>
+    <div class="login-code-value" id="login-code-value" aria-live="polite">······</div>
+    <div class="login-code-wait" id="login-code-wait">Waiting for the code to be typed in…</div>
+    <div class="login-error" id="login-code-error" role="alert"></div>
+    <button class="btn btn-secondary" id="login-code-new" onclick="loginShowCode()" style="display:none">Get a new code</button>
+    <button class="login-back" onclick="loginBackToUsers()">← Back</button>
   </div>
 </div>
 
@@ -3623,7 +4596,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
     <!-- Step 1: Jellyfin connection -->
     <div class="setup-step" id="setup-step-1">
-      <div style="font-size:28px;margin-bottom:16px">◈</div>
+      <img class="setup-mark" src="/static/brand/mark.svg" alt="">
       <h2>Connect Jellyfin</h2>
       <p>Tentacle needs your Jellyfin server URL and an API key to get started.</p>
 
@@ -3818,6 +4791,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
       <div style="background:var(--bg2);border-radius:8px;padding:12px;margin:12px 0;font-size:13px;color:var(--text2)">
         After installing, go to <strong>Jellyfin → Plugins → Tentacle → Settings</strong> and set the Tentacle URL to this server's address.
+        Jellyfin then keeps the plugin up to date from this catalogue by itself (Scheduled tasks → Update Plugins, daily); a new version runs after Jellyfin restarts. Settings → About shows which versions run.
       </div>
 
       <div style="display:flex;gap:8px;margin-top:16px">
@@ -3832,10 +4806,16 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="/static/js/app.js?v=42"></script>
-<script src="/static/js/sources.js?v=42"></script>
-<script src="/static/js/pages.js?v=42"></script>
-<script src="/static/js/music.js?v=42"></script>
+<script src="/static/js/app.js?v=46"></script>
+<script src="/static/js/sources.js?v=45"></script>
+<script src="/static/js/pages.js?v=50"></script>
+<script src="/static/js/music.js?v=45"></script>
+<script src="/static/js/mychannels.js?v=48"></script>
+<script src="/static/js/newgroups.js?v=45"></script>
+<script src="/static/js/family.js?v=47"></script>
+<script src="/static/js/welcome.js?v=50"></script>
+<script src="/static/js/live.js?v=3"></script>
+<script src="/static/js/myyoutube.js?v=48"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {

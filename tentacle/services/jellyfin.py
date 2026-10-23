@@ -1719,8 +1719,8 @@ class JellyfinService:
             return []
 
     def get_ownerless_playlists(self) -> Optional[List[dict]]:
-        """Playlists with no owner, from the Tentacle plugin: [{id, name, entries,
-        openAccess, shares}]. None when the plugin can't answer — Jellyfin's own
+        """Playlists with no owner, or whose owner was deleted (ownerGone), from
+        the Tentacle plugin: [{id, name, entries, openAccess, shares, ownerGone}]. None when the plugin can't answer — Jellyfin's own
         API never says who owns a playlist."""
         path = "/Tentacle/Playlists/Ownerless"
         try:

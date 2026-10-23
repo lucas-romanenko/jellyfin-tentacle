@@ -53,6 +53,19 @@ Gotchas:
   The LibraryChanged push carries one `CollectionFolders` entry
   `tentacle-home:<user id without dashes, or *>:<version>`; the TV app
   remembers it and catches up on view, foreground and reconnect.
+- **Live TV changed**: `POST /Tentacle/Refresh?scope=livetv&homeVersion=<v>`
+  (Tentacle, after every Live TV setup run) clears nothing and sends every
+  connected user an empty LibraryChanged with `tentacle-livetv:<v>` in
+  `CollectionFolders`; open guides read their channel list again.
+- **Requests, activity, notifications changed**: `POST
+  /Tentacle/Notify?userIds=<ids>&topics=<requests,activity,notifications>`
+  (Tentacle, services/live_updates.py) sends those users' sessions a
+  `RefreshProgress` message with Data `{"ItemId": "tentacle", "Progress":
+  "0", "Tentacle": "<topics>"}` (only to users with a session). Not a
+  LibraryChanged: TV builds up to 1.25 reload Home on every one; no item
+  has the id "tentacle", so Jellyfin's own pages ignore it. Jellyfin Web's
+  tentacle-notifications.js and the TV app read again at once. An older
+  plugin answers 404 and the clients keep polling.
 - `POST /Tentacle/Playlists/PruneDead` with `"Async": true` answers 202
   `{runId}` at once and prunes in the background (one prune at a time); the
   server polls `GET .../PruneDead/{runId}` (running / done with the summary /
@@ -70,6 +83,7 @@ Gotchas:
 | POST | `/Tentacle/Deletions/{mediaType}/{tmdbId}/Confirm` | admin | ConfirmDeletion |  |
 | GET | `/Tentacle/HomeConfig` | admin | GetHomeConfig |  |
 | GET | `/Tentacle/MdbList/Ratings` | user | GetRatings |  |
+| POST | `/Tentacle/Notify` | admin | Notify |  |
 | GET | `/Tentacle/Playlists/Ownerless` | admin | GetOwnerlessPlaylists |  |
 | POST | `/Tentacle/Playlists/PruneDead` | admin | PruneDeadPlaylistEntries |  |
 | GET | `/Tentacle/Playlists/PruneDead/{runId}` | admin | GetPruneRun |  |
@@ -88,6 +102,8 @@ Gotchas:
 | GET | `/Tentacle/home.js` | none | GetHomeJs |  |
 | GET | `/Tentacle/livetv.css` | none | GetLiveTvCss |  |
 | GET | `/Tentacle/livetv.js` | none | GetLiveTvJs |  |
+| GET | `/Tentacle/login.css` | none | GetLoginCss |  |
+| GET | `/Tentacle/login.js` | none | GetLoginJs |  |
 | GET | `/Tentacle/logo.png` | none | GetLogo |  |
 | GET | `/Tentacle/mdblist.css` | none | GetMdbListCss |  |
 | GET | `/Tentacle/mdblist.js` | none | GetMdbListJs |  |
@@ -97,6 +113,7 @@ Gotchas:
 | GET | `/Tentacle/navbar.js` | none | GetNavbarJs |  |
 | GET | `/Tentacle/notifications.css` | none | GetNotificationsCss |  |
 | GET | `/Tentacle/notifications.js` | none | GetNotificationsJs |  |
+| GET | `/Tentacle/play.js` | none | GetPlayJs | Play links from the dashboard (`&tentaclePlay=1`) |
 | GET | `/Tentacle/search.css` | none | GetSearchCss |  |
 | GET | `/Tentacle/search.js` | none | GetSearchJs |  |
 | GET | `/Tentacle/tmdb.js` | none | GetTmdbJs |  |
@@ -116,6 +133,7 @@ Gotchas:
 | GET | `/TentacleDiscover/FixMatch/movie/{tmdbId}/Suggestions` | user | FixMatchSuggestions | yes |
 | POST | `/TentacleDiscover/Follow/{tmdbId}` | user | ToggleFollow | yes |
 | GET | `/TentacleDiscover/Genre` | user | GetByGenre | yes |
+| GET | `/TentacleDiscover/FamilyStatus` | user | GetFamilyStatus | yes |
 | GET | `/TentacleDiscover/Genres` | user | GetGenres | yes |
 | GET | `/TentacleDiscover/ImageProxy/{cacheKey}` | none | ImageProxy |  |
 | GET | `/TentacleDiscover/Items` | user | GetDiscoverItems | yes |
@@ -128,6 +146,7 @@ Gotchas:
 | POST | `/TentacleDiscover/Notifications/Toggle` | user | ToggleNotifications |  |
 | POST | `/TentacleDiscover/Notifications/{notificationId}/Dismiss` | user | DismissNotification | yes |
 | GET | `/TentacleDiscover/Providers` | user | GetStreamingProviders | yes |
+| GET | `/TentacleDiscover/RequestMode` | user | GetRequestMode | yes |
 | GET | `/TentacleDiscover/RadarrFolders` | user | GetRadarrFolders |  |
 | GET | `/TentacleDiscover/RadarrProfiles` | user | GetRadarrProfiles | yes |
 | POST | `/TentacleDiscover/ReplaceCopy/{mediaType}/{tmdbId}` | user | ReplaceCopy | yes |

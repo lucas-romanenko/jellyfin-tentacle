@@ -20,7 +20,7 @@ from models.database import (
     get_db, get_setting, get_recently_added_days, Movie, Series, Provider,
     ListSubscription, ListItem, AutoPlaylistToggle, TentacleUser, DownloadRequest,
 )
-from routers.auth import get_user_from_request
+from routers.auth import get_user_from_request, require_admin
 from services.smartlists import (
     get_desired_smartlists, sync_smartlists, _scan_existing,
     write_home_config, _notify_jellyfin_plugin, refresh_smartlist_playlists,
@@ -30,6 +30,7 @@ from services.smartlists import (
     sync_single_custom_playlist, toggle_auto_playlist_fast,
     home_config_lock, write_home_json,
 )
+from services import default_home
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/smartlists", tags=["smartlists"])
@@ -37,16 +38,21 @@ router = APIRouter(prefix="/api/smartlists", tags=["smartlists"])
 HOME_CONFIG_DIR = "/data/home-configs"
 
 # Built-in Jellyfin home sections that can be added to the home screen
+# Jellyfin's own home sections a row can be. "retired" ones are no longer
+# offered (Lucas, 2026-10-21: My Media duplicates the menu, the TV app can't
+# show books, On Now replaces the old Live TV row) but still draw for anyone
+# whose own layout has them.
 BUILTIN_SECTIONS = [
-    {"section_id": "smalllibrarytiles", "display_name": "My Media"},
-    {"section_id": "smalllibrarytiles_small", "display_name": "My Media (small)"},
-    {"section_id": "activerecordings", "display_name": "Active Recordings"},
     {"section_id": "resumevideo", "display_name": "Continue Watching"},
-    {"section_id": "resumeaudio", "display_name": "Continue Listening"},
-    {"section_id": "resumebook", "display_name": "Continue Reading"},
-    {"section_id": "latestmedia", "display_name": "Recently Added Media"},
     {"section_id": "nextup", "display_name": "Next Up"},
-    {"section_id": "livetv", "display_name": "Live TV"},
+    {"section_id": "onnow", "display_name": "On Now"},
+    {"section_id": "latestmedia", "display_name": "Recently Added Media"},
+    {"section_id": "activerecordings", "display_name": "Active Recordings"},
+    {"section_id": "resumeaudio", "display_name": "Continue Listening"},
+    {"section_id": "smalllibrarytiles", "display_name": "My Media", "retired": True},
+    {"section_id": "smalllibrarytiles_small", "display_name": "My Media (small)", "retired": True},
+    {"section_id": "resumebook", "display_name": "Continue Reading", "retired": True},
+    {"section_id": "livetv", "display_name": "Live TV", "retired": True},
 ]
 BUILTIN_MAP = {s["section_id"]: s for s in BUILTIN_SECTIONS}
 
@@ -55,65 +61,6 @@ JELLYFIN_SECTION_TO_BUILTIN = {
     "resume": "resumevideo",
     "librarybuttons": "smalllibrarytiles_small",
 }
-# Seeded when the user never customized their Jellyfin home (all slots unset)
-DEFAULT_SEED_SECTIONS = ["smalllibrarytiles", "resumevideo", "nextup", "latestmedia"]
-
-
-def _seed_home_config_from_jellyfin(db: Session, user: TentacleUser) -> dict:
-    """First visit with no home config: mirror the user's Jellyfin home-section
-    settings as builtin rows, so Tentacle starts from what they had enabled in
-    Jellyfin instead of a blank slate. Also snapshots the original values so
-    they can be restored if Tentacle home is ever removed."""
-    from services.jellyfin import JellyfinService
-
-    jellyfin_url = get_setting(db, "jellyfin_url", "")
-    jellyfin_key = get_setting(db, "jellyfin_api_key", "")
-    if not jellyfin_url or not jellyfin_key or not user.jellyfin_user_id:
-        return {}
-
-    try:
-        jf = JellyfinService(jellyfin_url, jellyfin_key, user.jellyfin_user_id)
-        sections = jf.get_home_sections()
-        if not sections:
-            return {}
-
-        customized = any(v not in ("", "none") for v in sections.values())
-        section_ids = []
-        if customized:
-            for i in range(10):
-                val = sections.get(f"homesection{i}", "")
-                sid = JELLYFIN_SECTION_TO_BUILTIN.get(val, val)
-                if sid and sid != "none" and sid in BUILTIN_MAP and sid not in section_ids:
-                    section_ids.append(sid)
-        else:
-            section_ids = list(DEFAULT_SEED_SECTIONS)
-
-        if not section_ids:
-            return {}
-
-        rows = [
-            {"type": "builtin", "section_id": sid,
-             "display_name": BUILTIN_MAP[sid]["display_name"], "order": idx + 1}
-            for idx, sid in enumerate(section_ids)
-        ]
-        config = {
-            "hero": {"enabled": False, "playlist_id": "", "display_name": ""},
-            "rows": rows,
-            # Without it the toolbar endpoint answered [] and the Android TV
-            # app hid every button (#119/#120).
-            "toolbar": [dict(b) for b in DEFAULT_TOOLBAR],
-            "jellyfin_sections_snapshot": sections,
-        }
-        with home_config_lock:
-            _write_home_json(user, config)
-        # Blank the native sections immediately so the injected Tentacle home
-        # doesn't double-render above Jellyfin's own rows
-        jf.disable_home_sections()
-        logger.info(f"Seeded home config for {user.display_name} from Jellyfin sections: {section_ids}")
-        return config
-    except Exception as e:
-        logger.warning(f"Could not seed home config from Jellyfin for {user.display_name}: {e}")
-        return {}
 
 
 @router.get("/version")
@@ -172,6 +119,54 @@ def _write_home_json(user: TentacleUser, config: dict):
     a removed row is otherwise gone for good."""
     p = _home_config_path(user)
     write_home_json(p, config)
+
+
+class _Home:
+    """The home a Home Screen edit is for: the caller's own, or (admins, with
+    ?scope=default) the default home for everyone without their own.
+
+    Changing your own rows, spotlight or their settings makes your home your
+    own (it stops following the default). A change to the default is saved
+    once and then written into every follower's home in the background."""
+
+    def __init__(self, db: Session, user: TentacleUser, is_default: bool):
+        self.db, self.user, self.is_default = db, user, is_default
+
+    def read(self) -> dict:
+        if self.is_default:
+            return json.loads(json.dumps(default_home.get_default(self.db)))
+        return _read_home_json(self.user)
+
+    def write(self, config: dict) -> None:
+        if self.is_default:
+            default_home.save_default(self.db, config)
+            default_home.apply_to_followers_soon("the default home changed")
+        else:
+            config.pop(default_home.FOLLOWS, None)
+            _write_home_json(self.user, config)
+
+    def notify(self) -> dict:
+        if self.is_default:
+            return {"notified": True}   # each follower is told once it's written
+        return _notify_jellyfin_plugin(self.db, self.user)
+
+    def playlists(self) -> list:
+        """Playlists rows can show: the caller's own, or for the default the
+        ready-made ones everyone can have (ids are their keys)."""
+        if self.is_default:
+            return [{"playlist_id": e["key"], "name": e["name"], "is_youtube": e["category"] == "youtube",
+                     "item_count": e["item_count"]}
+                    for e in default_home.shareable_playlists(self.db)]
+        return _get_smartlists_with_playlist_ids(self.db, user_id=self.user.id)
+
+
+def _home_for(db: Session, user: TentacleUser, scope: Optional[str]) -> _Home:
+    """`scope` is the request's ?scope= ("default" for the default home)."""
+    if scope == "default":
+        if not user.is_admin:
+            raise HTTPException(status_code=403, detail="Only an admin can change the default home")
+        return _Home(db, user, True)
+    return _Home(db, user, False)
 
 
 @router.get("")
@@ -431,21 +426,60 @@ def write_home(db: Session = Depends(get_db), user: TentacleUser = Depends(get_u
 
 
 @router.get("/home-config")
-def read_home(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
-    """Return the current per-user home config contents.
+def read_home(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request),
+        scope: Optional[str] = None):
+    """Return the current per-user home config contents (or, `?scope=default`,
+    the default home's).
 
-    First fetch for a user with no config seeds it from their Jellyfin
-    home-section settings (mirrors what they had enabled in Jellyfin).
+    A first fetch for a user with no config gives them the default home at
+    once (rows of playlists they don't have yet follow in the background).
 
     `home_version` is read before the config: a save in between makes the
     config newer than its version (one extra refresh later), never older."""
+    home = _home_for(db, user, scope)
+    if home.is_default:
+        return {"exists": True, "config": home.read(), "home_version": 0,
+                "custom": bool(default_home.saved_default(db)),
+                "followers": [u.display_name for u in default_home.followers(db)]}
     home_version = get_home_version(user.id)
     config = _read_home_json(user)
-    if not config:
-        config = _seed_home_config_from_jellyfin(db, user)
+    if not config and not _home_config_path(user).exists():
+        config = default_home.apply_default(db, user, build=False)
+        default_home.apply_soon(user.id)
     if not config:
         return {"exists": False, "config": {}, "home_version": home_version}
-    return {"exists": True, "config": config, "home_version": home_version}
+    return {"exists": True, "config": config, "home_version": home_version,
+            "follows_default": default_home.follows_default(config)}
+
+
+@router.post("/home/reset-to-default")
+def reset_home_to_default(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    """Make the caller's home the default again (their toolbar stays)."""
+    with home_config_lock:
+        config = _read_home_json(user)
+        config[default_home.FOLLOWS] = True
+        _write_home_json(user, config)
+    written = default_home.apply_default(db, user, build=False)
+    default_home.apply_soon(user.id)
+    return {"success": True, "rows": len(written.get("rows") or [])}
+
+
+@router.post("/default-home/from-mine", dependencies=[Depends(require_admin)])
+def default_home_from_mine(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    """Make the caller's own home the default for everyone (their own lists
+    and custom playlists are left out: nobody else has them)."""
+    cfg = default_home.save_default(db, default_home.default_from_home(db, user, _read_home_json(user)))
+    default_home.apply_to_followers_soon(f"{user.display_name}'s home is the default now")
+    return {"success": True, "rows": len(cfg["rows"])}
+
+
+@router.post("/default-home/suggested", dependencies=[Depends(require_admin)])
+def default_home_suggested(db: Session = Depends(get_db)):
+    """Back to Tentacle's suggested default home."""
+    default_home.clear_default(db)
+    default_home.apply_to_followers_soon("back to Tentacle's suggested default")
+    return {"success": True}
+
 
 
 @router.post("/refresh-playlists")
@@ -645,10 +679,12 @@ class ReorderRequest(BaseModel):
 
 
 @router.post("/reorder")
-def reorder(req: ReorderRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def reorder(req: ReorderRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request),
+        scope: Optional[str] = None):
     """Read JSON, reorder rows to match, write JSON back. That's it."""
+    home = _home_for(db, user, scope)
     with home_config_lock:
-        config = _read_home_json(user)
+        config = home.read()
         if not config or "rows" not in config:
             return {"success": False, "message": "No home config found"}
 
@@ -668,9 +704,9 @@ def reorder(req: ReorderRequest, db: Session = Depends(get_db), user: TentacleUs
             new_rows.append(row)
 
         config["rows"] = new_rows
-        _write_home_json(user, config)
+        home.write(config)
     bump_playlist_version()
-    _notify_jellyfin_plugin(db, user)
+    home.notify()
     logger.info(f"Reordered home rows for {user.display_name}: {[r['display_name'] for r in new_rows]}")
     return {"success": True, "rows": len(new_rows)}
 
@@ -682,18 +718,22 @@ class HeroPickRequest(BaseModel):
 
 
 @router.get("/all-playlists")
-def all_playlists(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def all_playlists(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request),
+        scope: Optional[str] = None):
     """Return all per-user SmartLists with playlist IDs."""
-    playlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
+    home = _home_for(db, user, scope)
+    playlists = home.playlists()
     playlists.sort(key=lambda x: x["name"].lower())
     return {"playlists": playlists}
 
 
 @router.get("/available-playlists")
-def available_playlists(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def available_playlists(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request),
+        scope: Optional[str] = None):
     """Return per-user SmartLists with playlist IDs that are not yet in the home config rows."""
-    all_pl = _get_smartlists_with_playlist_ids(db, user_id=user.id)
-    config = _read_home_json(user)
+    home = _home_for(db, user, scope)
+    all_pl = home.playlists()
+    config = home.read()
     current_ids = {r.get("playlist_id") for r in config.get("rows", []) if r.get("type", "playlist") == "playlist"}
     available = [p for p in all_pl if p["playlist_id"] not in current_ids]
     available.sort(key=lambda x: x["name"].lower())
@@ -706,10 +746,12 @@ class AddRowRequest(BaseModel):
 
 
 @router.post("/add-row")
-def add_row(req: AddRowRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def add_row(req: AddRowRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request),
+        scope: Optional[str] = None):
     """Add a playlist or built-in section as a new row to the home config."""
+    home = _home_for(db, user, scope)
     with home_config_lock:
-        config = _read_home_json(user)
+        config = home.read()
         if not config:
             config = {"hero": {"enabled": False, "playlist_id": "", "display_name": ""}, "rows": []}
         config.setdefault("rows", [])
@@ -717,7 +759,7 @@ def add_row(req: AddRowRequest, db: Session = Depends(get_db), user: TentacleUse
         if req.section_id:
             # Adding a built-in Jellyfin section
             builtin = BUILTIN_MAP.get(req.section_id)
-            if not builtin:
+            if not builtin or builtin.get("retired"):
                 return {"success": False, "message": "Unknown built-in section"}
             if any(r.get("type") == "builtin" and r.get("section_id") == req.section_id for r in config["rows"]):
                 return {"success": False, "message": "Already in home screen"}
@@ -731,7 +773,7 @@ def add_row(req: AddRowRequest, db: Session = Depends(get_db), user: TentacleUse
             })
         elif req.playlist_id:
             # Adding a Tentacle playlist (per-user)
-            all_playlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
+            all_playlists = home.playlists()
             match = next((p for p in all_playlists if p["playlist_id"] == req.playlist_id), None)
             if not match:
                 return {"success": False, "message": "Playlist not found"}
@@ -758,10 +800,10 @@ def add_row(req: AddRowRequest, db: Session = Depends(get_db), user: TentacleUse
         else:
             return {"success": False, "message": "Must provide playlist_id or section_id"}
 
-        _write_home_json(user, config)
+        home.write(config)
         rows_count = len(config["rows"])
     bump_playlist_version()
-    _notify_jellyfin_plugin(db, user)
+    home.notify()
     return {"success": True, "rows": rows_count}
 
 
@@ -771,10 +813,12 @@ class RemoveRowRequest(BaseModel):
 
 
 @router.post("/remove-row")
-def remove_row(req: RemoveRowRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def remove_row(req: RemoveRowRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request),
+        scope: Optional[str] = None):
     """Remove a row from the home config."""
+    home = _home_for(db, user, scope)
     with home_config_lock:
-        config = _read_home_json(user)
+        config = home.read()
         if not config or "rows" not in config:
             return {"success": False, "message": "No home config"}
 
@@ -788,19 +832,22 @@ def remove_row(req: RemoveRowRequest, db: Session = Depends(get_db), user: Tenta
         for i, r in enumerate(config["rows"], start=1):
             r["order"] = i
 
-        _write_home_json(user, config)
+        home.write(config)
         rows_count = len(config["rows"])
     bump_playlist_version()
-    _notify_jellyfin_plugin(db, user)
+    home.notify()
     return {"success": True, "rows": rows_count}
 
 
 @router.get("/builtin-sections")
-def list_builtin_sections(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def list_builtin_sections(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request),
+        scope: Optional[str] = None):
     """Return available built-in Jellyfin sections not yet in the home config."""
-    config = _read_home_json(user)
+    home = _home_for(db, user, scope)
+    config = home.read()
     current_ids = {r.get("section_id") for r in config.get("rows", []) if r.get("type") == "builtin"}
-    available = [s for s in BUILTIN_SECTIONS if s["section_id"] not in current_ids]
+    available = [{"section_id": s["section_id"], "display_name": s["display_name"]} for s in BUILTIN_SECTIONS
+                 if s["section_id"] not in current_ids and not s.get("retired")]
     return {"sections": available}
 
 
@@ -827,19 +874,21 @@ class MergeContinueRequest(BaseModel):
 
 
 @router.post("/merge-continue-watching")
-def set_merge_continue_watching(req: MergeContinueRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def set_merge_continue_watching(req: MergeContinueRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request),
+        scope: Optional[str] = None):
     """Toggle combining Continue Watching + Next Up into a single home row.
 
     Per-user; honored by both the Jellyfin web home (tentacle-home.js) and the
     Android TV app (builtin section rendering)."""
+    home = _home_for(db, user, scope)
     with home_config_lock:
-        config = _read_home_json(user)
+        config = home.read()
         if not config:
             config = {"hero": {"enabled": False, "playlist_id": "", "display_name": ""}, "rows": []}
         config["merge_continue_watching"] = bool(req.enabled)
-        _write_home_json(user, config)
+        home.write(config)
     bump_playlist_version()
-    _notify_jellyfin_plugin(db, user)
+    home.notify()
     return {"success": True, "merge_continue_watching": bool(req.enabled)}
 
 
@@ -877,10 +926,12 @@ def set_card_previews(req: CardPreviewsRequest, db: Session = Depends(get_db), u
 
 
 @router.post("/row-max-items")
-def set_row_max_items(req: RowMaxItemsRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def set_row_max_items(req: RowMaxItemsRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request),
+        scope: Optional[str] = None):
     """Update max_items for a specific row."""
+    home = _home_for(db, user, scope)
     with home_config_lock:
-        config = _read_home_json(user)
+        config = home.read()
         if not config or "rows" not in config:
             return {"success": False, "message": "No home config found"}
 
@@ -897,26 +948,28 @@ def set_row_max_items(req: RowMaxItemsRequest, db: Session = Depends(get_db), us
         else:
             return {"success": False, "message": "Row not found"}
 
-        _write_home_json(user, config)
+        home.write(config)
     bump_playlist_version()
-    _notify_jellyfin_plugin(db, user)
+    home.notify()
     return {"success": True, "max_items": val}
 
 
 @router.post("/row-shape")
-def set_row_shape(req: RowShapeRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def set_row_shape(req: RowShapeRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request),
+        scope: Optional[str] = None):
     """Choose whether a row draws poster (2:3) or wide (16:9) cards.
 
     Per-user and per-row, honoured by both the Jellyfin web home and the Android
     TV app. Stored on the row itself so write_home_config carries it across
     rebuilds like the rest of the row's settings.
     """
+    home = _home_for(db, user, scope)
     shape = (req.shape or "").strip().lower()
     if shape not in ROW_SHAPES:
         raise HTTPException(400, f"shape must be one of {', '.join(ROW_SHAPES)}")
 
     with home_config_lock:
-        config = _read_home_json(user)
+        config = home.read()
         if not config or "rows" not in config:
             return {"success": False, "message": "No home config found"}
 
@@ -928,9 +981,9 @@ def set_row_shape(req: RowShapeRequest, db: Session = Depends(get_db), user: Ten
         else:
             return {"success": False, "message": "Row not found"}
 
-        _write_home_json(user, config)
+        home.write(config)
     bump_playlist_version()
-    notify = _notify_jellyfin_plugin(db, user)
+    notify = home.notify()
     return {"success": True, "shape": shape, **notify}
 
 
@@ -967,11 +1020,18 @@ def _hero_display_name(db: Session, user: TentacleUser, playlist_id: str) -> str
 
 
 @router.post("/hero")
-def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request),
+        scope: Optional[str] = None):
     """Read JSON, update hero, write JSON back. That's it."""
-    display_name = _hero_display_name(db, user, req.playlist_id) if req.playlist_id else ""
+    home = _home_for(db, user, scope)
+    if home.is_default:
+        display_name = next((p["name"] for p in home.playlists() if p["playlist_id"] == req.playlist_id), "")
+        if req.playlist_id and not display_name:
+            return {"success": False, "message": "Playlist not found"}
+    else:
+        display_name = _hero_display_name(db, user, req.playlist_id) if req.playlist_id else ""
     with home_config_lock:
-        config = _read_home_json(user)
+        config = home.read()
         if not config:
             config = {"hero": {"enabled": False, "playlist_id": "", "display_name": ""}, "rows": []}
         if "rows" not in config:
@@ -994,9 +1054,9 @@ def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: Tentacle
         else:
             config["hero"] = {"enabled": False, "playlist_id": "", "display_name": "", "sort_by": "random", "sort_order": "Descending", "require_logo": True, "require_trailer": False, "item_count": 10}
 
-        _write_home_json(user, config)
+        home.write(config)
     bump_playlist_version()
-    _notify_jellyfin_plugin(db, user)
+    home.notify()
     logger.info(f"Updated hero: {req.playlist_id or '(disabled)'}")
     return {"success": True}
 
@@ -1011,10 +1071,12 @@ class HeroSortRequest(BaseModel):
 
 
 @router.post("/hero-sort")
-def set_hero_sort(req: HeroSortRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def set_hero_sort(req: HeroSortRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request),
+        scope: Optional[str] = None):
     """Update hero spotlight sort order."""
+    home = _home_for(db, user, scope)
     with home_config_lock:
-        config = _read_home_json(user)
+        config = home.read()
         hero = config.get("hero", {})
         if not hero.get("enabled"):
             return {"success": False, "message": "Hero is not enabled"}
@@ -1030,9 +1092,9 @@ def set_hero_sort(req: HeroSortRequest, db: Session = Depends(get_db), user: Ten
         if req.item_count is not None:
             hero["item_count"] = max(1, min(req.item_count, 25))
         config["hero"] = hero
-        _write_home_json(user, config)
+        home.write(config)
     bump_playlist_version()
-    _notify_jellyfin_plugin(db, user)
+    home.notify()
     logger.info(f"Updated hero sort: {req.sort_by} {req.sort_order}")
     return {"success": True}
 
@@ -1218,8 +1280,15 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
     from models.database import YouTubeChannel, YouTubeVideo
     from services.youtube.indexer import is_library_status
 
+    from services.youtube.follows import followed_ids
+    theirs = None
+    if user_id is not None:
+        owner = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
+        theirs = followed_ids(db, owner.jellyfin_user_id) if owner else set()
     for ch in db.query(YouTubeChannel).filter(
             YouTubeChannel.enabled == True).order_by(YouTubeChannel.title).all():  # noqa: E712
+        if theirs is not None and ch.id not in theirs:
+            continue   # someone else's channel (services/youtube/follows.py)
         count = db.query(func.count(YouTubeVideo.id)).filter(
             YouTubeVideo.channel_fk == ch.id,
             YouTubeVideo.removed_at.is_(None),
@@ -1230,7 +1299,7 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
             "name": ch.title,
             "tag": f"yt:{ch.slug}",
             "category": "youtube",
-            "origin": "YouTube channel · always on — remove it from the YouTube page",
+            "origin": "YouTube channel · always on — remove it on My YouTube",
             "media_type": ["Movie"],
             "item_count": count,
             "youtube_channel_id": ch.id,
@@ -1274,7 +1343,7 @@ def toggle_auto_playlist(req: AutoPlaylistToggleRequest, db: Session = Depends(g
     if req.key.startswith("youtube:"):
         return {"success": False,
                 "message": "YouTube channel playlists are always on. To remove one, "
-                           "remove the channel from the YouTube page."}
+                           "remove the channel on My YouTube."}
     # List playlists use ListSubscription.playlist_enabled
     elif req.key.startswith("list:"):
         list_id = int(req.key.replace("list:", ""))
