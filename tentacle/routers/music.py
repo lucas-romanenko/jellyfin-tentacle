@@ -315,7 +315,7 @@ def music_request(body: AlbumRequest, request: Request, db: Session = Depends(ge
     from services import approvals
     if approvals.needs_approval(user):
         return approvals.hold(db, user, "album", {"mbid": body.mbid, "choice": choice},
-                              title=(body.title or "")[:300] or _album_title(db, body.mbid))
+                              title=_album_title(db, body.mbid))
     try:
         return request_album(db, body.mbid, user_id=user.id if user else None, via=_via(request), choice=choice)
     except RequestRefused as e:
