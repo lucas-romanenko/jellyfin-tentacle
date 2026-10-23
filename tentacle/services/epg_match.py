@@ -18,12 +18,23 @@ Ordered passes, most reliable first:
      and DVR rules booked from it. Anything else is reported ("ambiguous",
      "foreign") and never guessed: for a guide, a wrong programme is worse
      than none.
+
+A feed can also list one channel under two ids, only one of which carries
+programmes: on a live install "TNTSport1.uk" (the provider's tvg-id, no
+programmes) and "tntsports1.uk" (the schedule, listed as "UK: TNT SPORTS 1"
+and "NOW: TNT SPORT 1"). So a channel matched by tvg-id or name also gets a
+FALLBACK: the one feed channel of the channel's own country (its tag, else its
+guide id's ".uk") with the same name once tier tags and "sport"/"sports" are
+set aside (channel_names.loose_name_key). The sync uses it only when the
+channel's own guide id brings no programmes, so no channel that has a guide
+changes it; never for an override.
 """
 from collections import Counter, defaultdict
 
 import re
 
-from services.channel_names import channel_country, channel_name_key, channel_name_words, feed_countries
+from services.channel_names import (channel_country, channel_name_key, channel_name_words, feed_countries,
+                                    feed_id_country, loose_name_key, loose_name_words)
 
 # How many unmatched / ambiguous channels a coverage report lists by name.
 _LIST_LIMIT = 200
@@ -35,18 +46,18 @@ _TIMESHIFT = re.compile(r"(?:\s+plus\s+\d{1,2})+$")
 _IDENTITY_DROP = {"bk", "channel", "tv"}
 
 
-def _identity(name: str) -> str:
-    words = " ".join(channel_name_words(name))
+def _identity(name: str, words_of=channel_name_words) -> str:
+    words = " ".join(words_of(name))
     words = _TIMESHIFT.sub("", words)
     return "".join(w for w in words.split() if w not in _IDENTITY_DROP)
 
 
-def _one_channel(names) -> bool:
+def _one_channel(names, words_of=channel_name_words) -> bool:
     """True when the names are one channel's: the same after _identity, or
     one ending the other ("HISTORY" / "DISCOVERY HISTORY": a brand prefix).
     "LRT" / "LRT PLUS" differ at the END: two channels. A name that is only
     a number (a channel number) is not counted."""
-    ids = sorted({i for i in (_identity(n) for n in names) if i and not i.isdigit()}, key=len)
+    ids = sorted({i for i in (_identity(n, words_of) for n in names) if i and not i.isdigit()}, key=len)
     if len(ids) <= 1:
         return True
     longest = ids[-1]
@@ -157,6 +168,30 @@ def resolve_guide_ids(channels: list, feed_channels: list) -> dict:
         else:
             out[cid] = {"method": None, "guide_id": None, "name_match": None,
                         "reason": "ambiguous", "candidates": [guide_id]}
+
+    # The same channel under another id of the feed (see the module docstring).
+    feed_by_loose = defaultdict(set)
+    for fid, names in feed_names.items():
+        for name in names:
+            key = loose_name_key(name)
+            if key:
+                feed_by_loose[key].add(fid)
+    loose_mixed = {fid for fid, names in feed_names.items() if not _one_channel(names, loose_name_words)}
+    for ch in channels:
+        r = out.get(ch["id"])
+        if not r or not r["guide_id"] or r["method"] == "override" or not feed_ids:
+            continue
+        country = channel_country(ch.get("name") or "") or feed_id_country(r["guide_id"])
+        key = loose_name_key(ch.get("name") or "")
+        if not country or not key:
+            continue
+        same = [c for c in sorted(feed_by_loose.get(key, ()))
+                if c != r["guide_id"] and c not in loose_mixed and country in countries.get(c, ())]
+        if len(same) > 1:
+            plain = [c for c in same if not any(_has_timeshift(n) for n in feed_names.get(c, ()))]
+            same = plain if len(plain) == 1 else same
+        if len(same) == 1:
+            r["fallback"] = same[0]
     return out
 
 

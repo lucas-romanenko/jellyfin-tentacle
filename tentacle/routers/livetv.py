@@ -3623,7 +3623,7 @@ def _run_epg_sync_background(provider_data: dict):
             def _resolve(feed_channels):
                 resolved.clear()
                 resolved.update(resolve_guide_ids(chan_info, feed_channels))
-                return {r["guide_id"] for r in resolved.values() if r["guide_id"]}
+                return {gid for r in resolved.values() for gid in (r["guide_id"], r.get("fallback")) if gid}
 
             epg_url = _epg_feed_url(provider_data)
             if not epg_url:
@@ -3718,8 +3718,16 @@ def _run_epg_sync_background(provider_data: dict):
                 # The parser kept programmes for every name match, including
                 # the ones dropped below: their ids go into the delete set too,
                 # so rows an earlier sync stored under them can't collide (#467).
-                matched_ids = {v["guide_id"] for v in resolved.values() if v["guide_id"]}
+                matched_ids = {gid for v in resolved.values()
+                               for gid in (v["guide_id"], v.get("fallback")) if gid}
                 for r in rows:
+                    res = resolved.get(r.id) or {}
+                    if (res.get("fallback") in with_programmes
+                            and res.get("guide_id") not in with_programmes):
+                        # Its own guide id brought nothing; the same channel
+                        # under the feed's other id did (epg_match).
+                        resolved[r.id] = {**res, "method": "name", "guide_id": res["fallback"],
+                                          "name_match": res["fallback"]}
                     match = (resolved.get(r.id) or {}).get("name_match")
                     tvg = (r.epg_channel_id or "").strip()
                     if match and tvg in with_programmes:
