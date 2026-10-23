@@ -70,8 +70,22 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   (`tentacle-play.js`): the page stays closed while `TentaclePlay.pending()`
   is true, until the `tentacle-play-done` event.
 - **Live TV guide** (`tentacle-livetv.js`): replaces `#/livetv` with no tab,
-  tab 0 and tab 1 (Programs, Guide); Channels, Recordings, Schedule and
-  Series stay native. Favorites / All is saved in Jellyfin display
+  tab 0 and tab 1 (Programs, Guide); Channels and Series stay native.
+  A dot marks what will record: `GET LiveTv/Timers` plus Tentacle's
+  `TentacleDiscover/Recordings/marks` (teams and rules; amber waiting,
+  hollow preview), keyed by channel id + start minute, re-read on
+  `Timer*`/`SeriesTimer*` socket messages, Tentacle's `recordings` push
+  and every minute.
+- **Recordings / Schedule** (`tentacle-recordings.js`): `#/livetv?tab=3`
+  and `tab=4` (the guide's two buttons) are Tentacle pages styled like the
+  guide: Schedule = `TentacleDiscover/Recordings/upcoming` (+ rules as
+  chips; Jellyfin's `LiveTv/Timers` alone when Tentacle can't answer),
+  preview matches folded; Recordings = `LiveTv/Recordings` as cards (tap =
+  details page to play). Read-only: teams and rules are set in Tentacle.
+- **TimerCancelForwarder**: Jellyfin's `TimerCancelled` (only API/user
+  cancels, never a guide refresh) is posted to Tentacle's
+  `/api/live/recordings/cancelled`; Tentacle confirms it with
+  `GET /Tentacle/TimerCancelled/{id}` (15 min) and skips that showing. Favorites / All is saved in Jellyfin display
   preferences (`tentacle-livetv`, client `tentacle`, `CustomPrefs.guideView`
   = `favorites`/`all`, the TV app can share it). Date strip = today to the
   day of the furthest programme end (`POST LiveTv/Programs`, StartDate

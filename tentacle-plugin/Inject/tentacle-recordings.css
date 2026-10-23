@@ -1,0 +1,83 @@
+/**
+ * Tentacle Recordings: Jellyfin Web's Live TV Recordings and Schedule pages,
+ * styled like the Tentacle guide (tentacle-livetv.css)
+ */
+
+body.tentacle-recordings-active .view {
+    visibility: hidden !important;
+    pointer-events: none !important;
+}
+
+body.tentacle-recordings-active .skinHeader .sectionTabs,
+body.tentacle-recordings-active .skinHeader [data-tentacle-tab-ancestor] {
+    display: none !important;
+}
+
+#tentacleRecordingsContainer {
+    --tr-accent: #8b80ff;
+    --tr-line: rgba(255, 255, 255, 0.07);
+    --tr-text: rgba(255, 255, 255, 0.92);
+    --tr-dim: rgba(255, 255, 255, 0.55);
+    position: fixed;
+    inset: 0;
+    z-index: 900;
+    background: #110f1e;
+    color: var(--tr-text);
+    padding: 84px 32px 0;
+    display: none;
+    flex-direction: column;
+    box-sizing: border-box;
+}
+
+.tr-top { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 14px; }
+.tr-back { display: inline-flex; align-items: center; gap: 2px; color: var(--tr-dim); text-decoration: none; font-size: 14px; }
+.tr-back svg { width: 22px; height: 22px; fill: currentColor; }
+.tr-back:hover { color: var(--tr-text); }
+.tr-title { font-size: 26px; font-weight: 700; letter-spacing: -0.3px; }
+.tr-toggle { display: inline-flex; padding: 3px; border-radius: 8px; background: rgba(255, 255, 255, 0.06); border: 1px solid var(--tr-line); margin-left: auto; }
+.tr-seg { padding: 6px 14px; border-radius: 6px; color: var(--tr-dim); text-decoration: none; font-size: 14px; font-weight: 500; }
+.tr-seg.active { background: var(--tr-accent); color: #fff; }
+
+.tr-body { flex: 1; overflow-y: auto; padding-bottom: 32px; max-width: 1100px; width: 100%; }
+.tr-none { padding: 40px 8px; color: var(--tr-dim); font-size: 15px; }
+.tr-list { border: 1px solid var(--tr-line); border-radius: 10px; overflow: hidden; margin-bottom: 18px; background: rgba(255, 255, 255, 0.02); }
+.tr-day { padding: 10px 16px 6px; font-size: 13px; font-weight: 600; color: var(--tr-dim); background: rgba(255, 255, 255, 0.04); border-bottom: 1px solid var(--tr-line); }
+.tr-row { display: flex; align-items: center; gap: 14px; padding: 11px 16px; border-bottom: 1px solid var(--tr-line); }
+.tr-row:last-child { border-bottom: none; }
+.tr-time { width: 150px; flex-shrink: 0; font-size: 13px; color: var(--tr-dim); font-variant-numeric: tabular-nums; }
+.tr-what { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.tr-what b { font-weight: 500; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tr-meta { display: flex; gap: 12px; font-size: 12px; color: var(--tr-dim); flex-wrap: wrap; }
+.tr-meta em { font-style: normal; color: #fbbf24; }
+.tr-pill { flex-shrink: 0; font-size: 12px; padding: 3px 9px; border-radius: 99px; background: rgba(255, 255, 255, 0.08); color: var(--tr-dim); }
+.tr-pill.ok { background: rgba(74, 222, 128, 0.14); color: #4ade80; }
+.tr-pill.rec { background: rgba(248, 113, 113, 0.18); color: #f87171; }
+.tr-pill.warn { background: rgba(251, 191, 36, 0.14); color: #fbbf24; }
+.tr-preview > summary { padding: 12px 16px; cursor: pointer; color: var(--tr-dim); font-size: 14px; }
+.tr-preview > summary span { font-size: 12px; margin-left: 8px; opacity: 0.8; }
+.tr-preview[open] > summary { border-bottom: 1px solid var(--tr-line); }
+.tr-preview .tr-what b { color: var(--tr-dim); }
+.tr-h { font-size: 13px; font-weight: 600; color: var(--tr-dim); text-transform: uppercase; letter-spacing: 0.06em; margin: 10px 0 10px; }
+.tr-rules { margin-bottom: 12px; }
+.tr-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.tr-chip { display: inline-flex; align-items: baseline; gap: 6px; padding: 6px 12px; border-radius: 99px; border: 1px solid var(--tr-line); font-size: 13px; }
+.tr-chip small { color: var(--tr-dim); font-size: 11px; }
+.tr-chip.on { border-color: rgba(74, 222, 128, 0.4); }
+.tr-chip.on small { color: #4ade80; }
+.tr-foot { color: var(--tr-dim); font-size: 13px; }
+.tr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; margin-bottom: 22px; }
+.tr-card { display: flex; flex-direction: column; gap: 4px; text-align: left; background: none; border: none; padding: 0; color: inherit; cursor: pointer; font: inherit; }
+.tr-img { position: relative; aspect-ratio: 16 / 9; border-radius: 8px; background: rgba(255, 255, 255, 0.06) center / cover no-repeat; }
+.tr-img .tr-pill { position: absolute; top: 8px; left: 8px; }
+.tr-card:hover .tr-img { outline: 2px solid var(--tr-accent); }
+.tr-cname { font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tr-cmeta { font-size: 12px; color: var(--tr-dim); }
+
+@media (max-width: 700px) {
+    #tentacleRecordingsContainer { padding: 70px 12px 0; }
+    .tr-title { font-size: 21px; }
+    .tr-toggle { margin-left: 0; }
+    .tr-row { flex-wrap: wrap; gap: 4px 10px; padding: 10px 12px; }
+    .tr-time { width: 100%; font-size: 12px; }
+    .tr-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
+}

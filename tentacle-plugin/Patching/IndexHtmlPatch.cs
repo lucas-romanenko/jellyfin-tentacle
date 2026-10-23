@@ -167,6 +167,8 @@ public static class IndexHtmlPatch
             var searchJsTag = $"<script src=\"/Tentacle/search.js?v={cacheBust}\" defer></script>";
             var livetvCssTag = $"<link rel=\"stylesheet\" href=\"/Tentacle/livetv.css?v={cacheBust}\" />";
             var livetvJsTag = $"<script src=\"/Tentacle/livetv.js?v={cacheBust}\" defer></script>";
+            var recordingsCssTag = $"<link rel=\"stylesheet\" href=\"/Tentacle/recordings.css?v={cacheBust}\" />";
+            var recordingsJsTag = $"<script src=\"/Tentacle/recordings.js?v={cacheBust}\" defer></script>";
             var favoritesCssTag = $"<link rel=\"stylesheet\" href=\"/Tentacle/favorites.css?v={cacheBust}\" />";
             var favoritesJsTag = $"<script src=\"/Tentacle/favorites.js?v={cacheBust}\" defer></script>";
             var notifCssTag = $"<link rel=\"stylesheet\" href=\"/Tentacle/notifications.css?v={cacheBust}\" />";
@@ -176,8 +178,8 @@ public static class IndexHtmlPatch
             var playJsTag = $"<script src=\"/Tentacle/play.js?v={cacheBust}\" defer></script>";
 
             content = content
-                .Replace("</head>", $"{cssTag}{discoverCssTag}{detailsCssTag}{mdblistCssTag}{navbarCssTag}{mediabarCssTag}{searchCssTag}{livetvCssTag}{favoritesCssTag}{notifCssTag}{loginCssTag}</head>")
-                .Replace("</body>", $"{mdblistJsTag}{tmdbJsTag}{navbarJsTag}{mediabarJsTag}{jsTag}{discoverJsTag}{searchJsTag}{livetvJsTag}{favoritesJsTag}{detailsJsTag}{notifJsTag}{playJsTag}{loginJsTag}</body>");
+                .Replace("</head>", $"{cssTag}{discoverCssTag}{detailsCssTag}{mdblistCssTag}{navbarCssTag}{mediabarCssTag}{searchCssTag}{livetvCssTag}{recordingsCssTag}{favoritesCssTag}{notifCssTag}{loginCssTag}</head>")
+                .Replace("</body>", $"{mdblistJsTag}{tmdbJsTag}{navbarJsTag}{mediabarJsTag}{jsTag}{discoverJsTag}{searchJsTag}{livetvJsTag}{recordingsJsTag}{favoritesJsTag}{detailsJsTag}{notifJsTag}{playJsTag}{loginJsTag}</body>");
 
             var bytes = System.Text.Encoding.UTF8.GetBytes(content);
             lock (_transformLock)

@@ -72,6 +72,18 @@ public class TentacleController : ControllerBase
     }
 
     /// <summary>
+    /// Tentacle asks (with the server's API key) whether a timer it was told about was
+    /// really cancelled through Jellyfin in the last 15 minutes (see TimerCancelForwarder).
+    /// </summary>
+    /// <param name="timerId">The Jellyfin timer id.</param>
+    [HttpGet("TimerCancelled/{timerId}")]
+    [Authorize(Policy = "RequiresElevation")]
+    public ActionResult TimerCancelled([FromRoute] string timerId)
+    {
+        return Services.RecentTimerCancels.Contains(timerId) ? Ok(new { cancelled = true }) : NotFound();
+    }
+
+    /// <summary>
     /// Full refresh: clears caches and broadcasts a library-changed event.
     /// Called by Tentacle server after every sync.
     /// Requires Jellyfin API key auth (X-Emby-Token header).
@@ -164,7 +176,7 @@ public class TentacleController : ControllerBase
     /// LibraryChanged: older TV apps reload Home on every one of those.
     /// </summary>
     /// <param name="userIds">Jellyfin user ids, comma separated (dashes optional).</param>
-    /// <param name="topics">"requests", "activity", "notifications", comma separated.</param>
+    /// <param name="topics">"requests", "activity", "notifications", "recordings", comma separated.</param>
     [HttpPost("Notify")]
     [Authorize(Policy = "RequiresElevation")]
     public async Task<ActionResult> Notify([FromQuery] string? userIds = null, [FromQuery] string? topics = null)
@@ -175,7 +187,7 @@ public class TentacleController : ControllerBase
             .Where(g => g != Guid.Empty)
             .Distinct()
             .ToList();
-        var known = new HashSet<string>(StringComparer.Ordinal) { "requests", "activity", "notifications" };
+        var known = new HashSet<string>(StringComparer.Ordinal) { "requests", "activity", "notifications", "recordings" };
         var what = string.Join(",", (topics ?? string.Empty)
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(known.Contains)
