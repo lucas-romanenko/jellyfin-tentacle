@@ -297,11 +297,33 @@ def approve(db: Session, request_id: int, admin: TentacleUser) -> dict:
     _live(row.user_id, activity=ok)
     if ok:
         logger.info(f"[Requests] {admin.display_name} approved '{row.title}' for user {row.user_id}")
-        _tell_owner(db, row, f"{admin.display_name} said yes. It's downloading now; "
-                             f"you'll get a message when it's ready to watch.")
+        _tell_owner(db, row, yes_message(db, row, admin.display_name))
     else:
         logger.warning(f"[Requests] Approved '{row.title}' but it wasn't added: {row.note}")
     return {"ok": ok, "status": row.status, "detail": row.note or "", "outcome": outcome}
+
+
+def _day(iso: str) -> str:
+    d = datetime.strptime(iso, "%Y-%m-%d")
+    return f"{d.day} {d:%B %Y}"
+
+
+def yes_message(db: Session, row: MediaRequest, admin_name: str) -> str:
+    """What the person hears when their request is approved: "downloading now"
+    only when it can be (Sony check, 23 Oct 2026: it said so for films out in
+    2026-12 and 2027-12)."""
+    yes = f"{admin_name} said yes."
+    ready = "you'll get a message when it's ready to watch."
+    if row.kind == "series" and json.loads(row.payload or "{}").get("monitor") == "future":
+        return f"{yes} New episodes will download as they come out; you'll get a message when one's ready to watch."
+    title_id = row.tmdb_id or (-row.tvdb_id if row.kind == "series" and row.tvdb_id else 0)
+    if row.kind in ("movie", "series") and title_id:
+        from services import media_requests
+        when = media_requests.coming_out(db, row.kind, title_id)
+        if when is not None:
+            return f"{yes} It'll download when it comes out ({_day(when)}); {ready}" if when \
+                else f"{yes} It'll download when it comes out; {ready}"
+    return f"{yes} It's downloading now; {ready}"
 
 
 def decline(db: Session, request_id: int, admin: TentacleUser, note: str = "") -> dict:
