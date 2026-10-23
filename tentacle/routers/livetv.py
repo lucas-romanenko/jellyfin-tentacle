@@ -515,7 +515,9 @@ _PLACEHOLDER_STEMS = {
     "channel_unavailable",
     "user_connections_exhausted",
     "provider_connections_exhausted",
+    "low_priority_preempted",
     "user_account_expired",
+    "panel_api_provisioning",
 }
 # Placeholder refusals since start, per channel: {"count", "segment", "at"}.
 _placeholders: "dict[int, dict]" = {}
@@ -528,11 +530,22 @@ def _placeholder_name(url: str) -> "str | None":
     """The file name, when `url` is a known placeholder segment."""
     from urllib.parse import urlparse
     try:
-        base = urlparse(url).path.rsplit("/", 1)[-1].lower()
+        parts = urlparse(url).path.lower().split("/")
     except ValueError:
         return None
+    base = parts[-1]
     stem, dot, ext = base.rpartition(".")
-    return base if dot and ext == "ts" and stem in _PLACEHOLDER_STEMS else None
+    if not dot or ext != "ts":
+        return None
+    if stem in _PLACEHOLDER_STEMS:
+        return base
+    # tuliprox 3.3 also serves its custom videos as numbered segments of their
+    # own playlist, /cvs/hls/<lease>/<asset>/<n>.ts, and provisioning as
+    # /cvs/hls/<user>/<pass>/provisioning_<n>.ts: no reason in the file name,
+    # so they are recognised by tuliprox's route, /cvs/{hls|ts}/<a>/<b>/<file>.
+    if len(parts) >= 5 and parts[-5] == "cvs" and parts[-4] in ("hls", "ts"):
+        return base
+    return None
 
 
 class _ProviderPlaceholder(Exception):
@@ -4719,7 +4732,9 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         if is_hls:
             # HLS playlist — read the playlist text, then we're done with this client
             playlist_text = playlist_bytes.decode("utf-8", errors="replace")
-            playlist_base = tokenized_url
+            # What a reload asks for, and what the playlist's URIs resolve
+            # against: the URL it finally came from, after any redirect.
+            playlist_url = playlist_base = tokenized_url
             # Look at the media playlist before answering: a provider with
             # nothing for the channel serves one that holds only a placeholder
             # segment, and once the response has started it can only end, not
@@ -4737,6 +4752,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     v_resp.raise_for_status()
                     variant_text = (await asyncio.wait_for(v_resp.aread(), 10.0)).decode(
                         "utf-8", errors="replace")
+                    variant_final = str(v_resp.url)
                 except _PlaceholderRefusal:
                     raise
                 except _ProviderPlaceholder as e:
@@ -4750,7 +4766,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 finally:
                     if v_resp is not None:
                         await v_resp.aclose()
-                playlist_text, playlist_base = variant_text, variant
+                playlist_text, playlist_url, playlist_base = variant_text, variant, variant_final
             if not _select_hls_variant(playlist_text, playlist_base):
                 segments = _media_segments(playlist_text, playlist_base)
                 placeholders = [_placeholder_name(u) for u in segments]
@@ -5031,6 +5047,10 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         last_disc = None    # and the discontinuity sequence it was sent under
         last_payload_hash = None   # sha1 of the last segment sent (re-resolve dedupe)
         current_playlist = playlist_text
+        # A reload asks for current_url; its URIs resolve against current_base,
+        # where the variant hop's redirect landed. A reload that lands
+        # elsewhere keeps that base, so a segment keeps its URL (seen_chunks).
+        current_url = playlist_url
         current_base = playlist_base
         ua_headers = {"User-Agent": user_agent}
         # An Xtream provider answers 429/509 while the account's connection
@@ -5203,7 +5223,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 delivering (it holds the account; taking it back would kick it
                 and it would kick back). "ok" = a fresh playlist is in hand,
                 "stop" = end the stream, "" = go on waiting."""
-                nonlocal current_playlist, current_base, playlist_loaded_at
+                nonlocal current_playlist, current_url, current_base, playlist_loaded_at
                 nonlocal after_reresolve, backoff_cap
                 if rival_delivering is None or refused_since is None:
                     return ""
@@ -5254,7 +5274,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         f"Re-resolving after refusals: {e}"), "Re-resolving after refusals")
                     backoff_cap = _REFUSAL_BACKOFF_CAP
                     return "stop" if stop else ""
-                current_playlist, current_base = text, final
+                current_playlist, current_url, current_base = text, final, final
                 playlist_loaded_at = asyncio.get_running_loop().time()
                 after_reresolve = True
                 st = _stream_status.get(channel_id)
@@ -5271,7 +5291,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 a recording: for as long as it stays attached). True means
                 stop."""
                 nonlocal reresolve_run, after_reresolve, current_playlist
-                nonlocal current_base, playlist_loaded_at, backoff_cap, stream_answer_since
+                nonlocal current_url, current_base, playlist_loaded_at, backoff_cap, stream_answer_since
                 loop_now = asyncio.get_running_loop().time
                 reresolve_run += 1
                 status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
@@ -5357,7 +5377,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     await _backoff_sleep()
                     return False
                 stream_answer_since = None
-                current_playlist, current_base = text, final
+                current_playlist, current_url, current_base = text, final, final
                 playlist_loaded_at = asyncio.get_running_loop().time()
                 after_reresolve = True
                 logger.info(f"[LiveTV] Channel {channel_id}: re-resolved the channel URL, "
@@ -5423,6 +5443,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             v_resp.raise_for_status()
                             variant_text = (await _aread_within(v_resp, _HLS_PLAYLIST_READ, playlist_stretch)).decode(
                                 "utf-8", errors="replace")
+                            variant_final = str(v_resp.url)
                         finally:
                             await v_resp.aclose()
                     except _ProviderPlaceholder as e:
@@ -5448,7 +5469,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         variant_retry = True
                         break
                     _note_success()
-                    current_base = variant
+                    current_url, current_base = variant, variant_final
                     current_playlist = variant_text
                     playlist_loaded_at = asyncio.get_running_loop().time()
 
@@ -5521,6 +5542,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             await _backoff_sleep()
                             try:
                                 current_playlist, current_base = await _resolve_channel_playlist()
+                                current_url = current_base
                                 playlist_loaded_at = asyncio.get_running_loop().time()
                             except _ProviderPlaceholder:
                                 pass        # still the placeholder: wait again
@@ -5698,7 +5720,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 if remaining > 0:
                     await asyncio.sleep(remaining)
                 try:
-                    pl_resp = await _send_checked(hls_client, current_base, ua_headers, guard)
+                    pl_resp = await _send_checked(hls_client, current_url, ua_headers, guard)
                     try:
                         pl_resp.raise_for_status()
                         refreshed = (await _aread_within(pl_resp, _HLS_PLAYLIST_READ, playlist_stretch)).decode(
