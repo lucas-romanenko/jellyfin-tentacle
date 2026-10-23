@@ -603,7 +603,8 @@ movies/series, then Sonarr/Radarr text-lookup titles TMDB lacks (TheTVDB).
 The jellyfish mark, the thin TENTACLE wordmark and their lockups, as on the
 TV app's banner, are code: `scripts/brand.py` draws every SVG in
 `static/brand/` (plus the TV app's one-colour vector `android/ic_tentacle.xml`)
-and copies them to `docs/assets/brand/`; `--png` renders the favicons, app
+and copies them to `docs/assets/brand/` and the plugin's `tentacle-plugin/Brand/`
+(each is built from its own folder); `--png` renders the favicons, app
 icons, `docs/images/banner.png`, `social-preview.png` and the plugin's
 `tentacle-logo.png`. Don't edit those files by hand (`tests/test_brand.py`
 compares them with the script). `static/brand/tokens.css` holds the colours;

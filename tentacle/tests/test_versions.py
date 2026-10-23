@@ -102,8 +102,8 @@ class Derive(Case):
             calls.append(url)
             if fail:
                 raise requests.ConnectionError("offline")
-            if url.endswith("/releases/latest"):
-                return Resp(200, {"tag_name": "v1.23.0", "html_url": "https://example.invalid/r"})
+            if "/releases?" in url:
+                return Resp(200, RELEASES)
             return Resp(200, {"status": status, "ahead_by": ahead})
         return get, calls
 
@@ -142,13 +142,23 @@ class Derive(Case):
         thread.assert_not_called()
 
 
+# The plugin's release is usually published last, so it heads the list (and is
+# what /releases/latest would answer): the server's version is never taken from it.
+RELEASES = [{"tag_name": "plugin-v2.286.0", "html_url": "https://example.invalid/p"},
+            {"tag_name": "v1.24.0", "draft": True},
+            {"tag_name": "v1.23.0", "html_url": "https://example.invalid/r"},
+            {"tag_name": "v1.22.1", "html_url": "https://example.invalid/old"}]
+
+
 class Latest(Case):
     def test_newest_release_cached_and_quiet_offline(self):
         calls = []
 
         def ok(url):
             calls.append(url)
-            return Resp(200, {"tag_name": "v1.24.0", "html_url": "https://example.invalid/v1.24.0"})
+            return Resp(200, [{"tag_name": "plugin-v2.290.0", "html_url": "https://example.invalid/p"},
+                              {"tag_name": "v1.25.0-rc.1", "prerelease": True},
+                              {"tag_name": "v1.24.0", "html_url": "https://example.invalid/v1.24.0"}])
         self.assertEqual({"version": "v1.24.0", "page": "https://example.invalid/v1.24.0"}, V.latest_release(ok))
         V.latest_release(ok)
         self.assertEqual(1, len(calls))

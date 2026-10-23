@@ -56,9 +56,19 @@ class BrandFilesTest(unittest.TestCase):
                 with self.subTest(name=f.name):
                     self.assertEqual((docs / f.name).read_bytes(), f.read_bytes(), "run scripts/brand.py")
 
-    def test_plugin_embeds_the_brand_folder(self):
+    def test_plugin_copy_matches(self):
+        # The plugin is built from tentacle-plugin/ alone (the maintainer's deploy
+        # archives only that folder), so it embeds a copy, never ../tentacle/...
+        plugin = ROOT / "tentacle-plugin" / "Brand"
+        self.assertEqual({f.name for f in plugin.glob("*.svg")}, {f.name for f in BRAND.glob("*.svg")})
+        for f in sorted(BRAND.glob("*.svg")):
+            with self.subTest(name=f.name):
+                self.assertEqual((plugin / f.name).read_bytes(), f.read_bytes(), "run scripts/brand.py")
+
+    def test_plugin_embeds_its_brand_folder(self):
         csproj = (ROOT / "tentacle-plugin" / "Jellyfin.Plugin.Tentacle.csproj").read_text()
-        self.assertIn('Include="../tentacle/static/brand/*.svg"', csproj)
+        self.assertNotIn("../", csproj.split("<EmbeddedResource")[1:].__str__())
+        self.assertIn('Include="Brand/*.svg"', csproj)
         self.assertIn("Jellyfin.Plugin.Tentacle.Assets.brand-%(Filename)%(Extension)", csproj)
 
     def test_every_brand_url_exists(self):

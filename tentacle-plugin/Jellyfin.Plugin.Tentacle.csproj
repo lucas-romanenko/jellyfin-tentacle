@@ -61,8 +61,8 @@
     <EmbeddedResource Include="Assets/rogerebert.svg" />
     <EmbeddedResource Include="Assets/mal.svg" />
     <EmbeddedResource Include="Assets/anilist.svg" />
-    <!-- The brand (scripts/brand.py draws it; the dashboard serves the same files): /Tentacle/Assets/brand-<name>.svg -->
-    <EmbeddedResource Include="../tentacle/static/brand/*.svg" LogicalName="Jellyfin.Plugin.Tentacle.Assets.brand-%(Filename)%(Extension)" />
+    <!-- The brand: scripts/brand.py's copy of tentacle/static/brand (the plugin is built from this folder alone), /Tentacle/Assets/brand-<name>.svg -->
+    <EmbeddedResource Include="Brand/*.svg" LogicalName="Jellyfin.Plugin.Tentacle.Assets.brand-%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>

@@ -11,9 +11,9 @@ wide-spaced TENTACLE wordmark, as on the Android TV app's banner
                               social preview); needs Playwright's Chromium:
                               uv run --with playwright python scripts/brand.py --png
 
-tentacle/static/brand/ is the one source: the dashboard serves it, the plugin
-embeds it (Jellyfin.Plugin.Tentacle.csproj links the files), the README points
-at it, the docs site gets a copy. tests/test_brand.py fails when a file there
+tentacle/static/brand/ is the one source: the dashboard serves it, the README
+points at it; the plugin (tentacle-plugin/Brand/, embedded) and the docs site
+(docs/assets/brand/) get copies, since each is built from its own folder. tests/test_brand.py fails when a file there
 differs from what this script draws, or a copy differs from the source.
 
 Coordinates are those of the 1280x720 TV banner, so the mark and wordmark sit
@@ -27,6 +27,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "tentacle" / "static" / "brand"
 DOCS = ROOT / "docs" / "assets" / "brand"
+PLUGIN = ROOT / "tentacle-plugin" / "Brand"  # the plugin builds from its own folder alone
 
 # ── Colours (also in tokens.css) ──
 NAVY = "#181b3c"        # banner background
@@ -272,6 +273,7 @@ PNGS = [
     ("banner.svg", "docs/images/banner.png", 1280, 720),
     ("social-preview.svg", "docs/images/social-preview.png", 1280, 640),
     ("lockup.svg", "tentacle-plugin/Inject/tentacle-logo.png", 1660, 676),
+    ("banner.svg", "tentacle-plugin/logo.png", 1280, 720),
 ]
 
 
@@ -282,9 +284,12 @@ def write_svgs():
         (OUT / name).write_text(text)
     (OUT / "android").mkdir(exist_ok=True)
     (OUT / "android" / "ic_tentacle.xml").write_text(android_mono())
+    PLUGIN.mkdir(parents=True, exist_ok=True)
     for f in sorted(OUT.iterdir()):
         if f.suffix in (".svg", ".css"):
             shutil.copyfile(f, DOCS / f.name)
+        if f.suffix == ".svg":
+            shutil.copyfile(f, PLUGIN / f.name)
 
 
 def render_pngs():

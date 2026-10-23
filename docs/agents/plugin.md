@@ -175,8 +175,9 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   local Playstate Stop, then pause and drop its source.
 - **Home sections**: when Tentacle's home is on, the server turns
   Jellyfin's own home sections off per user (see server.md).
-- **Brand**: the csproj links the server's `tentacle/static/brand/*.svg`
-  (one source, drawn by `scripts/brand.py`), served as
+- **Brand**: `Brand/*.svg` is `scripts/brand.py`'s copy of the server's
+  `tentacle/static/brand/` (the plugin must build from `tentacle-plugin/`
+  alone: the maintainer's deploy archives only that folder), embedded and served as
   `/Tentacle/Assets/brand-<name>.svg`. `tentacle-home.css` swaps Jellyfin's
   logo for `brand-lockup.svg` (header, admin drawer, splash, home title);
   the login page shows it over "Who's watching?"; the navbar has the small
