@@ -1101,6 +1101,106 @@ class LivePoolArrival(Base):
     added_at = Column(DateTime, nullable=True)
 
 
+class RecordingRule(Base):
+    """What to record from the guide (services/recording_rules): a team of a
+    league ("kind" team: league + team, from leagues.json) or typed words
+    ("kind" keywords, in recording_rule_terms). New rules start in preview:
+    they show what they would record and book nothing. owner_user_id is the
+    person who made it (TentacleUser.id); recordings themselves are the
+    household's, as Jellyfin's are."""
+    __tablename__ = "recording_rules"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, nullable=False)
+    kind = Column(String, nullable=False, default="team")      # team | keywords | series
+    league = Column(String, nullable=True)                      # leagues.json id ("nhl"), team and series rules
+    team = Column(String, nullable=True)                        # the team's id in that league ("tor")
+    home_away = Column(String, nullable=False, default="both")  # both | home | away (team rules)
+    match_all = Column(Boolean, default=False)                  # keywords: every term, not any one
+    search_description = Column(Boolean, default=False)         # keywords: also the programme's description
+    min_minutes = Column(Integer, nullable=True)                # shorter listings aren't it (sports: a recap, a pregame)
+    pre_padding_minutes = Column(Integer, nullable=False, default=5)
+    post_padding_minutes = Column(Integer, nullable=False, default=60)
+    playoff_extra_minutes = Column(Integer, nullable=False, default=0)   # added after a playoff game
+    pregame_next = Column(Boolean, default=True)                # a matching pregame show: record what follows it
+    skip_replays = Column(Boolean, default=True)
+    mode = Column(String, nullable=False, default="preview")    # preview | record
+    active = Column(Boolean, default=True)
+    priority = Column(Integer, nullable=False, default=0)
+    owner_user_id = Column(Integer, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RecordingRuleTerm(Base):
+    """A keyword rule's words: a term to find, or (exclude) one that rules a
+    programme out."""
+    __tablename__ = "recording_rule_terms"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    rule_id = Column(Integer, ForeignKey("recording_rules.id", ondelete="CASCADE"), nullable=False, index=True)
+    term = Column(String, nullable=False)
+    exclude = Column(Boolean, default=False)
+
+
+class RecordingRuleChannel(Base):
+    """Channels a rule is limited to (pool keys); none = every channel."""
+    __tablename__ = "recording_rule_channels"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    rule_id = Column(Integer, ForeignKey("recording_rules.id", ondelete="CASCADE"), nullable=False, index=True)
+    pool_key = Column(String, nullable=False)
+    __table_args__ = (UniqueConstraint("rule_id", "pool_key", name="uq_recording_rule_channel"),)
+
+
+class RecordingBooking(Base):
+    """One airing a rule chose (or passed over, with the reason), keyed by
+    (rule, pool key, UTC start) and, once booked, the Jellyfin timer's id;
+    never by title. Times are the programme's (UTC, without padding).
+
+    state: preview (the rule is in preview: it would record this), booked,
+    recording, ended (the window passed; Jellyfin has the file), waiting
+    (not booked yet: Jellyfin's guide doesn't have it, or no connection is
+    free; reason says which), covered (someone's own Jellyfin recording
+    already records it), lost (its timer went before the start without a
+    cancel: booked again), skipped (a person said no: never booked again),
+    failed (Jellyfin refused it)."""
+    __tablename__ = "recording_bookings"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    rule_id = Column(Integer, ForeignKey("recording_rules.id", ondelete="SET NULL"), nullable=True, index=True)
+    pool_key = Column(String, nullable=False)
+    channel_name = Column(String, nullable=True)      # display only
+    start = Column(DateTime, nullable=False)
+    stop = Column(DateTime, nullable=False)
+    title = Column(String, nullable=True)
+    sub_title = Column(String, nullable=True)
+    description = Column(Text, nullable=True)
+    from_event = Column(Boolean, default=False)       # an event channel's slot, not a regular listing
+    why = Column(String, nullable=True)               # what matched ("Maple Leafs in the title")
+    state = Column(String, nullable=False, default="preview", index=True)
+    reason = Column(String, nullable=True)            # the state in words
+    jellyfin_timer_id = Column(String, nullable=True, index=True)
+    jellyfin_channel_id = Column(String, nullable=True)
+    jellyfin_program_id = Column(String, nullable=True)
+    pre_padding_seconds = Column(Integer, nullable=True)
+    post_padding_seconds = Column(Integer, nullable=True)
+    attempts = Column(Integer, default=0)
+    next_attempt_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("rule_id", "pool_key", "start", name="uq_recording_booking"),)
+
+
+class RecordingBookingEvent(Base):
+    """The journal: every Jellyfin write a rule makes, written before it is
+    made, and what came of it."""
+    __tablename__ = "recording_booking_events"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    booking_id = Column(Integer, ForeignKey("recording_bookings.id", ondelete="CASCADE"), nullable=True, index=True)
+    at = Column(DateTime, default=datetime.utcnow)
+    actor = Column(String, nullable=False)     # scan | person | jellyfin
+    action = Column(String, nullable=False)    # book | cancel | skip | restore | adopt | lost
+    http_status = Column(Integer, nullable=True)
+    detail = Column(String, nullable=True)
+
+
 class EPGProgram(Base):
     __tablename__ = "epg_programs"
     id = Column(Integer, primary_key=True, autoincrement=True)

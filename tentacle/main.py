@@ -810,6 +810,12 @@ def setup_scheduler(db):
         coalesce=True,
     )
     schedule_once(lambda: _livetv_sync("start-up"), 150, "livetv_setup_first")
+    # Recording rules (services/recording_rules): what each would record, and
+    # Jellyfin timers for the ones that record. Nothing to do without rules.
+    from services.recording_rules import book as _rec_book
+    scheduler.add_job(_rec_book.run_scan, IntervalTrigger(minutes=_rec_book.SCAN_MINUTES,
+                                                          start_date=datetime.now() + timedelta(seconds=240)),
+                      id="recording_rules", replace_existing=True, max_instances=1, coalesce=True)
     # The welcome's "You now have access to N movies, N TV shows and N live TV
     # channels" for everyone it is still due for, kept counted (services/welcome.py).
     from services.welcome import warm_everyone_due as _welcome_counts
@@ -988,6 +994,8 @@ from routers import my_livetv as my_livetv_router
 app.include_router(my_livetv_router.router)
 from routers import my_youtube as my_youtube_router
 app.include_router(my_youtube_router.router)
+from routers import recordings as recordings_router  # noqa: E402
+app.include_router(recordings_router.router)
 from routers import livetv_checker as livetv_checker_router
 app.include_router(livetv_checker_router.router)
 from routers import livetv_catalog as livetv_catalog_router
