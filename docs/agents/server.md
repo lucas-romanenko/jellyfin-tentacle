@@ -1089,6 +1089,58 @@ User docs: `docs/features/live-tv.md`.
   everything and served 95% of the known titles (`may_prune`,
   `end_probation`, setting `provider_address_probation_<pid>`).
 
+## Recording rules (`services/recording_rules/`, `routers/recordings.py`, dashboard `static/js/recordings.js`)
+
+Follow a team or record by words, as Jellyfin one-off timers (#770). No league
+schedule or score service: games are found in the guide Tentacle serves.
+
+- `leagues.json`: the built-in leagues and teams (full/short name, nicknames,
+  code, city, French name, venues; per league the context words, the shortest
+  listing that is a game, padding, playoff words; motor racing as `series`
+  with terms). Edited by hand.
+- `match.py`: fold (NFKD, casefold, `&` = and, `Live:`/`New:` off), whole-word
+  phrases. A team's full name is enough; any other name needs the league
+  (a context word in the listing, its category or the channel's raw name) or a
+  second team of that league; a city alone needs the league itself (not only
+  "hockey"), and other teams' full names that contain the city ("Toronto
+  Raptors") are taken out first. A listing naming a league not in the list
+  (AHL, NCAA, ...) isn't the team's. Venue = home; "X at/@ Y" = Y at home.
+- `guide.py`: listings per lineup entry (pool key), mapped exactly like
+  `hdhr_xmltv` (epg ids, folded networks' guides, `event_programmes()` for
+  event channels; not stored anywhere).
+- `plan.py` (pure): per rule, matched listings (plus the listing after a
+  matching pregame show, plus same-time listings from an opponent's arena for
+  a game an event slot names), grouped into events (team/series: starts within
+  90 min; words: same title+description within 45 min), best option first
+  (regular channel, `Live:`, earliest), later same programme = replay. `fit()`
+  gives connections by priority then start, against each provider's
+  `provider_stream_limit` and the windows of timers Tentacle didn't make;
+  a first showing that can't fit takes its replay; else `waiting` with why.
+- `book.py`: the only writer of Jellyfin timers, one scan at a time (`_lock`):
+  every 30 min (`recording_rules` job), 3 s after a rule change
+  (`request_scan`), 10 min after a guide refresh (`jellyfin_guide`). Booking =
+  `/LiveTv/Programs` at the start (±2 min) on the entry's Jellyfin channel
+  id (`m3u_channel_item_id`), Defaults, padding, POST, then the id is read
+  back (POST has no body); Defaults' 500 for a programme already on gets a
+  hand-made DTO. A journal row (`recording_booking_events`) is committed
+  before every write. Reconcile by timer id; a missing id is re-found by
+  (channel, start) (moved) or the row is `lost` and booked again; after the
+  window `ended`. A timer someone else set on the same channel and start
+  makes the row `covered` (never touched). Rules gone, off or back in preview
+  cancel their own `booked` timers that haven't started. A guide that lost a
+  listing never cancels a booking.
+- Tables (plain columns): `recording_rules` (+ `recording_rule_terms`,
+  `recording_rule_channels`), `recording_bookings` (unique rule, pool key,
+  start; states preview/booked/recording/waiting/covered/failed/lost/ended/
+  skipped), `recording_booking_events`.
+- Who: `can_record` = admin, or Jellyfin's `EnableLiveTvManagement` (read
+  once a minute), never a kids profile. Everyone signed in reads rules,
+  Upcoming, Recorded and marks; owners and admins edit.
+- Live updates: topic `recordings` to everyone (dashboards) and the clients
+  (plugin Notify), after every change and scan that changed something.
+- `GET /api/live/recordings/busy`: Jellyfin recording or a padded start
+  within 20 min; the maintainer's deploy gate checks the same.
+
 ## YouTube per person (`services/youtube/follows.py`, `routers/my_youtube.py`, dashboard `static/js/myyoutube.js`)
 
 - `youtube_follows` (channel_fk, jellyfin_user_id without dashes, added_by =
