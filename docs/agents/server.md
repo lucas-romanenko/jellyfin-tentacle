@@ -1010,7 +1010,8 @@ User docs: `docs/features/live-tv.md`.
   a retry: 403, timeout, a bad or partial feed) again after 5, 15, 30 min,
   then hourly until one works, one download each, longer when the provider
   sends Retry-After (6 h at most), hourly while provider health finds its
-  server refusing. A guide that worked is synced again when it ends within
+  server refusing. A guide that worked is synced again when it (the median
+  enabled channel's last programme, not the latest) ends within
   12 h (at most every 6 h). The record (`livetv_guide_top_up_<pid>`) survives
   a restart. It waits for VOD syncs, the nightly job until its guide step,
   and protected recordings. A guide failing 6 h or run out is an admin alert

@@ -196,6 +196,21 @@ class GuideTopUp(unittest.TestCase):
         self.assertEqual(1, self.server.requests)
         self.assertGreater(self.guide_end(), datetime.utcnow() + timedelta(hours=30))
 
+    def test_one_channel_scheduled_weeks_ahead_does_not_hide_the_rest_running_out(self):
+        # A live feed: most channels end the next morning, one runs six weeks ahead.
+        now = datetime.utcnow()
+        for n, (gid, end) in enumerate((("d.ca", now + timedelta(hours=3)), ("e.ca", now + timedelta(hours=4)),
+                                        ("f.ca", now + timedelta(days=42))), start=2):
+            self.db.add(mdb.LiveChannel(provider_id=self.pid, name=f"CA: {gid}", stream_id=str(n),
+                                        epg_channel_id=gid, stream_url=f"http://192.0.2.10/live/{n}.ts", enabled=True))
+            self.db.add(mdb.EPGProgram(channel_id=gid, title="Old", start=end - timedelta(hours=1), stop=end))
+        self.store_guide_ending(now + timedelta(hours=2))
+        self.db.commit()
+        self.assertLess(self.guide_end(), now + timedelta(hours=12))
+        self.server.refuse = False
+        livetv.run_guide_top_up()
+        self.assertEqual(1, self.server.requests)
+
     def test_a_guide_that_reaches_far_enough_is_left_alone(self):
         self.store_guide_ending(datetime.utcnow() + timedelta(hours=30))
         livetv.run_guide_top_up()
