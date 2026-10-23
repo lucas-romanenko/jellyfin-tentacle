@@ -168,7 +168,7 @@ class TheBumpedViewerIsTold(_Base):
         self.assertEqual(1, self.livetv._tell_stopped_for_recording(self.b.id))
         posts = [(p, b) for m, p, b in _FakeJellyfin.calls if m == "POST"]
         self.assertEqual(["/Sessions/web/Playing/Stop", "/Sessions/web/Message"], [p for p, _ in posts])
-        self.assertEqual("Stopped for a recording", posts[1][1]["Text"])
+        self.assertEqual({"Header": "Live TV", "Text": "Stopped for a recording", "TimeoutMs": 10000}, posts[1][1])
 
     def test_a_preempted_upstream_tells_its_viewers(self):
         told = []

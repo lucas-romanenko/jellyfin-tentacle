@@ -1405,7 +1405,8 @@ def _tell_stopped_for_recording(channel_id: int) -> int:
                 continue
             requests.post(f"{url}/Sessions/{sid}/Playing/Stop", headers=headers, timeout=5)
             requests.post(f"{url}/Sessions/{sid}/Message", headers=headers, timeout=5,
-                          json={"Header": "", "Text": STOPPED_FOR_RECORDING, "TimeoutMs": 10000})
+                          # Jellyfin puts "Message from Server" in for an empty header
+                          json={"Header": "Live TV", "Text": STOPPED_FOR_RECORDING, "TimeoutMs": 10000})
             told += 1
     except Exception as e:
         logger.warning(f"[LiveTV] Could not tell the viewers of channel {channel_id} why it stopped: {e}")
