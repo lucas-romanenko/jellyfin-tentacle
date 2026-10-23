@@ -202,6 +202,69 @@ def radarr_upcoming_release(url: str, key: str, tmdb_id: int) -> Optional[str]:
     return None
 
 
+def _future(val, now: datetime) -> Optional[datetime]:
+    if not val:
+        return None
+    try:
+        dt = datetime.fromisoformat(val.replace("Z", "+00:00")).replace(tzinfo=None)
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return dt if dt > now else None
+
+
+def movie_coming_out(movie: dict, now: Optional[datetime] = None) -> Optional[str]:
+    """For a Radarr movie: None when it is out (or has its file), else when it
+    comes out ("YYYY-MM-DD", the earliest future release, as Activity's
+    Upcoming Releases shows it), or "" when Radarr has no date yet."""
+    now = now or datetime.utcnow()
+    if movie.get("hasFile"):
+        return None
+    dates = [d for d in (_future(movie.get(f), now) for f in ("digitalRelease", "physicalRelease", "inCinemas")) if d]
+    if dates:
+        return min(dates).strftime("%Y-%m-%d")
+    # No future date: out, unless Radarr says it isn't available yet (announced, no dates)
+    return None if movie.get("isAvailable", True) else ""
+
+
+def series_coming_out(series: dict, now: Optional[datetime] = None) -> Optional[str]:
+    """For a Sonarr series: None when it has aired (or has files), else when it
+    starts ("YYYY-MM-DD"), or "" when Sonarr has no date yet."""
+    now = now or datetime.utcnow()
+    if (series.get("statistics") or {}).get("episodeFileCount", 0) > 0:
+        return None
+    first = series.get("firstAired")
+    if first and not _future(first, now):
+        return None
+    start = _future(first, now) or _future(series.get("nextAiring"), now)
+    if start:
+        return start.strftime("%Y-%m-%d")
+    return "" if not first or series.get("status") == "upcoming" else None
+
+
+def coming_out(db: Session, kind: str, tmdb_id: int) -> Optional[str]:
+    """Whether a title Radarr/Sonarr has isn't out yet, for the requester's
+    "said yes" message: see movie_coming_out. None also when it can't be read
+    (the message then stays the usual one). A negative id is a TVDB-only series."""
+    try:
+        if kind == "movie":
+            url, key = _connection(db, "radarr")
+            r = requests.get(f"{url}/api/v3/movie", headers={"X-Api-Key": key},
+                             params={"tmdbId": tmdb_id}, timeout=arr_add.READ_TIMEOUT)
+            r.raise_for_status()
+            movies = r.json()
+            movie = next((m for m in movies if m.get("tmdbId") == tmdb_id), None) if isinstance(movies, list) else None
+            return movie_coming_out(movie) if movie else None
+        if kind == "series":
+            from services.sonarr import SonarrService
+            url, key = _connection(db, "sonarr")
+            sonarr = SonarrService(url, key)
+            series = sonarr.get_series_by_tvdb(-tmdb_id) if tmdb_id < 0 else sonarr.get_series_by_tmdb(tmdb_id)
+            return series_coming_out(series) if series else None
+    except Exception as e:
+        logger.debug(f"Could not tell whether {kind} {tmdb_id} is out yet: {e}")
+    return None
+
+
 def request_movies(db: Session, tmdb_ids: Iterable[int], *, user_id: Optional[int], via: str,
                    quality_profile_override: Optional[int] = None,
                    legacy_profile_id: Optional[int] = None,

@@ -12,6 +12,7 @@ replaces the whole policy; /QuickConnect/Authorize?code=&userId= answers 404
 for a code no device is showing and 401 while Quick Connect is off.
 """
 import json
+from datetime import datetime
 import logging
 import re
 import unittest
@@ -465,6 +466,60 @@ class Requests(Case):
                                           "ready to watch."), self._notes(self.ann))
         with self.assertRaises(approvals.NotPending):
             approvals.approve(self.db, row.id, self.admin)
+
+    def _approve_movie(self, coming_out, payload=None, kind="movie"):
+        approvals.hold(self.db, self.ann, kind, payload or {"tmdb_ids": [1003596]}, tmdb_ids=[1003596])
+        row = self.db.query(mdb.MediaRequest).one()
+        outcome = mock.Mock()
+        outcome.as_response.return_value = {"added": 1, "already_exists": 0, "failed": 0}
+        fn = "request_movies" if kind == "movie" else "request_series"
+        with mock.patch(f"services.media_requests.{fn}", return_value=outcome), \
+                mock.patch("services.media_requests.coming_out", return_value=coming_out) as co:
+            self.assertTrue(approvals.approve(self.db, row.id, self.admin)["ok"])
+        return [n[2] for n in self._notes(self.ann) if "said yes" in n[2]], co
+
+    def test_the_yes_for_a_title_not_out_yet_says_when_it_downloads(self):
+        # Sony check 23 Oct 2026: "It's downloading now" for films out in 2026-12 and 2027-12
+        said, co = self._approve_movie("2026-12-18")
+        self.assertEqual(["Lucas said yes. It'll download when it comes out (18 December 2026); "
+                          "you'll get a message when it's ready to watch."], said)
+        co.assert_called_once_with(self.db, "movie", 1003596)
+
+    def test_the_yes_without_a_release_date(self):
+        said, _ = self._approve_movie("")
+        self.assertEqual(["Lucas said yes. It'll download when it comes out; "
+                          "you'll get a message when it's ready to watch."], said)
+
+    def test_the_yes_for_a_released_title_says_downloading_now(self):
+        said, _ = self._approve_movie(None)
+        self.assertEqual(["Lucas said yes. It's downloading now; you'll get a message when it's ready to watch."], said)
+
+    def test_the_yes_for_future_episodes_only(self):
+        said, co = self._approve_movie(None, {"tmdb_ids": [1003596], "monitor": "future"}, kind="series")
+        self.assertEqual(["Lucas said yes. New episodes will download as they come out; "
+                          "you'll get a message when one's ready to watch."], said)
+        co.assert_not_called()
+
+    def test_whether_a_title_is_out_yet(self):
+        from services.media_requests import movie_coming_out, series_coming_out
+        now = datetime(2026, 10, 23)
+        # The earliest future date, as Activity's Upcoming Releases shows it
+        self.assertEqual("2026-12-18", movie_coming_out(
+            {"inCinemas": "2026-12-18T00:00:00Z", "digitalRelease": "2027-03-01T00:00:00Z"}, now))
+        self.assertEqual("2027-03-01", movie_coming_out(
+            {"inCinemas": "2026-09-01T00:00:00Z", "digitalRelease": "2027-03-01T00:00:00Z"}, now))
+        self.assertIsNone(movie_coming_out({"inCinemas": "2021-10-22T00:00:00Z", "isAvailable": True}, now))
+        self.assertEqual("", movie_coming_out({"isAvailable": False, "status": "announced"}, now))
+        self.assertIsNone(movie_coming_out({"hasFile": True, "digitalRelease": "2027-01-01T00:00:00Z"}, now))
+        self.assertEqual("2027-01-10", series_coming_out({"firstAired": "2027-01-10T00:00:00Z"}, now))
+        self.assertEqual("", series_coming_out({"status": "upcoming"}, now))
+        self.assertIsNone(series_coming_out({"firstAired": "2011-04-17T00:00:00Z",
+                                             "nextAiring": "2026-11-01T00:00:00Z"}, now))
+        self.assertIsNone(series_coming_out({"statistics": {"episodeFileCount": 3}, "status": "upcoming"}, now))
+
+    def test_out_yet_when_radarr_cant_be_read(self):
+        from services.media_requests import coming_out
+        self.assertIsNone(coming_out(self.db, "movie", 1003596))   # no Radarr configured
 
     def test_an_approval_the_arr_refuses_stays_for_another_try(self):
         from services.media_requests import RequestRefused
