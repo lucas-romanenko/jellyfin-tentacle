@@ -3875,6 +3875,10 @@ def _sync_epg_once(provider_data: dict, attempts: int = 3):
 
 GUIDE_TOP_UP_BELOW = timedelta(hours=12)
 GUIDE_TOP_UP_EVERY = timedelta(minutes=5)
+# A check comes every GUIDE_TOP_UP_EVERY, its first one at start-up's pace,
+# not the failure's: a retry due a few seconds after a check would otherwise
+# wait for the next one.
+_GUIDE_CHECK_SLACK = timedelta(minutes=1)
 _GUIDE_RETRY_AFTER = (timedelta(minutes=5), timedelta(minutes=15), timedelta(minutes=30), timedelta(hours=1))
 # A Retry-After longer than this is read as this: the guide must not wait a day.
 _GUIDE_RETRY_AFTER_MAX = timedelta(hours=6)
@@ -4061,7 +4065,7 @@ def guide_top_up_due(db: Session, provider, now: datetime | None = None) -> str 
     rec = _epg_record(db, provider.id)
     if rec is not None and rec["failures"]:
         # A failed sync is tried again whatever the stored guide still covers.
-        if now - rec["at"] < _guide_retry_wait(rec, _guide_server_refuses(db, provider)):
+        if now - rec["at"] < _guide_retry_wait(rec, _guide_server_refuses(db, provider)) - _GUIDE_CHECK_SLACK:
             return None
         return f"failed to download {rec['failures']} time(s) in a row ({rec.get('error') or 'error'})"
     if rec is not None and now - rec["at"] < _GUIDE_RESYNC_AFTER:

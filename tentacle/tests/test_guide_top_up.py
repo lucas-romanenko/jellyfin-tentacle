@@ -208,9 +208,10 @@ class GuideTopUp(unittest.TestCase):
         for failures, wait in ((1, 5), (2, 15), (3, 30), (4, 60), (9, 60), (40, 60)):
             at = datetime.utcnow()
             self.set_last_attempt(at, failures)
-            self.assertIsNone(livetv.guide_top_up_due(self.db, provider, at + timedelta(minutes=wait - 1)),
+            self.assertIsNone(livetv.guide_top_up_due(self.db, provider, at + timedelta(minutes=wait - 2)),
                               f"{failures} failure(s): not before {wait} min")
-            self.assertTrue(livetv.guide_top_up_due(self.db, provider, at + timedelta(minutes=wait + 1)),
+            # a check a few seconds early still counts: the next one is 5 min away
+            self.assertTrue(livetv.guide_top_up_due(self.db, provider, at + timedelta(minutes=wait, seconds=-5)),
                             f"{failures} failure(s): due after {wait} min")
 
     def test_a_failed_sync_is_retried_though_the_stored_guide_still_reaches_far(self):
@@ -251,7 +252,7 @@ class GuideTopUp(unittest.TestCase):
         self.assertEqual(1, self.server.requests)
         provider = self.db.get(mdb.Provider, self.pid)
         at = self.last_attempt()[0]
-        self.assertIsNone(livetv.guide_top_up_due(self.db, provider, at + timedelta(minutes=119)))
+        self.assertIsNone(livetv.guide_top_up_due(self.db, provider, at + timedelta(minutes=118)))
         self.assertTrue(livetv.guide_top_up_due(self.db, provider, at + timedelta(minutes=121)))
 
     def test_a_retry_after_of_days_waits_six_hours_at_most(self):
@@ -260,7 +261,7 @@ class GuideTopUp(unittest.TestCase):
         livetv.run_guide_top_up()
         provider = self.db.get(mdb.Provider, self.pid)
         at = self.last_attempt()[0]
-        self.assertIsNone(livetv.guide_top_up_due(self.db, provider, at + timedelta(hours=5, minutes=59)))
+        self.assertIsNone(livetv.guide_top_up_due(self.db, provider, at + timedelta(hours=5, minutes=58)))
         self.assertTrue(livetv.guide_top_up_due(self.db, provider, at + timedelta(hours=6, minutes=1)))
 
     def test_retry_after_as_a_date(self):
