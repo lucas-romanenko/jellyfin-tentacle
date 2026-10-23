@@ -1227,7 +1227,8 @@ async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
   loading.style.display = 'block';
 
   const btn = document.getElementById('add-radarr-confirm-btn');
-  btn.disabled = false;
+  // Enabled once a list is shown: Save unmonitors every episode not ticked (#764).
+  btn.disabled = true;
   btn.textContent = 'Save Changes';
   btn.setAttribute('onclick', 'confirmManageEpisodes()');
 
@@ -1281,6 +1282,7 @@ async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
         </label>`;
       }).join('');
     }
+    btn.disabled = !seasonNums.length;
   } catch (e) {
     if (tok !== _epPickerToken) return;
     container.innerHTML = '<div style="padding:12px;color:var(--text3)">Failed to load episodes</div>';
@@ -1297,7 +1299,7 @@ async function confirmManageEpisodes() {
   try {
     const r = await api('/api/discover/manage-episodes', {
       method: 'POST',
-      body: { tmdb_id: _manageTmdbId, selected_episodes: selected },
+      body: { tmdb_id: _manageTmdbId, selected_episodes: selected, unmonitor_all: !selected.length },
     });
     if (r.success) {
       toast(`Updated — monitoring ${r.monitored} episode${r.monitored !== 1 ? 's' : ''}${r.searching ? `, searching ${r.searching} new` : ''}`);

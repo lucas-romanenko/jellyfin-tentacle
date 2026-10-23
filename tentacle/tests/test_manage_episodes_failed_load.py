@@ -148,11 +148,13 @@ class _Cases:
         posts = self.save("ok")["posts"]
         self.assertEqual(1, len(posts))
         self.assertEqual([{"season": 1, "episode": 1}, {"season": 1, "episode": 2}], posts[0][1]["selected_episodes"])
+        self.assertFalse(posts[0][1]["unmonitor_all"])
 
     def test_unticking_every_episode_on_purpose_still_saves(self):
         posts = self.save("ok", untick=True)["posts"]
         self.assertEqual(1, len(posts))
         self.assertEqual([], posts[0][1]["selected_episodes"])
+        self.assertTrue(posts[0][1]["unmonitor_all"], "the server refuses an empty selection without it")
 
 
 @unittest.skipUnless(shutil.which("node"), "node is not installed")

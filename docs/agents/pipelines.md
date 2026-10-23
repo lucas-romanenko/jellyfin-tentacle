@@ -109,8 +109,11 @@ monitors only the chosen episodes, sets `monitorNewItems="all"` when
 records `sonarr_path`/`sonarr_monitored` at once.
 
 **"Manage episodes"** on a Sonarr series: `GET /api/discover/sonarr-episodes/{tmdb_id}`,
-then `POST /api/discover/manage-episodes`: everything unmonitored, the
-chosen ones monitored again, those without files searched.
+then `POST /api/discover/manage-episodes`: the chosen ones monitored, the
+rest unmonitored, those without files searched. A failed Sonarr read is a
+503 (never an empty list); Save stays disabled until a list is shown, and an
+empty selection is refused (400) unless the body says `unmonitor_all: true`
+(the person unticked every episode on purpose) (#764).
 
 **A custom playlist is created**: `POST /api/tags/rules`, then
 `POST /api/smartlists/sync` (refreshes only `changed_names`, clears their

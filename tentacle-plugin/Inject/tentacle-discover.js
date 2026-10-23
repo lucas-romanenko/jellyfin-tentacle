@@ -1361,6 +1361,10 @@
     section.style.display = 'block';
     var container = document.getElementById('mdEpSeasons');
     container.innerHTML = '<div style="padding:12px;color:#999;font-size:13px">Loading episodes...</div>';
+    // Save sends the ticked episodes and the server unmonitors the rest: only
+    // once a list is shown, never for one that is loading or failed (#764).
+    var saveBtn = document.getElementById('mdManageSaveBtn');
+    if (saveBtn) saveBtn.disabled = true;
 
     var uid = window.ApiClient.getCurrentUserId();
     apiGet('TentacleDiscover/SonarrEpisodes/' + item.tmdb_id + '?userId=' + uid).then(function (data) {
@@ -1405,11 +1409,11 @@
           '</label>';
         }).join('');
       });
+      if (saveBtn) saveBtn.disabled = !seasonNums.length;
     }).catch(function () {
       container.innerHTML = '<div style="padding:12px;color:#999;font-size:13px">Failed to load</div>';
     });
 
-    var saveBtn = document.getElementById('mdManageSaveBtn');
     if (saveBtn) {
       saveBtn.addEventListener('click', function () {
         var selected = _mdGetSelectedEpisodes();
@@ -1420,6 +1424,7 @@
         apiPost('TentacleDiscover/ManageEpisodes?userId=' + uid2, {
           tmdb_id: item.tmdb_id,
           selected_episodes: selected,
+          unmonitor_all: !selected.length,
         }).then(function (r) {
           if (status) { status.style.color = '#4caf50'; status.textContent = '\u2713 Updated \u2014 monitoring ' + (r.monitored || 0) + ' episode(s)' + (r.searching ? ', searching ' + r.searching + ' new' : ''); }
           saveBtn.textContent = 'Saved!';
