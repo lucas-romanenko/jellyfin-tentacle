@@ -345,7 +345,8 @@ def remove_download(db, app: str, queue_id: int, delete_file: bool = True, reaso
 
 
 def attempt_manual_import(db, app: str, download_id: str,
-                          movie_id: int = None, episode_id: int = None) -> dict:
+                          movie_id: int = None, episode_id: int = None,
+                          allow_rejected: bool = False) -> dict:
     """Force-import a completed download the arr's automated pipeline declined —
     but only when its own Manual Import lookup finds exactly one candidate file
     matching the expected movie/episode. Anything ambiguous is left for a human."""
@@ -357,6 +358,12 @@ def attempt_manual_import(db, app: str, download_id: str,
     if len(candidates) != 1:
         return {"ok": False, "reason": f"{len(candidates)} candidate files found — needs manual review"}
     item = candidates[0]
+
+    refused = [r.get("reason") or "?" for r in item.get("rejections") or []
+               if (r.get("type") or "permanent").lower() == "permanent"]
+    if refused and not allow_rejected:
+        return {"ok": False, "refused": refused,
+                "reason": f"{app} refused it ({'; '.join(refused)}) — needs manual review"}
 
     file = {
         "path": item["path"],
@@ -399,7 +406,25 @@ def attempt_manual_import(db, app: str, download_id: str,
     return {"ok": False, "reason": "still running after 10s — check Radarr/Sonarr directly"}
 
 
-# ─── Background job (every 5 minutes) ─────────────────────────────────────────
+TRIED_KEY = "downloads_auto_import_tried"
+
+
+def _tried_imports(db) -> dict:
+    """download id -> when the sweep force-imported it (kept a week)."""
+    try:
+        tried = json.loads(get_setting(db, TRIED_KEY, "") or "{}")
+    except (ValueError, TypeError):
+        tried = {}
+    cutoff = datetime.utcnow().timestamp() - 7 * 86400
+    out = {}
+    for k, v in tried.items():
+        try:
+            if datetime.fromisoformat(v).timestamp() >= cutoff:
+                out[k] = v
+        except (TypeError, ValueError):
+            pass
+    return out
+
 
 def run_download_health_check():
     """Always advances stall tracking so the UI's phase stays accurate; only
@@ -451,6 +476,12 @@ def run_download_health_check():
                             logger.info(f"[Download health] auto-fixed: {result.get('title')}")
                     elif auto_import and cls["status"] == "import_blocked":
                         download_id = r.get("downloadId") or str(r["id"])
+                        tried = _tried_imports(db)
+                        if download_id in tried:
+                            continue   # one try per download; still blocked = a human's call
+                        tried[download_id] = datetime.utcnow().isoformat()
+                        set_setting(db, TRIED_KEY, json.dumps(tried))
+                        db.commit()
                         imported = attempt_manual_import(db, app, download_id,
                                                          movie_id=r.get("movieId"),
                                                          episode_id=r.get("episodeId"))

@@ -73,7 +73,14 @@ def manual_import_download(body: DownloadImportRequest, db: Session = Depends(ge
     from services.download_health import attempt_manual_import
     try:
         result = attempt_manual_import(db, body.source, body.download_id,
-                                       movie_id=body.movie_id, episode_id=body.episode_id)
+                                       movie_id=body.movie_id, episode_id=body.episode_id,
+                                       allow_rejected=True)
+        if not result.get("ok") and "refused" in result:
+             raise HTTPException(400, f"Arr refused it: {', '.join(result['refused'])}")
+        if not result.get("ok"):
+             raise HTTPException(502, f"Manual import failed: {result.get('reason')}")
+    except HTTPException as e:
+        raise e
     except Exception as e:
         raise HTTPException(502, f"Manual import failed: {e}")
     return result
