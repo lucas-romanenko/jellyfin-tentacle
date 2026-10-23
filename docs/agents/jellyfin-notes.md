@@ -100,7 +100,10 @@ The code wins where they differ.
   alone, not whether the streams are known (they are saved by the first
   probe). For a provider film that was ~3.4 s of range requests before
   PlaybackInfo answered; the plugin (`VodProbeOncePatch`) passes
-  `allowMediaProbe=false` for a Tentacle VOD item that has a video stream.
+  `allowMediaProbe=false` for a Tentacle VOD item that has a video stream
+  probed at the address its `.strm` holds now (remembered in memory since
+  Jellyfin started; a `.strm` Tentacle re-pointed is probed again, #775:
+  a scan updates `ShortcutPath` but never re-probes a shortcut).
   Trickplay, chapter images and the keyframe task skip shortcuts; a
   library scan does not probe them. Jellyfin Web in Chrome direct-plays a
   remote mkv itself: the browser fetches the .strm address from its own
