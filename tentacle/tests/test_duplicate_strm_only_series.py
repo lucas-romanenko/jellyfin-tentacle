@@ -195,6 +195,9 @@ class KeepDownloadedRefusesWithoutADownload(_Base):
         mkv = self.show / "Season 01" / "Fargo - S01E02.mkv"
         mkv.write_bytes(b"\0" * 64)
         FakeSonarr.files[7].append({"id": 3, "path": str(mkv)})
+        # ...and of every episode the VOD copy has (#800)
+        FakeSonarr.files[7] += [{"id": 4, "path": f"{self.show}/Season 01/Fargo - S01E01.mkv"},
+                                {"id": 5, "path": f"{self.show}/Season 02/Fargo - S02E01.mkv"}]
         _apply_resolution(self.dup, "keep_radarr", self.db)
         self.assertFalse(any(p.exists() for p in self.eps))
         self.assertTrue(mkv.exists())

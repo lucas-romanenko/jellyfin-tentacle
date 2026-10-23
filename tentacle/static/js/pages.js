@@ -4670,9 +4670,6 @@ function renderDupList() {
           <div style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace;word-break:break-all">${escapeAttr(s.path || '(path not recorded)')}</div>
         </div>`;
     }).join('');
-  if (items.length < total) {
-    el.insertAdjacentHTML('beforeend', `<div style="text-align:center;padding:10px"><button class="btn btn-secondary btn-sm" onclick="showAllDuplicates()">Show all ${total}</button></div>`);
-  }
 
     const title = dup.title || `TMDB #${dup.tmdb_id}`;
     const poster = dup.poster_path ? `https://image.tmdb.org/t/p/w92${dup.poster_path}` : '';
@@ -4697,6 +4694,10 @@ function renderDupList() {
         </div>
       </div>`;
   }).join('');
+  // After the list is written: added inside the map, the list replaced it (#800)
+  if (items.length < total) {
+    el.insertAdjacentHTML('beforeend', `<div style="text-align:center;padding:10px"><button class="btn btn-secondary btn-sm" onclick="showAllDuplicates()">Show all ${total}</button></div>`);
+  }
 }
 
 function resolveDup(id, resolution, mediaType) {
@@ -4746,9 +4747,12 @@ function resolveAllKeepRadarr() {
   const warnEl = document.getElementById('resolve-dup-warning');
   const confirmBtn = document.getElementById('resolve-dup-confirm');
 
+  // Health lists a few; say how many this acts on (#800)
+  const n = (pages.dup.items || []).filter(d => d.resolution === 'pending').length;
   titleEl.textContent = 'Resolve All Duplicates';
-  msgEl.textContent = 'This will resolve all pending duplicates by keeping the downloaded versions.';
-  warnEl.textContent = 'All VOD stream files for duplicated content will be permanently deleted.';
+  msgEl.textContent = `This will resolve all ${n} pending duplicate${n === 1 ? '' : 's'} by keeping the downloaded versions.`;
+  warnEl.textContent = 'All VOD stream files for duplicated content will be permanently deleted. '
+    + 'A show with episodes that exist only as VOD streams is left pending.';
   confirmBtn.textContent = 'Keep All Downloaded';
   confirmBtn.onclick = () => { closeModal('modal-resolve-dup'); _executeResolveAll(); };
   showModal('modal-resolve-dup');

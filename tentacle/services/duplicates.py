@@ -13,6 +13,7 @@ silently undoing the user's resolution.
 """
 
 import logging
+import re
 import threading
 import time
 import unicodedata
@@ -97,6 +98,40 @@ def series_has_real_download(sonarr, series_id) -> Optional[bool]:
         logger.warning(f"Could not read Sonarr's episode files for series {series_id}: {e}")
         return None
     return any(is_downloaded_file(f.get("path")) for f in files or [])
+
+
+# S01E02, S01E02E03, S01E02-E03: every episode a file name covers.
+_EPISODES_RE = re.compile(r"(?i)S(\d{1,3})((?:[ ._-]?E\d{1,4})+)")
+
+
+def _episode_keys(name: str) -> set:
+    keys = set()
+    for m in _EPISODES_RE.finditer(name or ""):
+        season = int(m.group(1))
+        keys |= {f"S{season:02d}E{int(e):02d}" for e in re.findall(r"(?i)E(\d{1,4})", m.group(2))}
+    return keys
+
+
+def vod_only_episodes(sonarr, series_id, dup) -> Optional[list]:
+    """The episodes (SxxEyy, sorted) the show's VOD folder has a .strm of and
+    Sonarr holds no downloaded file of: Keep Downloaded would delete them for
+    good (#800). None when Sonarr's files can't be read."""
+    try:
+        files = sonarr.get_episode_files(series_id)
+    except Exception as e:
+        logger.warning(f"Could not read Sonarr's episode files for series {series_id}: {e}")
+        return None
+    downloaded = set()
+    for f in files or []:
+        if is_downloaded_file(f.get("path")):
+            downloaded |= _episode_keys(Path(f["path"].replace("\\", "/")).name)
+    vod = set()
+    for s in dup.sources or []:
+        path = s.get("path")
+        if (s.get("source") or "").startswith("provider_") and path and Path(path).is_dir():
+            for strm in Path(path).rglob("*.strm"):
+                vod |= _episode_keys(strm.name)
+    return sorted(vod - downloaded)
 
 
 def _folder_name(path: Optional[str]) -> str:
