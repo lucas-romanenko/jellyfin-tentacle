@@ -23,7 +23,7 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 import routers.livetv as livetv_router
 import services.xmltv as xmltv
-from services.channel_names import channel_country, channel_name_key
+from services.channel_names import channel_country, channel_name_key, loose_name_key
 from services.epg_match import resolve_guide_ids
 from tmp_dirs import temp_dir
 
@@ -68,8 +68,13 @@ CHANNELS = [
 
 class Names(unittest.TestCase):
     def test_tier_tags_are_not_part_of_the_name(self):
-        self.assertEqual(channel_name_key("UK: TNT SPORTS 1 SD"), channel_name_key("VIP: TNT SPORT 1 ᴴᴰ"))
-        self.assertEqual(channel_name_key("UK: SKY SPORTS + SD"), channel_name_key("NOW: SKY SPORTS+ ᴴᴰ"))
+        self.assertEqual(loose_name_key("UK: TNT SPORTS 1 SD"), loose_name_key("VIP: TNT SPORT 1 ᴴᴰ"))
+        self.assertEqual(loose_name_key("UK: SKY SPORTS + SD"), loose_name_key("NOW: SKY SPORTS+ ᴴᴰ"))
+
+    def test_the_name_key_itself_is_unchanged(self):
+        # Matching by name keeps telling these apart (see NamePassUnchanged).
+        self.assertNotEqual(channel_name_key("SKY SPORTS NEWS"), channel_name_key("SKY SPORT NEWS"))
+        self.assertEqual("viptntsport1", channel_name_key("VIP: TNT SPORT 1"))
 
     def test_tier_tags_name_no_country(self):
         self.assertIsNone(channel_country("VIP: TNT SPORT 1 ᴴᴰ"))
@@ -98,17 +103,71 @@ class Resolve(unittest.TestCase):
         self.assertIsNone(out[5].get("fallback"), "the .uk channel must not take France's schedule")
 
     def test_an_override_has_no_fallback(self):
-        out = resolve_guide_ids([{"id": 1, "name": "UK: TNT SPORTS 1 SD", "tvg_id": None, "override": "x.uk"}],
-                                [{"id": fid, "names": names} for fid, names, _ in FEED])
+        feed = [{"id": fid, "names": names} for fid, names, _ in FEED]
+        out = resolve_guide_ids([{"id": 1, "name": "UK: TNT SPORTS 1 SD", "tvg_id": None, "override": "x.uk"},
+                                 # Its one namesake would be skysportsplus.uk (as for channel 3).
+                                 {"id": 2, "name": "UK: SKY SPORTS + SD", "tvg_id": None,
+                                  "override": "SkySportsArena.uk"}], feed)
         self.assertIsNone(out[1].get("fallback"))
+        self.assertEqual(("override", None), (out[2]["method"], out[2].get("fallback")))
+
+    def one(self, feed, name, tvg_id):
+        return resolve_guide_ids([{"id": 1, "name": name, "tvg_id": tvg_id, "override": None}],
+                                 [{"id": fid, "names": names} for fid, names in feed])[1]
+
+    def test_an_id_whose_names_are_two_channels_is_never_the_fallback(self):
+        feed = [("Gold.uk", ["UK: GOLD"]), ("gold.uk", ["UK: GOLD ᴴᴰ", "UK: ALIBI ᴴᴰ"])]
+        self.assertIsNone(self.one(feed, "UK: GOLD", "Gold.uk").get("fallback"))
+
+    def test_the_plain_id_is_the_fallback_next_to_one_that_also_lists_the_timeshift(self):
+        feed = [("Alibi.uk", ["UK: ALIBI"]), ("alibi.uk", ["UK: ALIBI ᴴᴰ"]),
+                ("alibiplus.uk", ["UK: ALIBI", "UK: ALIBI +1"])]
+        self.assertEqual("alibi.uk", self.one(feed, "UK: ALIBI", "Alibi.uk").get("fallback"))
+
+
+class NamePassUnchanged(unittest.TestCase):
+    """A channel that has a guide keeps it, and never takes another country's.
+    The loose name is for the fallback only: folded into the name pass,
+    "sport"/"sports" made these untagged names (which match in any country)
+    meet a namesake of another country, in a feed that has both."""
+
+    # (feed, channel name, the match it has today)
+    SKY_SPORTS_NEWS = ([("SkySportsNews.uk", ["Sky Sports News"]), ("SkySportNews.de", ["Sky Sport News"])],
+                       "SKY SPORTS NEWS HD", "SkySportsNews.uk")
+    FOX_SPORTS_1 = ([("FoxSports1.us", ["Fox Sports 1"]), ("FoxSport1.au", ["Fox Sport 1"])],
+                    "FOX SPORTS 1", "FoxSports1.us")
+    # Its own id also lists the timeshift, so the other spelling would be the
+    # one "plain" candidate: a different country's channel.
+    SKY_SPORT_NEWS = ([("SkySportNews.de", ["Sky Sport News HD", "Sky Sport News +1"]),
+                       ("SkySportsNews.uk", ["Sky Sports News"])],
+                      "SKY SPORT NEWS", "SkySportNews.de")
+
+    def match(self, feed, name):
+        return resolve_guide_ids([{"id": 1, "name": name, "tvg_id": "", "override": None}],
+                                 [{"id": fid, "names": names} for fid, names in feed])[1]
+
+    def check(self, case):
+        feed, name, today = case
+        r = self.match(feed, name)
+        self.assertEqual(("name", today), (r["method"], r["guide_id"]), name)
+        self.assertIsNone(r.get("fallback"), f"{name}: a fallback of another country")
+
+    def test_sky_sports_news_keeps_its_one_match(self):
+        self.check(self.SKY_SPORTS_NEWS)
+
+    def test_fox_sports_1_keeps_its_one_match(self):
+        self.check(self.FOX_SPORTS_1)
+
+    def test_sky_sport_news_does_not_move_to_another_countrys_id(self):
+        self.check(self.SKY_SPORT_NEWS)
 
 
 def _stamp(dt):
     return dt.strftime("%Y%m%d%H%M%S +0000")
 
 
-class Sync(unittest.TestCase):
-    """The real sync, the feed in the disk cache."""
+class _RealSync:
+    """The real sync, the feed (FEED, CHANNELS of the class) in the disk cache."""
 
     def setUp(self):
         self.tmp = temp_dir(self)
@@ -124,7 +183,7 @@ class Sync(unittest.TestCase):
         self.db.add(p)
         self.db.commit()
         self.pid = p.id
-        for sid, name, tvg in CHANNELS:
+        for sid, name, tvg in self.CHANNELS:
             self.db.add(mdb.LiveChannel(provider_id=p.id, name=name, stream_id=sid, epg_channel_id=tvg,
                                         stream_url=f"http://192.0.2.10/live/{sid}.ts", enabled=True))
         self.db.commit()
@@ -134,15 +193,15 @@ class Sync(unittest.TestCase):
         self.url = "http://192.0.2.10/xmltv.php"
         start = datetime.utcnow() + timedelta(hours=1)
         channels = "".join(f'<channel id="{fid}">' + "".join(f"<display-name>{n}</display-name>" for n in names)
-                           + "</channel>" for fid, names, _ in FEED)
+                           + "</channel>" for fid, names, _ in self.FEED)
         progs = "".join(f'<programme start="{_stamp(start)}" stop="{_stamp(start + timedelta(hours=1))}" '
                         f'channel="{fid}"><title>{fid} show</title></programme>'
-                        for fid, _, has in FEED if has)
+                        for fid, _, has in self.FEED if has)
         with open(xmltv._get_cache_path(self.url), "w", encoding="utf-8") as f:
             f.write(f"<tv>{channels}{progs}</tv>")
 
     def sync(self):
-        data = {"id": self.pid, "channels": [], "enabled_count": len(CHANNELS), "epg_url": self.url,
+        data = {"id": self.pid, "channels": [], "enabled_count": len(self.CHANNELS), "epg_url": self.url,
                 "provider_type": "xtream", "user_agent": "t"}
         with mock.patch.object(livetv_router, "SessionLocal", self.Session):
             self.assertTrue(livetv_router._run_epg_sync_background(data))
@@ -152,6 +211,10 @@ class Sync(unittest.TestCase):
     def titles(self, channel):
         return [p.title for p in self.db.query(mdb.EPGProgram).filter(
             mdb.EPGProgram.channel_id == channel.guide_epg_id)]
+
+
+class Sync(_RealSync, unittest.TestCase):
+    FEED, CHANNELS = FEED, CHANNELS
 
     def test_channels_whose_tvg_id_is_empty_get_the_other_ids_programmes(self):
         by_sid = self.sync()
@@ -181,6 +244,18 @@ class Sync(unittest.TestCase):
         by_sid = self.sync()
         self.assertEqual("tntsports1.uk", by_sid["1"].guide_epg_id)
         self.assertEqual(["tntsports1.uk show"], self.titles(by_sid["1"]))
+
+
+class GuideKept(_RealSync, unittest.TestCase):
+    """A channel matched by name to an id that has programmes keeps that id,
+    though its namesake under the feed's other id has programmes too."""
+    FEED = [("skysportsplus.uk", ["UK: SKY SPORTS+"], True), ("SkySportPlus.uk", ["NOW: SKY SPORT+"], True)]
+    CHANNELS = [("1", "UK: SKY SPORTS+ HD", "")]
+
+    def test_a_name_match_with_programmes_is_not_replaced_by_its_fallback(self):
+        ch = self.sync()["1"]
+        self.assertEqual(("skysportsplus.uk", "name"), (ch.guide_epg_id, ch.epg_match))
+        self.assertEqual(["skysportsplus.uk show"], self.titles(ch))
 
 
 if __name__ == "__main__":

@@ -11,21 +11,15 @@ from typing import Optional
 
 # A leading country / language tag: "CA:", "CA EN:", "US|", "|US|", "[UK]".
 # Two-letter codes (plus a few longer ones panels use), so a brand such as
-# "CNN: International" keeps its name. "VIP:" and "NOW:" are a panel's
-# tiers, not part of the name: one live feed tags 431 display names "VIP:"
-# and 87 "NOW:" ("NOW: TNT SPORT 1" next to "UK: TNT SPORTS 1" on one id).
-# They name no country (channel_country below reads two-letter codes only).
+# "CNN: International" keeps its name.
 _PREFIX_RE = re.compile(
-    r"^\s*[|\[(]?\s*(?:[A-Za-z]{2}(?:[ /-][A-Za-z]{2})?|USA|EXYU|LATAM|ARAB|VIP|NOW)\s*[|\]):]\s*")
+    r"^\s*[|\[(]?\s*(?:[A-Za-z]{2}(?:[ /-][A-Za-z]{2})?|USA|EXYU|LATAM|ARAB)\s*[|\]):]\s*")
 
 # Quality and format markers that say nothing about which channel it is.
 _MARKERS = {
     "hd", "fhd", "uhd", "sd", "hq", "lq", "4k", "8k", "hdr", "hevc", "h264", "h265",
     "raw", "1080p", "1080i", "720p", "576i", "50fps", "60fps",
 }
-
-# One word, two spellings, in the same feed: "TNT SPORT 1" / "TNT SPORTS 1".
-_WORD_FORMS = {"sports": "sport"}
 
 
 def channel_name_words(name: str) -> list:
@@ -38,7 +32,7 @@ def channel_name_words(name: str) -> list:
         text = stripped
     text = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
     text = text.lower().replace("&", " and ").replace("+", " plus ")
-    return [_WORD_FORMS.get(w, w) for w in re.split(r"[^0-9a-z]+", text) if w and w not in _MARKERS]
+    return [w for w in re.split(r"[^0-9a-z]+", text) if w and w not in _MARKERS]
 
 
 def channel_name_key(name: str) -> str:
@@ -54,10 +48,35 @@ def channel_name_key(name: str) -> str:
     # Accents off: "Šiauliai" and "Siauliai" are the same channel name.
     text = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
     text = text.lower().replace("&", " and ").replace("+", " plus ")
-    words = [_WORD_FORMS.get(w, w) for w in re.split(r"[^0-9a-z]+", text) if w and w not in _MARKERS]
+    words = [w for w in re.split(r"[^0-9a-z]+", text) if w and w not in _MARKERS]
     # Spaces are dropped too, so "TSN 5" and "TSN5" meet.
     return "".join(words)
 
+
+# For finding the same channel under another id of one feed only (epg_match's
+# fallback), never for matching by name: a panel's tier tags ("VIP:", "NOW:")
+# are not part of a name, and one feed spells one channel "TNT SPORT 1" and
+# "TNT SPORTS 1". Folded in the name pass they would join channels of different
+# countries for a name with no tag ("Sky Sports News" .uk, "Sky Sport News" .de)
+# and take away a guide that works today.
+_TIER_RE = re.compile(r"^\s*[|\[(]?\s*(?:VIP|NOW)\s*[|\]):]\s*", re.IGNORECASE)
+_WORD_FORMS = {"sports": "sport"}
+
+
+def loose_name_words(name: str) -> list:
+    """channel_name_words() without a tier tag, "sports" read as "sport"."""
+    if not name:
+        return []
+    text = unicodedata.normalize("NFKC", name)
+    stripped = _TIER_RE.sub("", text, count=1)
+    if stripped.strip():
+        text = stripped
+    return [_WORD_FORMS.get(w, w) for w in channel_name_words(text)]
+
+
+def loose_name_key(name: str) -> str:
+    """"VIP: TNT SPORT 1" and "UK: TNT SPORTS 1 SD" -> "tntsport1"."""
+    return "".join(loose_name_words(name))
 
 # The country a provider's leading tag names: "CA:", "CA EN:", "|UK|", "[US]".
 _COUNTRY_RE = re.compile(r"^\s*[|\[(]?\s*([A-Za-z]{2}|USA)(?:[ /-]([A-Za-z]{2}))?\s*[|\]):]")
@@ -95,15 +114,6 @@ def channel_country(name: str) -> Optional[str]:
     return None
 
 
-def feed_id_country(feed_id: str) -> Optional[str]:
-    """The country an XMLTV id's two-letter suffix names: "TNTSport1.uk" -> "gb"."""
-    m = _ID_COUNTRY_RE.search(feed_id or "")
-    if not m:
-        return None
-    code = m.group(1).lower()
-    return _SAME_COUNTRY.get(code, code)
-
-
 def feed_countries(feed_id: str, names) -> set:
     """The countries an XMLTV channel belongs to: its id's two-letter suffix
     ("SkyOne.de") and any tag its display names carry. Empty when it says none.
@@ -119,3 +129,12 @@ def feed_countries(feed_id: str, names) -> set:
         if country:
             out.add(country)
     return out
+
+
+def feed_id_country(feed_id: str) -> Optional[str]:
+    """The country an XMLTV id's two-letter suffix names: "TNTSport1.uk" -> "gb"."""
+    m = _ID_COUNTRY_RE.search(feed_id or "")
+    if not m:
+        return None
+    code = m.group(1).lower()
+    return _SAME_COUNTRY.get(code, code)
