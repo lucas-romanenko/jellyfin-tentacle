@@ -912,7 +912,10 @@
     try { msg = JSON.parse(e.data); } catch (x) { return; }
     if (msg && (/^(Series)?Timer(Created|Cancelled)$/.test(msg.MessageType || '') || (msg.MessageType === 'RefreshProgress'
         && msg.Data && msg.Data.ItemId === 'tentacle' && String(msg.Data.Tentacle || '').split(',').indexOf('recordings') >= 0))) {
-      if (G.active) setTimeout(loadMarks, 500);   // a recording set or cancelled, here or in Tentacle
+      // a recording set or cancelled, here or in Tentacle: this tab, and the
+      // browser's other tabs (Jellyfin tells only the newest one)
+      if (relay) { try { relay.postMessage({ MessageType: 'TentacleRecordings' }); } catch (x) { } }
+      onMessage({ MessageType: 'TentacleRecordings' });
       return;
     }
     if (!msg || (msg.MessageType !== 'UserDataChanged' && msg.MessageType !== 'LibraryChanged')) return;
@@ -923,6 +926,7 @@
 
   function onMessage(msg) {
     if (!G.active || !msg) return;
+    if (msg.MessageType === 'TentacleRecordings') { setTimeout(loadMarks, 500); return; }
     if (msg.MessageType === 'UserDataChanged') onUserData(msg.Data);
     else if (msg.MessageType === 'LibraryChanged') scheduleReload(1500);
   }

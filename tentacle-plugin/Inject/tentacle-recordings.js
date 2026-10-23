@@ -228,15 +228,30 @@
     if (!ws || ws === R.socket || typeof ws.addEventListener !== 'function') return;
     R.socket = ws;
     ws.addEventListener('message', function (e) {
-      if (!R.active || e.target !== R.socket) return;
+      if (e.target !== R.socket) return;
       var msg;
       try { msg = JSON.parse(e.data); } catch (x) { return; }
       var t = msg && msg.MessageType;
       var tentacle = t === 'RefreshProgress' && msg.Data && msg.Data.ItemId === 'tentacle' &&
         String(msg.Data.Tentacle || '').split(',').indexOf('recordings') >= 0;
-      if (tentacle || /^(Series)?Timer(Created|Cancelled)$/.test(t || '')) setTimeout(load, 500);
+      if (tentacle || /^(Series)?Timer(Created|Cancelled)$/.test(t || '')) {
+        if (R.active) setTimeout(load, 500);
+        // Jellyfin tells only the browser's newest tab: the guide in another tab hears it here
+        if (relay) { try { relay.postMessage({ MessageType: 'TentacleRecordings' }); } catch (x) { } }
+      }
     });
   }
+
+  // The guide's channel between tabs (tentacle-livetv.js): its recordings news reaches this page too.
+  var relay = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('tentacle-livetv') : null;
+  if (relay) {
+    relay.onmessage = function (e) { if (R.active && e.data && e.data.MessageType === 'TentacleRecordings') setTimeout(load, 500); };
+    if (relay.unref) relay.unref();
+  }
+
+  // Listen in every tab, whatever page it shows: Jellyfin sends to the newest tab only, and
+  // this passes recordings news on to a guide or Schedule open in another tab.
+  setInterval(watchSocket, 5000);
 
   ['hashchange', 'popstate'].forEach(function (ev) { window.addEventListener(ev, function () { setTimeout(onRoute, 30); }); });
   document.addEventListener('viewshow', function () { setTimeout(onRoute, 30); });
