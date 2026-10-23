@@ -30,7 +30,6 @@ from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
-from fastapi import HTTPException
 from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker
 
@@ -60,11 +59,6 @@ class StatementFails:
 
     def remove(self):
         event.remove(self.engine, "before_cursor_execute", self.hook)
-
-
-class _FakeClient:
-    def movie_stream_url(self, stream_id, ext="mp4"):
-        return f"http://p/movie/u/p/{stream_id}.{ext}"
 
 
 class _Common(_Base):
@@ -126,25 +120,6 @@ class KeepDownloaded(_Common):
                 f"the provider's ({row.source}, {row.strm_path}): the next sync writes the .strm back")
         else:
             self.assertEqual("pending", dup.resolution)
-
-    def test_what_follows_today(self):
-        """Documents the consequence on the pinned sha (passes there): the
-        next sync's repair brings the VOD copy back and the duplicate can't
-        be resolved again. With the fix the first assertion flips."""
-        StatementFails(self.engine)
-        duplicates._resolve(self.dup, "keep_radarr", self.db)
-        s = self.fresh()
-        row = s.query(Movie).one()
-        if row.source == "radarr":
-            self.skipTest("fixed: the conversion was kept")
-        from services.sync import _repair_movie_strm
-        provider = s.get(Provider, 1)
-        self.assertTrue(_repair_movie_strm(_FakeClient(), {"stream_id": 1, "container_extension": "mp4"},
-                                           101, provider, s))
-        self.assertTrue(self.strm.exists(), "the deleted VOD copy is back after the next sync")
-        with self.assertRaises(HTTPException) as cm:
-            duplicates.resolve_duplicate(self.dup.id, duplicates.ResolveRequest(resolution="keep_radarr"), s)
-        self.assertEqual(409, cm.exception.status_code, "and it can't be resolved again")
 
 
 class KeepVod(_Common):

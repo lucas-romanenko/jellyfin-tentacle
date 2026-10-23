@@ -1139,8 +1139,12 @@ def log_activity(db, event: str, message: str, detail: dict = None):
 def log_deletion(db, kind: str, name: str, media_type: str = None,
                  size_bytes: int = None, reason: str = "manual",
                  detail: str = None, user_name: str = None):
-    """Write a deletion-audit entry. Never raises — an audit write must not
-    break the delete it's recording."""
+    """Write a deletion-audit entry. The caller's own pending changes are
+    committed first, outside the guard: if that commit fails, it raises, so
+    the caller's action fails loudly instead of being rolled back here and
+    reported as done (#774). The audit row itself is best-effort: its failure
+    only rolls back that row and logs a warning."""
+    db.commit()
     try:
         db.add(DeletionLog(
             kind=kind, name=name, media_type=media_type, size_bytes=size_bytes,
