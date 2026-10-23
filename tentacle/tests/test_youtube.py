@@ -610,6 +610,8 @@ class TestPlaylistIsUploadsOnly(unittest.TestCase):
         self.db.commit()
         self.db.refresh(self.channel)
         self.user = self.db.query(TentacleUser).first()
+        from services.youtube import follows
+        follows.follow(self.db, self.channel, "u1")
         # A realistic mix, including a NULL status
         for vid, st in (("aaaaaaaaaaa", None), ("bbbbbbbbbbb", "not_live"),
                         ("ccccccccccc", "is_live"), ("ddddddddddd", "is_upcoming"),
@@ -648,15 +650,22 @@ class TestPlaylistIsUploadsOnly(unittest.TestCase):
         self.assertFalse(r["success"])
         self.assertIn("remove the channel", r["message"])
 
-    def test_every_user_gets_the_playlist_not_just_whoever_added_it(self):
+    def test_its_followers_get_the_playlist_and_nobody_else(self):
+        # A channel is its followers' (services/youtube/follows.py): someone
+        # who doesn't follow it has no playlist of it, and gets one by following.
         from models.database import TentacleUser
+        from routers.smartlists import _compute_auto_playlists
         from services.smartlists import get_desired_smartlists
+        from services.youtube import follows
         other = TentacleUser(jellyfin_user_id="u2", display_name="guest")
         self.db.add(other)
         self.db.commit()
-        for u in (self.user, other):
-            names = [x["name"] for x in get_desired_smartlists(self.db, user_id=u.id)]
-            self.assertIn("TraderTV Live", names, u.display_name)
+        names = [x["name"] for x in get_desired_smartlists(self.db, user_id=self.user.id)]
+        self.assertIn("TraderTV Live", names)
+        self.assertNotIn("TraderTV Live", [x["name"] for x in get_desired_smartlists(self.db, user_id=other.id)])
+        self.assertFalse([r for r in _compute_auto_playlists(self.db, user_id=other.id) if r["category"] == "youtube"])
+        follows.follow(self.db, self.channel, "u2")
+        self.assertIn("TraderTV Live", [x["name"] for x in get_desired_smartlists(self.db, user_id=other.id)])
 
     def test_a_disabled_channel_has_no_playlist(self):
         from services.smartlists import get_desired_smartlists
@@ -1794,6 +1803,8 @@ class _PublishFixture(unittest.TestCase):
         self.db.add(self.channel)
         self.db.commit()
         self.db.refresh(self.channel)
+        from services.youtube import follows
+        follows.follow(self.db, self.channel, self.user.jellyfin_user_id)
         for i in range(3):
             self.db.add(YouTubeVideo(channel_fk=self.channel.id, video_id=str(i) * 11,
                                      title=str(i), live_status="not_live",

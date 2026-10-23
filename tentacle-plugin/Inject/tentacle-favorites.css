@@ -1,4 +1,6 @@
-/* Tentacle Favorites — styled favorites page (matches Live TV / Discover look) */
+/* Tentacle Favorites — the Favorites tab as home-style rows.
+   Rows and cards are home's (.mh-row, .mh-card in tentacle-home.css); this
+   file adds the page around them, channel cards, square cards and the heart. */
 
 #tentacleFavoritesContainer {
     position: fixed;
@@ -6,8 +8,13 @@
     z-index: 900;
     background: #110f1e;
     overflow-y: auto;
-    padding: 80px 40px 40px;
+    overflow-x: hidden;
+    padding: 96px 4vw 40px;
+    box-sizing: border-box;
     display: none;
+    /* Rows fade out under the floating navbar instead of sliding under it */
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, transparent 72px, #000 96px);
+    mask-image: linear-gradient(to bottom, transparent 0, transparent 72px, #000 96px);
 }
 
 body.tentacle-favorites-active #tentacleFavoritesContainer {
@@ -19,26 +26,12 @@ body.tentacle-favorites-active .view {
     display: none !important;
 }
 
-/* ==================== Header ==================== */
+/* ==================== Page ==================== */
 
-.tfav-header {
+.tfav-loading {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 28px;
-}
-
-.tfav-title {
-    font-size: 26px;
-    font-weight: 700;
-    color: rgba(255, 255, 255, 0.95);
-    letter-spacing: -0.3px;
-}
-
-.tfav-count {
-    font-size: 13px;
-    color: rgba(255, 255, 255, 0.45);
-    font-weight: 500;
+    justify-content: center;
+    padding: 60px 0;
 }
 
 .tfav-empty {
@@ -48,129 +41,84 @@ body.tentacle-favorites-active .view {
     font-size: 15px;
 }
 
-/* ==================== Sections ==================== */
+/* ==================== Rows ==================== */
 
-.tfav-section {
-    margin-bottom: 34px;
+/* Arrows only where there is more to see */
+.tfav-row.tfav-at-start .mh-row-arrow-left,
+.tfav-row.tfav-at-end .mh-row-arrow-right {
+    display: none;
 }
 
-.tfav-section-title {
-    font-size: 17px;
-    font-weight: 700;
-    color: rgba(255, 255, 255, 0.92);
-    margin-bottom: 14px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
+/* Square cards: playlists, artists, albums, songs */
+.tfav-card-square {
+    width: 154px;
+}
+.tfav-poster-square {
+    aspect-ratio: 1 / 1;
 }
 
-.tfav-section-count {
-    font-size: 12px;
-    font-weight: 600;
-    color: rgba(139, 128, 255, 0.9);
-    background: rgba(139, 128, 255, 0.12);
-    border: 1px solid rgba(139, 128, 255, 0.25);
-    padding: 1px 9px;
-    border-radius: 10px;
+/* ==================== Live TV channel cards ==================== */
+
+/* The logo whole on a calm panel (home's On Now look), never cropped */
+.tfav-channel .mh-onnow-logo img {
+    position: absolute;
+    inset: 0;
 }
 
-/* ==================== Grids ==================== */
-
-.tfav-grid-poster {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    gap: 16px;
-}
-
-.tfav-grid-wide {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    gap: 16px;
-}
-
-/* ==================== Cards ==================== */
-
-.tfav-card {
-    cursor: pointer;
-    transition: transform 0.15s;
-}
-
-.tfav-card:hover {
-    transform: translateY(-3px);
-}
-
-.tfav-card-img {
-    position: relative;
-    border-radius: 10px;
-    overflow: hidden;
-    background: rgba(26, 22, 50, 0.6);
-    border: 1px solid rgba(139, 128, 255, 0.08);
-    transition: border-color 0.2s, box-shadow 0.2s;
-}
-
-.tfav-card:hover .tfav-card-img {
-    border-color: rgba(139, 128, 255, 0.45);
-    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
-}
-
-.tfav-card-poster .tfav-card-img {
-    aspect-ratio: 2 / 3;
-}
-
-.tfav-card-wide .tfav-card-img {
-    aspect-ratio: 16 / 9;
-}
-
-.tfav-card-img img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    display: block;
-}
-
-.tfav-card-placeholder {
-    width: 100%;
-    height: 100%;
+/* The channel's name stands in for a missing logo */
+.tfav-logo-name {
+    position: absolute;
+    inset: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    color: rgba(255, 255, 255, 0.25);
-    font-size: 34px;
+    padding: 0 14px;
+    text-align: center;
+    font-size: 1.15em;
+    font-weight: 700;
+    color: rgba(255, 255, 255, 0.75);
+    line-height: 1.2;
+    overflow: hidden;
+}
+.mh-onnow-logo img + .tfav-logo-name {
+    display: none;
 }
 
-.tfav-card-name {
-    margin-top: 8px;
-    font-size: 13px;
+/* Lineup number, top-left like the guide's */
+.tfav-chno {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 3;
+    min-width: 18px;
+    padding: 1px 7px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.55);
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 11px;
     font-weight: 600;
-    color: rgba(255, 255, 255, 0.92);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
 }
 
-.tfav-card-sub {
-    margin-top: 2px;
-    font-size: 11.5px;
-    color: rgba(255, 255, 255, 0.45);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+.tfav-now-none {
+    color: rgba(255, 255, 255, 0.35);
 }
 
-/* ==================== Unfavorite heart ==================== */
+/* ==================== Unfavorite heart (on hover, pointer devices) ==================== */
 
 .tfav-unfav {
     position: absolute;
-    top: 8px;
-    right: 8px;
-    width: 30px;
-    height: 30px;
+    top: 6px;
+    right: 6px;
+    z-index: 4;
+    width: 28px;
+    height: 28px;
+    padding: 0;
     border-radius: 50%;
     border: none;
     background: rgba(17, 15, 30, 0.75);
     color: #f472b6;
-    font-size: 14px;
-    line-height: 1;
     cursor: pointer;
     opacity: 0;
     transition: opacity 0.15s, transform 0.15s, background 0.15s;
@@ -178,20 +126,13 @@ body.tentacle-favorites-active .view {
     align-items: center;
     justify-content: center;
 }
-
-.tfav-card:hover .tfav-unfav,
-#tentacleFavoritesContainer .tltv-card:hover .tfav-unfav {
-    opacity: 1;
+.tfav-unfav svg {
+    width: 15px;
+    height: 15px;
 }
 
-/* Channel-card hearts (flex-row cards from the Live TV styles) sit at the
-   card's top-right corner */
-#tentacleFavoritesContainer .tltv-card .tfav-unfav {
-    top: 6px;
-    right: 6px;
-    width: 26px;
-    height: 26px;
-    font-size: 12px;
+#tentacleFavoritesContainer .mh-card:hover .tfav-unfav {
+    opacity: 1;
 }
 
 .tfav-unfav:hover {
@@ -199,22 +140,40 @@ body.tentacle-favorites-active .view {
     transform: scale(1.12);
 }
 
+/* Touch screens: no hover, so no heart (unfavourite from the item's page);
+   no hover zoom or arrows either, rows scroll with a swipe */
+@media (hover: none) {
+    .tfav-unfav {
+        display: none;
+    }
+    #tentacleFavoritesContainer .mh-row-arrow {
+        display: none;
+    }
+}
+
 /* ==================== Responsive ==================== */
 
-@media (max-width: 900px) {
+@media (max-width: 1024px) {
+    .tfav-card-square { width: 140px; }
+}
+
+@media (max-width: 767px) {
     #tentacleFavoritesContainer {
-        padding: 72px 16px 24px;
+        padding: 76px 3vw 24px;
+        -webkit-mask-image: linear-gradient(to bottom, transparent 0, transparent 60px, #000 78px);
+        mask-image: linear-gradient(to bottom, transparent 0, transparent 60px, #000 78px);
     }
-    .tfav-grid-poster {
-        grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
-        gap: 10px;
+    #tentacleFavoritesContainer .mh-row {
+        margin-bottom: 18px;
     }
-    .tfav-grid-wide {
-        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-        gap: 10px;
+    #tentacleFavoritesContainer .mh-row-title {
+        font-size: 1.15em;
     }
-    /* Touch devices: heart always visible */
-    .tfav-unfav {
-        opacity: 1;
-    }
+    #tentacleFavoritesContainer .mh-card { width: 120px; }
+    #tentacleFavoritesContainer .mh-card-wide { width: 200px; }
+    .tfav-card-square { width: 120px; }
+}
+
+@media (min-width: 2560px) {
+    .tfav-card-square { width: 190px; }
 }

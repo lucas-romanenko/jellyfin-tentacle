@@ -30,7 +30,7 @@ class AdminOnlyTabs(unittest.TestCase):
         self.assertIsNotNone(server, "the admins' nav section carries data-admin-only")
         self.assertIn('data-page="health"', server.group(0))
         app = (ROOT / "static" / "js" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("const ADMIN_PAGES = new Set(['sources', 'health', 'settings']);", app)
+        self.assertIn("const ADMIN_PAGES = new Set(['people', 'requests', 'sources', 'health', 'settings']);", app)
 
 
 if __name__ == "__main__":

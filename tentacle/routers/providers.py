@@ -307,11 +307,14 @@ def create_provider(body: ProviderCreate, db: Session = Depends(get_db)):
     )
     if body.user_agent:
         provider.user_agent = body.user_agent
+    from services import livetv_tuners
+    count_before = livetv_tuners.tuner_count(db)
     db.add(provider)
     from services import provider_addresses
     provider_addresses.ensure_current(db, provider)
     db.commit()
     db.refresh(provider)
+    _follow_stream_limit(db, count_before)
     return {"id": provider.id, "success": True}
 
 
@@ -329,13 +332,23 @@ def _stop_live_tv(db: Session, provider_id: int) -> None:
         {LiveChannelGroup.enabled: False}, synchronize_session=False)
 
 
+def _follow_stream_limit(db: Session, before: int) -> None:
+    """Jellyfin's tuner count follows Tentacle's stream limit within seconds
+    of a change (services/livetv_tuners.py)."""
+    from services import livetv_tuners
+    if livetv_tuners.tuner_count(db) != before:
+        livetv_tuners.stream_limit_changed("streams at once changed")
+
+
 @router.put("/{provider_id}")
 def update_provider(provider_id: int, body: ProviderUpdate, db: Session = Depends(get_db)):
     p = db.query(Provider).filter(Provider.id == provider_id).first()
     if not p:
         raise HTTPException(404, "Provider not found")
     from routers.livetv import _xtream_login, rewrite_xtream_channel_urls
+    from services import livetv_tuners
     before = _xtream_login(p)
+    count_before = livetv_tuners.tuner_count(db)
     m3u_before = p.m3u_url
     if body.name is not None:
         p.name = body.name
@@ -384,6 +397,7 @@ def update_provider(provider_id: int, body: ProviderUpdate, db: Session = Depend
     if body.channel_number_offset is not None:
         p.channel_number_offset = max(0, body.channel_number_offset)
     db.commit()
+    _follow_stream_limit(db, count_before)
     if relink:
         provider_relink.start_relink(p.id, before)
     return {"success": True}
@@ -394,6 +408,8 @@ def delete_provider(provider_id: int, db: Session = Depends(get_db)):
     p = db.query(Provider).filter(Provider.id == provider_id).first()
     if not p:
         raise HTTPException(404, "Provider not found")
+    from services import livetv_tuners
+    count_before = livetv_tuners.tuner_count(db)
 
     # A sync writes each new title's files before its rows, and commits the rows
     # once per category: a delete under it misses them, the sync's commit then
@@ -466,6 +482,7 @@ def delete_provider(provider_id: int, db: Session = Depends(get_db)):
         db.commit()
     finally:
         _running_syncs.pop(provider_id, None)
+    _follow_stream_limit(db, count_before)
 
     from models.database import log_deletion
     log_deletion(db, kind="provider-cascade", name=provider_name, reason="manual",
@@ -590,6 +607,7 @@ def fetch_categories(provider_id: int, db: Session = Depends(get_db)):
     }
 
     new_count = 0
+    created = []
     for cat_type, cats, counts in [("movie", vod_cats, vod_counts), ("series", series_cats, series_counts)]:
         # Not a single title of this type in the provider's answer is a blip, not
         # every category emptying at once. A category's count is also the sync's
@@ -620,8 +638,12 @@ def fetch_categories(provider_id: int, db: Session = Depends(get_db)):
                     last_seen=datetime.utcnow(),
                 )
                 db.add(new_cat)
+                created.append(new_cat)
                 new_count += 1
 
+    if created:
+        from services import provider_new
+        provider_new.note_created(db, created, first_setup=not existing)
     db.commit()
     return {"success": True, "new_categories": new_count}
 

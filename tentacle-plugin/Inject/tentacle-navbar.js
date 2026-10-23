@@ -390,6 +390,7 @@
             this.container.className = 'moonfin-navbar';
             this.container.innerHTML = [
                 '<div class="moonfin-navbar-left">',
+                '    <img class="tentacle-nav-brand" src="/Tentacle/Assets/brand-mark-small.svg" alt="" aria-hidden="true">',
                 '    <button class="moonfin-user-btn" title="User Menu">',
                 '        <div class="moonfin-user-avatar">',
                 '            ' + this.getFallbackUserIconSvg(),

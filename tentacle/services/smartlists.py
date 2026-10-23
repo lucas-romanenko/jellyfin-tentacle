@@ -94,10 +94,15 @@ def bump_home_version(user_id: int = None) -> int:
             top = max([_home_version_floor, *_home_versions.values()])
             _home_version_floor = _next_home_version(top)
             _home_versions.clear()
-            return _home_version_floor
-        version = _next_home_version(max(_home_versions.get(user_id, 0), _home_version_floor))
-        _home_versions[user_id] = version
-        return version
+            version = _home_version_floor
+        else:
+            version = _next_home_version(max(_home_versions.get(user_id, 0), _home_version_floor))
+            _home_versions[user_id] = version
+    # Open dashboards showing this home (My Home Screen) read it again.
+    from services import live_updates
+    live_updates.publish("home", user_ids=[user_id] if user_id is not None else (), everyone=user_id is None,
+                         data={"version": version})
+    return version
 
 
 PRESERVED_FIELDS = ["LastRefreshed", "DateCreated", "ItemCount", "Order"]
@@ -551,18 +556,23 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
                     existing_tags.add(user_tag)
 
     # ── YouTube channel playlists ──
-    # Every added channel becomes a playlist of its uploads, for every user.
-    # Adding the channel is the decision; the per-user choice is whether it
-    # goes on a home screen, made on the Home Screen tab like any other row.
+    # Every channel someone follows becomes a playlist of its uploads, for
+    # them (services/youtube/follows.py: nobody else sees its videos).
+    # Following is the decision; the choice is whether it goes on a home
+    # screen, made on the Home Screen tab like any other row.
     # The tag is already in every video's NFO, which Jellyfin reads for .strm
     # files, so no tagger pass is needed. Being *desired* is also what keeps
     # the orphan cleanup and write_home_config from dropping the row.
     if user_id is not None:
         from models.database import YouTubeChannel
         from services.youtube.indexer import MAX_KEEP
+        from services.youtube.follows import followed_ids
+        theirs = followed_ids(db, _get_jellyfin_user_id(db, user_id) or "")
         channels = db.query(YouTubeChannel).filter(
             YouTubeChannel.enabled == True).order_by(YouTubeChannel.title).all()  # noqa: E712
         for channel in channels:
+            if channel.id not in theirs:
+                continue
             if channel.title in existing_tags:
                 continue
             smartlists.append({
@@ -1280,20 +1290,10 @@ def write_home_config(db: Session, user_id: int = None, dropped_ids: frozenset =
         # A user with no playlists and no config at all — a new household
         # member, a fresh install's owner — used to get nothing until the
         # nightly job or a settings change, so their home and toolbar were
-        # blank (#120). Give them the starter config the first plugin read
-        # would: their Jellyfin home sections as built-in rows, plus the
-        # default toolbar.
-        from routers.smartlists import _seed_home_config_from_jellyfin
+        # blank (#120). They start on the default home (services/default_home).
+        from services.default_home import apply_default
         user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
-        seeded = _seed_home_config_from_jellyfin(db, user) if user else {}
-        if not seeded:
-            logger.warning(f"No SmartLists for user {user_id} and no starter home config could be "
-                           f"built (Jellyfin unreachable?) — will retry on the next write")
-            return {}
-        bump_playlist_version()
-        logger.info(f"Wrote a starter home config for user {user_id} "
-                    f"({len(seeded.get('rows', []))} built-in rows) — no playlists yet")
-        return seeded
+        return apply_default(db, user, build=True) if user else {}
 
     # A user who has playlists but no home config yet — every user gets the
     # YouTube channel playlists, so a new household member has at least one —
@@ -1306,10 +1306,11 @@ def write_home_config(db: Session, user_id: int = None, dropped_ids: frozenset =
     # the user's old rows. (Users already given `rows: []` by the old code keep
     # it: that cannot be told apart from rows removed on purpose.)
     if user_id is not None and not _home_config_exists(db, user_id):
-        from routers.smartlists import _seed_home_config_from_jellyfin
+        from services.default_home import apply_default
         new_user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
         if new_user:
-            _seed_home_config_from_jellyfin(db, new_user)
+            # Writes the file, then comes back here for the rest
+            return apply_default(db, new_user, build=True)
 
     with home_config_lock:
         existing_config = get_home_config(db, user_id=user_id)
@@ -1471,6 +1472,8 @@ def write_home_config(db: Session, user_id: int = None, dropped_ids: frozenset =
                 config["merge_continue_watching"] = existing_config["merge_continue_watching"]
             if existing_config.get("card_previews"):
                 config["card_previews"] = existing_config["card_previews"]
+            if existing_config.get("follows_default") is True:
+                config["follows_default"] = True
 
         # Detect whether the generated config actually differs from what's on disk,
         # so we only bump the live-update version (and notify clients) on real
@@ -1494,11 +1497,17 @@ def write_home_config(db: Session, user_id: int = None, dropped_ids: frozenset =
         if config_changed:
             bump_playlist_version()
 
-    # If user has Tentacle home rows, disable Jellyfin's built-in home sections
-    # to prevent overlap between the two home screens. Snapshot the user's own
-    # Jellyfin configuration first so it can be restored if Tentacle home is
-    # ever removed.
-    if rows:
+    take_over_jellyfin_home(db, user_id, config)
+    return config
+
+
+
+def take_over_jellyfin_home(db: Session, user_id: int, config: dict) -> None:
+    """While a user has Tentacle home rows, Jellyfin's own home sections are
+    off for them (rows would show twice); the first time, what they had is
+    kept as `jellyfin_sections_snapshot`. An emptied Tentacle home gives
+    Jellyfin's sections back from it."""
+    if config.get("rows"):
         try:
             from services.jellyfin import JellyfinService
             jellyfin_url = get_setting(db, "jellyfin_url", "")
@@ -1533,8 +1542,6 @@ def write_home_config(db: Session, user_id: int = None, dropped_ids: frozenset =
                     jf.restore_home_sections(snapshot)
             except Exception as e:
                 logger.debug(f"Could not restore Jellyfin home sections: {e}")
-
-    return config
 
 
 def _home_config_exists(db: Session, user_id: int) -> bool:
@@ -2526,7 +2533,8 @@ def _is_managed_name_variant(name: str, managed: set) -> bool:
 
 
 def _cleanup_ownerless_playlists_locked(db: Session, jf) -> int:
-    """Delete EMPTY playlists that have no owner and carry a managed name (#120).
+    """Delete EMPTY playlists that have no owner and carry a managed name (#120),
+    and the private, unshared playlists of people deleted in Jellyfin.
 
     Jellyfin can leave one behind — an interrupted create, where the folder got
     a "1" suffix because the name was taken, and no owner was ever written.
@@ -2535,6 +2543,11 @@ def _cleanup_ownerless_playlists_locked(db: Session, jf) -> int:
     and leaves anything other users can see alone. Jellyfin's API never says
     who owns a playlist, so the plugin reports these. Only an empty one is
     removed — nothing is lost — and only under a name Tentacle manages.
+
+    Deleting a user in Jellyfin removes their private, unshared playlists from
+    the library but leaves the folders, and the next scan brings them back
+    owned by nobody who exists (the plugin says `ownerGone`). Those are what
+    Jellyfin meant to delete, so they go whatever their name or entries.
     """
     try:
         ownerless = jf.get_ownerless_playlists()
@@ -2544,18 +2557,27 @@ def _cleanup_ownerless_playlists_locked(db: Session, jf) -> int:
     if not ownerless:
         return 0
     managed = _managed_playlist_names(db)
-    if not managed:
-        return 0
     deleted = 0
     for pl in ownerless:
         name, pid = pl.get("name") or "", pl.get("id")
-        if not pid or (pl.get("entries") or 0) != 0 or not _is_managed_name_variant(name, managed):
+        if not pid:
+            continue
+        if pl.get("ownerGone"):
+            # A deleted person's playlist the library scan brought back:
+            # Jellyfin's user delete meant to remove it (it removes only
+            # private, unshared ones too) but left the folder behind.
+            if pl.get("openAccess") or (pl.get("shares") or 0):
+                continue
+            what = "playlist of a deleted user"
+        elif (pl.get("entries") or 0) == 0 and _is_managed_name_variant(name, managed):
+            what = "empty ownerless playlist"
+        else:
             continue
         if jf.delete_item(pid):
             deleted += 1
-            logger.info(f"[SmartLists] Deleted empty ownerless playlist '{name}' ({pid})")
+            logger.info(f"[SmartLists] Deleted {what} '{name}' ({pid})")
         else:
-            logger.warning(f"[SmartLists] Failed to delete empty ownerless playlist '{name}' ({pid})")
+            logger.warning(f"[SmartLists] Failed to delete {what} '{name}' ({pid})")
     return deleted
 
 

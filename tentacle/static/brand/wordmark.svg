@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="486 314 563 91" width="563" height="91" role="img" aria-label="Tentacle">
+<title>Tentacle</title>
+<g transform="translate(490,318)" fill="none" stroke="#fff" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round">
+<path transform="translate(0,0)" d="M3.25,3.25 H57.75 M30.5,3.25 V79.75"/>
+<path transform="translate(78,0)" d="M44.75,3.25 H3.25 V79.75 H44.75 M3.25,41.5 H40.75"/>
+<path transform="translate(144,0)" d="M3.25,79.75 V3.25 L58.75,79.75 V3.25"/>
+<path transform="translate(221,0)" d="M3.25,3.25 H58.75 M31,3.25 V79.75"/>
+<path transform="translate(285,0)" d="M4.25,79.75 L34,3.25 L62.75,79.75 M13.6,56 H54.4"/>
+<path transform="translate(362,0)" d="M63.8,12.6 A38,38 0 1 0 63.8,70.4"/>
+<path transform="translate(444,0)" d="M3.25,3.25 V79.75 H44.75"/>
+<path transform="translate(506,0)" d="M45.75,3.25 H3.25 V79.75 H45.75 M3.25,41.5 H41.75"/>
+</g>
+</svg>

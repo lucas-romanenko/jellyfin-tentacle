@@ -8,6 +8,7 @@ service name -- so every avatar was a broken image. `jellyfin_public_url`
 exists for exactly this and routers/discover.py already prefers it for links.
 """
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from sqlalchemy import create_engine
@@ -39,8 +40,8 @@ class AvatarUrl(unittest.TestCase):
     def _users(self):
         from routers import auth
         with mock.patch.object(auth.requests, "get", return_value=_Resp()) as get:
-            users = auth.get_jellyfin_users(db=self.db)
-        return users, get.call_args[0][0]
+            users = auth.get_jellyfin_users(SimpleNamespace(client=SimpleNamespace(host="192.168.1.5"), headers={}), db=self.db)
+        return users["people"], get.call_args_list[0][0][0]
 
     def test_the_public_url_is_what_the_browser_is_given(self):
         from models.database import set_setting

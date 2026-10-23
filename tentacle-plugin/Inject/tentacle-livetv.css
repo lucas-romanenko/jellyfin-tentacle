@@ -1,6 +1,6 @@
 /**
  * Tentacle Live TV Styles
- * Favorites grid replacing native Jellyfin Live TV page
+ * The guide (Favorites / All) replacing Jellyfin's Live TV landing and guide tabs
  */
 
 /* ==================== Hide native content ==================== */
@@ -19,7 +19,8 @@ body.tentacle-livetv-active .skinHeader [data-tentacle-tab-ancestor] {
 
 /* Provider channel numbers run to 6-7 digits (Jellyfin's tuner keys the
    channel on them, so they can't be shortened) and Jellyfin's guide cuts
-   them at 30% of the channel cell ("414..."). Use the room left of the logo. */
+   them at 30% of the channel cell ("414..."). Use the room left of the logo.
+   (Native guide: TV layout only; elsewhere Tentacle's guide replaces it.) */
 .guide-channelHeaderCell .guideChannelNumber {
     max-width: calc(100% - 6.2em);
     padding-left: 0.6em;
@@ -31,226 +32,494 @@ body.tentacle-livetv-active .skinHeader [data-tentacle-tab-ancestor] {
 /* ==================== Container ==================== */
 
 #tentacleLiveTvContainer {
+    --tg-accent: #8b80ff;
+    --tg-accent-soft: rgba(139, 128, 255, 0.16);
+    --tg-line: rgba(255, 255, 255, 0.07);
+    --tg-text: rgba(255, 255, 255, 0.92);
+    --tg-dim: rgba(255, 255, 255, 0.55);
     position: fixed;
     inset: 0;
     z-index: 900;
     background: #110f1e;
-    overflow-y: auto;
-    padding: 80px 40px 40px;
+    color: var(--tg-text);
+    padding: 84px 32px 0;
     display: none;
+    flex-direction: column;
+    box-sizing: border-box;
 }
 
 body.tentacle-livetv-active #tentacleLiveTvContainer {
-    display: block;
+    display: flex;
 }
 
-/* ==================== Header ==================== */
+/* ==================== Header: title, toggle, search, links ==================== */
 
-.tltv-header {
+.tg-top {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    margin-bottom: 28px;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
 }
 
-.tltv-title {
+.tg-title {
     font-size: 26px;
     font-weight: 700;
-    color: rgba(255, 255, 255, 0.95);
     letter-spacing: -0.3px;
+    margin-right: 4px;
 }
 
-.tltv-guide-btn {
+.tg-toggle {
+    display: inline-flex;
+    padding: 3px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--tg-line);
+}
+
+.tg-seg {
+    border: 0;
+    background: transparent;
+    color: var(--tg-dim);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 7px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.tg-seg:hover { color: var(--tg-text); }
+
+.tg-seg.on {
+    background: var(--tg-accent);
+    color: #fff;
+}
+
+.tg-count {
+    font-weight: 500;
+    opacity: 0.7;
+    margin-left: 2px;
+    font-variant-numeric: tabular-nums;
+}
+
+.tg-search {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 10px 20px;
-    border-radius: 10px;
-    border: 1px solid rgba(139, 128, 255, 0.3);
-    background: rgba(139, 128, 255, 0.12);
-    color: rgba(255, 255, 255, 0.9);
+    flex: 0 1 260px;
+    min-width: 0;
+    padding: 0 12px;
+    height: 38px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--tg-line);
+}
+
+.tg-search svg { width: 18px; height: 18px; fill: var(--tg-dim); flex: none; }
+
+.tg-search input {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--tg-text);
+    font: inherit;
+    font-size: 14px;
+}
+
+.tg-search:focus-within { border-color: rgba(139, 128, 255, 0.6); }
+
+.tg-links {
+    display: flex;
+    gap: 8px;
+    margin-left: auto;
+}
+
+.tg-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 38px;
+    padding: 0 14px;
+    border-radius: 8px;
+    color: var(--tg-text) !important;
+    text-decoration: none !important;
     font-size: 14px;
     font-weight: 600;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--tg-line);
+}
+
+.tg-link:hover { background: rgba(255, 255, 255, 0.11); }
+.tg-link svg { width: 18px; height: 18px; fill: currentColor; }
+
+/* ==================== Notice (family plain line) ==================== */
+
+.tltv-notice {
+    margin: 0 0 12px;
+    padding: 10px 14px;
+    border-radius: 6px;
+    border: 1px solid rgba(251, 191, 36, 0.35);
+    background: rgba(251, 191, 36, 0.12);
+    font-size: 14px;
+}
+
+/* ==================== Date strip ==================== */
+
+.tg-days {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    margin-bottom: 12px;
+    flex: none;
+}
+
+.tg-days::-webkit-scrollbar { display: none; }
+
+.tg-day {
+    flex: none;
+    border: 1px solid var(--tg-line);
+    background: transparent;
+    color: var(--tg-dim);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 6px 14px;
+    border-radius: 999px;
     cursor: pointer;
-    transition: background 0.2s, border-color 0.2s;
 }
 
-.tltv-guide-btn:hover {
-    background: rgba(139, 128, 255, 0.22);
-    border-color: rgba(139, 128, 255, 0.5);
+.tg-day:hover { color: var(--tg-text); }
+
+.tg-day.on {
+    color: #fff;
+    background: var(--tg-accent-soft);
+    border-color: rgba(139, 128, 255, 0.55);
 }
 
-.tltv-guide-btn svg {
-    width: 18px;
-    height: 18px;
-    fill: currentColor;
+/* ==================== Guide grid ==================== */
+
+.tg-body {
+    flex: 1;
+    min-height: 0;
+    position: relative;
 }
 
-/* ==================== Grid ==================== */
-
-.tltv-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-    gap: 12px;
+.tg-scroller {
+    position: absolute;
+    inset: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    border-top: 1px solid var(--tg-line);
 }
 
-/* ==================== Channel Card ==================== */
+.tg-canvas {
+    position: relative;
+}
 
-.tltv-card {
+/* Time header: sticks to the top; its corner also sticks left. */
+.tg-head {
+    position: sticky;
+    top: 0;
+    z-index: 4;
+    height: var(--head);
+    display: flex;
+    background: #110f1e;
+    border-bottom: 1px solid var(--tg-line);
+}
+
+.tg-corner {
+    position: sticky;
+    left: 0;
+    z-index: 5;
+    flex: none;
+    width: var(--chan);
+    background: #110f1e;
+}
+
+.tg-ticks {
+    position: relative;
+    flex: none;
+}
+
+.tg-tick {
+    position: absolute;
+    top: 0;
+    height: 100%;
     display: flex;
     align-items: center;
-    gap: 14px;
-    background: rgba(26, 22, 50, 0.5);
-    border: 1px solid rgba(139, 128, 255, 0.08);
-    border-radius: 12px;
-    padding: 12px 16px;
+    padding-left: 8px;
+    border-left: 1px solid var(--tg-line);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--tg-dim);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.tg-nowpill {
+    position: absolute;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--tg-accent);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    z-index: 1;
+}
+
+/* The now line runs down the whole guide, under the sticky channel column. */
+.tg-now {
+    position: absolute;
+    top: var(--head);
+    bottom: 0;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--tg-accent);
+    box-shadow: 0 0 8px rgba(139, 128, 255, 0.6);
+    z-index: 2;
+    pointer-events: none;
+}
+
+.tg-row {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: var(--row);
+    border-bottom: 1px solid var(--tg-line);
+    box-sizing: border-box;
+}
+
+.tg-chan {
+    position: sticky;
+    left: 0;
+    z-index: 3;
+    width: var(--chan);
+    height: 100%;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 8px 0 4px;
+    box-sizing: border-box;
+    background: #15132a;
+    border-right: 1px solid var(--tg-line);
     cursor: pointer;
-    transition: background 0.2s, border-color 0.2s, transform 0.15s;
-    position: relative;
-    overflow: hidden;
 }
 
-.tltv-card:hover {
-    background: rgba(139, 128, 255, 0.12);
-    border-color: rgba(139, 128, 255, 0.3);
-    transform: translateY(-2px);
+.tg-chan:hover { background: #1c1936; }
+
+/* the channel last watched from the guide (it comes back on it) */
+.tg-row.tg-last .tg-chan { background: #241f4a; box-shadow: inset 3px 0 0 var(--tg-accent); }
+.tg-row.tg-last .tg-chan:hover { background: #2a2456; }
+
+.tg-logo {
+    flex: none;
+    width: 64px;
+    height: 44px;
+    object-fit: contain;
+    border-radius: 4px;
 }
 
-/* Channel logo */
-.tltv-logo {
-    width: 56px;
-    height: 56px;
-    border-radius: 10px;
-    background: rgba(255, 255, 255, 0.05);
+.tg-logo-text {
     display: flex;
     align-items: center;
     justify-content: center;
-    flex-shrink: 0;
-    overflow: hidden;
+    background: rgba(255, 255, 255, 0.07);
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--tg-dim);
+    text-transform: uppercase;
 }
 
-.tltv-logo img {
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-}
-
-.tltv-logo-fallback {
-    color: rgba(255, 255, 255, 0.3);
-    font-size: 22px;
-}
-
-.tltv-logo-fallback svg {
-    width: 28px;
-    height: 28px;
-    fill: currentColor;
-}
-
-/* Channel info */
-.tltv-info {
+.tg-chan-text {
     flex: 1;
     min-width: 0;
 }
 
-.tltv-channel-name {
+.tg-chan-name {
     font-size: 14px;
     font-weight: 600;
-    color: rgba(255, 255, 255, 0.95);
-    white-space: nowrap;
+    line-height: 1.25;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
     overflow: hidden;
-    text-overflow: ellipsis;
-    margin-bottom: 3px;
+    overflow-wrap: anywhere;
 }
 
-.tltv-program-name {
-    font-size: 12.5px;
-    color: rgba(255, 255, 255, 0.55);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    margin-bottom: 2px;
+.tg-chan-num {
+    font-size: 12px;
+    color: var(--tg-dim);
+    font-variant-numeric: tabular-nums;
 }
 
-.tltv-program-time {
-    font-size: 11px;
-    color: rgba(255, 255, 255, 0.35);
+.tg-star {
+    flex: none;
+    width: 32px;
+    height: 32px;
+    border: 0;
+    padding: 6px;
+    border-radius: 6px;
+    background: transparent;
+    cursor: pointer;
+    opacity: 0.45;
 }
 
-/* Progress bar */
-.tltv-progress {
+.tg-star svg { width: 100%; height: 100%; fill: #fff; }
+.tg-chan:hover .tg-star, .tg-star:focus-visible { opacity: 0.85; }
+.tg-star.on { opacity: 1; }
+.tg-star.on svg { fill: #fbbf24; }
+
+.tg-progs {
     position: absolute;
+    top: 0;
     bottom: 0;
-    left: 0;
+    left: var(--chan);
     right: 0;
-    height: 3px;
-    background: rgba(255, 255, 255, 0.05);
 }
 
-.tltv-progress-bar {
+.tg-prog {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    margin-left: 1px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.045);
+    overflow: clip;  /* not hidden: hidden would stop the sticky title */
+    cursor: pointer;
+    box-sizing: border-box;
+    transition: background 0.12s;
+}
+
+.tg-prog:hover { background: rgba(255, 255, 255, 0.1); }
+
+/* The title sticks to the left edge while a long programme scrolls past. */
+.tg-sticky {
+    position: sticky;
+    left: var(--chan);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
     height: 100%;
-    background: rgba(139, 128, 255, 0.5);
-    border-radius: 0 2px 2px 0;
-    transition: width 1s linear;
+    width: fit-content;   /* narrower than the cell, so it can slide along it */
+    max-width: 100%;
+    padding: 0 10px;
+    box-sizing: border-box;
 }
 
-/* ==================== Empty State ==================== */
-
-.tltv-empty {
-    text-align: center;
-    padding: 80px 20px;
-    color: rgba(255, 255, 255, 0.45);
-    font-size: 15px;
-    line-height: 1.6;
-}
-
-.tltv-empty-icon {
-    font-size: 48px;
-    margin-bottom: 16px;
-    opacity: 0.3;
-}
-
-.tltv-empty-icon svg {
-    width: 48px;
-    height: 48px;
-    fill: currentColor;
-}
-
-.tltv-empty a {
-    color: rgba(139, 128, 255, 0.8);
-    text-decoration: none;
-}
-
-.tltv-empty a:hover {
-    color: rgba(139, 128, 255, 1);
-    text-decoration: underline;
-}
-
-/* ==================== Loading ==================== */
-
-.tltv-loading {
-    text-align: center;
-    padding: 60px 20px;
-    color: rgba(255, 255, 255, 0.4);
+.tg-prog-name {
     font-size: 14px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
-/* ==================== Responsive ==================== */
+.tg-prog-time {
+    font-size: 12px;
+    color: var(--tg-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-variant-numeric: tabular-nums;
+    margin-top: 2px;
+}
 
-@media (max-width: 768px) {
+.tg-prog.past { opacity: 0.45; }
+
+.tg-prog.live {
+    background: var(--tg-accent-soft);
+    box-shadow: inset 3px 0 0 var(--tg-accent);
+}
+
+.tg-prog.live:hover { background: rgba(139, 128, 255, 0.26); }
+
+.tg-bar {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    height: 2px;
+    background: var(--tg-accent);
+}
+
+.tg-prog.tg-none {
+    cursor: default;
+    background: transparent;
+    color: var(--tg-dim);
+    font-size: 13px;
+}
+
+.tg-prog.tg-none .tg-sticky { font-size: 13px; }
+
+.tg-prog.tg-wait {
+    cursor: default;
+    background: linear-gradient(90deg, rgba(255,255,255,0.03), rgba(255,255,255,0.06), rgba(255,255,255,0.03));
+}
+
+/* ==================== Empty / loading ==================== */
+
+.tg-loading, .tg-empty {
+    padding: 56px 16px;
+    text-align: center;
+    color: var(--tg-dim);
+    font-size: 15px;
+    line-height: 1.5;
+}
+
+.tg-empty .tg-btn { margin-top: 16px; }
+
+.tg-btn {
+    border: 0;
+    border-radius: 8px;
+    background: var(--tg-accent);
+    color: #fff;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 10px 18px;
+    cursor: pointer;
+}
+
+/* ==================== Phone ==================== */
+
+@media (max-width: 699px) {
     #tentacleLiveTvContainer {
-        padding: 70px 16px 24px;
+        padding: 72px 12px 0;
     }
 
-    .tltv-title {
-        font-size: 20px;
-    }
+    .tg-top { gap: 8px; margin-bottom: 10px; }
+    .tg-title { display: none; }
+    .tg-seg { padding: 7px 12px; }
+    /* Search folds to an icon; tapping it opens the field across the row. */
+    .tg-search { flex: none; width: 36px; height: 36px; padding: 0; justify-content: center; cursor: pointer; }
+    .tg-search input { display: none; }
+    .tg-top.searching .tg-toggle, .tg-top.searching .tg-links { display: none; }
+    .tg-top.searching .tg-search { flex: 1 1 auto; width: auto; padding: 0 10px; justify-content: flex-start; }
+    .tg-top.searching .tg-search input { display: block; }
+    .tg-links { margin-left: auto; }
+    .tg-links { gap: 6px; }
+    .tg-link { width: 36px; height: 36px; padding: 0; justify-content: center; }
+    .tg-link span { display: none; }
 
-    .tltv-grid {
-        grid-template-columns: 1fr;
-    }
+    .tg-chan { flex-direction: column; justify-content: center; gap: 2px; padding: 0 4px; }
+    .tg-logo { width: 52px; height: 30px; }
+    .tg-chan-text { flex: none; width: 100%; text-align: center; }
+    .tg-chan-name { display: none; }
+    .tg-chan-num { font-size: 11px; }
+    .tg-star { position: absolute; bottom: 1px; right: 1px; width: 26px; height: 26px; padding: 5px; }
+    .tg-chan-num { padding-right: 18px; padding-left: 18px; box-sizing: border-box; }
 
-    .tltv-guide-btn {
-        padding: 8px 14px;
-        font-size: 13px;
-    }
+    .tg-prog-name { font-size: 13px; }
+    .tg-prog-time { font-size: 11px; }
+    .tg-sticky { padding: 0 8px; }
+    .tg-tick { font-size: 12px; }
 }

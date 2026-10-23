@@ -507,6 +507,11 @@ def _after_scan(db, tmdb_id, title, event_type, first_episode=None, episode_coun
                                     jellyfin_item_id=db_series.jellyfin_item_id,
                                 )
                                 notified_user_ids.add(uid)
+                    if dr:
+                        from models.database import tell_admins_ready
+                        tell_admins_ready(db, dr.user_id, tmdb_id, "series", db_series.title, notif_msg,
+                                          db_series.poster_path, db_series.jellyfin_item_id,
+                                          already=notified_user_ids)
             except Exception as e:
                 logger.warning(f"[Sonarr webhook] Notification creation failed: {e}")
         ready = bool(jf_item)

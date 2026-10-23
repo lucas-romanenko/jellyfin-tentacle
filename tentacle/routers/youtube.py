@@ -19,9 +19,9 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from typing import Optional
 
-from models.database import YouTubeChannel, YouTubeVideo, get_db, get_setting
-from routers.auth import require_admin
-from services.youtube import client, indexer, library, playlist, resolver, traffic
+from models.database import TentacleUser, YouTubeChannel, YouTubeVideo, get_db, get_setting
+from routers.auth import get_user_from_request, require_admin
+from services.youtube import client, follows, indexer, library, playlist, resolver, traffic
 from services.youtube.sync import check_base_url, detect_base_url
 from services.youtube.errors import YouTubeBlocked, YouTubeError
 from services.secret_mask import is_shown_form, mask_url_login, restore_url_login
@@ -438,6 +438,8 @@ class ChannelCreate(BaseModel):
     max_height: int = 1080
     rating: Optional[str] = None
     extra_tags: list = []
+    # Who it is for (Jellyfin user ids): none = the admin adding it.
+    people: list = []
 
 
 @router.get("/ping")
@@ -945,6 +947,8 @@ def list_channels(db: Session = Depends(get_db)):
     out = []
     numbers = yt_livetv.lineup_numbers(db)
     taken = yt_livetv.iptv_guide_numbers(db) | set(numbers.values())
+    people = {u.jellyfin_user_id: u for u in db.query(TentacleUser).all()}
+    by_channel = follows.followers_by_channel(db)
     for ch in db.query(YouTubeChannel).order_by(YouTubeChannel.title).all():
         # Guide entries this channel has in Tentacle's own EPG — what the
         # Live TV page shows next to it, and what Jellyfin's guide is built from.
@@ -980,6 +984,10 @@ def list_channels(db: Session = Depends(get_db)):
                 YouTubeVideo.channel_fk == ch.id,
                 YouTubeVideo.live_status == "is_upcoming",
                 YouTubeVideo.removed_at.is_(None)).count(),
+            # Who sees it (services/youtube/follows.py)
+            "followers": sorted(({"id": uid, "name": people[uid].display_name if uid in people else "Someone",
+                                  "kids": bool(people[uid].kids_level) if uid in people else False}
+                                 for uid in by_channel.get(ch.id, ())), key=lambda f: f["name"].lower()),
         })
     return out
 
@@ -990,14 +998,36 @@ _MAX_TITLE_NUMBER = 1000
 
 
 @router.post("/channels", dependencies=[Depends(require_admin)])
-def add_channel(body: ChannelCreate, request: Request, db: Session = Depends(get_db)):
-    """Add a channel. This is the only step; the rest is automatic.
+def add_channel(body: ChannelCreate, request: Request, db: Session = Depends(get_db),
+                admin: TentacleUser = Depends(get_user_from_request)):
+    """Add a channel for the admin, or for the people chosen (a kid's
+    channels are added this way). This is the only step; the rest is
+    automatic: indexing starts in the background, the videos are written
+    and Jellyfin is asked to scan, its followers' playlists are made, and if
+    Live TV was chosen the guide is refreshed. A channel someone has
+    already added is not fetched twice: the people chosen follow it."""
+    if not isinstance(admin, TentacleUser):   # called directly, not as a route
+        from services.family import admin_of
+        admin = admin_of(db)
+    known = {u.jellyfin_user_id for u in db.query(TentacleUser).all()}
+    people = [follows.norm(p) for p in body.people] or ([admin.jellyfin_user_id] if admin else [])
+    if any(p not in known for p in people):
+        raise HTTPException(400, "Pick people who have signed in to Tentacle")
+    channel, new = create_channel(db, body, request, existing_ok=True)
+    added = [p for p in people
+             if follows.follow(db, channel, p, None if p == admin.jellyfin_user_id else admin.display_name)]
+    if not new and not added:
+        raise HTTPException(409, f"'{channel.title}' is already added")
+    after_follow(db, channel, added, new, live=body.live)
+    return {"id": channel.id, "title": channel.title, "slug": channel.slug,
+            "keep_count": channel.keep_count, "live_enabled": channel.live_enabled,
+            "indexing": bool(new), "existing": not new, "followers": len(follows.follower_ids(db, channel.id))}
 
-    Indexing starts immediately in the background, the videos are written and
-    Jellyfin is asked to scan, the playlist is created for every user, and if
-    Live TV was chosen the guide is refreshed — so by the time the progress
-    toast finishes there is a row to add on the Home Screen tab.
-    """
+
+def create_channel(db: Session, body: ChannelCreate, request: Request, existing_ok: bool = False):
+    """Read the channel from YouTube and add it (not fetched yet: after_follow
+    starts that). Returns (channel, True), or with `existing_ok` the channel
+    someone already added and False."""
     if not client.available():
         raise HTTPException(400, "yt-dlp is not installed in this image")
 
@@ -1042,6 +1072,8 @@ def add_channel(body: ChannelCreate, request: Request, db: Session = Depends(get
             YouTubeChannel.channel_id == info["channel_id"],
             or_(YouTubeChannel.kind.is_(None), YouTubeChannel.kind != "playlist")).first()
     if existing:
+        if existing_ok:
+            return existing, False
         raise HTTPException(409, f"'{existing.title}' is already added")
 
     # The title names the source's folder, playlist and home row, and the
@@ -1111,10 +1143,115 @@ def add_channel(body: ChannelCreate, request: Request, db: Session = Depends(get
     db.refresh(channel)
     logger.info(f"[YouTube] Added channel '{channel.title}' ({channel.slug}), keeping newest {keep}"
                 f"{', Live TV' if body.live else ''}")
+    return channel, True
 
-    indexing = _start_refresh(channel_ids=[channel.id], guide=body.live)
-    return {"id": channel.id, "title": channel.title, "slug": channel.slug,
-            "keep_count": keep, "live_enabled": body.live, "indexing": indexing}
+
+def after_follow(db: Session, channel: YouTubeChannel, people: list, new: bool, live: bool = False) -> None:
+    """What follows someone following a channel: a new channel is fetched
+    (its followers' playlists come with it); an existing one is theirs in
+    Jellyfin at once (blocked tags), with their playlist made in the
+    background; Live TV asked for is switched on for it (only its followers
+    see it anyway). A kid's channel is rated for them (follows.rate_for_kids)."""
+    kids = {u.jellyfin_user_id for u in db.query(TentacleUser).filter(TentacleUser.kids_level.isnot(None)).all()}
+    if any(follows.norm(p) in kids for p in people):
+        follows.rate_for_kids(db, channel)
+    if new:
+        # Before Jellyfin has any of it: everyone else blocks its tags already.
+        follows.apply_everyone_soon("a channel was added")
+        _start_refresh(channel_ids=[channel.id], guide=channel.live_enabled)
+        return
+    if live and not channel.live_enabled:
+        toggle_live(channel.id, LiveToggle(enabled=True), db)
+    for uid in people:
+        follows.apply_person(db, uid)
+    if people:
+        _publish_for(people)
+        _live_followers_changed(db, channel)
+
+
+def _live_followers_changed(db: Session, channel: YouTubeChannel) -> None:
+    """Open guides re-read their channels; a channel a kid follows now (or
+    no longer) is a kids channel, which the Live TV sync tags."""
+    follows.tell_clients(db, live=bool(channel.live_enabled))
+    if channel.live_enabled:
+        from services import livetv_tuners
+        livetv_tuners.schedule_sync("who follows a YouTube channel changed")
+
+
+def _publish_for(user_ids: list) -> None:
+    """Make (or drop) these people's YouTube playlists and home rows in the
+    background, and tell their open apps."""
+    def _run():
+        from models.database import SessionLocal
+        from services.smartlists import refresh_smartlist_playlists, sync_smartlists, write_home_config
+        db = SessionLocal()
+        try:
+            for user in db.query(TentacleUser).filter(TentacleUser.jellyfin_user_id.in_(list(user_ids))).all():
+                try:
+                    sync_smartlists(db, user_id=user.id)
+                    refresh_smartlist_playlists(db, user_id=user.id)
+                    write_home_config(db, user_id=user.id)
+                except Exception as e:
+                    db.rollback()
+                    logger.warning(f"[YouTube] Playlists for {user.display_name} not updated: {e}")
+            follows.tell_clients(db)
+        finally:
+            db.close()
+    threading.Thread(target=_run, daemon=True, name="youtube-follow-publish").start()
+
+
+def leave_channel(db: Session, channel: YouTubeChannel, user_id: str) -> dict:
+    """Someone stops following a channel: it is gone from their Jellyfin
+    (blocked, their row and playlist removed); the last one to leave
+    removes it with its files (remove_channel)."""
+    uid = follows.norm(user_id)
+    if not follows.unfollow(db, channel.id, uid):
+        raise HTTPException(404, "Not one of their channels")
+    if not follows.follower_ids(db, channel.id):
+        return {**remove_channel(db, channel), "removed": True}
+    follows.apply_person(db, uid)
+    title, slug = channel.title, channel.slug
+    user = db.query(TentacleUser).filter(TentacleUser.jellyfin_user_id == uid).first()
+    if user:
+        threading.Thread(target=_cleanup_for_people, args=(title, slug, [user.id]), daemon=True,
+                         name="youtube-unfollow-cleanup").start()
+    _live_followers_changed(db, channel)
+    return {"success": True, "removed": False}
+
+
+class Followers(BaseModel):
+    people: list
+
+
+@router.get("/people", dependencies=[Depends(require_admin)])
+def youtube_people(db: Session = Depends(get_db), admin: TentacleUser = Depends(get_user_from_request)):
+    """Who a channel can be for (admins): everyone who has signed in to Tentacle."""
+    return [{"id": u.jellyfin_user_id, "name": u.display_name, "kids": bool(u.kids_level),
+             "me": u.jellyfin_user_id == admin.jellyfin_user_id}
+            for u in db.query(TentacleUser).order_by(TentacleUser.display_name).all()]
+
+
+@router.put("/channels/{channel_id}/followers", dependencies=[Depends(require_admin)])
+def set_followers(channel_id: int, body: Followers, db: Session = Depends(get_db),
+                  admin: TentacleUser = Depends(get_user_from_request)):
+    """Who follows a channel (admins: Sources → YouTube). Nobody = removed
+    with its files."""
+    channel = db.query(YouTubeChannel).filter(YouTubeChannel.id == channel_id).first()
+    if not channel:
+        raise HTTPException(404, "Channel not found")
+    known = {u.jellyfin_user_id for u in db.query(TentacleUser).all()}
+    want = {follows.norm(p) for p in body.people}
+    if want - known:
+        raise HTTPException(400, "Pick people who have signed in to Tentacle")
+    if not want:
+        return {**remove_channel(db, channel), "removed": True}
+    now = follows.follower_ids(db, channel.id)
+    added = [p for p in want - now
+             if follows.follow(db, channel, p, None if p == admin.jellyfin_user_id else admin.display_name)]
+    for p in now - want:
+        leave_channel(db, channel, p)
+    after_follow(db, channel, added, new=False)
+    return {"success": True, "followers": sorted(follows.follower_ids(db, channel.id))}
 
 
 # Indexing runs in the background and is polled. It cannot be a plain request:
@@ -1456,16 +1593,23 @@ def refresh_status():
 
 @router.delete("/channels/{channel_id}", dependencies=[Depends(require_admin)])
 def delete_channel(channel_id: int, db: Session = Depends(get_db)):
-    """Remove a channel and everything that came from it.
+    """Remove a channel for everyone (admins), and everything that came from it."""
+    channel = db.query(YouTubeChannel).filter(YouTubeChannel.id == channel_id).first()
+    if not channel:
+        raise HTTPException(404, "Channel not found")
+    return remove_channel(db, channel)
+
+
+def remove_channel(db: Session, channel: YouTubeChannel) -> dict:
+    """Remove a channel and everything that came from it (also when its
+    last follower leaves).
 
     The files go, so Jellyfin's scan drops the items; the playlist stops being
     desired, so the next sync removes it and its home rows. Leaving any of that
     behind — the old opt-in "also delete files?" — meant a channel that was
     gone from this page but still all over Jellyfin.
     """
-    channel = db.query(YouTubeChannel).filter(YouTubeChannel.id == channel_id).first()
-    if not channel:
-        raise HTTPException(404, "Channel not found")
+    channel_id = channel.id
     removed = 0
     for video in db.query(YouTubeVideo).filter(YouTubeVideo.channel_fk == channel.id).all():
         removed += library.remove_video(video)
@@ -1478,6 +1622,8 @@ def delete_channel(channel_id: int, db: Session = Depends(get_db)):
         db.query(EPGProgram).filter(
             EPGProgram.channel_id == yt_livetv.epg_channel_id(channel)
         ).delete(synchronize_session=False)
+    from models.database import YouTubeFollow
+    db.query(YouTubeFollow).filter(YouTubeFollow.channel_fk == channel_id).delete(synchronize_session=False)
     db.delete(channel)   # cascades to videos
     db.flush()
     # ...and any row a running refresh committed after the videos above were
@@ -1503,13 +1649,9 @@ def _cleanup_after_remove(title: str, was_live: bool, slug: str = None) -> None:
     by the id Tentacle recorded for it, never by name, so a user's own
     playlist that happens to share the channel's name is never touched.
     """
-    from models.database import SessionLocal, TentacleUser
-    from routers.smartlists import _read_home_json, _write_home_json
+    from models.database import SessionLocal
     from services.jellyfin import JellyfinService
-    from services.smartlists import (
-        _get_smartlists_with_playlist_ids, _notify_jellyfin_plugin,
-        bump_playlist_version, home_config_lock, sync_smartlists, write_home_config,
-    )
+    from services.smartlists import _notify_jellyfin_plugin, bump_playlist_version
     from services.youtube import livetv as yt_livetv
     from services.youtube.sync import youtube_library_id
 
@@ -1519,65 +1661,7 @@ def _cleanup_after_remove(title: str, was_live: bool, slug: str = None) -> None:
         key = get_setting(db, "jellyfin_api_key", "")
         jf = JellyfinService(url, key, get_setting(db, "jellyfin_user_id", "")) if url and key else None
 
-        for user in db.query(TentacleUser).all():
-            # The playlist id Tentacle recorded, captured before the sync below
-            # removes the folder that holds it.
-            # Found by the channel's own tag ("yt:<slug>"), never by name: a
-            # user's own playlist called "Cooking" is not the YouTube channel
-            # "Cooking", and matching by name deleted it, with its home row and
-            # hero (#52). Without a slug (an older caller), only YouTube
-            # playlists are considered.
-            smartlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
-            if slug:
-                recorded = next((p["playlist_id"] for p in smartlists
-                                 if f"yt:{slug}" in (p.get("yt_tags") or [])), None)
-            else:
-                recorded = next((p["playlist_id"] for p in smartlists
-                                 if p.get("is_youtube") and p["name"] == title), None)
-
-            # 1. The home row and, if it pointed here, the hero — explicitly.
-            try:
-                with home_config_lock:
-                    config = _read_home_json(user) or {}
-                    rows = config.get("rows") or []
-                    # By playlist id only. No recorded playlist means there is no
-                    # row of this channel to find, and a same-named row is someone
-                    # else's.
-                    kept = [r for r in rows if not (recorded and r.get("playlist_id") == recorded)]
-                    hero = config.get("hero") or {}
-                    hero_hit = bool(recorded) and hero.get("playlist_id") == recorded
-                    if len(kept) != len(rows) or hero_hit:
-                        for i, r in enumerate(kept, start=1):
-                            r["order"] = i
-                        config["rows"] = kept
-                        if hero_hit:
-                            config["hero"] = {"enabled": False, "playlist_id": "", "display_name": ""}
-                        _write_home_json(user, config)
-                        logger.info(f"[YouTube] Removed '{title}' from user {user.id}'s home screen")
-            except Exception as e:
-                logger.warning(f"[YouTube] Could not remove '{title}' row for user {user.id}: {e}")
-
-            # 2. The playlist: no longer desired, so the sync's orphan cleanup
-            #    deletes it and its folder.
-            try:
-                sync_smartlists(db, user_id=user.id)
-            except Exception as e:
-                logger.warning(f"[YouTube] Playlist cleanup for user {user.id} failed: {e}")
-
-            # 3. If Jellyfin still has the playlist Tentacle recorded, delete it.
-            if jf and recorded:
-                try:
-                    if any(p.get("Id") == recorded for p in jf.get_playlists(user.jellyfin_user_id) or []):
-                        # Only a playlist Tentacle made (#152).
-                        if jf.delete_tentacle_playlist(recorded, user.jellyfin_user_id):
-                            logger.info(f"[YouTube] Deleted leftover Jellyfin playlist {recorded} ('{title}')")
-                except Exception as e:
-                    logger.warning(f"[YouTube] Could not check Jellyfin playlists for user {user.id}: {e}")
-
-            try:
-                write_home_config(db, user_id=user.id)
-            except Exception as e:
-                logger.warning(f"[YouTube] Home config rewrite for user {user.id} failed: {e}")
+        _drop_for_people(db, jf, title, slug, db.query(TentacleUser).all())
 
         try:
             bump_playlist_version()
@@ -1598,3 +1682,90 @@ def _cleanup_after_remove(title: str, was_live: bool, slug: str = None) -> None:
         logger.info(f"[YouTube] Cleanup after removing '{title}' finished")
     finally:
         db.close()
+
+
+def _cleanup_for_people(title: str, slug: str, user_ids: list) -> None:
+    """Take a channel out of these people's Jellyfin (they stopped following
+    it): their home row, hero and playlist, and tell their apps."""
+    from models.database import SessionLocal
+    from services.jellyfin import JellyfinService
+    db = SessionLocal()
+    try:
+        url = get_setting(db, "jellyfin_url", "")
+        key = get_setting(db, "jellyfin_api_key", "")
+        jf = JellyfinService(url, key, get_setting(db, "jellyfin_user_id", "")) if url and key else None
+        _drop_for_people(db, jf, title, slug,
+                         db.query(TentacleUser).filter(TentacleUser.id.in_(list(user_ids))).all())
+        follows.tell_clients(db)
+    except Exception as e:
+        logger.warning(f"[YouTube] Cleanup after unfollowing '{title}' failed: {e}")
+    finally:
+        db.close()
+
+
+def _drop_for_people(db: Session, jf, title: str, slug: str, users: list) -> None:
+    """A channel's home row, hero and playlist out of each person's Jellyfin.
+    Every step stands on its own and is logged (see _cleanup_after_remove)."""
+    from routers.smartlists import _read_home_json, _write_home_json
+    from services.smartlists import (
+        _get_smartlists_with_playlist_ids, home_config_lock, sync_smartlists, write_home_config,
+    )
+    for user in users:
+        # The playlist id Tentacle recorded, captured before the sync below
+        # removes the folder that holds it.
+        # Found by the channel's own tag ("yt:<slug>"), never by name: a
+        # user's own playlist called "Cooking" is not the YouTube channel
+        # "Cooking", and matching by name deleted it, with its home row and
+        # hero (#52). Without a slug (an older caller), only YouTube
+        # playlists are considered.
+        smartlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
+        if slug:
+            recorded = next((p["playlist_id"] for p in smartlists
+                             if f"yt:{slug}" in (p.get("yt_tags") or [])), None)
+        else:
+            recorded = next((p["playlist_id"] for p in smartlists
+                             if p.get("is_youtube") and p["name"] == title), None)
+
+        # 1. The home row and, if it pointed here, the hero — explicitly.
+        try:
+            with home_config_lock:
+                config = _read_home_json(user) or {}
+                rows = config.get("rows") or []
+                # By playlist id only. No recorded playlist means there is no
+                # row of this channel to find, and a same-named row is someone
+                # else's.
+                kept = [r for r in rows if not (recorded and r.get("playlist_id") == recorded)]
+                hero = config.get("hero") or {}
+                hero_hit = bool(recorded) and hero.get("playlist_id") == recorded
+                if len(kept) != len(rows) or hero_hit:
+                    for i, r in enumerate(kept, start=1):
+                        r["order"] = i
+                    config["rows"] = kept
+                    if hero_hit:
+                        config["hero"] = {"enabled": False, "playlist_id": "", "display_name": ""}
+                    _write_home_json(user, config)
+                    logger.info(f"[YouTube] Removed '{title}' from user {user.id}'s home screen")
+        except Exception as e:
+            logger.warning(f"[YouTube] Could not remove '{title}' row for user {user.id}: {e}")
+
+        # 2. The playlist: no longer desired, so the sync's orphan cleanup
+        #    deletes it and its folder.
+        try:
+            sync_smartlists(db, user_id=user.id)
+        except Exception as e:
+            logger.warning(f"[YouTube] Playlist cleanup for user {user.id} failed: {e}")
+
+        # 3. If Jellyfin still has the playlist Tentacle recorded, delete it.
+        if jf and recorded:
+            try:
+                if any(p.get("Id") == recorded for p in jf.get_playlists(user.jellyfin_user_id) or []):
+                    # Only a playlist Tentacle made (#152).
+                    if jf.delete_tentacle_playlist(recorded, user.jellyfin_user_id):
+                        logger.info(f"[YouTube] Deleted leftover Jellyfin playlist {recorded} ('{title}')")
+            except Exception as e:
+                logger.warning(f"[YouTube] Could not check Jellyfin playlists for user {user.id}: {e}")
+
+        try:
+            write_home_config(db, user_id=user.id)
+        except Exception as e:
+            logger.warning(f"[YouTube] Home config rewrite for user {user.id} failed: {e}")

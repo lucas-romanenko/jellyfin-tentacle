@@ -42,6 +42,9 @@
     <EmbeddedResource Include="Inject/tentacle-favorites.css" />
     <EmbeddedResource Include="Inject/tentacle-notifications.js" />
     <EmbeddedResource Include="Inject/tentacle-notifications.css" />
+    <EmbeddedResource Include="Inject/tentacle-login.js" />
+    <EmbeddedResource Include="Inject/tentacle-login.css" />
+    <EmbeddedResource Include="Inject/tentacle-play.js" />
     <EmbeddedResource Include="Assets/imdb.svg" />
     <EmbeddedResource Include="Assets/tmdb.svg" />
     <EmbeddedResource Include="Assets/trakt.svg" />
@@ -58,6 +61,8 @@
     <EmbeddedResource Include="Assets/rogerebert.svg" />
     <EmbeddedResource Include="Assets/mal.svg" />
     <EmbeddedResource Include="Assets/anilist.svg" />
+    <!-- The brand: scripts/brand.py's copy of tentacle/static/brand (the plugin is built from this folder alone), /Tentacle/Assets/brand-<name>.svg -->
+    <EmbeddedResource Include="Brand/*.svg" LogicalName="Jellyfin.Plugin.Tentacle.Assets.brand-%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>

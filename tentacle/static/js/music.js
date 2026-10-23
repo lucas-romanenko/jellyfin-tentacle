@@ -385,7 +385,7 @@ function showMusicImport() {
     <div class="form-group" style="margin-top:14px">
       <div class="form-label">Or an Exportify file (up to 2,000 songs, private playlists too)</div>
       <input type="file" id="music-import-file" accept=".csv,text/csv" onchange="startMusicImport(null)">
-      <div class="form-hint">Export the playlist at <a href="https://exportify.net" target="_blank" rel="noopener" style="color:var(--accent)">exportify.net</a> and choose the CSV it saves.</div>
+      <div class="form-hint">Export the playlist at <a href="https://exportify.net" target="_blank" rel="noopener" style="color: var(--accent-text)">exportify.net</a> and choose the CSV it saves.</div>
     </div>
     <p class="form-hint" style="margin-top:14px">Nothing is requested yet: you'll see the albums first and tick the ones you want.</p>`);
   setTimeout(() => { const i = document.getElementById('music-import-url'); if (i) i.focus(); }, 50);
@@ -627,7 +627,7 @@ function _musicAlbumBody(a) {
   let html = `<div style="display:flex;gap:18px;flex-wrap:wrap">
       ${_musicCover(a.cover, 160)}
       <div style="flex:1;min-width:200px">
-        <div style="font-size:13px;color:var(--text2)"><a href="#" onclick="openMusicArtist('${escapeJS(a.artist_mbid)}');return false" style="color:var(--accent)">${escapeAttr(a.artist)}</a></div>
+        <div style="font-size:13px;color:var(--text2)"><a href="#" onclick="openMusicArtist('${escapeJS(a.artist_mbid)}');return false" style="color: var(--accent-text)">${escapeAttr(a.artist)}</a></div>
         <div style="font-size:12px;color:var(--text3);margin-top:2px">${escapeAttr([a.year, a.type].filter(Boolean).join(' · '))}</div>
         <div style="margin-top:8px">${_musicBadge(a, 'Not requested')}</div>
         ${verdictMsg ? `<div style="font-size:12px;color:var(--text2);margin-top:8px">${escapeAttr(verdictMsg)}</div>` : ''}

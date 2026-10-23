@@ -29,8 +29,11 @@ function el(id) {
   return els[id];
 }
 var document = { getElementById: el, querySelectorAll: function () { return []; } };
-var state = {};
+var state = { _loginPeople: [{ name: 'Alice', has_password: true }] };
 function setTimeout() {}
+function clearTimeout() {}
+function escHtml(s) { return String(s); }
+function loginAvatar() { return ''; }
 var logins = [];
 async function doLogin(u, p) { logins.push([u, p]); }
 %FUNCS%
@@ -40,7 +43,7 @@ async function main() {
   loginShowManual();
   out.formShown = el('login-password-form').style.display;
   out.nameShown = el('login-username').style.display !== 'none';
-  out.linkHiddenWhileOpen = el('login-manual-link').style.display === 'none';
+  out.linkHiddenWhileOpen = el('login-step-people').style.display === 'none';
   await submitLogin();
   out.emptyNameLogins = logins.length;
   out.emptyNameError = el('login-error').textContent;
@@ -53,7 +56,9 @@ async function main() {
   logins.length = 0;
   selectLoginUser({ name: 'Alice', has_password: true }, el('card'));
   out.nameHiddenAfterPick = el('login-username').style.display === 'none';
-  out.linkBackAfterPick = el('login-manual-link').style.display !== 'none';
+  loginBackToUsers();
+  out.linkBackAfterPick = el('login-step-people').style.display !== 'none';
+  selectLoginUser({ name: 'Alice', has_password: true }, el('card'));
   el('login-username').value = 'someone_else';
   el('login-password').value = 'pw2';
   await submitLogin();
@@ -85,7 +90,8 @@ class ManualUsernameLogin(unittest.TestCase):
     def setUpClass(cls):
         src = APP_JS.read_text(encoding="utf-8")
         funcs = "\n".join(_function(src, n) for n in
-                          ("submitLogin", "loginShowManual", "selectLoginUser", "loginBackToUsers"))
+                          ("submitLogin", "loginShowManual", "selectLoginUser", "loginBackToUsers",
+                           "loginStep", "loginStopCode"))
         out = subprocess.run(["node", "-e", HARNESS.replace("%FUNCS%", funcs)],
                              capture_output=True, text=True, timeout=30)
         if out.returncode:
@@ -121,9 +127,8 @@ class ManualUsernameMarkup(unittest.TestCase):
     def test_the_link_can_be_reached_and_pressed_from_the_keyboard(self):
         import re
         html = INDEX.read_text(encoding="utf-8")
-        link = re.search(r'<a[^>]*id="login-manual-link"[^>]*>', html).group(0)
-        self.assertIn('tabindex="0"', link, "an <a> without href is skipped by Tab")
-        self.assertIn("onkeydown", link)
+        link = re.search(r'<(\w+)[^>]*id="login-manual-link"[^>]*>', html)
+        self.assertEqual("button", link.group(1), "a <button> is reached by Tab and pressed by Enter/Space")
 
     def test_an_empty_user_list_opens_the_manual_form(self):
         src = APP_JS.read_text(encoding="utf-8")

@@ -150,7 +150,7 @@ class TestR3CorruptConfigIsNotSeededOver(unittest.TestCase):
                   "sort_by": "releasedate", "sort_order": "Descending", "is_youtube": True}]
         with mock.patch.object(ssl, "_get_smartlists_with_playlist_ids", lambda db, user_id=None: smart), \
              mock.patch.object(ssl, "_user_home_config_path", lambda db, user_id=None: path), \
-             mock.patch("routers.smartlists._seed_home_config_from_jellyfin", seed), \
+             mock.patch("services.default_home.apply_default", seed), \
              mock.patch.object(ssl, "bump_playlist_version"):
             ssl.write_home_config(db, user_id=1)
         seed.assert_not_called()

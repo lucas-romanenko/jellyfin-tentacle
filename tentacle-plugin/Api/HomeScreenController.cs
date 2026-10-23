@@ -846,6 +846,15 @@ public class TentacleHomeController : ControllerBase
     [HttpGet("/Tentacle/notifications.css")]
     public ActionResult GetNotificationsCss() => ServeAsset("tentacle-notifications.css", "text/css");
 
+    [HttpGet("/Tentacle/login.js")]
+    public ActionResult GetLoginJs() => ServeAsset("tentacle-login.js", "application/javascript");
+
+    [HttpGet("/Tentacle/login.css")]
+    public ActionResult GetLoginCss() => ServeAsset("tentacle-login.css", "text/css");
+
+    [HttpGet("/Tentacle/play.js")]
+    public ActionResult GetPlayJs() => ServeAsset("tentacle-play.js", "application/javascript");
+
     /// <summary>
     /// Returns an embedded CSS/JS resource. A request carrying the current boot
     /// stamp (?v=) is cacheable for a long time — the stamp changes on every plugin

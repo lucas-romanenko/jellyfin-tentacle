@@ -1,0 +1,19 @@
+/* The docs in Tentacle's colours (assets/brand/tokens.css, a copy of
+   tentacle/static/brand/ made by scripts/brand.py): navy header, the TV
+   app's accent, the dashboard's ink background. */
+@import "../assets/brand/tokens.css";
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: var(--tentacle-navy);
+  --md-primary-fg-color--light: #23275a;
+  --md-primary-fg-color--dark: #10122a;
+  --md-accent-fg-color: var(--tentacle-accent);
+  --md-typeset-a-color: var(--tentacle-accent);
+  --md-default-bg-color: var(--tentacle-ink);
+  --md-code-bg-color: var(--tentacle-ink-2);
+  --md-footer-bg-color: var(--tentacle-navy);
+  --md-footer-bg-color--dark: #10122a;
+}
+
+/* The header logo is the jellyfish, which is taller than wide */
+.md-header__button.md-logo img { height: 1.9rem; width: auto; }

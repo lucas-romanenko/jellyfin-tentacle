@@ -27,13 +27,16 @@ parameters, or a helper it calls):
 
 Declared on the app in `main.py` (no router, all **none**; listed in
 `tests/test_route_auth_inventory.py` MAIN_PUBLIC): `GET /api/health`
-(liveness), `GET /api/version` (build identity), `GET /api/provider-status`
+(liveness), `GET /api/version` (build identity: `version` "v1.23.0", or
+"v1.23.0+3" for a build of main 3 commits after it, null when unknown;
+`commit`, `built`, `code`, `endpoints`), `GET /api/provider-status`
 (the provider health check for a monitor: 200 `{"status": "ok"}`, or 503
 `{"status": "failing", "since", "checked_at", "problems": [reason]}`; no
 provider names, URLs or logins).
 
 | Method | Path | Auth | Handler |
 |---|---|---|---|
+| GET | `/api/about` | admin | about.py:about (Settings → About: server version and the newest release on GitHub, the Jellyfin plugin against `MIN_PLUGIN_VERSION`, Jellyfin's version, each person's TV app; services/versions.py) |
 | GET | `/api/activity` | user | activity.py:get_activity |
 | POST | `/api/activity/arr/check` | user | activity.py:check_releases |
 | POST | `/api/activity/arr/grab` | user | activity.py:grab_release |
@@ -46,6 +49,8 @@ provider names, URLs or logins).
 | GET | `/api/auth/me` | user | auth.py:get_me |
 | POST | `/api/auth/set-admin` | admin | auth.py:set_user_admin |
 | GET | `/api/auth/users` | none | auth.py:get_jellyfin_users |
+| POST | `/api/auth/quick-connect` | none | auth.py:quick_connect_start |
+| GET | `/api/auth/quick-connect/{handle}` | none | auth.py:quick_connect_poll |
 | POST | `/api/collections/sync-artwork` | admin | collections.py:sync_artwork |
 | GET | `/api/discover` | user | discover.py:get_discover |
 | GET | `/api/discover/config` | none | discover.py:get_discover_config |
@@ -69,6 +74,25 @@ provider names, URLs or logins).
 | GET | `/api/duplicates` | admin | duplicates.py:get_duplicates |
 | POST | `/api/duplicates/resolve-all` | admin | duplicates.py:resolve_all |
 | POST | `/api/duplicates/{dup_id}/resolve` | admin | duplicates.py:resolve_duplicate |
+| GET | `/api/family/kids-channels` | admin | family.py:kids_channels |
+| PUT | `/api/family/kids-channels` | admin | family.py:save_kids_channels |
+| PUT | `/api/family/addresses` | admin | family.py:save_addresses (Add someone's one question: `{tentacle, jellyfin}` browser addresses; asked once) |
+| POST | `/api/family/invite` | admin | family.py:invite (`{name, kids_level, request_mode, location, password, live_tv, home, channels}`; location = a place's slug, none = the household's; password none = made from the name; home `default`/`kids`/a person's id, channels `none`/`kids`/a person's id, none = the household's; the answer's `invite.message` is the text to send) |
+| GET | `/api/family/me` | user | family.py:me |
+| GET | `/api/family/people` | admin | family.py:people (each person's `location`; `locations` to choose from, `household_location`) |
+| PUT | `/api/family/people/{user_id}` | admin | family.py:update_person (only the fields sent: `kids_level`+`set_kids`, `request_mode`, `on_sign_in`, `location` ("" = the household's; the first admin's is the household's)) |
+| PUT | `/api/family/people/{user_id}/access` | admin | family.py:update_access |
+| POST | `/api/family/people/{user_id}/password` | admin | family.py:reset_password |
+| POST | `/api/family/people/{user_id}/tv-code` | admin | family.py:sign_in_tv_for |
+| PUT | `/api/family/defaults` | admin | family.py:save_defaults (`{home_from, channels_from, kids: {home, channels}}`) |
+| POST | `/api/family/quick-connect` | admin | family.py:turn_on_codes |
+| GET | `/api/family/server` | admin | family.py:server_settings |
+| PUT | `/api/family/server` | admin | family.py:save_server_settings |
+| GET | `/api/family/status` | user | family.py:status |
+| POST | `/api/me/pw` | user | family.py:change_my_password (`{current, new}`: the welcome's "pick my own"; current checked with Jellyfin) |
+| GET | `/api/welcome` | user | family.py:welcome_state (the first-sign-in welcome: `show`, names, addresses, home rows) |
+| POST | `/api/welcome/done` | user | family.py:welcome_done |
+| POST | `/api/family/tv-code` | user | family.py:sign_in_my_tv |
 | GET | `/api/health/arr-problems` | admin | health.py:arr_problems |
 | GET | `/api/health/deletions` | admin | health.py:get_deletions |
 | POST | `/api/health/downloads/fix` | admin | health.py:fix_stuck_download |
@@ -124,6 +148,26 @@ provider names, URLs or logins).
 | POST | `/api/lists/{list_id}/fetch` | user | lists.py:fetch_list (same background follow-up) |
 | POST | `/api/lists/{list_id}/playlist-toggle` | user | lists.py:toggle_list_playlist |
 | GET | `/api/live/capacity` | admin | livetv.py:live_capacity |
+| GET | `/api/live/checker/status` | admin | livetv_checker.py:checker_status (background stream checker: state, paused reason, progress) |
+| GET | `/api/live/catalog/types` | admin | livetv_catalog.py:catalog_types (the channel types) |
+| GET | `/api/live/catalog/pool` | admin | livetv_catalog.py:catalog_pool (the folded pool, with "no event" channels) |
+| GET | `/api/live/catalog/networks` | admin | livetv_catalog.py:catalog_networks (folded networks with their variants; `?include_empty=1`) |
+| POST | `/api/live/catalog/refresh` | admin | livetv_catalog.py:catalog_refresh (fold again now) |
+| PUT | `/api/live/catalog/networks/{nid}/variant` | admin | livetv_catalog.py:catalog_set_variant (`{channel_id}`, null = default) |
+| PUT | `/api/live/catalog/networks/{nid}` | admin | livetv_catalog.py:catalog_update_network (`{name, excluded}`) |
+| POST | `/api/live/catalog/networks/{nid}/split` | admin | livetv_catalog.py:catalog_split (`{channel_ids, name}`; no ids = dissolve) |
+| POST | `/api/live/catalog/merge` | admin | livetv_catalog.py:catalog_merge (`{keys: ["n1","c5"], name}`) |
+| PUT | `/api/live/catalog/channels/{channel_id}/enabled` | admin | livetv_catalog.py:catalog_tick (`{enabled}`) |
+| PUT | `/api/live/catalog/types` | admin | livetv_catalog.py:catalog_set_types (`{key, types}`; [] = automatic) |
+| GET | `/api/live/catalog/logos` | admin | livetv_catalog.py:catalog_logos (`?key=c5096`: logos to pick from: the provider's, other versions', same guide's, similar names') |
+| PUT | `/api/live/catalog/logo` | admin | livetv_catalog.py:catalog_set_logo (`{key, url}`; "" = automatic; http(s) only) |
+| GET, HEAD | `/api/live/net/{nid}` | none | livetv_catalog.py:network_stream (the network's chosen variant through stream_proxy) |
+| GET, HEAD | `/api/live/net/{nid}/at/{place}` | none | livetv_catalog.py:network_place_stream (the network's variant for a place, else its chosen one: the lineup's "CTV · Vancouver") |
+| GET | `/api/live/new-groups` | admin | provider_new.py:new_groups (new groups read: country, title, tags, `for_you`, samples; `?dismissed=true` also the dismissed; `?country=&lang=` the browser's locale; starts reading their channels in the background) |
+| POST | `/api/live/new-groups/add` | admin | provider_new.py:new_groups_add (picked channels into the pool; the groups reviewed) |
+| POST | `/api/live/new-groups/channels` | admin | provider_new.py:new_group_channels (step 2: the ticked groups' channels, folded) |
+| POST | `/api/live/new-groups/dismiss` | admin | provider_new.py:new_groups_dismiss |
+| POST | `/api/live/new-groups/restore` | admin | provider_new.py:new_groups_restore |
 | GET | `/api/live/channels` | admin | livetv.py:list_channels |
 | POST | `/api/live/channels/bulk` | admin | livetv.py:bulk_update_channels |
 | POST | `/api/live/channels/bulk-filter` | admin | livetv.py:bulk_update_channels_by_filter |
@@ -132,18 +176,27 @@ provider names, URLs or logins).
 | GET | `/api/live/groups` | admin | livetv.py:list_groups |
 | PUT | `/api/live/groups/bulk` | admin | livetv.py:bulk_update_groups |
 | PUT | `/api/live/groups/{group_id}` | admin | livetv.py:update_group |
+| GET | `/api/live/people` | admin | my_livetv.py:live_people |
 | GET | `/api/live/playlist.m3u` | none | livetv.py:live_playlist_m3u |
 | POST | `/api/live/refresh-guide` | admin | livetv.py:refresh_jellyfin_guide |
 | POST | `/api/live/reserve` | admin or internal | livetv.py:live_reserve |
 | DELETE | `/api/live/reserve/{channel_id}` | admin or internal | livetv.py:live_unreserve |
+| POST | `/api/live/setup` | admin | my_livetv.py:live_setup_now |
 | GET | `/api/live/status` | admin | livetv.py:live_status |
 | GET | `/api/live/stream/{channel_id}` | none | livetv.py:stream_proxy |
 | GET | `/api/live/streams` | admin or internal | livetv.py:live_streams |
 | POST | `/api/live/sync-channels/{provider_id}` | admin | livetv.py:sync_live_channels |
 | POST | `/api/live/sync-epg/{provider_id}` | admin | livetv.py:sync_epg |
 | GET | `/api/live/sync-status` | admin | livetv.py:sync_status_endpoint |
+| GET | `/api/live/tuner/all.m3u` | none | livetv.py:live_tuner_all |
+| GET | `/api/live/users/{user_id}/tuner.m3u` | none | livetv.py:live_tuner_user |
 | POST | `/api/live/sync/{provider_id}` | admin | livetv.py:sync_live_groups |
 | GET | `/api/live/xmltv.xml` | none | livetv.py:hdhr_xmltv |
+| GET | `/api/new-from-provider/categories` | admin | provider_new.py:new_categories |
+| POST | `/api/new-from-provider/categories/add` | admin | provider_new.py:new_categories_add |
+| POST | `/api/new-from-provider/categories/dismiss` | admin | provider_new.py:new_categories_dismiss |
+| POST | `/api/new-from-provider/categories/restore` | admin | provider_new.py:new_categories_restore |
+| GET | `/api/new-from-provider/counts` | admin | provider_new.py:new_counts (the sidebar badge) |
 | GET | `/api/music/album/{rgid}` | user | music.py:music_album |
 | POST | `/api/music/apply` | admin | music.py:apply_fixes |
 | GET | `/api/music/artist/{mbid}` | user | music.py:music_artist |
@@ -176,8 +229,12 @@ provider names, URLs or logins).
 | GET | `/api/music/webhook-info` | admin | music.py:webhook_info |
 | POST | `/api/music/webhook/regenerate` | admin | music.py:regenerate_webhook_secret |
 | POST | `/api/music/webhook/test` | admin | music.py:test_webhook |
+| GET | `/api/my/channels` | user | my_livetv.py:my_channels |
+| PUT | `/api/my/channels/favourite` | user | my_livetv.py:set_my_favourite |
+| PUT | `/api/my/channels/favourites` | user | my_livetv.py:set_my_favourites |
 | GET | `/api/notifications` | user | notifications.py:get_notifications |
 | POST | `/api/notifications/dismiss-all` | user | notifications.py:dismiss_all |
+| PUT | `/api/notifications/others` | user (admins only, 403 otherwise) | notifications.py:show_others_downloads (`{"show": bool}`: other people's downloads in my Activity and messages) |
 | POST | `/api/notifications/toggle` | user | notifications.py:toggle_notifications |
 | POST | `/api/notifications/{notification_id}/dismiss` | user | notifications.py:dismiss_notification |
 | GET | `/api/providers` | admin | providers.py:list_providers |
@@ -196,6 +253,13 @@ provider names, URLs or logins).
 | POST | `/api/providers/{provider_id}/fetch-categories` | admin | providers.py:fetch_categories |
 | GET | `/api/providers/{provider_id}/preview` | admin | providers.py:preview_sync |
 | POST | `/api/providers/{provider_id}/test` | admin | providers.py:test_provider |
+| GET | `/api/requests` | admin | family.py:all_requests |
+| GET | `/api/requests/count` | admin | family.py:waiting_count |
+| GET | `/api/requests/mine` | user | family.py:my_requests |
+| DELETE | `/api/requests/mine/{request_id}` | user | family.py:take_back |
+| GET | `/api/requests/mode` | user | family.py:my_request_mode |
+| POST | `/api/requests/{request_id}/approve` | admin | family.py:approve |
+| POST | `/api/requests/{request_id}/decline` | admin | family.py:decline |
 | GET | `/api/radarr/logs/recent` | admin | radarr.py:get_recent_log_entries |
 | GET | `/api/radarr/logs/stream` | admin | radarr.py:stream_logs |
 | GET | `/api/radarr/migration/preview` | admin | radarr.py:preview_migration_endpoint |
@@ -263,8 +327,6 @@ provider names, URLs or logins).
 | GET | `/api/sync/dashboard` | admin | sync.py:get_dashboard |
 | GET | `/api/sync/feed` | admin | sync.py:get_new_additions_feed |
 | GET | `/api/sync/history` | admin | sync.py:get_sync_history |
-| GET | `/api/sync/new-content-notice` | admin | sync.py:get_new_content_notice |
-| POST | `/api/sync/new-content-notice/dismiss` | admin | sync.py:dismiss_new_content_notice |
 | GET | `/api/sync/progress/{provider_id}` | admin | sync.py:stream_sync_progress |
 | GET | `/api/sync/progress/{provider_id}/poll` | admin | sync.py:poll_sync_progress |
 | POST | `/api/sync/refresh-tags` | admin | sync.py:refresh_tags |
@@ -279,12 +341,18 @@ provider names, URLs or logins).
 | POST | `/api/tags/rules` | user | tags.py:create_rule |
 | DELETE | `/api/tags/rules/{rule_id}` | user | tags.py:delete_rule |
 | PUT | `/api/tags/rules/{rule_id}` | user | tags.py:update_rule |
+| GET | `/api/updates` | user | updates.py:updates (server-sent events: the dashboard's live channel, services/live_updates.py) |
 | GET | `/api/vod/{kind}/{token_file}` | none | vod.py:vod_stream |
 | GET | `/api/widget/status` | none | widget.py:widget_status |
 | GET | `/api/youtube/channels` | admin | youtube.py:list_channels |
 | POST | `/api/youtube/channels` | admin | youtube.py:add_channel |
 | DELETE | `/api/youtube/channels/{channel_id}` | admin | youtube.py:delete_channel |
 | POST | `/api/youtube/channels/{channel_id}/live` | admin | youtube.py:toggle_live |
+| PUT | `/api/youtube/channels/{channel_id}/followers` | admin | youtube.py:set_followers |
+| GET | `/api/youtube/people` | admin | youtube.py:youtube_people |
+| GET | `/api/my/youtube` | user | my_youtube.py:my_youtube |
+| POST | `/api/my/youtube` | user (not kids) | my_youtube.py:add_my_channel |
+| DELETE | `/api/my/youtube/{channel_id}` | user (not kids) | my_youtube.py:remove_my_channel |
 | GET | `/api/youtube/diagnose` | admin | youtube.py:diagnose |
 | GET | `/api/youtube/live/{channel_id}/master.m3u8` | none | youtube.py:live_master |
 | GET | `/api/youtube/live/{channel_id}/stream.ts` | none | youtube.py:live_stream |
@@ -310,3 +378,7 @@ provider names, URLs or logins).
 | GET | `/lineup.json` | none | livetv.py:hdhr_lineup |
 | POST | `/lineup.post` | none | livetv.py:hdhr_lineup_post |
 | GET | `/lineup_status.json` | none | livetv.py:hdhr_lineup_status |
+
+Outside `/api`: `GET /tv` (no sign-in, family.py:tv_app_download) redirects
+to the newest TV app APK on GitHub; people type Tentacle's address + `/tv`
+into the Downloader app on a TV.

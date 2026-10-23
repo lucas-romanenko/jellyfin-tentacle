@@ -77,11 +77,14 @@ class RefreshIsScopedToTheUser(unittest.TestCase):
                         "TentacleTmdbController.ClearCache()", "TentacleConfigController.ClearCache()"):
             self.assertIn(cleared, full)
 
+    BROADCAST = _block(TENTACLE, "private async Task<int> BroadcastLibraryChanged(")
+
     def test_a_home_save_is_pushed_only_to_its_user(self):
-        self.assertRegex(self.REFRESH, r"homeOnly\s*\?\s*new List<Guid> \{ userId!\.Value \}")
+        self.assertIn("BroadcastLibraryChanged(homeOnly ? userId : null, marker)", self.REFRESH)
+        self.assertRegex(self.BROADCAST, r"userId is \{ \} one\s*\?\s*new List<Guid> \{ one \}")
 
     def test_the_message_carries_the_marker(self):
-        self.assertIn("CollectionFolders = marker", self.REFRESH)
+        self.assertIn("CollectionFolders = markers", self.BROADCAST)
         self.assertIn('$"tentacle-home:{(userId is { } id ? id.ToString("N") : "*")}:{homeVersion}"', TENTACLE)
 
 

@@ -423,6 +423,55 @@ def read_feed_channels(path: str) -> list[dict]:
     return out
 
 
+def one_schedule(programs: list[dict]) -> tuple[list[dict], int]:
+    """The programmes with one schedule per guide id: no two overlap.
+
+    Some providers' feeds merge several guide sources under one id: their
+    MLBNetwork.us came as four blocks that disagree ("Live: MLB Baseball"
+    16:30-19:30 beside "Live: MLB Central" 17:00-20:00 and 18:00-20:00), and
+    Jellyfin draws every one of them, on top of each other. The feed's first
+    word on a time wins: a later programme that runs into kept ones keeps the
+    largest free stretch of its time when that is at least half of it (a
+    programme running a few minutes into the next), else it is left out, as
+    is one that ends before it starts. Returns the kept programmes in feed
+    order and how many were left out or shortened.
+    """
+    import bisect
+    from datetime import timedelta
+    kept_at: dict = {}   # guide id -> (starts, stops) of what is kept, sorted
+    out, changed = [], 0
+    for p in programs:
+        s, e = p["start"], p["stop"]
+        if e <= s:
+            changed += 1
+            continue
+        starts, stops = kept_at.setdefault(p["channel_id"], ([], []))
+        i = bisect.bisect_right(starts, s)
+        if i and stops[i - 1] > s:
+            i -= 1
+        j = bisect.bisect_left(starts, e)
+        if i < j:
+            # The free stretches of [s, e) between the kept programmes it meets.
+            best, at = timedelta(0), None
+            edge = s
+            for k in range(i, j + 1):
+                end = starts[k] if k < j else e
+                if end - edge > best:
+                    best, at = end - edge, (edge, end)
+                if k < j:
+                    edge = max(edge, stops[k])
+            changed += 1
+            if at is None or best * 2 < e - s:
+                continue
+            s, e = at
+            p = {**p, "start": s, "stop": e}
+            i = bisect.bisect_right(starts, s)
+        starts.insert(i, s)
+        stops.insert(i, e)
+        out.append(p)
+    return out, changed
+
+
 def download_xmltv(
     url: str,
     user_agent: str = "TiviMate/4.7.0 (Linux; Android 12)",

@@ -9,6 +9,14 @@ Tentacle gives you a Netflix-style home screen in Jellyfin with a hero spotlight
 
 Go to **My Home Screen** in the Tentacle dashboard.
 
+## The default home
+
+Everyone starts on the **default home**, so a fresh install looks right with no setup: Continue Watching, Next Up, Recently Added Movies, Recently Added TV and your biggest sources, with recently added movies in the spotlight.
+
+- **Admins** change it with **My Home Screen → Default for everyone**: the same rows, order, poster or wide cards and spotlight as your own home, or **Copy my home here** to make your own layout the default (your personal lists are left out; nobody else has them). Everyone on the default sees a change within seconds.
+- **Everyone else** keeps the default until they change something on their own Home Screen; from then on the layout is theirs and later changes to the default leave it alone. **Reset to default** goes back.
+- **Kids** get the same rows, showing only what their age limit allows.
+
 ## Hero Spotlight
 
 The hero spotlight is a large banner at the top of the Jellyfin home page that cycles through featured content with a Ken Burns zoom effect and smooth crossfade transitions.
@@ -58,6 +66,15 @@ Click the remove button on any row to take it off your home screen. The underlyi
 ### Max Items Per Row
 
 Each row can have a limit on how many items it displays. This is useful for large playlists where you only want to show a curated subset on the home screen.
+
+## Favorites
+
+Jellyfin's **Favorites** tab (the heart in the top bar) shows your favourites in rows like the home screen, each scrolling sideways: **Movies**, **Shows**, **Live TV**, **YouTube**, **Recordings**, then episodes, collections, playlists, music and anything else you have favourited. Rows with nothing in them are left out.
+
+- **Live TV** cards show the channel's logo and number, what's on now with how far in it is, and play the channel when you click them. Channels come in the guide's order.
+- **YouTube** holds the videos and YouTube live channels you favourited (only the YouTube channels you follow).
+- Kids see only what their profile allows, like everywhere else in Jellyfin.
+- Favourite or unfavourite something anywhere (Tentacle's My Channels, the guide's star, a details page, another device) and the open Favorites page shows it within a second or two, no reload. On a computer, the heart on a card (when you point at it) takes it off the list.
 
 ## How It Works Internally
 

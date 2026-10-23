@@ -20,7 +20,7 @@ from services.cleaner import clean_list_title
 from services.ssrf import is_safe_url
 from services.nfo import update_nfo_tags
 from services.tmdb import TMDBService
-from services import media_requests
+from services import approvals, media_requests
 from services.media_requests import RequestRefused
 from pathlib import Path
 
@@ -999,6 +999,9 @@ def add_to_radarr(body: AddMissingBody, db: Session = Depends(get_db),
     """
     if not body.tmdb_ids:
         raise HTTPException(400, "No tmdb_ids provided")
+    if approvals.needs_approval(user):
+        # A family member's request waits for an admin (services/approvals.py).
+        return approvals.hold(db, user, "movie", body.model_dump(), tmdb_ids=body.tmdb_ids)
 
     def downloaded(tmdb_id):
         # Only an already-DOWNLOADED copy blocks the add. A VOD (.strm) copy
@@ -1025,6 +1028,9 @@ def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db),
     """Add specific TMDB or TVDB IDs to Sonarr (same callers as add-to-radarr)."""
     if not body.tmdb_ids and not body.tvdb_ids:
         raise HTTPException(400, "No tmdb_ids or tvdb_ids provided")
+    if approvals.needs_approval(user):
+        return approvals.hold(db, user, "series", body.model_dump(),
+                              tmdb_ids=body.tmdb_ids or [], tvdb_ids=body.tvdb_ids or [])
 
     def downloaded(tmdb_id):
         existing = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
@@ -1164,7 +1170,9 @@ def fetch_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser =
     # Auto-add missing movies to Radarr
     radarr_added = 0
     radarr_error = None
-    if lst.auto_add_radarr and get_setting(db, "radarr_url") and get_setting(db, "radarr_api_key"):
+    # A list of someone whose requests wait for an admin never grabs by itself.
+    if (lst.auto_add_radarr and not approvals.needs_approval(user)
+            and get_setting(db, "radarr_url") and get_setting(db, "radarr_api_key")):
         # Movies only: a series' TMDB id names a different title (or nothing)
         # in Radarr's movie namespace.
         movie_ids = [item["tmdb_id"] for item in items

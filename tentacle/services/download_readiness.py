@@ -53,6 +53,10 @@ def end(token: "int | None", ready: bool) -> None:
         entry = _in_flight.pop(token, None)
         if entry is not None and ready:
             _ready_at[(entry["media_type"], entry["tmdb_id"])] = time.monotonic()
+    from services import live_updates
+    if entry is not None and live_updates.active():
+        # "Getting it ready" became "Ready to watch" (or went): open Activity screens.
+        live_updates.changed("activity", user_ids=live_updates.owners_of([entry]), admins=True, clients=True)
 
 
 def _prune(now: float) -> None:

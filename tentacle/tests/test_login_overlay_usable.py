@@ -55,9 +55,9 @@ class LoginOverlay(unittest.TestCase):
         self.assertGreater(overlay, end, "the login overlay would be made inert along with the app")
 
     def test_back_can_be_reached_and_pressed_from_the_keyboard(self):
-        back = re.search(r"<a[^>]*loginBackToUsers\(\)[^>]*>", HTML).group(0)
-        self.assertIn('tabindex="0"', back)
-        self.assertIn("onkeydown", back)
+        backs = re.findall(r"<(\w+)[^>]*loginBackToUsers\(\)[^>]*>", HTML)
+        self.assertTrue(backs)
+        self.assertEqual({"button"}, set(backs), "a <button> is reached by Tab and pressed by Enter/Space")
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ releases", Lucas's server, private). The GitHub UI can't create one.
 
 | Trigger | Workflow | Publishes |
 |---|---|---|
-| push to any branch, pull request | Tests | nothing (unit tests; the `unit` check) |
+| push to any branch, pull request | Tests | nothing (unit tests in 4 shards `unit 1/4` ... `unit 4/4`; the final `unit` job, green only when all are, is the required check) |
 | docs change on main | Deploy Documentation | nothing (build only, `mkdocs --strict`) |
 | tag `vX.Y.Z`, or a GitHub release on it | Docker Publish | image tags `X.Y.Z`, `X.Y` and `latest` (a pre-release like `v2.0.0-rc.1` gets only its own tag, never `latest`) |
 | tag `vX.Y.Z`, or a GitHub release on it | Deploy Documentation | the docs site |
@@ -70,6 +70,9 @@ for t in X.Y.Z latest; do curl -sI -H "Authorization: Bearer $tok" -H "Accept: a
 Plugin: the GitHub release has `tentacle-plugin-vX.Y.Z.zip`, and main has
 the bot's "Update plugin manifest for vX.Y.Z" commit (with a Tests run).
 
-A running install says what it is: `GET /api/version` shows `commit`
-(= `git rev-list -n1 vX.Y.Z`) and `code.matches: true`. Installs that
+A running install says what it is: `GET /api/version` shows `version`
+(`vX.Y.Z`, from the tag), `commit` (= `git rev-list -n1 vX.Y.Z`) and
+`code.matches: true`. When a release needs a newer plugin than the last
+one, raise `MIN_PLUGIN_VERSION` in `tentacle/services/versions.py` (Settings
+→ About warns installs whose plugin is older). Installs that
 follow `latest` get new code only from a release.
