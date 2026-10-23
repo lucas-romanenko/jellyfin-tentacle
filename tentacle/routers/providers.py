@@ -565,6 +565,7 @@ def test_provider(provider_id: int, db: Session = Depends(get_db)):
     from services.provider_activity import refuse_while_recording
     refuse_while_recording(db, "Testing the provider")
     try:
+        first_test = p.last_tested is None
         data = test_provider_connection(p, db)
         info = data.get("user_info", {})
         p.status = "ok"
@@ -580,6 +581,8 @@ def test_provider(provider_id: int, db: Session = Depends(get_db)):
             p.has_live = data["_m3u"].get("has_live", False)
             if p.has_live and not had_live:
                 p.live_tv_enabled = True      # as for Xtream, below
+            if first_test and not (p.has_vod or p.has_series):
+                p.active = False              # a channels-only playlist: no Movies & Series switch
             account = m3u_source.account_info(p)
             ainfo = account.get("user_info") or {}
             if ainfo:

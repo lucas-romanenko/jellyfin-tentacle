@@ -15,7 +15,7 @@ The result: your provider's content appears in Jellyfin as if it were a native l
 
 ## Adding a Provider
 
-Go to **Sources → IPTV providers** in Tentacle and click **+ Add Provider**. The same provider also serves [Live TV](live-tv.md) when it is an Xtream provider whose account has live channels.
+Go to **Sources → IPTV providers** in Tentacle and click **+ Add Provider**. Enter what your provider gave you: an Xtream Codes login, a playlist link (M3U URL) or a playlist file. All three work the same: the same provider also serves [Live TV](live-tv.md) when it has live channels, and several people can watch at once. Paste a link into any box: Tentacle splits an Xtream link (`get.php?username=…&password=…`) into server, username and password, and moves a playlist link to the playlist box.
 
 ### Xtream API (Recommended)
 
@@ -26,19 +26,22 @@ Most IPTV providers support the Xtream Codes API:
 - **Username** — Your account username
 - **Password** — Your account password
 
-### M3U URL
+### Playlist link (M3U URL)
 
-If your provider gives you an M3U playlist URL instead:
-
-- **Name** — A label for this provider
-- **M3U URL** — The full URL to the M3U playlist
-
-### M3U File
-
-For locally hosted M3U files:
+If your provider gives you a playlist link instead:
 
 - **Name** — A label for this provider
-- **M3U File** — Path to the M3U file
+- **Playlist link** — The full URL to the M3U playlist
+- **Guide link** (optional) — Leave it empty: Tentacle uses the guide the playlist names (`url-tvg`), or the provider's own
+
+The playlist is read whole: its live channels go to Live TV, its films and episodes to the library. When its links are an Xtream panel's (most provider playlists are `get.php`), Tentacle also reads the account's expiry and connection limit, opens live channels as one continuous stream like an Xtream provider, and plays films through Tentacle so a dropped connection resumes. Episodes need a season and episode number in their names (`S01E02`).
+
+### Playlist file (M3U)
+
+For a playlist file on the server:
+
+- **Name** — A label for this provider
+- **Playlist file** — Its path **inside Tentacle's container**: put the file in Tentacle's data folder and enter `/data/<file name>`, or mount its folder into the container. Tentacle says so when it saves the provider if it can't read the file. It is read again at every sync.
 
 !!! tip "Test first"
     Click the **Test** button on the provider's card in Sources → IPTV providers to verify the connection before syncing. This only tests connectivity — it doesn't download any content.

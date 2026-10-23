@@ -157,6 +157,21 @@ class ProviderTest(unittest.TestCase):
         self.assertIsNone(r["max_connections"])
         self.assertIsNone(self.db.get(Provider, self.p.id).max_connections)
 
+    def test_a_channels_only_playlist_starts_with_movies_off(self):
+        from routers import providers
+        self.p.active = True
+        self.db.commit()
+        text = '#EXTM3U\n#EXTINF:-1 group-title="News",News 1\nhttps://cdn.example/n1/master.m3u8\n'
+        with _read(text), mock.patch("services.provider_activity.refuse_while_recording"):
+            providers.test_provider(self.p.id, self.db)
+        p = self.db.get(Provider, self.p.id)
+        self.assertEqual((False, True), (p.active, p.live_tv_enabled))
+        p.active = True                      # the admin's choice stands at the next test
+        self.db.commit()
+        with _read(text), mock.patch("services.provider_activity.refuse_while_recording"):
+            providers.test_provider(self.p.id, self.db)
+        self.assertTrue(self.db.get(Provider, self.p.id).active)
+
     def test_the_playlists_guide_is_kept(self):
         self._test()
         self.assertEqual(f"{S}/xmltv.php?username=u%40x&password=p", m3u_source.guide_url(self.db, self.p.id))

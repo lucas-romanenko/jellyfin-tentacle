@@ -246,7 +246,7 @@ sees the drop. If it still happens:
   minute and a half after Tentacle starts, and at every sync.
 - The setting `vod_via_tentacle_enabled` set to `false` turns this off on
   purpose.
-- Only Xtream providers play through Tentacle; M3U ones keep their own links.
+- Xtream providers play through Tentacle, and so do the films of a playlist (M3U) whose links are an Xtream panel's; any other playlist link is kept as it is.
 
 ### VOD content missing metadata
 
