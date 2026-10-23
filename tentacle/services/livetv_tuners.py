@@ -54,6 +54,7 @@ logger = logging.getLogger(__name__)
 TUNER_BASE_KEY = "livetv_tuner_base"         # the address every new tuner gets, kept once chosen
 ALL_TUNER_URL_KEY = "livetv_all_tuner_url"   # the lineup tuner's address, kept as first given
 MIGRATED_KEY = "livetv_per_person_migrated"  # the old single tuner was moved off
+OLD_TAG = L.TAG_PREFIX + "old"                # an old tuner kept for its bookings: hidden from everyone
 TUNER_NAME = "Tentacle · Live TV"
 STATUS_KEY = "livetv_setup_status"           # the last sync's outcome (JSON)
 BACKUP_DIR = os.environ.get("TENTACLE_LIVETV_BACKUP_DIR", "/data/livetv-backups")
@@ -427,6 +428,60 @@ def old_tuner_item_ids(tuner: dict, channels: list) -> dict:
     return {L.m3u_channel_item_id(url, base + c["stream_path"]): c["key"] for c in channels}
 
 
+def hdhr_external_keys(db, keys: set) -> dict:
+    """hdhr_<GuideNumber> -> pool key now, for every channel an HDHomeRun
+    tuner of before carried: each switched-on channel, also those folded
+    into a network since (the network's key; v1.9's lineup had them all)."""
+    from routers.livetv import _shown_channels, _unique_numbers
+    try:
+        from services import livetv_catalog
+        net_of = {cid: f"n{nid}" for nid, info in livetv_catalog._network_members(db).items()
+                  for cid in info["all"]}
+    except Exception:
+        net_of = {}
+    out = {}
+    for ch, number in _unique_numbers(db, _shown_channels(db)):
+        key = net_of.get(ch.id) or f"c{ch.id}"
+        if key in keys:
+            out[L.hdhr_external_id(str(number))] = key
+    return out
+
+
+def repoint_guides(jf: Jellyfin, cfg: dict, olds: list, tuner_id: str, url: str, entries: list,
+                   ext_keys: dict) -> int:
+    """Guide sources that aren't Tentacle's, on an old tuner: enabled for the
+    lineup tuner too, and each channel mapping keyed by an old channel id also
+    keyed by the lineup channel's id. Never removes anything. Returns the
+    sources changed."""
+    old_ids = {t.get("Id") for t in olds}
+    path_of = {e["key"]: e["stream_path"] for e in entries}
+    base = L.tuner_base(url)
+    changed = 0
+    for lp in cfg.get("ListingProviders") or []:
+        if lp.get("Type") == "xmltv" and "xmltv.xml" in (lp.get("Path") or "").lower():
+            continue   # Tentacle's own
+        new = dict(lp)
+        enabled = list(lp.get("EnabledTuners") or [])
+        if not lp.get("EnableAllTuners") and old_ids & set(enabled) and tuner_id not in enabled:
+            new["EnabledTuners"] = enabled + [tuner_id]
+        maps = list(lp.get("ChannelMappings") or [])
+        have = {m.get("Name") for m in maps}
+        for m in list(maps):
+            key = ext_keys.get(m.get("Name"))
+            if key and key in path_of:
+                ext = L.m3u_external_id(url, base + path_of[key])
+                if ext not in have:
+                    maps.append({"Name": ext, "Value": m.get("Value")})
+                    have.add(ext)
+        if maps != list(lp.get("ChannelMappings") or []):
+            new["ChannelMappings"] = maps
+        if new != lp:
+            jf.post("/LiveTv/ListingProviders", new, validateListings="false", validateLogin="false")
+            changed += 1
+            logger.info(f"[LiveTV] Guide source '{lp.get('Path') or lp.get('Id')}' now also covers the lineup")
+    return changed
+
+
 def ensure_guide(jf: Jellyfin, cfg: dict, base: str) -> bool:
     """Tentacle's TV guide (XMLTV) as a guide source for every tuner, added
     when Jellyfin has none on Tentacle yet. Returns whether it was added."""
@@ -733,8 +788,11 @@ def sync(db, refresh: bool = False) -> dict:
     for t in personal:
         sources.update(L.item_ids_for(t.get("Url") or "", channels))
         sources.update(L.alias_item_ids_for(t.get("Url") or "", alias))
+    ext_keys = hdhr_external_keys(db, {c["key"] for c in channels}) if olds else {}
     for old in olds:
         sources.update(old_tuner_item_ids(old, channels))
+        if old.get("Type") == "hdhomerun":
+            sources.update({L.channel_item_id(e): k for e, k in ext_keys.items()})
         if old.get("Type") == "m3u":
             sources.update(L.alias_item_ids_for(old.get("Url") or "", alias))
     if alias and tuner is not None:
@@ -878,7 +936,30 @@ def sync(db, refresh: bool = False) -> dict:
         if sources:
             done["schedules"] += move_schedules(jf, sources, mine, pre_one_offs)
 
-    to_remove = list(olds)
+    if in_jf and olds:
+        now = jf.get("/System/Configuration/livetv") or {}
+        lineup_id = next((t.get("Id") for t in now.get("TunerHosts") or [] if t.get("Url") == url), None)
+        if lineup_id:
+            done["guides_repointed"] = repoint_guides(jf, now, olds, lineup_id, url, entries, ext_keys)
+    # An old tuner stays while a recording schedule is still on its channels
+    # (#765: removed at once, the bookings that couldn't move yet were lost);
+    # the hourly run tries the move again. Its channels are hidden meanwhile.
+    on_old = _scheduled_channel_ids(jf) if olds else set()
+    keep, hide = [], set()
+    for o in olds:
+        ids = set(old_tuner_item_ids(o, channels))
+        if o.get("Type") == "hdhomerun":
+            ids |= {L.channel_item_id(e) for e in ext_keys}
+        if on_old & ids:
+            logger.warning(f"[LiveTV] {len(on_old & ids)} recording schedule(s) still on the old tuner "
+                           f"'{o.get('FriendlyName') or o.get('Url')}'; it stays (hidden) until they move")
+            keep.append(o)
+            hide |= ids
+    if hide and admin_id:
+        present = channel_ids(jf)
+        if tag_channels(jf, admin_id, sorted(hide & present), OLD_TAG):
+            done["policies"] += apply_policies(db, jf, people, tags_on_channels(jf))
+    to_remove = [o for o in olds if o not in keep]
     if personal:
         stuck = _scheduled_channel_ids(jf) & {i for t in personal
                                               for i in L.item_ids_for(t.get("Url") or "", channels)}
@@ -892,7 +973,7 @@ def sync(db, refresh: bool = False) -> dict:
         done["removed"] += 1
         logger.info(f"[LiveTV] Moved everyone onto the lineup and removed Jellyfin tuner "
                     f"'{t.get('FriendlyName') or t.get('Url')}'")
-    if olds:
+    if olds and not keep:
         set_setting(db, MIGRATED_KEY, datetime.utcnow().isoformat())
         db.commit()
 
