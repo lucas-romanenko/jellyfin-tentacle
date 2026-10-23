@@ -63,7 +63,7 @@ provider names, URLs or logins).
 | GET | `/api/discover/lists` | user | discover.py:get_discover_lists |
 | POST | `/api/discover/manage-episodes` | user | discover.py:manage_episodes |
 | GET | `/api/discover/providers` | user | discover.py:get_streaming_providers |
-| GET | `/api/discover/search` | user | discover.py:search_discover |
+| GET | `/api/discover/search` | user | discover.py:search_discover (the only Discover route open to a kids profile: it answers `{"items": [], "kids": true}`, and clients show Jellyfin's own search) |
 | GET | `/api/discover/season-tvdb/{tvdb_id}/{season_number}` | user | discover.py:get_season_episodes_tvdb |
 | GET | `/api/discover/season/{tmdb_id}/{season_number}` | user | discover.py:get_season_episodes |
 | GET | `/api/discover/seasons-tvdb/{tvdb_id}` | user | discover.py:get_seasons_tvdb |

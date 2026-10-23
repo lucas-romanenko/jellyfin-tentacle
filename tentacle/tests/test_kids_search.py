@@ -60,11 +60,11 @@ class KidsSearchOnTheServer(unittest.TestCase):
         self.db.add_all([self.kid, self.adult])
         self.db.commit()
 
-    def _get(self, user, path):
+    def _get(self, user, path, prefix=""):
         from routers import discover
         from routers.auth import get_user_from_request
         app = FastAPI()
-        app.include_router(discover.router)
+        app.include_router(discover.router, prefix=prefix)
         app.dependency_overrides[mdb.get_db] = lambda: self.db
         app.dependency_overrides[get_user_from_request] = lambda: user
         tmdb = mock.Mock()
@@ -82,6 +82,17 @@ class KidsSearchOnTheServer(unittest.TestCase):
         self.assertIs(True, r.json().get("kids"))
         tmdb.search_multi_results.assert_not_called()
 
+    def test_a_kid_gets_the_kids_answer_even_with_nothing_typed(self):
+        r, tmdb = self._get(self.kid, "/api/discover/search?q=&type=channels")
+        self.assertEqual({"items": [], "kids": True}, r.json())
+
+    def test_search_is_open_to_kids_by_route_not_by_url(self):
+        # Mounted under a prefix (a root path, a proxy) the exemption still holds.
+        r, _ = self._get(self.kid, "/tentacle/api/discover/search?q=bluey", prefix="/tentacle")
+        self.assertEqual({"items": [], "kids": True}, r.json())
+        r, _ = self._get(self.kid, "/tentacle/api/discover/providers", prefix="/tentacle")
+        self.assertEqual(403, r.status_code)
+
     def test_the_rest_of_discover_stays_closed_to_kids(self):
         r, _ = self._get(self.kid, "/api/discover/providers")
         self.assertEqual(403, r.status_code)
@@ -91,6 +102,23 @@ class KidsSearchOnTheServer(unittest.TestCase):
         self.assertEqual(200, r.status_code, r.text)
         self.assertEqual(["Bluey TV"], [i["title"] for i in r.json()["items"]])
         self.assertNotIn("kids", r.json())
+
+
+class KidsSearchThroughAnOlderTentacle(unittest.TestCase):
+    """New plugin, Tentacle from before this fix: its 403 for a kid's search
+    becomes the kids answer, not "finish setup"."""
+
+    def test_the_plugin_turns_the_old_kids_refusal_into_the_kids_answer(self):
+        src = (INJECT.parent / "Api" / "DiscoverController.cs").read_text(encoding="utf-8")
+        start = src.index('[HttpGet("Search")]')
+        body = src[start:src.index("[Http", start + 10)]
+        self.assertIn("HttpStatusCode.Forbidden", body)
+        self.assertIn('"kids profile"', body)
+        self.assertIn("kids = true", body)
+        # Discover's own message (the 403 the plugin matches) is unchanged on the server.
+        from routers import discover
+        import inspect
+        self.assertIn("kids profile", inspect.getsource(discover._not_on_kids_profiles))
 
 
 # A small DOM: enough for tentacle-search.js to find Jellyfin's search input,
