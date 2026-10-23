@@ -113,6 +113,7 @@ Gotchas:
 | GET | `/Tentacle/navbar.js` | none | GetNavbarJs |  |
 | GET | `/Tentacle/notifications.css` | none | GetNotificationsCss |  |
 | GET | `/Tentacle/notifications.js` | none | GetNotificationsJs |  |
+| GET | `/Tentacle/play.js` | none | GetPlayJs | Play links from the dashboard (`&tentaclePlay=1`) |
 | GET | `/Tentacle/search.css` | none | GetSearchCss |  |
 | GET | `/Tentacle/search.js` | none | GetSearchJs |  |
 | GET | `/Tentacle/tmdb.js` | none | GetTmdbJs |  |

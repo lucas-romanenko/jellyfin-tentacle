@@ -364,6 +364,13 @@ def welcome_state(user: TentacleUser = Depends(get_user_from_request), db: Sessi
     return welcome.state(db, user)
 
 
+@router.get("/api/welcome/counts")
+def welcome_counts(user: TentacleUser = Depends(get_user_from_request), db: Session = Depends(get_db)):
+    """How many movies, TV shows and live TV channels this person has, for
+    the welcome when GET /api/welcome didn't have them yet."""
+    return {"counts": welcome.counts(db, user, wait=welcome.COUNTS_LATE_WAIT_S)}
+
+
 @router.post("/api/welcome/done")
 def welcome_done(user: TentacleUser = Depends(get_user_from_request), db: Session = Depends(get_db)):
     welcome.done(db, user)

@@ -351,5 +351,67 @@ class WelcomedMigration(unittest.TestCase):
         self.assertIsNotNone(conn.execute("SELECT welcomed_at FROM tentacle_users").fetchone()[0])
 
 
+
+class WelcomeCounts(Case):
+    """"You now have access to 12,345 movies, 1,234 TV shows and 1,730 live
+    TV channels": what this person can watch, counted once per title."""
+
+    def setUp(self):
+        super().setUp()
+        welcome._counts_cache.clear()
+        welcome._counts_running.clear()
+        self.addCleanup(welcome._counts_cache.clear)
+        from routers import discover
+        maps = {"movie": {1: "a", 2: "b", 3: "c"}, "series": {7: "s"}}
+        p = mock.patch.object(discover, "_get_jellyfin_tmdb_items", side_effect=lambda k: maps[k])
+        self.maps = p.start()
+        self.addCleanup(p.stop)
+        lineup = mock.patch("routers.my_livetv.my_lineup", side_effect=lambda db, u: [{}] * (2 if u.kids_level else 5))
+        lineup.start()
+        self.addCleanup(lineup.stop)
+        # The counting thread opens its own session: the test's.
+        sl = mock.patch("models.database.SessionLocal", side_effect=lambda: self.Session())
+        sl.start()
+        self.addCleanup(sl.stop)
+
+    def test_everyone_counts_the_whole_library_once_per_title(self):
+        self.assertEqual({"movies": 3, "shows": 1, "channels": 5}, welcome.counts(self.db, self.ann, wait=5))
+
+    def test_a_kid_counts_what_jellyfin_shows_them_and_their_kids_channels(self):
+        self.ann.kids_level = "young"
+        self.db.commit()
+        with mock.patch("services.family.visible_titles", return_value={("movie", 1), ("series", 7), ("series", 8)}):
+            self.assertEqual({"movies": 1, "shows": 2, "channels": 2}, welcome.counts(self.db, self.ann, wait=5))
+
+    def test_no_live_tv_no_channels(self):
+        self.ann.live_tv_off = True
+        self.db.commit()
+        self.assertEqual(0, welcome.counts(self.db, self.ann, wait=5)["channels"])
+
+    def test_counted_once_then_from_the_cache(self):
+        welcome.counts(self.db, self.ann, wait=5)
+        calls = self.maps.call_count
+        welcome.counts(self.db, self.ann, wait=5)
+        self.assertEqual(calls, self.maps.call_count)
+
+    def test_a_slow_count_comes_later_not_in_the_way(self):
+        import threading
+        gate = threading.Event()
+        from routers import discover
+        with mock.patch.object(discover, "_get_jellyfin_tmdb_items", side_effect=lambda k: gate.wait(5) and {1: "a"}):
+            self.ann.welcomed_at = None
+            self.db.commit()
+            self.assertIsNone(welcome.state(self.db, self.ann)["counts"])
+            gate.set()
+            self.assertEqual({"movies": 1, "shows": 1, "channels": 5},
+                             welcome.counts(self.db, self.ann, wait=welcome.COUNTS_LATE_WAIT_S))
+
+    def test_nothing_is_counted_for_someone_already_welcomed(self):
+        from datetime import datetime
+        self.ann.welcomed_at = datetime.utcnow()
+        self.db.commit()
+        self.assertIsNone(welcome.state(self.db, self.ann)["counts"])
+        self.maps.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()

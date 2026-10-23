@@ -131,6 +131,8 @@ live.handlers.activity = ({ progressOnly }) => {
     if (!progressOnly) liveDetailRefresh();
   }
   if (state.currentPage === 'health') _run('loadHealthDownloads');
+  // A download became ready to watch: its Library card gets ▶ Play.
+  if (!progressOnly && state.currentPage === 'library') _run('libRefreshWatch');
 };
 
 live.handlers.notifications = () => {};

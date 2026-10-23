@@ -1269,6 +1269,26 @@ body.modal-open { overflow: hidden; }
 }
 .lib-card:hover .lib-card-add-btn { opacity: 1; }
 
+/* ── ▶ Play / Open in Jellyfin (pages.js watchButtons / watchCardButtons) ── */
+.watch-btns { display: inline-flex; gap: 6px; flex-wrap: wrap; vertical-align: middle; }
+.watch-btns .btn { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
+.watch-row { margin: -4px 0 14px; }
+.btn.btn-xs { padding: 3px 10px; font-size: 11px; border-radius: 5px; }
+.btn.btn-xs svg { width: 12px; height: 12px; }
+.watch-card-btns { position: absolute; left: 6px; bottom: 6px; display: flex; gap: 6px; opacity: 0; transition: opacity 0.12s; }
+.lib-card:hover .watch-card-btns, .lib-card:focus-within .watch-card-btns { opacity: 1; }
+.watch-card-btns a { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  color: #fff; text-decoration: none; box-shadow: 0 2px 8px rgba(0,0,0,.45); }
+.watch-card-play { background: var(--accent); }
+.watch-card-play svg { width: 15px; height: 15px; margin-left: 2px; }
+.watch-card-open { background: rgba(15, 15, 20, .78); border: 1px solid rgba(255,255,255,.18); }
+.watch-card-btns a:hover { filter: brightness(1.15); }
+.watch-card-btns a:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.ep-play-btn { flex: 0 0 22px; width: 22px; height: 22px; margin-left: -26px; border-radius: 50%; display: inline-flex;
+  align-items: center; justify-content: center; color: var(--accent); text-decoration: none; }
+.ep-play-btn svg { width: 12px; height: 12px; margin-left: 1px; }
+a.ep-play-btn:hover { background: var(--accent); color: #fff; }
+
 /* Inline-styled flex rows inside headers and forms wrap instead of pushing past the edge
    (no effect while they fit; matters on phones and on tablets with the sidebar open) */
 .page-header-row > [style*="display:flex"], .card-header > [style*="display:flex"],
@@ -1278,7 +1298,8 @@ body.modal-open { overflow: hidden; }
 
 /* Touch screens have no hover: show the add buttons that hover reveals, drop hover lifts */
 @media (hover: none) {
-  .lib-card .lib-card-add-btn, .coverage-card .card-add-btn { opacity: 1; }
+  .lib-card .lib-card-add-btn, .coverage-card .card-add-btn, .watch-card-btns { opacity: 1; }
+  .ep-play-btn { flex-basis: 28px; width: 28px; height: 28px; margin-left: -30px; }
   .lib-card:hover { transform: none; box-shadow: none; }
 }
 button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .live-ch-row, .nav-item {
@@ -1675,6 +1696,9 @@ label.pool-row:hover { background: var(--bg2); }
 .welcome-picks { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; }
 .welcome-rows { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 12px; padding: 0; list-style: none; }
 .welcome-rows li { background: var(--bg3); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 13px; color: var(--text); }
+.welcome-counts { font-size: 15px; line-height: 1.5; color: var(--text); }
+.welcome-counts strong { color: var(--accent); font-weight: 600; white-space: nowrap; }
+.welcome-counts:empty { display: none; }
 .welcome-where { border: 1px solid var(--border2); background: var(--bg2); border-radius: var(--radius-sm); padding: 12px 14px; margin-bottom: 12px; }
 .welcome-where .big { font-size: 16px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
 /* Add someone: three steps (family.js) */
@@ -4761,13 +4785,13 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="/static/js/app.js?v=45"></script>
 <script src="/static/js/sources.js?v=45"></script>
-<script src="/static/js/pages.js?v=45"></script>
+<script src="/static/js/pages.js?v=50"></script>
 <script src="/static/js/music.js?v=45"></script>
 <script src="/static/js/mychannels.js?v=48"></script>
 <script src="/static/js/newgroups.js?v=45"></script>
 <script src="/static/js/family.js?v=47"></script>
-<script src="/static/js/welcome.js?v=48"></script>
-<script src="/static/js/live.js?v=2"></script>
+<script src="/static/js/welcome.js?v=50"></script>
+<script src="/static/js/live.js?v=3"></script>
 <script src="/static/js/myyoutube.js?v=48"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
