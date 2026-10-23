@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="222 182 829 338" width="829" height="338" role="img" aria-label="Tentacle">
+<title>Tentacle</title>
+<defs><linearGradient id="tdome" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#c39bf0"/><stop offset=".55" stop-color="#8a64e4"/><stop offset="1" stop-color="#6f4bd8"/></linearGradient><linearGradient id="trim" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4a3191"/><stop offset="1" stop-color="#714dc2"/></linearGradient><linearGradient id="tstr" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#b9a4f0" stop-opacity=".9"/><stop offset="1" stop-color="#d6c6ff"/></linearGradient><radialGradient id="tga"><stop offset="0" stop-color="#e64ce0" stop-opacity=".75"/><stop offset="1" stop-color="#e64ce0" stop-opacity="0"/></radialGradient><radialGradient id="tgb"><stop offset="0" stop-color="#f3a8dc" stop-opacity=".75"/><stop offset="1" stop-color="#f3a8dc" stop-opacity="0"/></radialGradient><radialGradient id="tgc"><stop offset="0" stop-color="#f2507f" stop-opacity=".75"/><stop offset="1" stop-color="#f2507f" stop-opacity="0"/></radialGradient><radialGradient id="tgd"><stop offset="0" stop-color="#3fe0e8" stop-opacity=".75"/><stop offset="1" stop-color="#3fe0e8" stop-opacity="0"/></radialGradient><radialGradient id="tge"><stop offset="0" stop-color="#4fb0f5" stop-opacity=".75"/><stop offset="1" stop-color="#4fb0f5" stop-opacity="0"/></radialGradient><radialGradient id="tgf"><stop offset="0" stop-color="#e83fd0" stop-opacity=".75"/><stop offset="1" stop-color="#e83fd0" stop-opacity="0"/></radialGradient><radialGradient id="tgg"><stop offset="0" stop-color="#45d5e8" stop-opacity=".75"/><stop offset="1" stop-color="#45d5e8" stop-opacity="0"/></radialGradient><radialGradient id="tgh"><stop offset="0" stop-color="#9ad84a" stop-opacity=".75"/><stop offset="1" stop-color="#9ad84a" stop-opacity="0"/></radialGradient><radialGradient id="tgi"><stop offset="0" stop-color="#f0566a" stop-opacity=".75"/><stop offset="1" stop-color="#f0566a" stop-opacity="0"/></radialGradient><radialGradient id="tgj"><stop offset="0" stop-color="#f2c23c" stop-opacity=".75"/><stop offset="1" stop-color="#f2c23c" stop-opacity="0"/></radialGradient><linearGradient id="teae" gradientUnits="userSpaceOnUse" x1="278" y1="343" x2="243" y2="387"><stop offset="0" stop-color="#e64ce0"/><stop offset="1" stop-color="#4fb0f5"/></linearGradient><linearGradient id="teac" gradientUnits="userSpaceOnUse" x1="278" y1="343" x2="303" y2="368"><stop offset="0" stop-color="#e64ce0"/><stop offset="1" stop-color="#f2507f"/></linearGradient><linearGradient id="teah" gradientUnits="userSpaceOnUse" x1="278" y1="343" x2="282" y2="410"><stop offset="0" stop-color="#e64ce0"/><stop offset="1" stop-color="#9ad84a"/></linearGradient><linearGradient id="tece" gradientUnits="userSpaceOnUse" x1="303" y1="368" x2="243" y2="387"><stop offset="0" stop-color="#f2507f"/><stop offset="1" stop-color="#4fb0f5"/></linearGradient><linearGradient id="tech" gradientUnits="userSpaceOnUse" x1="303" y1="368" x2="282" y2="410"><stop offset="0" stop-color="#f2507f"/><stop offset="1" stop-color="#9ad84a"/></linearGradient><linearGradient id="tecf" gradientUnits="userSpaceOnUse" x1="303" y1="368" x2="329" y2="391"><stop offset="0" stop-color="#f2507f"/><stop offset="1" stop-color="#e83fd0"/></linearGradient><linearGradient id="teeh" gradientUnits="userSpaceOnUse" x1="243" y1="387" x2="282" y2="410"><stop offset="0" stop-color="#4fb0f5"/><stop offset="1" stop-color="#9ad84a"/></linearGradient><linearGradient id="tehf" gradientUnits="userSpaceOnUse" x1="282" y1="410" x2="329" y2="391"><stop offset="0" stop-color="#9ad84a"/><stop offset="1" stop-color="#e83fd0"/></linearGradient><linearGradient id="tehj" gradientUnits="userSpaceOnUse" x1="282" y1="410" x2="329" y2="438"><stop offset="0" stop-color="#9ad84a"/><stop offset="1" stop-color="#f2c23c"/></linearGradient><linearGradient id="tefj" gradientUnits="userSpaceOnUse" x1="329" y1="391" x2="329" y2="438"><stop offset="0" stop-color="#e83fd0"/><stop offset="1" stop-color="#f2c23c"/></linearGradient><linearGradient id="tefd" gradientUnits="userSpaceOnUse" x1="329" y1="391" x2="355" y2="368"><stop offset="0" stop-color="#e83fd0"/><stop offset="1" stop-color="#3fe0e8"/></linearGradient><linearGradient id="tedg" gradientUnits="userSpaceOnUse" x1="355" y1="368" x2="415" y2="387"><stop offset="0" stop-color="#3fe0e8"/><stop offset="1" stop-color="#45d5e8"/></linearGradient><linearGradient id="tedi" gradientUnits="userSpaceOnUse" x1="355" y1="368" x2="376" y2="410"><stop offset="0" stop-color="#3fe0e8"/><stop offset="1" stop-color="#f0566a"/></linearGradient><linearGradient id="tebd" gradientUnits="userSpaceOnUse" x1="380" y1="343" x2="355" y2="368"><stop offset="0" stop-color="#f3a8dc"/><stop offset="1" stop-color="#3fe0e8"/></linearGradient><linearGradient id="tebg" gradientUnits="userSpaceOnUse" x1="380" y1="343" x2="415" y2="387"><stop offset="0" stop-color="#f3a8dc"/><stop offset="1" stop-color="#45d5e8"/></linearGradient><linearGradient id="tebi" gradientUnits="userSpaceOnUse" x1="380" y1="343" x2="376" y2="410"><stop offset="0" stop-color="#f3a8dc"/><stop offset="1" stop-color="#f0566a"/></linearGradient><linearGradient id="tegi" gradientUnits="userSpaceOnUse" x1="415" y1="387" x2="376" y2="410"><stop offset="0" stop-color="#45d5e8"/><stop offset="1" stop-color="#f0566a"/></linearGradient><linearGradient id="teij" gradientUnits="userSpaceOnUse" x1="376" y1="410" x2="329" y2="438"><stop offset="0" stop-color="#f0566a"/><stop offset="1" stop-color="#f2c23c"/></linearGradient><linearGradient id="tbe" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5a8fe0"/><stop offset="1" stop-color="#3a6ab8"/></linearGradient><linearGradient id="tbh" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5cc27e"/><stop offset="1" stop-color="#3b955c"/></linearGradient><linearGradient id="tbj" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f6d25a"/><stop offset="1" stop-color="#d39e2e"/></linearGradient><linearGradient id="tbi" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e8578f"/><stop offset="1" stop-color="#b23a6c"/></linearGradient><linearGradient id="tbg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5fd2dc"/><stop offset="1" stop-color="#3aa5b2"/></linearGradient></defs>
+<path d="M241,276 C241,222 281,186 329,186 C377,186 417,222 417,276 C417,292 380,303 329,303 C278,303 241,292 241,276 Z" fill="url(#tdome)"/>
+<ellipse cx="329" cy="296" rx="61" ry="10" fill="url(#trim)"/>
+<g fill="none" stroke-linecap="round" stroke-width="2.4">
+<path d="M278,296 L278,343" stroke="#e64ce0" stroke-opacity=".6"/>
+<path d="M304,296 L303,368" stroke="#f2507f" stroke-opacity=".6"/>
+<path d="M329,296 L329,391" stroke="#e83fd0" stroke-opacity=".6"/>
+<path d="M354,296 L355,368" stroke="#3fe0e8" stroke-opacity=".6"/>
+<path d="M380,296 L380,343" stroke="#f3a8dc" stroke-opacity=".6"/>
+<path d="M278,343 L243,387" stroke="url(#teae)" stroke-opacity=".75"/>
+<path d="M278,343 L303,368" stroke="url(#teac)" stroke-opacity=".75"/>
+<path d="M278,343 L282,410" stroke="url(#teah)" stroke-opacity=".75"/>
+<path d="M303,368 L243,387" stroke="url(#tece)" stroke-opacity=".75"/>
+<path d="M303,368 L282,410" stroke="url(#tech)" stroke-opacity=".75"/>
+<path d="M303,368 L329,391" stroke="url(#tecf)" stroke-opacity=".75"/>
+<path d="M243,387 L282,410" stroke="url(#teeh)" stroke-opacity=".75"/>
+<path d="M282,410 L329,391" stroke="url(#tehf)" stroke-opacity=".75"/>
+<path d="M282,410 L329,438" stroke="url(#tehj)" stroke-opacity=".75"/>
+<path d="M329,391 L329,438" stroke="url(#tefj)" stroke-opacity=".75"/>
+<path d="M329,391 L355,368" stroke="url(#tefd)" stroke-opacity=".75"/>
+<path d="M355,368 L415,387" stroke="url(#tedg)" stroke-opacity=".75"/>
+<path d="M355,368 L376,410" stroke="url(#tedi)" stroke-opacity=".75"/>
+<path d="M380,343 L355,368" stroke="url(#tebd)" stroke-opacity=".75"/>
+<path d="M380,343 L415,387" stroke="url(#tebg)" stroke-opacity=".75"/>
+<path d="M380,343 L376,410" stroke="url(#tebi)" stroke-opacity=".75"/>
+<path d="M415,387 L376,410" stroke="url(#tegi)" stroke-opacity=".75"/>
+<path d="M376,410 L329,438" stroke="url(#teij)" stroke-opacity=".75"/>
+<path d="M243,387 C236,402 238,420 238,436" stroke="#5a8fe0"/>
+<path d="M282,410 C280,430 279,450 279,469" stroke="#5cc27e"/>
+<path d="M329,438 L329,494" stroke="#f6d25a"/>
+<path d="M376,410 C378,430 379,450 379,469" stroke="#e8578f"/>
+<path d="M415,387 C422,402 421,420 421,436" stroke="#5fd2dc"/>
+</g>
+<circle cx="238" cy="448" r="12" fill="url(#tbe)"/>
+<circle cx="279" cy="481" r="12" fill="url(#tbh)"/>
+<circle cx="329" cy="506" r="12" fill="url(#tbj)"/>
+<circle cx="379" cy="481" r="12" fill="url(#tbi)"/>
+<circle cx="421" cy="448" r="12" fill="url(#tbg)"/>
+<circle cx="278" cy="343" r="11" fill="url(#tga)"/>
+<circle cx="278" cy="343" r="4.2" fill="#e64ce0"/>
+<circle cx="278" cy="343" r="2.1" fill="#fff" fill-opacity=".8"/>
+<circle cx="380" cy="343" r="11" fill="url(#tgb)"/>
+<circle cx="380" cy="343" r="4.2" fill="#f3a8dc"/>
+<circle cx="380" cy="343" r="2.1" fill="#fff" fill-opacity=".8"/>
+<circle cx="303" cy="368" r="11" fill="url(#tgc)"/>
+<circle cx="303" cy="368" r="4.2" fill="#f2507f"/>
+<circle cx="303" cy="368" r="2.1" fill="#fff" fill-opacity=".8"/>
+<circle cx="355" cy="368" r="11" fill="url(#tgd)"/>
+<circle cx="355" cy="368" r="4.2" fill="#3fe0e8"/>
+<circle cx="355" cy="368" r="2.1" fill="#fff" fill-opacity=".8"/>
+<circle cx="243" cy="387" r="11" fill="url(#tge)"/>
+<circle cx="243" cy="387" r="4.2" fill="#4fb0f5"/>
+<circle cx="243" cy="387" r="2.1" fill="#fff" fill-opacity=".8"/>
+<circle cx="329" cy="391" r="11" fill="url(#tgf)"/>
+<circle cx="329" cy="391" r="4.2" fill="#e83fd0"/>
+<circle cx="329" cy="391" r="2.1" fill="#fff" fill-opacity=".8"/>
+<circle cx="415" cy="387" r="11" fill="url(#tgg)"/>
+<circle cx="415" cy="387" r="4.2" fill="#45d5e8"/>
+<circle cx="415" cy="387" r="2.1" fill="#fff" fill-opacity=".8"/>
+<circle cx="282" cy="410" r="11" fill="url(#tgh)"/>
+<circle cx="282" cy="410" r="4.2" fill="#9ad84a"/>
+<circle cx="282" cy="410" r="2.1" fill="#fff" fill-opacity=".8"/>
+<circle cx="376" cy="410" r="11" fill="url(#tgi)"/>
+<circle cx="376" cy="410" r="4.2" fill="#f0566a"/>
+<circle cx="376" cy="410" r="2.1" fill="#fff" fill-opacity=".8"/>
+<circle cx="329" cy="438" r="11" fill="url(#tgj)"/>
+<circle cx="329" cy="438" r="4.2" fill="#f2c23c"/>
+<circle cx="329" cy="438" r="2.1" fill="#fff" fill-opacity=".8"/>
+<g transform="translate(490,318)" fill="none" stroke="#fff" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round">
+<path transform="translate(0,0)" d="M3.25,3.25 H57.75 M30.5,3.25 V79.75"/>
+<path transform="translate(78,0)" d="M44.75,3.25 H3.25 V79.75 H44.75 M3.25,41.5 H40.75"/>
+<path transform="translate(144,0)" d="M3.25,79.75 V3.25 L58.75,79.75 V3.25"/>
+<path transform="translate(221,0)" d="M3.25,3.25 H58.75 M31,3.25 V79.75"/>
+<path transform="translate(285,0)" d="M4.25,79.75 L34,3.25 L62.75,79.75 M13.6,56 H54.4"/>
+<path transform="translate(362,0)" d="M63.8,12.6 A38,38 0 1 0 63.8,70.4"/>
+<path transform="translate(444,0)" d="M3.25,3.25 V79.75 H44.75"/>
+<path transform="translate(506,0)" d="M45.75,3.25 H3.25 V79.75 H45.75 M3.25,41.5 H41.75"/>
+</g>
+</svg>

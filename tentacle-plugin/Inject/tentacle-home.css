@@ -19,9 +19,9 @@ body.tentacle-home-active .homeSectionsContainer {
 
 /* ── Tentacle Logo Branding ────────────────────────────────────────── */
 
-/* Header home button — replace Jellyfin icon with Tentacle logo */
+/* Header home button — replace Jellyfin icon with Tentacle's mark + wordmark (scripts/brand.py) */
 .headerHomeButton {
-  background: url('/Tentacle/logo.png') no-repeat center / contain !important;
+  background: url('/Tentacle/Assets/brand-lockup.svg') no-repeat center / contain !important;
   width: 8em !important;
   height: 2.4em !important;
   font-size: 0 !important;
@@ -34,13 +34,13 @@ body.tentacle-home-active .homeSectionsContainer {
 
 /* Admin sidebar logo */
 .adminDrawerLogo img {
-  content: url('/Tentacle/logo.png') !important;
+  content: url('/Tentacle/Assets/brand-lockup.svg') !important;
   max-height: 2.5em;
 }
 
 /* Splash/loading screen logo */
 .splashLogo {
-  background: url('/Tentacle/logo.png') no-repeat center / contain !important;
+  background: url('/Tentacle/Assets/brand-lockup.svg') no-repeat center / contain !important;
   height: 8em !important;
   width: 20em !important;
   margin: 0 auto !important;
@@ -48,7 +48,7 @@ body.tentacle-home-active .homeSectionsContainer {
 
 /* Page title logo on home page */
 .pageTitleWithDefaultLogo {
-  background-image: url('/Tentacle/logo.png') !important;
+  background-image: url('/Tentacle/Assets/brand-lockup.svg') !important;
   background-size: contain !important;
   background-repeat: no-repeat !important;
   width: 10em !important;

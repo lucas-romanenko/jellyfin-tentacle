@@ -3,34 +3,36 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#0c0c10">
+<meta name="theme-color" content="#0f0d1a">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Tentacle">
 <title>Tentacle</title>
 <link rel="icon" type="image/png" href="/static/favicon-96x96.png" sizes="96x96">
-<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="icon" type="image/svg+xml" href="/static/brand/mark-small.svg">
 <link rel="shortcut icon" href="/static/favicon.ico">
 <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
 <link rel="manifest" href="/static/site.webmanifest">
+<link rel="stylesheet" href="/static/brand/tokens.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg0: #0c0c10;
-  --bg1: #13131a;
-  --bg2: #1a1a24;
-  --bg3: #22222e;
+  /* the brand's colours, as on the TV app: the same values as static/brand/tokens.css (tests/test_brand.py) */
+  --bg0: #0f0d1a;
+  --bg1: #141226;
+  --bg2: #1b1830;
+  --bg3: #231f3d;
   --border: rgba(255,255,255,0.07);
   --border2: rgba(255,255,255,0.12);
-  --text: #e2e2ec;
-  --text2: #9090a8;
-  --text3: #82829c;  /* 4.6:1 on --bg2 (WCAG AA); #5a5a72 was 2.6:1 */
-  --accent: #6c63ff;
-  --accent-dim: rgba(108,99,255,0.15);
-  --accent-hover: #7d75ff;
-  --accent-text: #958fff;  /* accent as text on --accent-dim: 5.8:1 on --bg1, 5.3:1 on --bg2 (#6c63ff was 3.7:1) */
+  --text: #ebe9f5;
+  --text2: #9b97b6;
+  --text3: #8b87a8;  /* 4.6:1 on --bg3, 5.0:1 on --bg2 (WCAG AA) */
+  --accent: #6f5ce6;  /* fills under white text: 4.8:1 */
+  --accent-dim: rgba(111,92,230,0.18);
+  --accent-hover: #6450dc;
+  --accent-text: #8b80ff;  /* the TV app's accent, as text, icons, focus: 5.8:1 on --bg1, 5.0:1 on --accent-dim */
   --green: #4ade80;
   --green-dim: rgba(74,222,128,0.12);
   --red: #f87171;
@@ -103,18 +105,9 @@ body {
   gap: 10px;
 }
 
-.logo-icon {
-  width: 32px; height: 32px;
-  background: var(--accent);
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 16px;
-  flex-shrink: 0;
-}
-
-.logo-text { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+/* The brand: the jellyfish and the TENTACLE wordmark (static/brand/) */
+.logo-icon { width: 30px; height: 47px; flex-shrink: 0; display: block; }
+.logo-text { display: block; height: 12px; width: auto; }
 .logo-version { font-size: 10px; color: var(--text3); font-family: 'DM Mono', monospace; margin-top: 1px; }
 
 .sidebar-nav { padding: 12px 10px; flex: 1; overflow-y: auto; }
@@ -238,7 +231,7 @@ body {
   position: fixed;
   inset: 0;
   background:
-    radial-gradient(1200px 600px at 50% -10%, rgba(108,99,255,0.16), transparent 70%),
+    radial-gradient(1200px 600px at 50% -10%, rgba(111,92,230,0.16), transparent 70%),
     var(--bg0);
   z-index: 2000;
   display: flex;
@@ -261,8 +254,8 @@ body {
   margin-bottom: 40px;
 }
 
-.login-logo .logo-icon { width: 44px; height: 44px; font-size: 22px; }
-.login-logo .logo-text { font-size: 22px; }
+.login-logo .logo-icon { width: 46px; height: 73px; }
+.login-logo .logo-text { height: 20px; }
 
 .login-step {
   display: flex;
@@ -579,7 +572,7 @@ body:not(.music-on) [data-music-only] { display: none !important; }
 .music-disc { font-size: 11px; color: var(--text3); margin: 12px 0 4px; text-transform: uppercase; letter-spacing: 0.05em; }
 .music-tracklist { margin-top: 8px; display: grid; }
 .music-track { display: flex; gap: 10px; padding: 5px 8px; font-size: 13px; border-radius: 4px; }
-.music-track.hl { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
+.music-track.hl { background: var(--accent-dim); color: var(--accent-text); font-weight: 600; }
 .music-track-n { width: 26px; color: var(--text3); font-family: 'DM Mono', monospace; font-size: 11px; flex-shrink: 0; padding-top: 1px; }
 .music-track-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .music-track-len { color: var(--text3); font-family: 'DM Mono', monospace; font-size: 11px; }
@@ -622,7 +615,7 @@ body:not(.music-on) [data-music-only] { display: none !important; }
 .btn-primary:hover:not(:disabled) { background: var(--accent-hover); transform: translateY(-1px); }
 
 .btn-secondary { background: var(--bg3); color: var(--text); border: 1px solid var(--border2); }
-.btn-secondary:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.btn-secondary:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-text); }
 
 .btn-danger { background: var(--red-dim); color: var(--red); border: 1px solid rgba(248,113,113,0.2); }
 .btn-danger:hover:not(:disabled) { background: rgba(248,113,113,0.2); }
@@ -658,7 +651,7 @@ body:not(.music-on) [data-music-only] { display: none !important; }
   white-space: nowrap;
 }
 
-.badge-accent { background: var(--accent-dim); color: var(--accent); }
+.badge-accent { background: var(--accent-dim); color: var(--accent-text); }
 .badge-green { background: var(--green-dim); color: var(--green); }
 .badge-red { background: var(--red-dim); color: var(--red); }
 .badge-amber { background: var(--amber-dim); color: var(--amber); }
@@ -735,6 +728,8 @@ td.primary { color: var(--text); font-weight: 500; }
 
 .empty-state { text-align: center; padding: 48px; color: var(--text3); }
 .empty-state .empty-icon { font-size: 32px; margin-bottom: 12px; }
+.empty-state .empty-mark { display: block; width: 38px; height: 60px; margin: 0 auto 14px; opacity: .45; }
+.setup-mark { display: block; width: 34px; height: 54px; margin-bottom: 16px; }
 .empty-state p { font-size: 13px; }
 
 /* ── Provider cards ── */
@@ -749,7 +744,7 @@ td.primary { color: var(--text); font-weight: 500; }
 }
 
 .provider-card:hover { border-color: var(--border2); }
-.provider-card.active-provider { border-color: rgba(108,99,255,0.4); }
+.provider-card.active-provider { border-color: rgba(111,92,230,0.4); }
 
 .provider-card-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; gap: 10px; }
 .provider-card-name { font-size: 14px; font-weight: 600; }
@@ -791,7 +786,7 @@ td.primary { color: var(--text); font-weight: 500; }
 .addr-word.green { color: var(--green); } .addr-word.amber { color: var(--amber); } .addr-word.red { color: var(--red); } .addr-word.gray { color: var(--text3); }
 .addr-list { display: flex; flex-direction: column; gap: 4px; }
 .addr-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
-.addr-row.in-use { border-color: rgba(108,99,255,0.4); }
+.addr-row.in-use { border-color: rgba(111,92,230,0.4); }
 .addr-row .dot { flex-shrink: 0; }
 .addr-main { flex: 1; min-width: 0; }
 .addr-url { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -800,7 +795,7 @@ td.primary { color: var(--text); font-weight: 500; }
 .addr-day { margin-left: 4px; white-space: nowrap; }
 .addr-pref { font-family: inherit; font-size: 11px; color: var(--text3); }
 .addr-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
-.addr-inuse { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); padding: 0 6px; }
+.addr-inuse { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--accent-text); padding: 0 6px; }
 .addr-remove { padding: 2px 8px; font-size: 18px; line-height: 1; color: var(--text3); background: none; border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; }
 .addr-remove:hover { color: var(--red); border-color: var(--border); }
 .addr-add { display: flex; gap: 8px; align-items: flex-start; margin-top: 10px; }
@@ -884,7 +879,7 @@ td.primary { color: var(--text); font-weight: 500; }
 }
 
 .cat-row:hover { border-color: var(--border2); }
-.cat-row.whitelisted { border-color: rgba(108,99,255,0.25); background: var(--accent-dim); }
+.cat-row.whitelisted { border-color: rgba(111,92,230,0.25); background: var(--accent-dim); }
 
 .cat-checkbox { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
 .cat-name { flex: 1; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1034,7 +1029,7 @@ body.modal-open { overflow: hidden; }
 .detail-follow-toggle { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; }
 .detail-follow-toggle input { accent-color: var(--accent); }
 .detail-follow-label { color: var(--text2); font-weight: 500; }
-.detail-follow-toggle input:checked + .detail-follow-label { color: var(--accent); }
+.detail-follow-toggle input:checked + .detail-follow-label { color: var(--accent-text); }
 
 /* ── Scrollbars ── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
@@ -1138,7 +1133,7 @@ body.modal-open { overflow: hidden; }
   padding: 2px 8px;
   color: var(--text2);
 }
-.run-cat-pill.has-new { border-color: rgba(108,99,255,0.3); background: var(--accent-dim); color: var(--accent); }
+.run-cat-pill.has-new { border-color: rgba(111,92,230,0.3); background: var(--accent-dim); color: var(--accent-text); }
 
 /* ── Duplicate rows ── */
 .dup-row {
@@ -1207,9 +1202,9 @@ body.modal-open { overflow: hidden; }
   background: var(--bg3); color: var(--text2); border: 1px solid var(--border); transition: all .15s;
 }
 .genre-chip:hover { border-color: var(--text3); }
-.genre-chip.selected { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); font-weight: 500; }
+.genre-chip.selected { background: var(--accent-dim); color: var(--accent-text); border-color: var(--accent); font-weight: 500; }
 .match-count { font-size: 12px; color: var(--text3); margin-top: 8px; font-family: 'DM Mono', monospace; transition: opacity .2s; }
-.match-count .count-num { color: var(--accent); font-weight: 600; }
+.match-count .count-num { color: var(--accent-text); font-weight: 600; }
 
 /* ── Log viewer ── */
 .log-panel {
@@ -1688,6 +1683,7 @@ label.pool-row:hover { background: var(--bg2); }
 .welcome-pips { flex: 1; margin: 0 12px 0 0; }
 .welcome-pips li { font-size: 0; gap: 0; padding-top: 0; }
 .welcome-title { font-size: 20px; margin-bottom: 10px; }
+.welcome-title-brand::before { content: ''; display: block; width: 34px; height: 54px; margin-bottom: 12px; background: url('/static/brand/mark.svg') no-repeat center / contain; }
 .welcome-body { font-size: 14px; line-height: 1.6; color: var(--text2); }
 .welcome-body p { margin: 0 0 12px; }
 .welcome-body strong { color: var(--text); }
@@ -1720,6 +1716,8 @@ label.pool-row:hover { background: var(--bg2); }
 .add-ask { border: 1px solid rgba(251,191,36,.3); background: var(--amber-dim); border-radius: var(--radius-sm); padding: 12px 14px; margin-top: 4px; }
 .add-ask .form-group { margin: 10px 0 0; }
 .add-message { width: 100%; font-size: 13px; line-height: 1.5; resize: vertical; white-space: pre-wrap; }
+.invite-brand { background: var(--tentacle-navy); border-radius: var(--radius-sm); padding: 14px 16px; margin-bottom: 12px; }
+.invite-brand img { display: block; height: 42px; width: auto; }
 .fam-card-steps ol, .fam-steps { padding-left: 20px; margin-top: 4px; }
 .fam-steps { font-size: 13px; color: var(--text2); line-height: 1.7; margin-bottom: 16px; }
 .fam-code { font-family: 'DM Mono', monospace; font-size: 22px; letter-spacing: .2em; text-align: center; }
@@ -1796,7 +1794,7 @@ label.pool-row:hover { background: var(--bg2); }
   transition: color 0.15s, border-color 0.15s;
 }
 .live-tab:hover { color: var(--text); }
-.live-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.live-tab.active { color: var(--accent-text); border-bottom-color: var(--accent); }
 .live-tab-panel { display: none; }
 .live-tab-panel.active { display: block; }
 /* Tab strips: when there are more tabs than width they scroll sideways (no scrollbar) */
@@ -2013,7 +2011,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
   display: inline-flex; align-items: center; justify-content: center;
   cursor: help; position: relative;
 }
-.hero-config-hint:hover { background: var(--accent-dim); color: var(--accent); }
+.hero-config-hint:hover { background: var(--accent-dim); color: var(--accent-text); }
 .hero-config-checkbox:hover .hero-config-tooltip,
 .hero-config-checkbox.show .hero-config-tooltip { display: block; }
 .hero-config-checkbox:last-of-type .hero-config-tooltip { left: auto; right: 0; }
@@ -2070,7 +2068,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
   font-size: 11px; font-weight: 500; padding: 2px 8px;
   border-radius: 4px; white-space: nowrap;
 }
-.dl-item-status.downloading { background: var(--accent-dim); color: var(--accent); }
+.dl-item-status.downloading { background: var(--accent-dim); color: var(--accent-text); }
 .dl-item-status.importing { background: var(--green-dim); color: var(--green); }
 .dl-item-status.queued { background: var(--bg3); color: var(--text3); }
 .dl-item-status.stuck { background: var(--red-dim); color: var(--red); }
@@ -2090,6 +2088,8 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 }
 
 /* ── Mobile menu button + off-canvas backdrop (hidden on desktop) ── */
+/* Phones: the jellyfish by the menu button (the sidebar, with the brand, is a drawer there) */
+.topbar-mark { display: none; height: 30px; width: auto; flex-shrink: 0; }
 .mobile-menu-btn {
   display: none;
   background: none;
@@ -2133,6 +2133,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 /* ── Responsive: tablet & mobile (≤768px) ── */
 @media (max-width: 768px) {
   .mobile-menu-btn { display: inline-flex; align-items: center; justify-content: center; }
+  .topbar-mark { display: block; }
 
   /* Sidebar becomes an off-canvas drawer */
   .sidebar {
@@ -2325,9 +2326,9 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
   <!-- Sidebar -->
   <aside class="sidebar">
     <div class="sidebar-logo">
-      <div class="logo-icon">◈</div>
+      <img class="logo-icon" src="/static/brand/mark-small.svg" alt="">
       <div>
-        <div class="logo-text">Tentacle</div>
+        <img class="logo-text" src="/static/brand/wordmark.svg" alt="Tentacle">
         <div class="logo-version" id="logo-version"></div>
       </div>
     </div>
@@ -2405,6 +2406,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
     <!-- Top bar -->
     <div class="topbar">
       <button class="mobile-menu-btn" id="mobileMenuBtn" onclick="toggleSidebar()" aria-label="Toggle menu">☰</button>
+      <img class="topbar-mark" src="/static/brand/mark-small.svg" alt="">
       <div class="topbar-title" id="topbar-title">Library</div>
       <div class="topbar-sub" id="topbar-sub"></div>
     </div>
@@ -2927,7 +2929,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
         <!-- No provider warning -->
         <div id="live-no-provider" style="display:none;padding:20px;text-align:center;color:var(--text3);font-size:13px">
-          No provider is used for Live TV. Switch on <strong>Use for Live TV</strong> on a provider&rsquo;s card in <a href="#" onclick="showSourcesTab('providers');return false" style="color:var(--accent)">IPTV providers</a>.
+          No provider is used for Live TV. Switch on <strong>Use for Live TV</strong> on a provider&rsquo;s card in <a href="#" onclick="showSourcesTab('providers');return false" style="color: var(--accent-text)">IPTV providers</a>.
         </div>
 
 
@@ -3079,8 +3081,8 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
             <p style="color:var(--text3);font-size:13px;margin-bottom:12px">You schedule and watch recordings in Jellyfin (Live TV &rarr; Guide &rarr; Record; they appear under Live TV &rarr; Recordings). Tentacle is the tuner they record from. Recordings and recording schedules are the household&rsquo;s: everyone sees them, like a family recorder, whoever scheduled them.</p>
             <ul style="font-size:13px;color:var(--text2);line-height:1.7;margin:0 0 0 18px">
               <li>A recording keeps its connection to the provider: if the provider drops it, Tentacle reconnects and the recording carries on.</li>
-              <li>How many channels can record at once is <strong>Streams at once</strong> on each provider&rsquo;s card under <a href="#" onclick="showSourcesTab('providers');return false" style="color:var(--accent)">IPTV providers</a>.</li>
-              <li>Problems with a recording (a damaged file, a channel the provider replaced with a placeholder) are listed on the <a href="#" onclick="showPage('health');return false" style="color:var(--accent)">Health</a> page.</li>
+              <li>How many channels can record at once is <strong>Streams at once</strong> on each provider&rsquo;s card under <a href="#" onclick="showSourcesTab('providers');return false" style="color: var(--accent-text)">IPTV providers</a>.</li>
+              <li>Problems with a recording (a damaged file, a channel the provider replaced with a placeholder) are listed on the <a href="#" onclick="showPage('health');return false" style="color: var(--accent-text)">Health</a> page.</li>
             </ul>
           </div>
         </div>
@@ -4380,6 +4382,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
     <!-- Step 3: the message -->
     <div id="invite-step-card" style="display:none">
+      <div class="invite-brand"><img src="/static/brand/lockup.svg" alt="Tentacle"></div>
       <p class="fam-hint" id="invite-card-lead"></p>
       <textarea class="form-input add-message" id="invite-message" readonly rows="14" aria-label="The message to send"></textarea>
       <div class="fam-hint" id="invite-card-note"></div>
@@ -4525,8 +4528,8 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 <!-- Login overlay: pick yourself (at home), or type your name, or use a code -->
 <div class="login-overlay" id="login-overlay" style="display:none">
   <div class="login-logo">
-    <div class="logo-icon">🐙</div>
-    <div><div class="logo-text">Tentacle</div></div>
+    <img class="logo-icon" src="/static/brand/mark.svg" alt="">
+    <img class="logo-text" src="/static/brand/wordmark.svg" alt="Tentacle">
   </div>
   <div class="login-step" id="login-step-people">
     <h1 class="login-title">Who's watching?</h1>
@@ -4574,7 +4577,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
     <!-- Step 1: Jellyfin connection -->
     <div class="setup-step" id="setup-step-1">
-      <div style="font-size:28px;margin-bottom:16px">◈</div>
+      <img class="setup-mark" src="/static/brand/mark.svg" alt="">
       <h2>Connect Jellyfin</h2>
       <p>Tentacle needs your Jellyfin server URL and an API key to get started.</p>
 

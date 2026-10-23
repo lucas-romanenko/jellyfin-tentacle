@@ -328,9 +328,12 @@ class PluginLoginPage(unittest.TestCase):
         css = re.sub(r"@media[^{]*\{", "", css)
         sels = re.findall(r"([^{}]+)\{", css)
         self.assertGreater(len(sels), 20)
+        # One rule reaches outside the page, and only while it shows: the
+        # header's small logo stands back for the brand over "Who's watching?"
+        scoped = ("#loginPage.tentacle-login", "body:has(#loginPage.tentacle-login:not(.hide))")
         for sel in sels:
             for part in sel.split(","):
-                self.assertTrue(part.strip().startswith("#loginPage.tentacle-login"), part)
+                self.assertTrue(part.strip().startswith(scoped), part)
 
 
 if __name__ == "__main__":

@@ -130,7 +130,8 @@
     if (visual && !visual.querySelector('.tentacle-login-head')) {
       var head = document.createElement('div');
       head.className = 'tentacle-login-head';
-      head.innerHTML = '<h1 class="tentacle-login-title">Who’s watching?</h1>'
+      head.innerHTML = '<img class="tentacle-login-brand" src="/Tentacle/Assets/brand-lockup.svg" alt="Tentacle">'
+        + '<h1 class="tentacle-login-title">Who’s watching?</h1>'
         + '<p class="tentacle-login-sub">Pick yourself to sign in.</p>';
       visual.insertBefore(head, visual.firstChild);
     }

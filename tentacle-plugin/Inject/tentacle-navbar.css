@@ -102,6 +102,19 @@ body.moonfin-navbar-active .cardOverlayContainer {
     gap: 8px;
 }
 
+/* Tentacle's jellyfish at the far left (wide screens only; the pill keeps Home) */
+.tentacle-nav-brand {
+    display: block;
+    height: 40px;
+    width: auto;
+    margin-right: 4px;
+    pointer-events: none;
+}
+
+@media (max-width: 1000px) {
+    .tentacle-nav-brand { display: none; }
+}
+
 .moonfin-nav-back {
     background: rgba(255, 255, 255, 0.1);
     backdrop-filter: blur(12px);

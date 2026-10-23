@@ -585,6 +585,22 @@ movies/series, then Sonarr/Radarr text-lookup titles TMDB lacks (TheTVDB).
   admins, every 2 min), and to monitors by `GET /api/provider-status`
   (503 while failing, no names).
 
+## Brand (`static/brand/`, drawn by `scripts/brand.py`)
+
+The jellyfish mark, the thin TENTACLE wordmark and their lockups, as on the
+TV app's banner, are code: `scripts/brand.py` draws every SVG in
+`static/brand/` (plus the TV app's one-colour vector `android/ic_tentacle.xml`)
+and copies them to `docs/assets/brand/`; `--png` renders the favicons, app
+icons, `docs/images/banner.png`, `social-preview.png` and the plugin's
+`tentacle-logo.png`. Don't edit those files by hand (`tests/test_brand.py`
+compares them with the script). `static/brand/tokens.css` holds the colours;
+`index.html`'s `:root` maps the dashboard's tokens onto them. Accent: one
+colour can't carry white text and be read as text on the dark background, so
+`--accent` (the fill, `--tentacle-accent-fill`) is for buttons and fills under
+white text and `--accent-text` (the TV app's #8b80ff) for text, icons and
+focus; `color: var(--accent)` is a contrast bug. Small sizes (sidebar,
+favicons, navbar) use `mark-small.svg`: thicker lines that survive 16-48 px.
+
 ## UI words
 
 The UI says "Playlist" everywhere; the code says SmartList, TagRule,

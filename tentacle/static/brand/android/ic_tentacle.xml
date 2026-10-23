@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tentacle's jellyfish, one colour (drawn by jellyfin-tentacle scripts/brand.py) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="346"
+    android:viewportHeight="346">
+    <group android:translateX="-156" android:translateY="-178">
+        <path android:fillColor="#FFFFFFFF" android:fillType="evenOdd" android:pathData="M241,276 C241,222 281,186 329,186 C377,186 417,222 417,276 C417,292 380,303 329,303 C278,303 241,292 241,276 Z M268,296 a61,10 0 1,0 122,0 a61,10 0 1,0 -122,0 Z" />
+        <path android:strokeColor="#FFFFFFFF" android:strokeWidth="6" android:strokeLineCap="round" android:pathData="M278,304 L278,343 M304,304 L303,368 M329,304 L329,391 M354,304 L355,368 M380,304 L380,343 M278,343 L243,387 M278,343 L303,368 M278,343 L282,410 M303,368 L243,387 M303,368 L282,410 M303,368 L329,391 M243,387 L282,410 M282,410 L329,391 M282,410 L329,438 M329,391 L329,438 M329,391 L355,368 M355,368 L415,387 M355,368 L376,410 M380,343 L355,368 M380,343 L415,387 M380,343 L376,410 M415,387 L376,410 M376,410 L329,438 M243,387 C236,402 238,420 238,436 M282,410 C280,430 279,450 279,469 M329,438 L329,494 M376,410 C378,430 379,450 379,469 M415,387 C422,402 421,420 421,436" />
+        <path android:fillColor="#FFFFFFFF" android:pathData="M223,448 a15,15 0 1,0 30,0 a15,15 0 1,0 -30,0 Z M264,481 a15,15 0 1,0 30,0 a15,15 0 1,0 -30,0 Z M314,506 a15,15 0 1,0 30,0 a15,15 0 1,0 -30,0 Z M364,481 a15,15 0 1,0 30,0 a15,15 0 1,0 -30,0 Z M406,448 a15,15 0 1,0 30,0 a15,15 0 1,0 -30,0 Z M270,343 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0 Z M372,343 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0 Z M295,368 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0 Z M347,368 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0 Z M235,387 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0 Z M321,391 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0 Z M407,387 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0 Z M274,410 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0 Z M368,410 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0 Z M321,438 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0 Z" />
+    </group>
+</vector>

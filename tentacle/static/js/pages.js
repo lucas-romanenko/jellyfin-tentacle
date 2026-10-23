@@ -196,8 +196,8 @@ function renderCategoryChart() {
         {
           label: 'Total',
           data: totals,
-          backgroundColor: 'rgba(108,99,255,0.2)',
-          borderColor: 'rgba(108,99,255,0.6)',
+          backgroundColor: 'rgba(139,128,255,0.2)',
+          borderColor: 'rgba(139,128,255,0.7)',
           borderWidth: 1,
           type: 'line',
           tension: 0.3,
@@ -762,7 +762,7 @@ async function fetchLibraryPage() {
 
     if (!data.items.length && offset === 0) {
       el.innerHTML = `<div class="empty-state" style="grid-column:1/-1">
-        <div class="empty-icon">◫</div>
+        <img class="empty-mark" src="/static/brand/mark-white.svg" alt="">
         <p>${listId ? 'No items found. Fetch the list first.' : 'No content yet. Run a sync to populate your library.'}</p>
       </div>`;
     }
@@ -2373,33 +2373,33 @@ function onQuickListUrlInput() {
   if (urlLower.includes('imdb.com/chart/top')) {
     detectedName = 'IMDB TOP 250';
     hintEl.textContent = 'IMDb Top 250 chart';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.includes('imdb.com/chart/moviemeter')) {
     detectedName = 'IMDb Most Popular';
     hintEl.textContent = 'IMDb Most Popular Movies';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.includes('imdb.com/chart/bottom')) {
     detectedName = 'IMDb Bottom 100';
     hintEl.textContent = 'IMDb Bottom 100 chart';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.match(/imdb\.com\/user\/ur\d+/)) {
     detectedName = 'My IMDB Watchlist';
     hintEl.textContent = 'IMDb user watchlist detected';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.match(/imdb\.com\/list\/ls\d+/)) {
     detectedName = 'IMDB List';
     hintEl.textContent = 'IMDb custom list detected';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.includes('trakt.tv')) {
     const m = url.match(/\/lists\/([^/?]+)/);
     detectedName = m ? m[1].replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Trakt List';
     hintEl.textContent = 'Trakt list detected';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.includes('letterboxd.com')) {
     const m = url.match(/\/list\/([^/?]+)/);
     detectedName = m ? m[1].replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Letterboxd List';
     hintEl.textContent = 'Letterboxd list detected';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (url.trim()) {
     hintEl.textContent = 'Paste an IMDb, Trakt, or Letterboxd URL';
     hintEl.style.color = 'var(--text3)';
@@ -2724,22 +2724,22 @@ function onModalUrlInput() {
   // Update hint to confirm detection
   if (urlLower.includes('imdb.com/chart/top')) {
     hintEl.textContent = 'IMDb Top 250 chart';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.includes('imdb.com/chart/moviemeter')) {
     hintEl.textContent = 'IMDb Most Popular Movies';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.match(/imdb\.com\/user\/ur\d+/)) {
     hintEl.textContent = 'IMDb user watchlist';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.match(/imdb\.com\/list\/ls\d+/)) {
     hintEl.textContent = 'IMDb custom list';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.includes('trakt.tv')) {
     hintEl.textContent = 'Trakt list';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (urlLower.includes('letterboxd.com')) {
     hintEl.textContent = 'Letterboxd list';
-    hintEl.style.color = 'var(--accent)';
+    hintEl.style.color = 'var(--accent-text)';
   } else if (url.trim()) {
     hintEl.textContent = 'Paste an IMDb, Trakt, or Letterboxd URL';
     hintEl.style.color = '';
@@ -5773,7 +5773,7 @@ function renderDiscoverGrid(items) {
       addBtn = `<button onclick="event.stopPropagation();showAddToArrModal(${tmdbId},'${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}','${escapeJS(item.media_type)}',${tvdbId})" class="lib-card-add-btn" title="${escapeAttr(_arrAddLabel(item.media_type === 'series'))}">+</button>`;
     }
     const clickHandler = `onclick="showDiscoverDetail(${tmdbId},'${escapeJS(item.media_type)}','${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}',${!!item.in_library},${tvdbId})"`;
-    const listTag = item.list_name ? `<div style="font-size:10px;color:var(--accent);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeAttr(item.list_name)}</div>` : '';
+    const listTag = item.list_name ? `<div style="font-size:10px;color: var(--accent-text);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeAttr(item.list_name)}</div>` : '';
     return `
       <div class="lib-card" ${clickHandler}>
         <div class="lib-card-poster">
