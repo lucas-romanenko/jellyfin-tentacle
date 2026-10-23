@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Reflection;
 using HarmonyLib;
 using Jellyfin.Database.Implementations.Entities;
@@ -21,14 +22,24 @@ namespace Jellyfin.Plugin.Tentacle.Services;
 ///
 /// How: a Harmony prefix sets <c>allowMediaProbe</c> to false for a Tentacle
 /// VOD item (VodNoVideoCopyFilter.IsTentacleVod) that already has a video
-/// stream. A title never probed (no streams yet) is probed as before, and
-/// so are library files, Live TV and other .strm files. If a later Jellyfin
-/// renames the method, nothing is patched and a warning is logged: VOD then
+/// stream from a probe of the address its .strm holds now. A title never
+/// probed (no streams yet) is probed as before, and so are library files,
+/// Live TV and other .strm files. A .strm Tentacle re-pointed (another
+/// provider or encode: services/sync.py rewrites it in place, same item) is
+/// probed again (#775): a library scan re-reads the address but never probes
+/// a shortcut, so its streams would stay the old file's. The addresses are
+/// kept in memory, so a title's first play after Jellyfin starts probes once
+/// (that also heals titles that went stale before this fix, and a probe that
+/// failed is retried after the next start). If a later Jellyfin renames the
+/// method, nothing is patched and a warning is logged: VOD then
 /// starts as before, a few seconds slower.
 /// </summary>
 public sealed class VodProbeOncePatch : IHostedService
 {
     private static readonly Harmony HarmonyInstance = new("jellyfin.plugin.tentacle.vod.probeonce");
+
+    // Item id -> the .strm address Jellyfin last probed it at, since it started.
+    private static readonly ConcurrentDictionary<Guid, string> ProbedAt = new();
 
     private readonly ILogger<VodProbeOncePatch> _hostLogger;
 
@@ -75,18 +86,29 @@ public sealed class VodProbeOncePatch : IHostedService
         }
     }
 
-    /// <summary>Whether Jellyfin may skip the probe: a Tentacle VOD item whose streams it already knows.</summary>
-    public static bool SkipProbe(bool isTentacleVod, IEnumerable<MediaStream>? knownStreams)
-        => isTentacleVod && (knownStreams ?? Array.Empty<MediaStream>()).Any(s => s.Type == MediaStreamType.Video);
+    /// <summary>Whether Jellyfin may skip the probe: a Tentacle VOD item whose streams it already knows,
+    /// probed at the address its .strm holds now (<paramref name="probedAt"/>: null when not probed since Jellyfin started).</summary>
+    public static bool SkipProbe(bool isTentacleVod, IEnumerable<MediaStream>? knownStreams, string? probedAt, string? shortcutPath)
+        => isTentacleVod && probedAt is not null && string.Equals(probedAt, shortcutPath, StringComparison.Ordinal)
+            && (knownStreams ?? Array.Empty<MediaStream>()).Any(s => s.Type == MediaStreamType.Video);
 
     private static void Prefix(BaseItem item, ref bool allowMediaProbe)
     {
         try
         {
-            if (allowMediaProbe && item != null && VodNoVideoCopyFilter.IsTentacleVod(item)
-                && SkipProbe(true, item.GetMediaStreams()))
+            if (!allowMediaProbe || item == null || !VodNoVideoCopyFilter.IsTentacleVod(item))
+            {
+                return;
+            }
+
+            ProbedAt.TryGetValue(item.Id, out var probedAt);
+            if (SkipProbe(true, item.GetMediaStreams(), probedAt, item.ShortcutPath))
             {
                 allowMediaProbe = false;
+            }
+            else
+            {
+                ProbedAt[item.Id] = item.ShortcutPath; // Jellyfin probes it now
             }
         }
         catch
