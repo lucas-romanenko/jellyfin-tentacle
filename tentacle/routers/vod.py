@@ -47,7 +47,7 @@ from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.orm import Session
 
 from models.database import Provider, get_db, get_setting
-from services import vod_tokens
+from services import vod_index_cache, vod_tokens
 from services.ssrf import is_safe_url, lan_origin_guard
 from services.xtream_client import quote_cred
 from routers import livetv
@@ -332,6 +332,8 @@ _item_titles: "dict[str, tuple]" = {}
 # title -> loop time it was closed for having no viewer (GONE_REFUSE_SECONDS)
 _gone: "dict[str, float]" = {}
 _pending_releases: "set[asyncio.Task]" = set()
+# Kept indexes being written to disk (services.vod_index_cache).
+_index_writes: "set[asyncio.Task]" = set()
 # provider URL of a title -> (its redirect target, monotonic time it expires)
 _targets: "dict[str, tuple]" = {}
 # The one provider client (connection pool) VOD requests share: (event loop,
@@ -838,38 +840,12 @@ async def _wait_turn(pb: _Playback, reader: _Reader) -> bool:
     return not pb.stopped.is_set()
 
 
-@router.get("/api/vod/{kind}/{token_file}")
-async def vod_stream(kind: str, token_file: str, request: Request, db: Session = Depends(get_db)):
-    """Stream one provider file through Tentacle: byte ranges passed through
-    (so seeking works), resumed from where it stopped if the upstream drops
-    or ends short, counted and ranked against live TV and recordings, and
-    one provider connection per playback however many requests share it."""
-    url, guard, ua, owner = await asyncio.to_thread(_resolve, db, kind, token_file)
-    # One playback per title per PERSON: two TVs on the same film are two
-    # playbacks (two provider connections, two slots), not one that they
-    # keep taking from each other; a second client of a title only one
-    # person watches (Jellyfin's subtitle extraction next to a browser that
-    # plays the file itself) joins the playback (_shared_playback).
-    who = request.client.host if request.client else "unknown"
-    range_header = request.headers.get("range")
-    start, end = _range_bounds(range_header)
-    if _refuse_continuation(f"{kind}/{token_file}", start):
-        logger.info(f"[VOD] {owner}: refused a pull from byte {start} of a title nobody watches any more "
-                    f"(Jellyfin's own work coming back for the rest, such as a subtitle extraction)")
-        raise HTTPException(503, "Nobody is watching this title any more")
-    pb = await _playback_for(db, f"{kind}/{token_file}", owner, who)
-    headers = {"User-Agent": ua}
-    if range_header:
-        headers["Range"] = range_header
-    client = _client()
-
-    async def player_left() -> bool:
-        try:
-            return await request.is_disconnected()
-        except RuntimeError:            # no receive channel (a test, or an unusual server)
-            return False
-
-    reader = _Reader(who)
+async def _open_first(pb: _Playback, reader: _Reader, client, url, headers, guard, owner, player_left,
+                      start, end, title, kept):
+    """Open a request's provider connection (parking the request that held
+    it) and work out what the response says: (resp, headers to pass on,
+    content type, status, first byte, last byte asked for, last byte the
+    body carries, the Tap that keeps the film's moov from it)."""
     pb.opening += 1
     try:
         async with pb.open_lock:
@@ -928,10 +904,80 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
     last = end
     if last is None and length.isdigit():
         last = start + int(length) - 1
+    if kept is not None and pb.size is not None and pb.size != kept.size:
+        await asyncio.to_thread(vod_index_cache.forget, title)     # the file changed
+    tap = vod_index_cache.Tap(title, start, pb.size, content_type) if kept is None else None
+    return resp, passthrough, content_type, status, start, end, last, tap
+
+
+@router.get("/api/vod/{kind}/{token_file}")
+async def vod_stream(kind: str, token_file: str, request: Request, db: Session = Depends(get_db)):
+    """Stream one provider file through Tentacle: byte ranges passed through
+    (so seeking works), resumed from where it stopped if the upstream drops
+    or ends short, counted and ranked against live TV and recordings, and
+    one provider connection per playback however many requests share it."""
+    url, guard, ua, owner = await asyncio.to_thread(_resolve, db, kind, token_file)
+    # One playback per title per PERSON: two TVs on the same film are two
+    # playbacks (two provider connections, two slots), not one that they
+    # keep taking from each other; a second client of a title only one
+    # person watches (Jellyfin's subtitle extraction next to a browser that
+    # plays the file itself) joins the playback (_shared_playback).
+    who = request.client.host if request.client else "unknown"
+    range_header = request.headers.get("range")
+    start, end = _range_bounds(range_header)
+    if _refuse_continuation(f"{kind}/{token_file}", start):
+        logger.info(f"[VOD] {owner}: refused a pull from byte {start} of a title nobody watches any more "
+                    f"(Jellyfin's own work coming back for the rest, such as a subtitle extraction)")
+        raise HTTPException(503, "Nobody is watching this title any more")
+    title = f"{kind}/{token_file}"
+    # The film's moov, when an earlier play kept it (services.vod_index_cache):
+    # a request that starts inside it gets those bytes from here, and only
+    # the rest (if it asks for more) from the provider.
+    kept = None
+    if vod_index_cache.applies(title) and (range_header is None or _RANGE_RE.match(range_header.strip())):
+        kept = await asyncio.to_thread(vod_index_cache.lookup, title)
+    pb = await _playback_for(db, title, owner, who)
+    headers = {"User-Agent": ua}
+    if range_header:
+        headers["Range"] = range_header
+    client = _client()
+    index = None
+    if kept is not None and kept.start <= start < kept.end and (end is None or start <= end):
+        index = kept
+        end = min(end, kept.size - 1) if end is not None else kept.size - 1
+
+    async def player_left() -> bool:
+        try:
+            return await request.is_disconnected()
+        except RuntimeError:            # no receive channel (a test, or an unusual server)
+            return False
+
+    reader = _Reader(who)
+    if index is not None:
+        resp = None
+        cached_to = min(index.end, end + 1)
+        if cached_to <= end:
+            # The rest comes from the provider: this request takes the
+            # connection now (a newer request parks the one before it), and
+            # the rest is opened while the kept bytes go out.
+            async with pb.open_lock:
+                pb.take(reader)
+        status = 206 if range_header else 200
+        passthrough = {"content-length": str(end - start + 1), "accept-ranges": "bytes"}
+        if status == 206:
+            passthrough["content-range"] = f"bytes {start}-{end}/{index.size}"
+        content_type = index.content_type
+        pb.size, pb.content_type = index.size, content_type
+        last = end
+        tap = None
+    else:
+        resp, passthrough, content_type, status, start, end, last, tap = \
+            await _open_first(pb, reader, client, url, headers, guard, owner, player_left, start, end,
+                              title, kept)
     pb.active_bodies += 1
     pb.generation += 1
     my_generation = pb.generation
-    state = {"finished": False, "complete": False}
+    state = {"finished": False, "complete": False, "opener": None}
 
     def finish():
         """Runs exactly once per request, however it ends (the generator's
@@ -943,6 +989,8 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
         if state["finished"]:
             return
         state["finished"] = True
+        if state["opener"] is not None and not state["opener"].done():
+            state["opener"].cancel()
         pb.active_bodies -= 1
         pb.touch()
         if pb.upstream is not None and pb.upstream is reader.resp:
@@ -958,6 +1006,36 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
                 and not pb.stopped.is_set():
             _release_soon(pb, my_generation)
 
+    async def open_rest():
+        """The provider connection for what follows the kept bytes. None
+        when a newer request took the connection meanwhile (this one then
+        waits its turn like any parked request)."""
+        async with pb.open_lock:
+            if pb.holder is not reader:
+                return None
+            await pb.settle()
+            got = await _open_with_retry(client, "GET", url, dict(headers, Range=f"bytes={index.end}-{end}"),
+                                         guard, owner, stopped=pb.stopped.is_set)
+            first = _content_range(got.headers.get("content-range"))[0]
+            m = _SIZE_RE.search(got.headers.get("content-range") or "")
+            if got.status_code != 206 or first != index.end or not m or int(m.group(1)) != index.size:
+                pb.close_upstream(got)
+                await asyncio.to_thread(vod_index_cache.forget, title)
+                raise HTTPException(502, f"the provider's file is not the one whose index was kept "
+                                         f"(answered {got.status_code} {got.headers.get('content-range')})")
+            reader.resp = got
+            reader.since = reader.last_chunk = asyncio.get_running_loop().time()
+            reader.waiting = False
+            pb.upstream = got
+            return got
+
+    def keep_index(data: bytes) -> None:
+        logger.info(f"[VOD] {owner}: kept its index ({len(data) / 1e6:.1f} MB) for the next play")
+        task = asyncio.get_running_loop().create_task(
+            asyncio.to_thread(vod_index_cache.store, title, tap.start, data, pb.size, content_type))
+        _index_writes.add(task)
+        task.add_done_callback(_index_writes.discard)
+
     async def body():
         sent = 0
         attempts = 0
@@ -966,6 +1044,32 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
         since_open = 0
         resumed_from = None
         try:
+            if index is not None:
+                if cached_to <= end:
+                    opener = state["opener"] = loop.create_task(open_rest())
+                    opener.add_done_callback(lambda t: t.cancelled() or t.exception())
+                try:
+                    pieces = await asyncio.to_thread(index.read, start, cached_to)
+                except OSError as e:
+                    await asyncio.to_thread(vod_index_cache.forget, title)
+                    logger.error(f"[VOD] {owner}: its kept index could not be read: {type(e).__name__}")
+                    return
+                for piece in pieces:
+                    if pb.stopped.is_set():
+                        return
+                    sent += len(piece)
+                    pb.touch()
+                    yield piece
+                    reader.last_chunk = loop.time()
+                if start + sent > end:
+                    state["complete"] = True
+                    return
+                try:
+                    await state["opener"]
+                except HTTPException as e:
+                    logger.error(f"[VOD] {owner}: could not open the rest after its kept index: {e.detail}")
+                    return
+                opened_at = loop.time()
             while True:
                 if pb.stopped.is_set():
                     return
@@ -1019,6 +1123,10 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
                             return
                         if reader.resp is not resp:
                             break               # handed to another request (closed from outside)
+                        if tap is not None and not tap.done:
+                            kept_bytes = tap.feed(start + sent, chunk)
+                            if kept_bytes is not None:
+                                keep_index(kept_bytes)
                         sent += len(chunk)
                         since_open += len(chunk)
                         pb.touch()

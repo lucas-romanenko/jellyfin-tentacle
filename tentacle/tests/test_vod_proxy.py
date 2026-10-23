@@ -135,6 +135,8 @@ class _Base(unittest.TestCase):
                     if limit_pieces and n >= limit_pieces:
                         await resp.body_iterator.aclose()
                         break
+                if vod._index_writes:
+                    await asyncio.gather(*vod._index_writes)
                 return resp.status_code, dict(resp.headers), out
         return asyncio.run(go())
 
@@ -962,6 +964,118 @@ class AProviderThatDropsTheConnection(_Base):
         self.assertEqual(f"bytes 150000-307199/{len(self.DATA)}", headers.get("content-range"))
         self.assertEqual(self.DATA[150000:], body)
         self.assertEqual(["bytes=150000-", "bytes=200000-307199"], [r for _, r in provider.requests])
+
+
+def _box(kind: bytes, payload: bytes) -> bytes:
+    import struct
+    return struct.pack(">I", 8 + len(payload)) + kind + payload
+
+
+class AFilmsIndexIsKeptForTheNextPlay(_Base):
+    """A provider MP4's moov (2.5-8 MB, at its head or at its end) took 1-3 s
+    to come from the provider's edge at every play; ExoPlayer cannot start
+    before it has all of it. The relay keeps it from the first play and
+    serves it from disk afterwards, the rest from the provider."""
+
+    FTYP = _box(b"ftyp", b"isom" * 4)
+    MOOV = _box(b"moov", b"m" * 40)
+    MDAT = _box(b"mdat", b"d" * 60)
+
+    def setUp(self):
+        super().setUp()
+        from services import vod_tokens
+        self.data = temp_dir(self)
+        env = mock.patch.dict("os.environ", {"DATA_DIR": self.data})
+        env.start()
+        self.addCleanup(env.stop)
+        self.token_file = vod_tokens.url("http://tentacle:8888", "s" * 64, self.provider.id, "movie", 2141622,
+                                         "mp4").rsplit("/", 1)[1]
+        self.upstream = f"{PANEL}/movie/u/p/2141622.mp4"
+        self.title = f"movie/{self.token_file}"
+
+    def _kept(self):
+        from services import vod_index_cache
+        return vod_index_cache.lookup(self.title)
+
+    def _pieces(self, data, n=7):
+        return [data[i:i + n] for i in range(0, len(data), n)]
+
+    def test_a_moov_at_the_head_is_kept_and_the_next_play_gets_only_the_rest_from_the_provider(self):
+        film = self.FTYP + self.MOOV + self.MDAT
+        head = len(self.FTYP) + len(self.MOOV)
+        first = _file(200, self._pieces(film), ct="video/mp4")
+        del first.headers["accept-ranges"]
+        status, _, body = self._play({self.upstream: [first]}, range_header="bytes=0-")
+        self.assertEqual(film, body)
+        kept = self._kept()
+        self.assertIsNotNone(kept, "the first play keeps the head up to the end of the moov")
+        self.assertEqual((0, head, len(film)), (kept.start, kept.end, kept.size))
+
+        self.log.clear()
+        rest = _file(206, self._pieces(film[head:]), start=head, total=len(film), ct="video/mp4")
+        status, headers, body = self._play({self.upstream: [rest]}, range_header="bytes=0-")
+        self.assertEqual(film, body)
+        self.assertEqual(206, status)
+        self.assertEqual(f"bytes 0-{len(film) - 1}/{len(film)}", headers.get("content-range"))
+        self.assertEqual(str(len(film)), headers.get("content-length"))
+        self.assertEqual([("GET", self.upstream, f"bytes={head}-{len(film) - 1}")], self.log,
+                         "only what follows the kept moov comes from the provider")
+
+    def test_a_moov_at_the_end_is_kept_and_the_next_jump_to_it_opens_no_provider_connection(self):
+        film = self.FTYP + self.MDAT + self.MOOV
+        at = len(self.FTYP) + len(self.MDAT)
+        tail = _file(206, self._pieces(film[at:]), start=at, total=len(film), ct="video/mp4")
+        status, _, body = self._play({self.upstream: [tail]}, range_header=f"bytes={at}-")
+        self.assertEqual(film[at:], body)
+        kept = self._kept()
+        self.assertEqual((at, len(film)), (kept.start, kept.end))
+
+        self.log.clear()
+        status, headers, body = self._play({self.upstream: []}, range_header=f"bytes={at}-")
+        self.assertEqual(film[at:], body)
+        self.assertEqual(f"bytes {at}-{len(film) - 1}/{len(film)}", headers.get("content-range"))
+        self.assertEqual([], self.log, "the moov came from the kept copy")
+
+    def test_a_moov_kept_through_a_drop_is_whole(self):
+        film = self.FTYP + self.MOOV + self.MDAT
+        script = {self.upstream: [_file(206, [film[:30]], then=_dropped(), total=len(film), ct="video/mp4"),
+                                  _file(206, self._pieces(film[30:]), start=30, ct="video/mp4")]}
+        status, _, body = self._play(script, range_header="bytes=0-")
+        self.assertEqual(film, body)
+        with open(self._kept().path, "rb") as f:
+            self.assertEqual(self.FTYP + self.MOOV, f.read())
+
+    def test_media_first_keeps_nothing_from_the_head(self):
+        film = self.FTYP + self.MDAT + self.MOOV
+        self._play({self.upstream: [_file(206, self._pieces(film), total=len(film), ct="video/mp4")]},
+                   range_header="bytes=0-")
+        self.assertIsNone(self._kept())
+
+    def test_a_film_whose_size_changed_drops_its_kept_index(self):
+        film = self.FTYP + self.MOOV + self.MDAT
+        head = len(self.FTYP) + len(self.MOOV)
+        self._play({self.upstream: [_file(206, self._pieces(film), total=len(film), ct="video/mp4")]},
+                   range_header="bytes=0-")
+        self.assertIsNotNone(self._kept())
+        other = _file(206, [b"x" * 10], start=head, total=len(film) + 500, ct="video/mp4")
+        status, _, body = self._play({self.upstream: [other]}, range_header="bytes=0-")
+        self.assertEqual(film[:head], body, "the body ends after the kept bytes; the player asks again")
+        self.assertIsNone(self._kept(), "and the next play reads the provider's file afresh")
+
+    def test_a_range_outside_the_kept_moov_goes_to_the_provider_as_before(self):
+        film = self.FTYP + self.MOOV + self.MDAT
+        self._play({self.upstream: [_file(206, self._pieces(film), total=len(film), ct="video/mp4")]},
+                   range_header="bytes=0-")
+        self.log.clear()
+        status, _, body = self._play({self.upstream: [_file(206, [film[80:]], start=80, ct="video/mp4")]},
+                                     range_header="bytes=80-")
+        self.assertEqual(film[80:], body)
+        self.assertEqual([("GET", self.upstream, "bytes=80-")], self.log)
+
+    def test_other_containers_keep_nothing(self):
+        from services import vod_index_cache
+        tap = vod_index_cache.Tap("movie/1.2.sig.mkv", 0, 1000, "video/x-matroska")
+        self.assertTrue(tap.done)
 
 
 if __name__ == "__main__":
