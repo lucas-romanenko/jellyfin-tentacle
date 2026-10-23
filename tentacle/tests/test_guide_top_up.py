@@ -1,4 +1,5 @@
-"""A guide that is running out is synced again before the next night.
+"""A failed guide download is retried until it works; a guide that is running
+out is synced again before the next night (#709).
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 
@@ -7,8 +8,10 @@ failed it "kept existing guide data" until the next night -- but on a live
 install the feed reaches only a day or so ahead, and the provider
 refused the nightly download on 19 of 20 nights (403) while serving the
 same feed at other hours. The kept guide had already ended: every channel
-showed an empty guide for days. run_guide_top_up() (hourly) syncs a guide
-that ends within 12 hours again, backing off after each failure.
+showed an empty guide for days. run_guide_top_up() (every 5 minutes) tries a
+failed sync again after 5, 15, 30 minutes, then hourly, syncs a guide that
+ends within 12 hours again, and says a guide failing for 6 hours or run out on
+the dashboard, the Activity feed and Pushover.
 
 The provider is a local HTTP server that answers 403 or the feed; nothing
 leaves the machine.
@@ -37,10 +40,14 @@ def _stamp(dt):
 
 
 class FakeProvider(http.server.ThreadingHTTPServer):
-    """xmltv.php: 403 while `refuse` is set, else a feed reaching 36 h ahead."""
+    """xmltv.php: 403 while `refuse` is set (or for the next `refuse_next`
+    requests), else a feed reaching 36 h ahead. `retry_after`: the header sent
+    with a 403."""
     def __init__(self):
         super().__init__(("127.0.0.1", 0), self.Handler)
         self.refuse = True
+        self.refuse_next = 0
+        self.retry_after = None
         self.requests = 0
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -49,8 +56,11 @@ class FakeProvider(http.server.ThreadingHTTPServer):
 
         def do_GET(self):
             self.server.requests += 1
-            if self.server.refuse:
+            if self.server.refuse or self.server.refuse_next > 0:
+                self.server.refuse_next -= 1
                 self.send_response(403)
+                if self.server.retry_after:
+                    self.send_header("Retry-After", self.server.retry_after)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
@@ -109,6 +119,13 @@ class GuideTopUp(unittest.TestCase):
         pt = mock.patch("services.provider_activity.recording_protected", lambda db: False)
         pt.start()
         self.addCleanup(pt.stop)
+        self.pushover = mock.Mock(return_value=True)
+        for target, name, value in (("services.pushover.send", None, self.pushover),
+                                    ("routers.livetv.nightly_guide_done_at", None, None),
+                                    ("routers.livetv._epg_last_failure", None, {})):
+            pt = mock.patch(target, value)
+            pt.start()
+            self.addCleanup(pt.stop)
 
     def store_guide_ending(self, end):
         self.db.add(mdb.EPGProgram(channel_id="c.ca", title="Old", start=end - timedelta(hours=1), stop=end))
@@ -132,20 +149,28 @@ class GuideTopUp(unittest.TestCase):
         finally:
             db.close()
 
-    def set_last_attempt(self, at, failures):
+    def set_last_attempt(self, at, failures, **more):
         mdb.set_setting(self.db, f"livetv_guide_top_up_{self.pid}",
-                        json.dumps({"at": at.isoformat(), "failures": failures}))
+                        json.dumps({"at": at.isoformat(), "failures": failures, **more}))
 
     def age_last_attempt(self, by):
-        at, failures = self.last_attempt()
-        self.set_last_attempt(at - by, failures)
+        """Move the remembered sync (and when the failures began) back in time."""
+        db = self.Session()
+        try:
+            rec = livetv._epg_record(db, self.pid)
+            for key in ("at", "since", "retry_at"):
+                if rec.get(key):
+                    rec[key] -= by
+            livetv._save_epg_record(db, self.pid, rec)
+        finally:
+            db.close()
 
     def provider_health_says(self, state, step, checked_ago=timedelta(minutes=10)):
         checked = (datetime.now().astimezone() - checked_ago).isoformat()   # its clock: local, with offset
         mdb.set_setting(self.db, "provider_health", json.dumps(
             {str(self.pid): {"state": state, "step": step, "since": checked, "checked_at": checked}}))
 
-    def test_a_refused_nightly_download_is_tried_again_hours_later(self):
+    def test_a_refused_nightly_download_is_tried_again_minutes_later(self):
         now = datetime.utcnow()
         self.store_guide_ending(now - timedelta(hours=2))      # yesterday's guide has run out
 
@@ -153,11 +178,11 @@ class GuideTopUp(unittest.TestCase):
         self.assertEqual(3, self.server.requests)
         self.assertLess(self.guide_end(), now, "the failed sync kept the old guide")
 
-        livetv.run_guide_top_up()                               # the same hour: too soon
+        livetv.run_guide_top_up()                               # at once: too soon
         self.assertEqual(3, self.server.requests)
 
         self.server.refuse = False                              # the provider serves it again
-        self.age_last_attempt(timedelta(minutes=61))
+        self.age_last_attempt(timedelta(minutes=6))
         livetv.run_guide_top_up()
 
         self.assertEqual(4, self.server.requests)
@@ -180,13 +205,71 @@ class GuideTopUp(unittest.TestCase):
     def test_failures_in_a_row_wait_longer_each_time(self):
         self.store_guide_ending(datetime.utcnow() - timedelta(hours=1))
         provider = self.db.get(mdb.Provider, self.pid)
-        for failures, wait in ((1, 1), (2, 2), (3, 4), (4, 6), (9, 6)):
+        for failures, wait in ((1, 5), (2, 15), (3, 30), (4, 60), (9, 60), (40, 60)):
             at = datetime.utcnow()
             self.set_last_attempt(at, failures)
-            self.assertIsNone(livetv.guide_top_up_due(self.db, provider, at + timedelta(hours=wait, minutes=-5)),
-                              f"{failures} failure(s): not before {wait} h")
-            self.assertTrue(livetv.guide_top_up_due(self.db, provider, at + timedelta(hours=wait, minutes=5)),
-                            f"{failures} failure(s): due after {wait} h")
+            self.assertIsNone(livetv.guide_top_up_due(self.db, provider, at + timedelta(minutes=wait - 1)),
+                              f"{failures} failure(s): not before {wait} min")
+            self.assertTrue(livetv.guide_top_up_due(self.db, provider, at + timedelta(minutes=wait + 1)),
+                            f"{failures} failure(s): due after {wait} min")
+
+    def test_a_failed_sync_is_retried_though_the_stored_guide_still_reaches_far(self):
+        # Retry until one works, not only once the guide is about to run out.
+        self.store_guide_ending(datetime.utcnow() + timedelta(hours=20))
+        provider = self.db.get(mdb.Provider, self.pid)
+        self.set_last_attempt(datetime.utcnow() - timedelta(minutes=6), 1)
+        self.assertTrue(livetv.guide_top_up_due(self.db, provider))
+        self.set_last_attempt(datetime.utcnow() - timedelta(minutes=6), 0)   # it worked: left alone
+        self.assertIsNone(livetv.guide_top_up_due(self.db, provider))
+
+    def test_an_empty_guide_fills_after_a_night_of_refusals(self):
+        # Nothing stored any more, the nightly is refused, the provider
+        # recovers after a while: 5, 15, 30 minutes, then hourly, until it works.
+        now = datetime.utcnow()
+        self.store_guide_ending(now - timedelta(hours=20))
+        self.assertFalse(self.nightly_download())
+        self.assertEqual(3, self.server.requests)
+        for n, (wait, failures) in enumerate(((5, 2), (15, 3), (30, 4), (60, 5), (60, 6)), start=4):
+            livetv.run_guide_top_up()
+            self.assertEqual(n - 1, self.server.requests, "not before the back-off has passed")
+            self.age_last_attempt(timedelta(minutes=wait, seconds=10))
+            livetv.run_guide_top_up()
+            self.assertEqual(n, self.server.requests, f"retried after {wait} min")
+            self.assertEqual(failures, self.last_attempt()[1])
+        self.server.refuse = False
+        self.age_last_attempt(timedelta(minutes=61))
+        livetv.run_guide_top_up()
+        self.assertEqual(9, self.server.requests)
+        self.assertEqual(0, self.last_attempt()[1])
+        self.assertGreater(self.guide_end(), now + timedelta(hours=30))
+        self.jf_refresh.assert_called_once()
+
+    def test_the_providers_retry_after_is_honoured(self):
+        self.store_guide_ending(datetime.utcnow() - timedelta(hours=1))
+        self.server.retry_after = "7200"
+        livetv.run_guide_top_up()
+        self.assertEqual(1, self.server.requests)
+        provider = self.db.get(mdb.Provider, self.pid)
+        at = self.last_attempt()[0]
+        self.assertIsNone(livetv.guide_top_up_due(self.db, provider, at + timedelta(minutes=119)))
+        self.assertTrue(livetv.guide_top_up_due(self.db, provider, at + timedelta(minutes=121)))
+
+    def test_a_retry_after_of_days_waits_six_hours_at_most(self):
+        self.store_guide_ending(datetime.utcnow() - timedelta(hours=1))
+        self.server.retry_after = str(3 * 86400)
+        livetv.run_guide_top_up()
+        provider = self.db.get(mdb.Provider, self.pid)
+        at = self.last_attempt()[0]
+        self.assertIsNone(livetv.guide_top_up_due(self.db, provider, at + timedelta(hours=5, minutes=59)))
+        self.assertTrue(livetv.guide_top_up_due(self.db, provider, at + timedelta(hours=6, minutes=1)))
+
+    def test_retry_after_as_a_date(self):
+        from email.utils import format_datetime
+        from datetime import timezone
+        e = mock.Mock(response=mock.Mock(headers={"Retry-After": format_datetime(
+            datetime.now(timezone.utc) + timedelta(minutes=40), usegmt=True)}))
+        self.assertAlmostEqual(2400, livetv._retry_after_seconds(e), delta=5)
+        self.assertIsNone(livetv._retry_after_seconds(mock.Mock(response=mock.Mock(headers={"Retry-After": "soon"}))))
 
     def test_a_protected_recording_defers_it_without_counting_a_failure(self):
         self.store_guide_ending(datetime.utcnow() - timedelta(hours=1))
@@ -206,6 +289,29 @@ class GuideTopUp(unittest.TestCase):
         self.server.refuse = False
         livetv.run_guide_top_up()                     # once the sync is over
         self.assertEqual(1, self.server.requests)
+
+    def test_it_retries_while_the_nightly_job_runs_on_after_its_guide_step(self):
+        # After its guide step the nightly job asks the provider nothing more
+        # (sweeps, playlists, home rows can take an hour): no reason to wait.
+        import routers.sync as sync_router
+        self.store_guide_ending(datetime.utcnow() - timedelta(hours=1))
+        self.server.refuse = False
+        started = datetime.utcnow() - timedelta(minutes=30)
+        with mock.patch.object(sync_router, "_after_sync", {"nightly": started}), \
+             mock.patch.object(livetv, "nightly_guide_done_at", started - timedelta(days=1)):
+            livetv.run_guide_top_up()                 # last night's step: this one's is still to come
+            self.assertEqual(0, self.server.requests)
+        with mock.patch.object(sync_router, "_after_sync", {"nightly": started}), \
+             mock.patch.object(livetv, "nightly_guide_done_at", started + timedelta(minutes=20)):
+            livetv.run_guide_top_up()
+        self.assertEqual(1, self.server.requests)
+
+    def test_a_sync_with_nothing_to_download_is_no_failure(self):
+        self.db.query(mdb.LiveChannel).delete()       # "No channels yet"
+        self.db.commit()
+        self.assertFalse(self.nightly_download())
+        self.assertEqual(0, self.server.requests)
+        self.assertIsNone(self.last_attempt())
 
     def test_a_feed_that_matches_no_channel_is_not_downloaded_again(self):
         self.set_last_attempt(datetime.utcnow() - timedelta(hours=7), 0)             # synced fine
@@ -227,10 +333,10 @@ class GuideTopUp(unittest.TestCase):
         at, failures = self.last_attempt()              # a new session: what a restart reads
         self.assertEqual(1, failures)
         self.assertLess(datetime.utcnow() - at, timedelta(minutes=1))
-        livetv.run_guide_top_up()                       # the start-up check, minutes later
+        livetv.run_guide_top_up()                       # the start-up check, a minute later
         self.assertEqual(3, self.server.requests, "a restart must not retry a refused download at once")
         self.server.refuse = False
-        self.age_last_attempt(timedelta(minutes=61))
+        self.age_last_attempt(timedelta(minutes=6))
         livetv.run_guide_top_up()
         self.assertEqual(4, self.server.requests)
         self.assertEqual(0, self.last_attempt()[1])
@@ -247,9 +353,9 @@ class GuideTopUp(unittest.TestCase):
     def test_one_download_per_top_up(self):
         self.store_guide_ending(datetime.utcnow() - timedelta(hours=1))
         livetv.run_guide_top_up()
-        self.assertEqual(1, self.server.requests, "no quick retries: the hour is the retry")
+        self.assertEqual(1, self.server.requests, "no quick retries: the back-off is the retry")
         self.assertEqual(1, self.last_attempt()[1])
-        self.age_last_attempt(timedelta(minutes=61))
+        self.age_last_attempt(timedelta(minutes=6))
         livetv.run_guide_top_up()
         self.assertEqual(2, self.server.requests)
         self.assertEqual(2, self.last_attempt()[1])
@@ -265,33 +371,93 @@ class GuideTopUp(unittest.TestCase):
         livetv.run_guide_top_up()
         self.assertEqual(1, self.server.requests)
 
-    def test_a_verdict_hours_old_does_not_hold_the_guide_back(self):
-        # The hourly check stood aside (live TV all evening): the provider may
-        # have recovered since; one download per back-off step finds out.
+    def test_retries_slow_to_hourly_while_provider_health_finds_the_server_refusing(self):
         self.store_guide_ending(datetime.utcnow() - timedelta(hours=1))
-        self.server.refuse = False
-        self.provider_health_says("failing", "api", checked_ago=timedelta(hours=3))
-        livetv.run_guide_top_up()
-        self.assertEqual(1, self.server.requests)
-
-    def test_a_refused_stream_or_a_guide_from_another_host_is_still_downloaded(self):
-        self.store_guide_ending(datetime.utcnow() - timedelta(hours=1))
-        self.server.refuse = False
-        self.provider_health_says("failing", "stream")   # streams refused: the guide is an API download
-        livetv.run_guide_top_up()
-        self.assertEqual(1, self.server.requests)
         provider = self.db.get(mdb.Provider, self.pid)
-        provider.server_url = "http://192.0.2.10"         # the guide comes from another host
-        self.db.commit()
+        at = datetime.utcnow()
+        self.set_last_attempt(at, 1)
         self.provider_health_says("failing", "api")
-        self.assertFalse(livetv._guide_server_refuses(self.db, provider))
-        provider.epg_url = None                           # Xtream's own xmltv.php, on the refusing server
+        self.assertIsNone(livetv.guide_top_up_due(self.db, provider, at + timedelta(minutes=10)))
+        self.assertTrue(livetv.guide_top_up_due(self.db, provider, at + timedelta(minutes=61)),
+                        "still once an hour: the guide must not stay empty")
+
+    # ── Telling the admin ────────────────────────────────────────────────────
+
+    def admin_alerts_check(self):
+        """The 10-minute problem check (services.admin_alerts), guides only."""
+        from services import admin_alerts
+        with mock.patch.object(admin_alerts, "CHECKS", (admin_alerts._seen_guides,)), \
+             mock.patch("services.live_updates.publish"):
+            admin_alerts.check(self.db)
+        return [(n.title, n.message) for n in self.db.query(mdb.Notification).filter(
+            mdb.Notification.kind == "problem").order_by(mdb.Notification.id)]
+
+    def test_a_guide_failing_for_six_hours_is_said_once_and_its_recovery_too(self):
+        self.db.add(mdb.TentacleUser(jellyfin_user_id="a" * 32, display_name="Lucas", is_admin=True))
         self.db.commit()
-        self.assertTrue(livetv._guide_server_refuses(self.db, provider))
+        self.store_guide_ending(datetime.utcnow() + timedelta(hours=20))
+        self.assertFalse(self.nightly_download())         # fails: 403
+        self.assertEqual(1, self.last_attempt()[1])
+        provider = self.db.get(mdb.Provider, self.pid)
+        self.assertIsNone(livetv.guide_problem(self.db, provider), "a fresh failure is no alarm yet")
+        self.assertEqual([], self.admin_alerts_check())
+
+        self.age_last_attempt(timedelta(hours=6, minutes=1))
+        livetv.run_guide_top_up()                         # fails again, 6 h after the first
+        problem = livetv.guide_problem(self.db, provider)
+        self.assertIn("isn't downloading", problem)
+        self.assertIn("2 download(s) failed", problem)
+        self.assertIn("HTTP 403", problem)
+        self.assertNotIn("127.0.0.1", problem)
+        notes = self.admin_alerts_check()
+        self.assertEqual(1, len(notes))
+        self.assertEqual("The Live TV guide of P isn't updating", notes[0][0])
+        self.assertEqual(problem, notes[0][1])
+        self.assertEqual(1, self.pushover.call_count)
+        from services import admin_alerts
+        self.assertEqual([{"area": "guide", "text": "The TV guide may be missing programmes right now. "
+                                                    "Lucas knows."}], admin_alerts.family_messages(self.db))
+
+        self.age_last_attempt(timedelta(minutes=16))
+        livetv.run_guide_top_up()                         # fails again: no second message
+        self.assertEqual(1, len(self.admin_alerts_check()))
+        self.assertEqual(1, self.pushover.call_count)
+
+        from services import provider_health
+        view = {p["id"]: p for p in provider_health.provider_view(self.db)}
+        self.assertIn("isn't downloading", view[self.pid]["guide_problem"])   # the dashboard banner
+
+        self.server.refuse = False
+        self.age_last_attempt(timedelta(minutes=31))
+        livetv.run_guide_top_up()                         # works
+        self.assertIsNone(livetv.guide_problem(self.db, provider))
+        notes = self.admin_alerts_check()
+        self.assertEqual("Fixed: The Live TV guide of P isn't updating", notes[-1][0])
+        self.assertEqual(2, self.pushover.call_count)
+        view = {p["id"]: p for p in provider_health.provider_view(self.db)}
+        self.assertIsNone(view[self.pid]["guide_problem"])
+
+    def test_a_guide_that_has_run_out_is_said_at_once(self):
+        self.store_guide_ending(datetime.utcnow() - timedelta(hours=1))
+        livetv.run_guide_top_up()                         # refused
+        provider = self.db.get(mdb.Provider, self.pid)
+        problem = livetv.guide_problem(self.db, provider)
+        self.assertIn("ran out", problem)
+        self.assertIn("Tentacle keeps trying", problem)
+        self.admin_alerts_check()
+        self.pushover.assert_called_once()
+
+    def test_a_guide_that_ran_out_with_no_failed_download_is_said_too(self):
+        # e.g. the nightly download stood aside for a recording all night
+        self.store_guide_ending(datetime.utcnow() - timedelta(minutes=10))
+        provider = self.db.get(mdb.Provider, self.pid)
+        problem = livetv.guide_problem(self.db, provider)
+        self.assertTrue(problem.startswith("The Live TV guide ran out at "), problem)
+        self.assertNotIn("keeps trying", problem)
 
 
 class GuideTopUpScheduled(unittest.TestCase):
-    def test_it_runs_every_hour(self):
+    def test_it_runs_every_five_minutes(self):
         try:
             import main
         except Exception as e:  # pragma: no cover - depends on optional deps
@@ -309,7 +475,7 @@ class GuideTopUpScheduled(unittest.TestCase):
         self.assertIn("guide_top_up", jobs)
         job = jobs["guide_top_up"]
         self.assertIs(livetv.run_guide_top_up, job.args[0])
-        self.assertEqual(timedelta(hours=1), job.args[1].interval)
+        self.assertEqual(timedelta(minutes=5), job.args[1].interval)
         # and a few minutes after start-up: an install restarted more often
         # than hourly would otherwise never run it
         first = [c.args for c in once.call_args_list if c.args[0] is livetv.run_guide_top_up]
