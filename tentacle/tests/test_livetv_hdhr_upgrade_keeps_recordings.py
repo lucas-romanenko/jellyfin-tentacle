@@ -109,6 +109,26 @@ class HdhrUpgrade(lineup_tests.DbCase):
         self.assertIn(self.jf.series[0]["ChannelId"], self.jf.channels,
                       "the series schedule points at a channel Jellyfin no longer has")
 
+    def test_the_kept_old_tuner_is_hidden_and_goes_once_nothing_is_booked_on_it(self):
+        hd = self.v190_hdhr()
+        self.no_guide_yet()
+        self.jf.timers.append({"Id": "once", "Name": "Basketball", "ChannelId": hd["102"],
+                               "StartDate": "2026-10-24T13:30:00.0000000Z",
+                               "EndDate": "2026-10-24T15:30:00.0000000Z"})
+        self.sync()
+        self.assertIn("hd", [t["Id"] for t in self.jf.tuners], "the old tuner went with a booking on it")
+        self.assertIn(T.OLD_TAG, self.jf.channels[hd["102"]]["Tags"])
+        for u in (ANN, BEN):
+            # nobody sees each channel twice meanwhile
+            self.assertFalse(self.jf.visible(u, hd["102"]))
+        self.assertIn(self.ids()["c2"], self.jf.channels)
+        self.assertTrue(self.jf.visible(ANN, self.ids()["c2"]))
+        # The recording has happened (or moved): the next run removes it.
+        self.jf.timers.clear()
+        self.sync()
+        self.assertNotIn("hd", [t["Id"] for t in self.jf.tuners])
+        self.assertNotIn(T.OLD_TAG, [t.lower() for t in self.jf.users[ANN]["Policy"]["BlockedTags"]])
+
     # ── F-A2: another guide source on the old tuner ─────────────────────────
 
     def test_another_guide_source_follows_the_channels_to_the_lineup(self):
