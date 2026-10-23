@@ -797,6 +797,11 @@ def setup_scheduler(db):
         coalesce=True,
     )
     schedule_once(lambda: _livetv_sync("start-up"), 150, "livetv_setup_first")
+    # The welcome's "You now have access to N movies, N TV shows and N live TV
+    # channels" for everyone it is still due for, kept counted (services/welcome.py).
+    from services.welcome import warm_everyone_due as _welcome_counts
+    scheduler.add_job(_welcome_counts, IntervalTrigger(hours=1, start_date=datetime.now() + timedelta(seconds=180)),
+                      id="welcome_counts", replace_existing=True, max_instances=1, coalesce=True)
     # Music module: the daily reconcile (checks the setting itself when it runs),
     # and any request a restart interrupted before its pin and search.
     reschedule_music_reconcile()

@@ -13,6 +13,7 @@ policy POST may reset (Jellyfin.Server.Implementations/Users/UserManager.cs).
 import json
 import re
 import sqlite3
+import time
 import unittest
 from unittest import mock
 
@@ -354,7 +355,8 @@ class WelcomedMigration(unittest.TestCase):
 
 class WelcomeCounts(Case):
     """"You now have access to 12,345 movies, 1,234 TV shows and 1,730 live
-    TV channels": what this person can watch, counted once per title."""
+    TV channels": what this person can watch, counted once per title, made
+    in the background and kept."""
 
     def setUp(self):
         super().setUp()
@@ -363,11 +365,11 @@ class WelcomeCounts(Case):
         self.addCleanup(welcome._counts_cache.clear)
         from routers import discover
         maps = {"movie": {1: "a", 2: "b", 3: "c"}, "series": {7: "s"}}
-        p = mock.patch.object(discover, "_get_jellyfin_tmdb_items", side_effect=lambda k: maps[k])
+        p = mock.patch.object(discover, "_search_jellyfin_ids", side_effect=lambda k, deadline: maps[k])
         self.maps = p.start()
         self.addCleanup(p.stop)
         lineup = mock.patch("routers.my_livetv.my_lineup", side_effect=lambda db, u: [{}] * (2 if u.kids_level else 5))
-        lineup.start()
+        self.lineup = lineup.start()
         self.addCleanup(lineup.stop)
         # The counting thread opens its own session: the test's.
         sl = mock.patch("models.database.SessionLocal", side_effect=lambda: self.Session())
@@ -387,24 +389,41 @@ class WelcomeCounts(Case):
         self.ann.live_tv_off = True
         self.db.commit()
         self.assertEqual(0, welcome.counts(self.db, self.ann, wait=5)["channels"])
+        self.lineup.assert_not_called()
 
-    def test_counted_once_then_from_the_cache(self):
+    def test_titles_and_channels_are_counted_once_then_kept(self):
         welcome.counts(self.db, self.ann, wait=5)
-        calls = self.maps.call_count
-        welcome.counts(self.db, self.ann, wait=5)
-        self.assertEqual(calls, self.maps.call_count)
+        maps, lineups = self.maps.call_count, self.lineup.call_count
+        self.assertEqual({"movies": 3, "shows": 1, "channels": 5}, welcome.counts(self.db, self.ann, wait=0))
+        self.assertEqual((maps, lineups), (self.maps.call_count, self.lineup.call_count))
+
+    def test_an_old_count_is_given_at_once_and_counted_again_behind_it(self):
+        welcome._counts_cache[self.ann.id] = (time.time() - welcome.COUNTS_FRESH_S - 1, {"movies": 9, "shows": 9, "channels": 9})
+        self.assertEqual({"movies": 9, "shows": 9, "channels": 9}, welcome.counts(self.db, self.ann, wait=0))
+        welcome._counts_running[self.ann.id].result(timeout=5)
+        self.assertEqual({"movies": 3, "shows": 1, "channels": 5}, welcome.counts(self.db, self.ann, wait=0))
 
     def test_a_slow_count_comes_later_not_in_the_way(self):
         import threading
         gate = threading.Event()
         from routers import discover
-        with mock.patch.object(discover, "_get_jellyfin_tmdb_items", side_effect=lambda k: gate.wait(5) and {1: "a"}):
+        with mock.patch.object(discover, "_search_jellyfin_ids", side_effect=lambda k, d: gate.wait(5) and {1: "a"}):
             self.ann.welcomed_at = None
             self.db.commit()
             self.assertIsNone(welcome.state(self.db, self.ann)["counts"])
             gate.set()
             self.assertEqual({"movies": 1, "shows": 1, "channels": 5},
                              welcome.counts(self.db, self.ann, wait=welcome.COUNTS_LATE_WAIT_S))
+
+    def test_everyone_the_welcome_is_due_for_is_counted_ahead(self):
+        from datetime import datetime
+        self.admin.welcomed_at = self.ben.welcomed_at = datetime.utcnow()
+        self.ann.welcomed_at = None
+        self.db.commit()
+        self.assertEqual(1, welcome.warm_everyone_due())
+        welcome._counts_running[self.ann.id].result(timeout=5)
+        self.assertIn(self.ann.id, welcome._counts_cache)
+        self.assertNotIn(self.ben.id, welcome._counts_cache)
 
     def test_nothing_is_counted_for_someone_already_welcomed(self):
         from datetime import datetime

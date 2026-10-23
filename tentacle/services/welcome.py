@@ -102,24 +102,28 @@ def state(db: Session, user: TentacleUser) -> dict:
 
 
 # ── "You now have access to 12,345 movies, 1,234 TV shows and 1,730 live TV
-# channels" (the hello step). Movies and shows: the titles this person can
+# channels!" (the hello step). Movies and shows: the titles this person can
 # open in Jellyfin, downloaded and provider (VOD) alike, a title with both
 # copies once (counted by TMDB id); a kid or someone with only some
 # libraries by what Jellyfin shows them (family.visible_titles), everyone
 # else from Discover's cached TMDB -> item maps. Channels: their lineup
 # (the pool after folding and hiding; a kid's kids channels), none when
-# Live TV is off for them. Cached, and warmed when the welcome is due, so
-# the step doesn't wait on Jellyfin.
+# Live TV is off for them. Reading a large lineup and the maps takes a
+# second or more, so the counts are made in the background and kept: when
+# an admin adds someone, at start-up and hourly for everyone not welcomed
+# yet, and when the welcome asks. An answer older than COUNTS_FRESH_S is
+# still given (and counted again behind it).
 COUNTS_WAIT_S = 0.25          # inside GET /api/welcome
 COUNTS_LATE_WAIT_S = 4.0      # GET /api/welcome/counts, when the first answer had none
-_COUNTS_TTL = 600
+COUNTS_FRESH_S = 600
+COUNTS_KEEP_S = 6 * 3600
 _counts_lock = threading.Lock()
-_counts_cache = {}            # user id -> (time, {"movies", "shows"})
+_counts_cache = {}            # user id -> (time, {"movies", "shows", "channels"})
 _counts_running = {}          # user id -> Future
 _counts_pool = None
 
 
-def _title_counts(db_factory, user_id: int) -> dict:
+def _count(db_factory, user_id: int) -> dict:
     from routers.library import _sees_only_some
     from services.family import visible_titles
     db = db_factory()
@@ -133,8 +137,17 @@ def _title_counts(db_factory, user_id: int) -> dict:
                    "shows": sum(1 for t, _ in seen if t == "series")}
         else:
             from routers import discover
-            out = {"movies": len(discover._get_jellyfin_tmdb_items("movie")),
-                   "shows": len(discover._get_jellyfin_tmdb_items("series"))}
+            # A map being refreshed is used meanwhile (stale-while-revalidate).
+            deadline = time.time() + 60
+            out = {"movies": len(discover._search_jellyfin_ids("movie", deadline)),
+                   "shows": len(discover._search_jellyfin_ids("series", deadline))}
+        out["channels"] = 0
+        if not user.live_tv_off:
+            try:
+                from routers.my_livetv import my_lineup
+                out["channels"] = len(my_lineup(db, user))
+            except Exception as e:
+                logger.info(f"[Welcome] Channels for {user.display_name} not counted: {e}")
     finally:
         db.close()
     with _counts_lock:
@@ -142,45 +155,51 @@ def _title_counts(db_factory, user_id: int) -> dict:
     return out
 
 
-def warm_counts(user: TentacleUser):
-    """Count this person's titles in the background (once at a time)."""
+def warm_counts(user_id: int):
+    """Count this person's titles and channels in the background (once at a time)."""
     from concurrent.futures import ThreadPoolExecutor
     from models.database import SessionLocal
     global _counts_pool
     with _counts_lock:
-        fut = _counts_running.get(user.id)
+        fut = _counts_running.get(user_id)
         if fut is not None and not fut.done():
             return fut
         if _counts_pool is None:
             _counts_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="welcome-counts")
-        fut = _counts_pool.submit(_title_counts, SessionLocal, user.id)
-        _counts_running[user.id] = fut
+        fut = _counts_pool.submit(_count, SessionLocal, user_id)
+        _counts_running[user_id] = fut
         return fut
 
 
+def warm_everyone_due() -> int:
+    """Counts for everyone the welcome is still due for (start-up, hourly)."""
+    from models.database import SessionLocal
+    db = SessionLocal()
+    try:
+        ids = [i for (i,) in db.query(TentacleUser.id).filter(TentacleUser.welcomed_at.is_(None)).all()]
+    finally:
+        db.close()
+    for i in ids:
+        warm_counts(i)
+    return len(ids)
+
+
 def counts(db: Session, user: TentacleUser, wait: float = COUNTS_WAIT_S) -> Optional[dict]:
-    """{"movies", "shows", "channels"} for this person, or None when the
-    titles aren't counted yet (asked again by GET /api/welcome/counts)."""
+    """{"movies", "shows", "channels"} for this person, or None when they
+    aren't counted yet (asked again by GET /api/welcome/counts)."""
     with _counts_lock:
         hit = _counts_cache.get(user.id)
-    if hit and time.time() - hit[0] < _COUNTS_TTL:
-        titles = hit[1]
+    age = time.time() - hit[0] if hit else None
+    if hit and age < COUNTS_KEEP_S:
+        if age >= COUNTS_FRESH_S:
+            warm_counts(user.id)
+        out = hit[1]
     else:
-        fut = warm_counts(user)
         try:
-            titles = fut.result(timeout=wait)
+            out = warm_counts(user.id).result(timeout=wait)
         except Exception:
-            titles = hit[1] if hit else None
-    if titles is None:
-        return None
-    channels = 0
-    if not user.live_tv_off:
-        try:
-            from routers.my_livetv import my_lineup
-            channels = len(my_lineup(db, user))
-        except Exception as e:
-            logger.info(f"[Welcome] Channels for {user.display_name} not counted: {e}")
-    return {"movies": titles.get("movies", 0), "shows": titles.get("shows", 0), "channels": channels}
+            return None
+    return dict(out) if out else None
 
 
 def done(db: Session, user: TentacleUser) -> None:
