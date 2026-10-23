@@ -1567,6 +1567,8 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
   .rec-row .rec-time { grid-column: 1 / -1; width: auto; font-size: 11px; color: var(--text3); }
   .rec-row .mych-meta { flex-wrap: nowrap; overflow: hidden; white-space: nowrap; }
   .rec-row .mych-meta > span { overflow: hidden; text-overflow: ellipsis; }
+  .rec-row .mych-meta > .rec-chan { flex-shrink: 0; }
+  .rec-row .rec-why { display: none; }
   .rec-ed { grid-template-columns: 1fr; max-height: none; overflow-y: auto; }
   .rec-ed-form { border-right: none; border-bottom: 1px solid var(--border); }
   .rec-pv-when { width: 96px; }
@@ -4938,7 +4940,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 <script src="/static/js/welcome.js?v=50"></script>
 <script src="/static/js/live.js?v=4"></script>
 <script src="/static/js/myyoutube.js?v=48"></script>
-<script src="/static/js/recordings.js?v=2"></script>
+<script src="/static/js/recordings.js?v=3"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {

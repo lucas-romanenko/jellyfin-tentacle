@@ -158,7 +158,7 @@ function _recUpcomingRow(it) {
   if (it.src === 'rule') {
     if (it.rule) meta.push(`<span class="via">${escHtml(it.rule)}</span>`);
     // Why, only where the title doesn't say it ("NHL Hockey" after the Leafs' pregame show)
-    if (it.why && /^(same time|follows)/.test(it.why)) meta.push(`<span>${escHtml(it.why.replace(/ \(.*\)$/, ''))}</span>`);
+    if (it.why && /^(same time|follows)/.test(it.why)) meta.push(`<span class="rec-why">${escHtml(it.why.replace(/ \(.*\)$/, ''))}</span>`);
     if (it.state === 'waiting' || it.state === 'failed' || it.state === 'lost') meta.push(`<span class="warn">${escHtml(it.reason || '')}</span>`);
   } else {
     meta.push(`<span>${escHtml(it.reason || 'Set in Jellyfin')}</span>`);
