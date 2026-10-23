@@ -405,9 +405,15 @@ def move_schedules(jf: Jellyfin, from_ids: dict, to_ids: dict, one_offs: Optiona
             logger.warning(f"[LiveTV] Recording '{t.get('Name')}': not in the new channel's guide yet, kept")
             continue
         new = jf.get("/LiveTv/Timers/Defaults", programId=progs[0]["Id"]) or {}
+        # What the person (or a recording rule) set: the padding, how long
+        # it's kept and its priority. The name and overview come with the
+        # programme (the same one, at the same start).
         for k in ("PrePaddingSeconds", "PostPaddingSeconds", "IsPrePaddingRequired", "IsPostPaddingRequired",
-                  "KeepUntil"):
+                  "KeepUntil", "Priority"):
             if k in t:
+                new[k] = t[k]
+        for k in ("Name", "Overview"):
+            if t.get(k) and not new.get(k):
                 new[k] = t[k]
         jf.post("/LiveTv/Timers", new)
         try:
