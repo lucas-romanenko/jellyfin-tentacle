@@ -1,6 +1,6 @@
-"""#771 check: a real sync() against the fake Jellyfin, run a second time with
-nothing changed (as the hourly check does), still POSTs /Tentacle/Refresh
-?scope=livetv -- the push every TV app turns into a forced Home reload."""
+"""#771: a real sync() against the fake Jellyfin, run a second time with
+nothing changed as the hourly check, posts no /Tentacle/Refresh?scope=livetv
+(the push every TV app turned into a forced Home reload once an hour)."""
 from unittest import mock
 
 from services import livetv_tuners as T
@@ -40,7 +40,7 @@ class HourlyNoopPush(lt.DbCase):
     def test_second_run_with_nothing_to_do_pushes_nothing(self):
         T.run_sync("start-up")
         self.assertEqual(1, len(self.pushes()))
-        done = T.run_sync("hourly check")
+        done = T.run_sync("hourly check", check=True)
         changed = {k: v for k, v in done.items() if v and k not in ("backup", "guide_added")}
         self.assertEqual({}, changed, "the hourly run did change something")
         self.assertEqual(1, len(self.pushes()), f"no-op hourly run still pushed: {self.pushes()[-1]}")

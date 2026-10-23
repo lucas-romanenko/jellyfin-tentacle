@@ -1005,8 +1005,18 @@ def _run_pending() -> None:
     run_sync(", ".join(dict.fromkeys(reasons)) or "scheduled", refresh)
 
 
-def run_sync(reason: str = "scheduled", refresh: bool = False) -> dict:
-    """One sync, never two at once; logs what it did and never raises."""
+# What a run changed that clients see: counts, a guide refresh, a guide
+# source added, channel logos dropped for Jellyfin to fetch again.
+CLIENT_CHANGES = ("added", "removed", "tagged", "policies", "favourites", "place_favourites",
+                  "schedules", "refreshed", "guide_added", "logos")
+
+
+def run_sync(reason: str = "scheduled", refresh: bool = False, check: bool = False) -> dict:
+    """One sync, never two at once; logs what it did and never raises.
+    `check`: the hourly look-over, which tells the clients only when it
+    changed something they see (#771: every TV reloaded its Home once an
+    hour for nothing). A run someone asked for tells them anyway: what they
+    changed can be in Jellyfin before the run (person_access)."""
     with _lock:
         status["running"] = True
         db = SessionLocal()
@@ -1023,7 +1033,7 @@ def run_sync(reason: str = "scheduled", refresh: bool = False) -> dict:
                                  f"{done['removed']} removed, {done['favourites']} favourite(s) and "
                                  f"{done['schedules']} recording schedule(s) carried over", done)
             logger.info(f"[LiveTV] Jellyfin sync ({reason}): {done}")
-            if not done.get("skipped"):
+            if not done.get("skipped") and (not check or any(done.get(k) for k in CLIENT_CHANGES)):
                 tell_clients(db)
             return done
         except Exception as e:
