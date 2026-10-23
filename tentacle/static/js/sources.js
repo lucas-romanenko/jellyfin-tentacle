@@ -65,7 +65,7 @@ async function loadProviders(opts = {}) {
   if (!providers.length) {
     grid.innerHTML = `
       <div class="empty-state">
-        <div class="empty-icon">◉</div>
+        <img class="empty-mark" src="/static/brand/mark-white.svg" alt="">
         <p style="margin-bottom:16px">No IPTV provider yet. Add one to bring in its movies and series, its live channels, or both.</p>
         <button class="btn btn-primary" onclick="showAddProvider()">Add a provider</button>
       </div>`;
@@ -279,7 +279,7 @@ function renderProvCatsPanel(id) {
           <button class="btn btn-primary btn-sm" onclick="provCatsSave(${id})">Save</button>
         </div>
       </div>
-      <div class="form-hint" style="margin-top:8px">New choices are added at the next sync, or <a href="#" onclick="syncEverythingNow();return false" style="color:var(--accent)">sync now</a>.</div>`;
+      <div class="form-hint" style="margin-top:8px">New choices are added at the next sync, or <a href="#" onclick="syncEverythingNow();return false" style="color: var(--accent-text)">sync now</a>.</div>`;
     panel.dataset.built = '1';
   }
   renderProvCats(id);
@@ -425,7 +425,7 @@ function renderProvGroupsPanel(id) {
           <button class="btn btn-primary btn-sm" onclick="provGroupsSave(${id})">Save &amp; update channels</button>
         </div>
       </div>
-      <div class="form-hint" style="margin-top:8px">Channels, their order and names are set on the <a href="#" onclick="showSourcesTab('live');return false" style="color:var(--accent)">Live TV</a> tab.</div>`;
+      <div class="form-hint" style="margin-top:8px">Channels, their order and names are set on the <a href="#" onclick="showSourcesTab('live');return false" style="color: var(--accent-text)">Live TV</a> tab.</div>`;
     panel.dataset.built = '1';
   }
   renderProvGroups(id);
@@ -807,9 +807,9 @@ async function fillArrWebhookUrls() {
   const hint = document.getElementById('arr-webhook-hint');
   if (hint) {
     hint.innerHTML = !base
-      ? '<span style="color:var(--red)">Tentacle&rsquo;s address is not known yet: set it in <a href="#" onclick="showPage(\'settings\',\'services\');return false" style="color:var(--accent)">Settings &rarr; Services</a>.</span>'
+      ? '<span style="color:var(--red)">Tentacle&rsquo;s address is not known yet: set it in <a href="#" onclick="showPage(\'settings\',\'services\');return false" style="color: var(--accent-text)">Settings &rarr; Services</a>.</span>'
       : saved ? 'Built from Tentacle&rsquo;s address (Settings &rarr; Services).'
-      : 'Built from the address Tentacle worked out for itself. Save it in <a href="#" onclick="showPage(\'settings\',\'services\');return false" style="color:var(--accent)">Settings &rarr; Services</a> to be sure it stays.';
+      : 'Built from the address Tentacle worked out for itself. Save it in <a href="#" onclick="showPage(\'settings\',\'services\');return false" style="color: var(--accent-text)">Settings &rarr; Services</a> to be sure it stays.';
   }
 }
 

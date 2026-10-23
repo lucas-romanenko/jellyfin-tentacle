@@ -2,17 +2,19 @@
    adds the heading, the initials and the words). Everything is scoped to
    #loginPage.tentacle-login, so no other page changes. */
 
+/* The brand's colours (tentacle/static/brand/tokens.css), as on Tentacle's own sign-in and the TV app */
 #loginPage.tentacle-login {
-  --tl-accent: #6c63ff;
-  --tl-accent-hover: #7d75ff;
-  --tl-bg2: #1a1a24;
-  --tl-bg3: #22222e;
+  --tl-accent: #6f5ce6;        /* fills under white text, 4.8:1 */
+  --tl-accent-hover: #6450dc;
+  --tl-accent-text: #8b80ff;   /* the TV app's accent, as text and focus */
+  --tl-bg2: #1b1830;
+  --tl-bg3: #231f3d;
   --tl-border: rgba(255, 255, 255, 0.12);
-  --tl-text: #e2e2ec;
-  --tl-text2: #9090a8;
+  --tl-text: #ebe9f5;
+  --tl-text2: #9b97b6;
   background:
-    radial-gradient(1200px 600px at 50% -10%, rgba(108, 99, 255, 0.16), transparent 70%),
-    #0c0c10 !important;
+    radial-gradient(1200px 600px at 50% -10%, rgba(111, 92, 230, 0.18), transparent 70%),
+    #0f0d1a !important;
   color: var(--tl-text);
 }
 
@@ -21,6 +23,12 @@
 
 /* ── Who's watching? ── */
 #loginPage.tentacle-login .visualLoginForm > h1 { display: none; }
+
+/* The mark and wordmark over "Who's watching?", as on Tentacle's sign-in;
+   the header's small logo stands back while this page shows */
+#loginPage.tentacle-login .tentacle-login-brand { display: block; height: 72px; width: auto; margin: 0 auto 28px; }
+body:has(#loginPage.tentacle-login:not(.hide)) .headerHomeButton,
+body:has(#loginPage.tentacle-login:not(.hide)) .pageTitleWithDefaultLogo { visibility: hidden; }
 
 #loginPage.tentacle-login .tentacle-login-head {
   display: flex;
@@ -228,7 +236,7 @@
 }
 
 #loginPage.tentacle-login .manualLoginForm .emby-input:focus { border-color: var(--tl-accent); }
-#loginPage.tentacle-login .manualLoginForm .inputLabelFocused { color: var(--tl-accent-hover); }
+#loginPage.tentacle-login .manualLoginForm .inputLabelFocused { color: var(--tl-accent-text); }
 #loginPage.tentacle-login .manualLoginForm .emby-checkbox:checked + span + .checkboxOutline,
 #loginPage.tentacle-login .manualLoginForm .emby-checkbox:focus + span + .checkboxOutline {
   background-color: var(--tl-accent);

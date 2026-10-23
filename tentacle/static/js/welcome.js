@@ -51,6 +51,8 @@ function _welcomeShow() {
   document.getElementById('welcome-next').textContent = last ? 'Start' : 'Next';
   const [title, body] = WELCOME_STEPS[step](welcome.data);
   document.getElementById('welcome-title').textContent = title;
+  // The first step carries the brand: the jellyfish over "Welcome, …"
+  document.getElementById('welcome-title').classList.toggle('welcome-title-brand', step === 'hello');
   document.getElementById('welcome-body').innerHTML = body;
   if (step === 'channels') _welcomePicks();
   if (step === 'hello' && !welcome.data.counts && !welcome.countsAsked) _welcomeCountsLate();

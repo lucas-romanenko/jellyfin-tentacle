@@ -1552,8 +1552,8 @@ function applyMusicVisibility() {
   if (status) {
     const lidarr = document.getElementById('lidarr_url')?.value.trim();
     status.innerHTML = !on ? ''
-      : lidarr ? 'Lidarr and your player are set in <a href="#" onclick="showSettingsSection(\'connections\');return false" style="color:var(--accent)">Connections</a>.'
-      : 'Next: connect Lidarr in <a href="#" onclick="showSettingsSection(\'connections\');return false" style="color:var(--accent)">Connections</a>.';
+      : lidarr ? 'Lidarr and your player are set in <a href="#" onclick="showSettingsSection(\'connections\');return false" style="color: var(--accent-text)">Connections</a>.'
+      : 'Next: connect Lidarr in <a href="#" onclick="showSettingsSection(\'connections\');return false" style="color: var(--accent-text)">Connections</a>.';
   }
   if (on) {
     loadServicePickers('lidarr');

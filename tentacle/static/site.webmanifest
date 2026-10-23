@@ -1,14 +1,14 @@
 {
   "name": "Tentacle",
   "short_name": "Tentacle",
-  "description": "Unified media library manager for Jellyfin",
+  "description": "Live TV, streaming providers and your own media, in one Jellyfin",
   "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#0c0c10",
-  "theme_color": "#0c0c10",
+  "background_color": "#0f0d1a",
+  "theme_color": "#0f0d1a",
   "icons": [
     {
       "src": "/static/web-app-manifest-192x192.png",

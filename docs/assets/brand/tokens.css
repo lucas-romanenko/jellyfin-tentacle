@@ -1,0 +1,32 @@
+/* Tentacle's brand colours, as on the Android TV app (its banner, launcher
+   and guide). The dashboard maps its own tokens onto these (index.html
+   :root); the docs site and the plugin's injected CSS use the same values.
+   Drawn assets next to this file come from scripts/brand.py. */
+:root {
+  --tentacle-navy: #181b3c;        /* banner background */
+  --tentacle-ink: #0f0d1a;         /* page background (TV app, Jellyfin Web, dashboard) */
+  --tentacle-ink-1: #141226;       /* raised surfaces, in steps */
+  --tentacle-ink-2: #1b1830;
+  --tentacle-ink-3: #231f3d;
+  --tentacle-launcher: #402b80;    /* app icon background */
+
+  --tentacle-dome-light: #c39bf0;  /* the jellyfish's dome, top to bottom */
+  --tentacle-dome: #8a64e4;
+  --tentacle-dome-deep: #6f4bd8;
+
+  /* Accent. One colour can't carry white text (4.5:1) and be read as text on
+     the dark background (4.5:1), so it comes in two: */
+  --tentacle-accent: #8b80ff;      /* the TV app's accent: text, links, icons, focus; 5.8:1 on ink-1 */
+  --tentacle-accent-fill: #6f5ce6; /* buttons and fills under white text: 4.8:1 */
+
+  /* The tentacles' glowing colours, for charts, tags and highlights */
+  --tentacle-blue: #4fb0f5;
+  --tentacle-cyan: #45d5e8;
+  --tentacle-green: #9ad84a;
+  --tentacle-amber: #f2c23c;
+  --tentacle-pink: #f2507f;
+  --tentacle-magenta: #e64ce0;
+
+  --tentacle-text: #f1effa;
+  --tentacle-text-muted: #9b97b6;
+}
