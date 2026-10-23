@@ -235,6 +235,9 @@ class HybridShowLosesItsDownload(unittest.TestCase):
             def get_series_details(self, *a, **k):
                 return None
 
+            def lookup_failed(self):
+                return False
+
         show = self._show(files=1)
         show["tmdbId"] = 0
         self.listed = [show, self._other()]
