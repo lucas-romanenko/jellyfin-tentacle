@@ -58,8 +58,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Stamp the image so /api/version can say which commit it is.
+          # Stamp the image so /api/version can say which version and commit it is.
           build-args: |
+            TENTACLE_VERSION=${{ github.event.release.tag_name || github.ref_name }}
             TENTACLE_COMMIT=${{ github.sha }}
             TENTACLE_BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.release.published_at || github.event.repository.pushed_at }}
           cache-from: type=gha

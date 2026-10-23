@@ -107,6 +107,13 @@ The code wins where they differ.
   address while the extraction comes from Jellyfin's.
 - **API key**: Jellyfin → Dashboard → API Keys; Tentacle checks it at
   startup and logs a warning if it's invalid. Invalid key = no playlists.
+- **Plugin updates** (10.11's source): every installed plugin's
+  `meta.json` has `autoUpdate` (default true; no API sets it, `/Plugins`
+  doesn't show it), and the scheduled task "Update Plugins" (at start-up and
+  every 24 h) installs the newest compatible version from the catalogues in
+  `/Repositories` for each plugin with it on and not disabled. The new
+  version is listed with Status `Restart` and runs only after Jellyfin
+  restarts. A plugin installed by hand (no catalogue listed) is never updated.
 
 ### Live TV per person (proven on 10.11.8, Oct 2026)
 

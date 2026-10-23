@@ -1667,6 +1667,17 @@ label.pool-row:hover { background: var(--bg2); }
 .fam-actions { display: flex; gap: 6px; min-width: 206px; justify-content: flex-end; }
 .fam-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
 .fam-hint { font-size: 12px; color: var(--text3); line-height: 1.5; margin: 6px 0 12px; }
+/* Settings → About (app.js loadAbout) */
+.about-row { display: grid; grid-template-columns: 150px 1fr; gap: 4px 16px; padding: 12px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.about-row:last-child { border-bottom: none; }
+.about-label { color: var(--text2); }
+.about-value { font-weight: 600; }
+.about-value .about-sub { font-weight: 400; color: var(--text3); font-size: 12px; margin-left: 6px; }
+.about-ok { color: var(--green); font-weight: 400; margin-left: 6px; }
+.about-row .fam-note { margin: 8px 0 0; }
+.about-row .fam-hint { margin: 4px 0 0; }
+.about-tv { display: flex; flex-wrap: wrap; gap: 2px 8px; padding: 2px 0; }
+@media (max-width: 600px) { .about-row { grid-template-columns: 1fr; } }
 .fam-box .form-group { margin-bottom: 12px; }
 .fam-copy { display: flex; align-items: center; gap: 8px; }
 .fam-copy code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-family: 'DM Mono', monospace; font-size: 13px; padding: 7px 10px; background: var(--bg3); border-radius: var(--radius-sm); }
@@ -3523,6 +3534,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
             <button class="settings-nav-item" data-section="schedule">Schedule &amp; notifications</button>
             <button class="settings-nav-item" data-section="signin">People &amp; sign-in</button>
             <button class="settings-nav-item" data-section="advanced">Advanced</button>
+            <button class="settings-nav-item" data-section="about">About</button>
           </div>
 
           <div>
@@ -3873,6 +3885,13 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <div style="margin-top:20px">
                 <button class="btn btn-primary" onclick="saveSettings()">Save</button>
               </div>
+            </div>
+
+            <!-- About: which versions run, and what needs updating (app.js loadAbout) -->
+            <div class="settings-section card" id="section-about">
+              <h3>About</h3>
+              <p class="section-desc">Which versions run here. You update each of them; Tentacle installs nothing by itself.</p>
+              <div id="about-versions"><div class="loading-state"><div class="spinner"></div> Loading&hellip;</div></div>
             </div>
           </div>
         </div>
@@ -4772,6 +4791,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
       <div style="background:var(--bg2);border-radius:8px;padding:12px;margin:12px 0;font-size:13px;color:var(--text2)">
         After installing, go to <strong>Jellyfin → Plugins → Tentacle → Settings</strong> and set the Tentacle URL to this server's address.
+        Jellyfin then keeps the plugin up to date from this catalogue by itself (Scheduled tasks → Update Plugins, daily); a new version runs after Jellyfin restarts. Settings → About shows which versions run.
       </div>
 
       <div style="display:flex;gap:8px;margin-top:16px">
@@ -4786,7 +4806,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="/static/js/app.js?v=45"></script>
+<script src="/static/js/app.js?v=46"></script>
 <script src="/static/js/sources.js?v=45"></script>
 <script src="/static/js/pages.js?v=50"></script>
 <script src="/static/js/music.js?v=45"></script>

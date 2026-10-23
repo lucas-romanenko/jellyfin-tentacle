@@ -70,6 +70,9 @@ for t in X.Y.Z latest; do curl -sI -H "Authorization: Bearer $tok" -H "Accept: a
 Plugin: the GitHub release has `tentacle-plugin-vX.Y.Z.zip`, and main has
 the bot's "Update plugin manifest for vX.Y.Z" commit (with a Tests run).
 
-A running install says what it is: `GET /api/version` shows `commit`
-(= `git rev-list -n1 vX.Y.Z`) and `code.matches: true`. Installs that
+A running install says what it is: `GET /api/version` shows `version`
+(`vX.Y.Z`, from the tag), `commit` (= `git rev-list -n1 vX.Y.Z`) and
+`code.matches: true`. When a release needs a newer plugin than the last
+one, raise `MIN_PLUGIN_VERSION` in `tentacle/services/versions.py` (Settings
+→ About warns installs whose plugin is older). Installs that
 follow `latest` get new code only from a release.

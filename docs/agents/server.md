@@ -22,8 +22,21 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
 ```
 
 - `/api/health`: the container healthcheck. `/api/version`
-  (unauthenticated): commit, build date, `code.matches` (the running files
-  match the image's fingerprint).
+  (unauthenticated): release version, commit, build date, `code.matches`
+  (the running files match the image's fingerprint).
+- Versions (`services/versions.py`): the image's `TENTACLE_VERSION` build
+  arg is the release tag (Docker Publish) or `git describe --tags --match
+  'v[0-9]*'` of a build of main, shown as "v1.23.0+3" (sidebar: "v1.23.0 + 3
+  changes", the commit in its tooltip). An image built without it (from a
+  GitHub URL at a commit: no tags in the context) asks GitHub at start-up
+  which release its commit follows (`releases/latest`, then
+  `compare/<tag>...<commit>`), once; offline it stays unknown and the
+  sidebar shows the commit. Settings → About (`/api/about`, admins): the
+  server and the newest release (GitHub, cached 6 h), the plugin running in
+  Jellyfin (`/Plugins`) against `MIN_PLUGIN_VERSION` (raise it when the
+  server starts needing a newer plugin), whether Tentacle's catalogue is in
+  Jellyfin's `/Repositories`, Jellyfin's version, and each person's TV app
+  with the features of `TV_APP_NEEDS` this install can't serve yet.
 - Paths inside the container are fixed (users map host folders with
   volumes; Health → Media folders checks them): `/data` (DB, caches,
   per-user `smartlists/` and `home-configs/`), `/media/movies` (Radarr),
