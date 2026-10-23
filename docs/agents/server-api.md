@@ -185,6 +185,7 @@ provider names, URLs or logins).
 | GET | `/api/live/status` | admin | livetv.py:live_status |
 | GET | `/api/live/stream/{channel_id}` | none | livetv.py:stream_proxy |
 | GET | `/api/live/streams` | admin or internal | livetv.py:live_streams |
+| GET | `/api/live/recordings/busy` | admin or internal | recordings.py:recordings_busy (Jellyfin recording now, or a timer whose padded start is within `soon_minutes`, default 20; `known` false when Jellyfin could not be asked) |
 | POST | `/api/live/sync-channels/{provider_id}` | admin | livetv.py:sync_live_channels |
 | POST | `/api/live/sync-epg/{provider_id}` | admin | livetv.py:sync_epg |
 | GET | `/api/live/sync-status` | admin | livetv.py:sync_status_endpoint |

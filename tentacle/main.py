@@ -988,6 +988,8 @@ from routers import my_livetv as my_livetv_router
 app.include_router(my_livetv_router.router)
 from routers import my_youtube as my_youtube_router
 app.include_router(my_youtube_router.router)
+from routers import recordings as recordings_router  # noqa: E402
+app.include_router(recordings_router.router)
 from routers import livetv_checker as livetv_checker_router
 app.include_router(livetv_checker_router.router)
 from routers import livetv_catalog as livetv_catalog_router
