@@ -1505,6 +1505,77 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
   .myt-row .btn { padding: 6px 10px; }
 }
 
+/* ── Recordings (recordings.js) ── */
+#rec-tabs { margin-bottom: 12px; }
+.card.rec-card { padding: 0; overflow: hidden; border-radius: 3px; margin-bottom: 16px; }
+.card.rec-card > .mych-step-title, .card.rec-card > .mych-hint, .card.rec-card > .mych-picks { margin-left: 16px; margin-right: 16px; }
+.card.rec-card > .mych-step-title { margin-top: 14px; }
+.card.rec-card > .mych-picks { margin-bottom: 14px; }
+.rec-day { padding: 10px 14px 6px; font-size: 12px; font-weight: 600; color: var(--text2); background: var(--bg2); border-bottom: 1px solid var(--border); }
+.rec-row { padding-top: 9px; padding-bottom: 9px; }
+.rec-row.rec-preview .mych-name { color: var(--text2); }
+.rec-time { width: 128px; flex-shrink: 0; font-family: 'DM Mono', monospace; font-size: 12px; color: var(--text2); }
+.rec-subt { color: var(--text3); font-size: 12px; margin-left: 6px; }
+.rec-chan { color: var(--text2); }
+.mych-meta .warn, .rec-pv-row .warn { color: var(--amber); }
+.rec-pill { flex-shrink: 0; }
+.rec-foot { font-size: 12px; color: var(--text3); margin: -8px 2px 16px; }
+.rec-rule-row { padding-top: 11px; padding-bottom: 11px; }
+.rec-rule-row.on { background: linear-gradient(90deg, var(--green-dim), transparent 60%); }
+.rec-rule-row .mych-name { font-size: 14px; font-weight: 500; }
+.rec-switch { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text2); cursor: pointer; white-space: nowrap; }
+.rec-switch input { accent-color: var(--green); width: 16px; height: 16px; }
+.rec-mode-text { font-size: 12px; color: var(--text3); }
+.rec-teams { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px; padding: 0 16px 16px; }
+.rec-team { display: flex; align-items: center; gap: 8px; text-align: left; padding: 8px 10px; font-size: 13px; color: var(--text); background: var(--bg2); border: 1px solid var(--border2); border-radius: 3px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+.rec-team:hover { border-color: var(--accent); }
+.rec-team.on { background: var(--accent-dim); border-color: var(--accent); }
+.rec-team .abbr { width: 34px; flex-shrink: 0; font-family: 'DM Mono', monospace; font-size: 11px; color: var(--text3); }
+.modal.rec-modal { max-width: 980px; width: calc(100vw - 32px); }
+.rec-ed { display: grid; grid-template-columns: minmax(0, 340px) minmax(0, 1fr); gap: 0; max-height: calc(100vh - 190px); }
+.rec-ed-form { padding: 16px; border-right: 1px solid var(--border); overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+.rec-ed-preview { padding: 12px 16px; overflow-y: auto; }
+.rec-ed-foot { display: flex; gap: 8px; align-items: center; padding: 12px 16px; border-top: 1px solid var(--border); }
+.rec-field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.rec-field > span { font-weight: 500; }
+.rec-field small, .rec-pad small, .rec-check small { color: var(--text3); font-size: 11px; }
+.rec-check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; color: var(--text2); cursor: pointer; }
+.rec-check input { margin-top: 2px; }
+.rec-check.rec-record { padding: 10px 12px; border: 1px solid var(--border2); border-radius: 3px; background: var(--bg2); color: var(--text); }
+.rec-check.rec-record input { accent-color: var(--green); width: 18px; height: 18px; }
+.rec-check.rec-record span { display: flex; flex-direction: column; gap: 2px; }
+.rec-seg { display: flex; gap: 4px; }
+.rec-pad { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.rec-pad select { width: auto; padding: 6px 8px; font-size: 13px; }
+.rec-num { width: 90px; display: inline-block; }
+.rec-pv-head { font-size: 13px; color: var(--text2); padding: 4px 0 10px; }
+.rec-pv-head b { color: var(--text); }
+.rec-pv-row { display: flex; gap: 12px; padding: 8px 0; border-top: 1px solid var(--border); font-size: 13px; }
+.rec-pv-row.wait b { color: var(--amber); }
+.rec-pv-row.dim { color: var(--text2); }
+.rec-pv-when { width: 132px; flex-shrink: 0; font-family: 'DM Mono', monospace; font-size: 12px; color: var(--text2); }
+.rec-pv-what { flex: 1; min-width: 0; }
+.rec-pv-what .rec-chan { font-size: 12px; margin-left: 6px; }
+.rec-pv-more { margin-top: 10px; font-size: 13px; }
+.rec-pv-more summary { cursor: pointer; color: var(--accent-text); padding: 6px 0; }
+.rec-preview-box > summary { padding: 12px 14px; cursor: pointer; font-size: 13px; color: var(--text2); list-style-position: inside; }
+.rec-preview-box > summary .mych-hint { margin-left: 8px; }
+.rec-preview-box[open] > summary { border-bottom: 1px solid var(--border); }
+.rec-preview-box .mych-name { color: var(--text2); }
+@media (max-width: 760px) {
+  .rec-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; column-gap: 8px; }
+  .rec-row .rec-time { grid-column: 1 / -1; width: auto; font-size: 11px; color: var(--text3); }
+  .rec-row .mych-meta { flex-wrap: nowrap; overflow: hidden; white-space: nowrap; }
+  .rec-row .mych-meta > span { overflow: hidden; text-overflow: ellipsis; }
+  .rec-row .mych-meta > .rec-chan { flex-shrink: 0; }
+  .rec-row .rec-why { display: none; }
+  .rec-ed { grid-template-columns: 1fr; max-height: none; overflow-y: auto; }
+  .rec-ed-form { border-right: none; border-bottom: 1px solid var(--border); }
+  .rec-pv-when { width: 96px; }
+  .rec-teams { grid-template-columns: 1fr 1fr; }
+  .rec-switch span { display: none; }
+}
+
 /* ── Sources → Live TV → Household channels: the pool (mychannels.js) ── */
 .pool-total { font-size: 20px; font-weight: 600; color: var(--text); margin-bottom: 2px; }
 .pool-total small { font-size: 13px; font-weight: 400; color: var(--text2); }
@@ -2366,6 +2437,10 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <button class="nav-item" data-page="mychannels" id="nav-mychannels" style="display:none">
           <span class="icon">▤</span> My Channels
         </button>
+        <!-- Teams and rules that record from the guide (recordings.js); shown with My Channels -->
+        <button class="nav-item" data-page="recordings" id="nav-recordings" style="display:none">
+          <span class="icon">●</span> Recordings
+        </button>
         <!-- Everyone's own YouTube channels (myyoutube.js) -->
         <button class="nav-item" data-page="myyoutube">
           <span class="icon">▶</span> My YouTube
@@ -2783,6 +2858,27 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         </div>
       </div>
 
+      <!-- ── RECORDINGS: My teams, rules, what will record and what did (recordings.js) ── -->
+      <div class="page" id="page-recordings">
+        <div class="card mych-head">
+          <div class="mych-head-text">
+            <div class="mych-title">Recordings</div>
+            <p class="mych-sub">Follow your teams and Tentacle records their games from the TV guide. Recordings are in Jellyfin, for everyone in the household.</p>
+          </div>
+          <div class="mych-status" id="rec-status" aria-live="polite"></div>
+        </div>
+        <div class="live-tabs" id="rec-tabs">
+          <button class="live-tab active" data-rectab="upcoming" onclick="recTab('upcoming')">Upcoming <span class="mych-count" id="rec-count-upcoming"></span></button>
+          <button class="live-tab" data-rectab="teams" onclick="recTab('teams')">My teams <span class="mych-count" id="rec-count-teams"></span></button>
+          <button class="live-tab" data-rectab="rules" onclick="recTab('rules')">Rules <span class="mych-count" id="rec-count-rules"></span></button>
+          <button class="live-tab" data-rectab="history" onclick="recTab('history')">Recorded</button>
+        </div>
+        <div class="rec-panel" id="rec-panel-upcoming"><div class="loading-state"><div class="spinner"></div> Loading...</div></div>
+        <div class="rec-panel" id="rec-panel-teams" style="display:none"></div>
+        <div class="rec-panel" id="rec-panel-rules" style="display:none"></div>
+        <div class="rec-panel" id="rec-panel-history" style="display:none"></div>
+      </div>
+
       <!-- ── MY YOUTUBE: everyone's own YouTube channels, theirs alone in Jellyfin (myyoutube.js) ── -->
       <div class="page" id="page-myyoutube">
         <div class="card mych-head">
@@ -3101,7 +3197,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
             <div class="live-more-row">
               <div>
                 <div class="live-more-title">Recordings</div>
-                <div class="live-more-hint">People schedule and watch recordings in Jellyfin (Guide &rarr; Record); they are the household&rsquo;s, like a family recorder. How many channels can play or record at once is <strong>Streams at once</strong> on the provider&rsquo;s card; problems with a recording are on <a href="#" onclick="showPage('health');return false" style="color: var(--accent-text)">Health</a>.</div>
+                <div class="live-more-hint">People follow their teams and set recording rules on <a href="#" onclick="showPage('recordings');return false" style="color: var(--accent-text)">Recordings</a>, and record single programmes in Jellyfin (Guide &rarr; Record); recordings are the household&rsquo;s, like a family recorder. How many channels can play or record at once is <strong>Streams at once</strong> on the provider&rsquo;s card; problems with a recording are on <a href="#" onclick="showPage('health');return false" style="color: var(--accent-text)">Health</a>.</div>
               </div>
             </div>
           </div>
@@ -3901,6 +3997,26 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 <!-- ── MODALS ── -->
 
 <!-- Add Provider Modal -->
+<!-- Recordings: a team's or a rule's options, and what it would record (recordings.js) -->
+<div class="modal-overlay" id="modal-rec-rule" style="display:none">
+  <div class="modal rec-modal">
+    <div class="modal-header">
+      <div class="modal-title" id="rec-ed-title">Rule</div>
+      <button class="modal-close" onclick="closeModal('modal-rec-rule')">&times;</button>
+    </div>
+    <div class="rec-ed">
+      <div class="rec-ed-form" id="rec-ed-form"></div>
+      <div class="rec-ed-preview" id="rec-ed-preview" aria-live="polite"></div>
+    </div>
+    <div class="rec-ed-foot">
+      <button class="btn btn-danger btn-sm" id="rec-ed-remove" onclick="recRemoveRule()">Stop following</button>
+      <span style="flex:1"></span>
+      <button class="btn btn-secondary btn-sm" onclick="closeModal('modal-rec-rule')">Cancel</button>
+      <button class="btn btn-primary btn-sm" id="rec-ed-save" onclick="recSaveEditor()">Save</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-add-provider" style="display:none">
   <div class="modal">
     <div class="modal-header">
@@ -4814,16 +4930,17 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="/static/js/app.js?v=46"></script>
+<script src="/static/js/app.js?v=47"></script>
 <script src="/static/js/sources.js?v=46"></script>
 <script src="/static/js/pages.js?v=51"></script>
 <script src="/static/js/music.js?v=45"></script>
-<script src="/static/js/mychannels.js?v=49"></script>
+<script src="/static/js/mychannels.js?v=50"></script>
 <script src="/static/js/newgroups.js?v=45"></script>
 <script src="/static/js/family.js?v=47"></script>
 <script src="/static/js/welcome.js?v=50"></script>
-<script src="/static/js/live.js?v=3"></script>
+<script src="/static/js/live.js?v=4"></script>
 <script src="/static/js/myyoutube.js?v=48"></script>
+<script src="/static/js/recordings.js?v=3"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {

@@ -65,6 +65,8 @@ async function mychCheckNav() {
   try {
     const d = await api('/api/my/channels');
     nav.style.display = d.available ? '' : 'none';
+    const recNav = document.getElementById('nav-recordings');
+    if (recNav) recNav.style.display = d.available ? '' : 'none';
   } catch (e) {
     nav.style.display = 'none';
   }

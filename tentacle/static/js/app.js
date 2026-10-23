@@ -515,6 +515,7 @@ const PAGE_TITLES = {
   jellyfin: ['My Home Screen', 'Your Jellyfin home rows and playlists'],
   mychannels: ['My Channels', 'Your favourite Live TV channels'],
   myyoutube: ['My YouTube', 'Your YouTube channels'],
+  recordings: ['Recordings', 'Your teams and what will record'],
   people: ['People', 'Your household: accounts, age limits and TVs'],
   requests: ['Requests', 'What your household asked for'],
   sources: ['Sources', 'Where the library comes from'],
@@ -581,6 +582,7 @@ function showPage(name, tab) {
     if (name === 'jellyfin') { loadJellyfinPage(); if (tab) showJellyfinTab(tab); }
     if (name === 'mychannels' && typeof loadMyChannels === 'function') loadMyChannels();
     if (name === 'myyoutube' && typeof loadMyYouTube === 'function') loadMyYouTube();
+    if (name === 'recordings' && typeof loadRecordings === 'function') loadRecordings();
     if (name === 'people') loadPeople();
     if (name === 'requests') { loadRequests(); famReqTab(tab === 'decided' ? 'decided' : 'pending'); }
     if (name === 'sources') showSourcesTab(tab || state.sourcesTab || 'providers');

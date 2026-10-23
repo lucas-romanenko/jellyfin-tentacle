@@ -27,6 +27,20 @@ In Jellyfin's web app, **Live TV** opens straight to Tentacle's guide:
 
 It stays quick with thousands of channels and works on a phone. (Jellyfin's TV layout keeps Jellyfin's own guide.)
 
+## Recordings: my teams and rules
+
+**Recordings** (in the sidebar, for everyone) records from the TV guide by itself.
+
+- **My teams**: pick a league (NHL, NBA, WNBA, NFL, MLB, MLS, CFL, Premier League, LaLiga, Serie A, Bundesliga, Ligue 1, Formula 1, NASCAR, IndyCar, MotoGP), then tap your team. Tentacle looks for its games in the guide by every name guides use: the full name, the short name and nicknames, the city, the code ("TOR"), the French name, and its home arena ("From Scotiabank Arena in Toronto" is a home game). It also reads event and pay-per-view channels ("Penguins@Maple Leafs @7", "NHL | 01 - 8pm Canadiens at Blackhawks"), and when the guide names only the pregame show ("Toronto Maple Leafs Pregame"), it records the game that follows it on that channel.
+- **Rules**: words to record by, for anything else: a show, "Grand Prix", a tournament. Whole words; accents and capitals don't matter; "Live:" and "New:" are ignored. Any word or every word, words to leave out, the title only or the description too, a shortest length.
+- **Preview first**: a new team or rule shows what it would record and books nothing. Its editor lists what it would record in the guide as it is now, which channel it would use and where else it is on, the replays it would skip, and near misses with the reason ("Toronto, but nothing says NHL"; "only 30 minutes: too short to be the game"). Switch on **Record their games** when it looks right.
+- **One game, one recording**: the same game on several channels is recorded once, on a regular channel before an event channel's slot, and a later showing of it (a replay) is skipped. If no connection is free for the first showing, the replay is recorded instead.
+- **Connections**: recordings use the provider's **Streams at once**, like watching. A game that would need one more connection than the account has waits, and Upcoming says why ("the provider's connection is in use then").
+- **Padding**: sports start 5 minutes early and run on after the listed end (an hour for hockey, 45 minutes for basketball); playoff games get an hour more for overtime. Each team's or rule's editor changes them.
+- **Upcoming** lists what will record, soonest first, with why and on which channel, including what people set to record in Jellyfin itself. **✕** skips one showing (it is never booked again; **Recorded** brings it back). **Recorded** lists what teams and rules recorded or skipped.
+
+Recordings are made in Jellyfin as ordinary recordings, exactly like its Record button, so they play everywhere and keep recording if the rule is switched off. Tentacle only ever cancels the recordings it made, and never one that has started; what people set in Jellyfin themselves is left alone. Anyone whose account may record (People → Can record; admins always, kids never) can follow teams and make rules; they see everyone's, and change their own (admins change any). The list of leagues and teams is built in: Tentacle doesn't ask any league's schedule, so it finds the games your guide lists (usually a day or two ahead).
+
 ## My Channels
 
 Everyone (admins too) has **My Channels** in Tentacle's sidebar once the household has Live TV channels.

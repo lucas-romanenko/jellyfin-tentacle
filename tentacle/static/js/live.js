@@ -194,6 +194,11 @@ live.handlers.groups = () => {
   }
 };
 
+// A team or rule changed, or what will record (everyone: recordings are the household's).
+live.handlers.recordings = () => {
+  if (state.currentPage === 'recordings' && !liveBusy('page-recordings')) _run('loadRecordings');
+};
+
 // A reconnect runs every topic's handler (above); and the Library.
 live.handlers.resync = () => {
   if (state.currentPage === 'library') _run('_debouncedLibRefresh');
