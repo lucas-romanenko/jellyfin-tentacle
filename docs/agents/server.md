@@ -264,8 +264,9 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   `downloaded_at`, no "Downloaded TV", no tag or NFO write: it skips the
   tag/NFO step) and releases one an older scan tagged (#682, see
   pipelines.md), and Keep Downloaded on a series checks again
-  before deleting anything (409 when nothing is downloaded, 502 when
-  Sonarr can't be asked). Before either Keep deletes a copy,
+  before deleting anything (409 when nothing is downloaded or when some
+  VOD episode, by SxxEyy, has no downloaded file: `vod_only_episodes`, #800;
+  502 when Sonarr can't be asked). Resolve All leaves such shows pending. Before either Keep deletes a copy,
   `services/duplicates.carry_user_data` merges every Jellyfin user's
   UserData (`/UserItems/{id}/UserData?userId=`) from the removed copy's
   item onto the kept one (films by path, shows per season/episode):

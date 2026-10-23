@@ -14,6 +14,7 @@ from routers.auth import require_admin
 from services.duplicates import (
     delete_vod_files, convert_record_to_downloaded, is_downloaded_file, arr_folder_is_vod_folder,
     carry_user_data, UserDataCarryError, watch_pending_user_data, vod_copy_on_disk, resolving,
+    vod_only_episodes,
 )
 from services.media_files import delete_series_files
 
@@ -176,6 +177,19 @@ def _require_series_download(dup: Duplicate, db: Session) -> None:
     if not has:
         raise HTTPException(409, "Nothing downloaded for this show: Sonarr only lists the VOD .strm files. "
                                  "Nothing was deleted; use Keep Both to dismiss it.")
+    # A show Sonarr holds only some episodes of (Download More for one
+    # season) is a duplicate too; Keep Downloaded deletes every .strm and the
+    # VOD sync never brings them back, so the episodes only VOD has would be
+    # gone for good (#800).
+    only_vod = vod_only_episodes(sonarr, show.get("id"), dup)
+    if only_vod is None:
+        raise HTTPException(502, "Couldn't read Sonarr's episode files. Nothing was deleted; try again.")
+    if only_vod:
+        n = len(only_vod)
+        raise HTTPException(409, f"{n} episode{'s' if n != 1 else ''} of this show exist{'' if n != 1 else 's'} "
+                                 f"only as VOD streams (first: {only_vod[0]}); Keep Downloaded would delete "
+                                 f"{'them' if n != 1 else 'it'} for good. Nothing was deleted; use Keep Both, "
+                                 "or download the rest first.")
 
 
 def _require_movie_download(dup: Duplicate, db: Session) -> None:

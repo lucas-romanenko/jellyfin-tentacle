@@ -84,6 +84,10 @@ class TestSeriesDuplicates(_Base):
         self.assertIsNone(self.db.query(Series).one().sonarr_path)
 
     def test_keep_downloaded_removes_the_vod_episodes(self):
+        # Sonarr holds every episode the VOD copy has (a partly downloaded
+        # show is refused: test_keep_downloaded_partial_show.py, #800).
+        self.sonarr.return_value.get_episode_files.return_value.append(
+            {"id": 51, "path": "/tv/Show (2010)/Season 01/Show - S01E01.mkv"})
         duplicates._apply_resolution(self.dup, "keep_radarr", self.db)
         self.assertEqual(list(self.show.rglob("*.strm")), [])
         self.assertEqual(self.db.query(Series).one().source, "sonarr")

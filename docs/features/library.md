@@ -77,7 +77,7 @@ The dashboard shows a duplicate count if any are detected. Click through to see 
 
 You can resolve duplicates individually or all at once:
 
-- **Keep Downloaded** deletes the VOD copy (its `.strm` and `.nfo` files) and keeps the download. Tentacle stops importing that title from your provider. For a show, Tentacle first checks with Sonarr that at least one episode really was downloaded, and refuses otherwise.
+- **Keep Downloaded** deletes the VOD copy (its `.strm` and `.nfo` files) and keeps the download. Tentacle stops importing that title from your provider. For a show, Tentacle first checks with Sonarr that every episode the VOD copy has really was downloaded, and refuses otherwise (deleting nothing), so episodes only your provider has aren't lost; use Keep Both, or download the rest first.
 - **Keep VOD** deletes the downloaded files through Radarr or Sonarr and removes the title there. When the download shares its folder with the VOD copy, only the downloaded video files are deleted; the `.strm` and `.nfo` files stay. Tentacle first checks that the VOD copy is on disk (a film's `.strm`, at least one episode `.strm` of a show) and refuses otherwise, so the download is never deleted when it is the only copy left, for example a film you downloaded before your provider offered it.
 - **Keep Both** changes nothing.
 
