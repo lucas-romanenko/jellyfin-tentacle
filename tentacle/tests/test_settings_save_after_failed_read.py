@@ -157,5 +157,46 @@ class SettingsSaveAfterFailedRead(unittest.TestCase):
         self.assertEqual(STORED["jellyfin_url"], after["jellyfin_url"])
 
 
+class JellyfinAddressAndKeyCantBeCleared(unittest.TestCase):
+    """The server's own belt: whatever a page posts, Jellyfin's address and
+    key (sign-in needs both) are never stored empty over a stored one."""
+
+    def setUp(self):
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
+        self.addCleanup(engine.dispose)
+        mdb.Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine)()
+        self.addCleanup(self.db.close)
+        mdb.seed_defaults(self.db)
+        set_setting(self.db, "jellyfin_url", STORED["jellyfin_url"])
+        set_setting(self.db, "jellyfin_api_key", STORED["jellyfin_api_key"])
+        set_setting(self.db, "pushover_user_key", "old-user-key")
+
+    def post(self, settings):
+        from fastapi import HTTPException
+        from routers import settings as r
+        with mock.patch("services.smartlists._notify_jellyfin_plugin"):
+            try:
+                r.update_settings(r.SettingsUpdate(settings=settings), db=self.db)
+            except HTTPException as e:
+                return e.status_code
+        return 200
+
+    def test_an_empty_address_or_key_is_refused_and_nothing_is_stored(self):
+        for key in ("jellyfin_url", "jellyfin_api_key"):
+            with self.subTest(key=key):
+                self.assertEqual(400, self.post({key: "", "pushover_user_key": "new"}))
+                self.assertEqual(STORED[key], get_setting(self.db, key))
+                self.assertEqual("old-user-key", get_setting(self.db, "pushover_user_key"))
+
+    def test_a_new_address_is_stored(self):
+        self.assertEqual(200, self.post({"jellyfin_url": "http://jf.test:8096"}))
+        self.assertEqual("http://jf.test:8096", get_setting(self.db, "jellyfin_url"))
+
+    def test_other_keys_can_still_be_cleared(self):
+        self.assertEqual(200, self.post({"pushover_user_key": ""}))
+        self.assertEqual("", get_setting(self.db, "pushover_user_key"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -155,6 +155,12 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
         if days is None:
             raise HTTPException(400, f"Recently added days '{body.settings['recently_added_days']}' is not a number")
         body.settings["recently_added_days"] = str(days)
+    for key, what in (("jellyfin_url", "address"), ("jellyfin_api_key", "API key")):
+        # Sign-in and every Jellyfin-token request need these: clearing one
+        # locked the install for good once the admin's session ended (#761).
+        if key in body.settings and not (body.settings[key] or "").strip() and get_setting(db, key, ""):
+            raise HTTPException(400, f"Jellyfin's {what} can't be left empty: signing in needs it. "
+                                     f"Type the new one instead.")
     from services.tmdb import TMDB_DEFAULT_TOKEN
     if (body.settings.get("tmdb_bearer_token") or "").strip() == TMDB_DEFAULT_TOKEN:
         # The built-in token stays a default: storing it would pin this install
