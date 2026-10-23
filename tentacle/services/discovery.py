@@ -145,17 +145,24 @@ def _refresh_vod_categories(db, provider) -> list:
 
 
 def _refresh_live_groups(db, provider) -> list:
-    """Fetch + upsert the provider's Live TV groups (Xtream only — M3U group
-    discovery requires a full playlist parse and is skipped nightly).
+    """Fetch + upsert the provider's Live TV groups. An M3U provider's
+    playlist is read again whole, as its own sync does: its new groups, and
+    its channels' links, which a provider may change (new tokens or host).
     Returns names of newly discovered groups."""
+    before = {
+        g.name for g in db.query(LiveChannelGroup).filter(LiveChannelGroup.provider_id == provider.id).all()
+    }
+    if (provider.provider_type or "xtream") in ("m3u_url", "m3u_file"):
+        from routers.livetv import _snapshot_provider, _sync_from_m3u
+        _sync_from_m3u(_snapshot_provider(provider, provider.provider_type), db, "Reading the playlist...")
+        after = {
+            g.name for g in db.query(LiveChannelGroup).filter(LiveChannelGroup.provider_id == provider.id).all()
+        }
+        return sorted(after - before)
     if (provider.provider_type or "xtream") != "xtream":
         return []
 
     from routers.livetv import _sync_groups_from_xtream
-
-    before = {
-        g.name for g in db.query(LiveChannelGroup).filter(LiveChannelGroup.provider_id == provider.id).all()
-    }
 
     provider_data = {
         "id": provider.id,

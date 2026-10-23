@@ -258,12 +258,12 @@ class XtreamClient:
 
 def vod_links_for(db: Session, provider: Provider):
     """The Links the sync client writes .strm files with, or None for direct
-    provider URLs. Needs VOD through Tentacle on (the default), an Xtream
-    provider, and Tentacle's own address as players reach it
-    (vod_base_url_for)."""
+    provider URLs. Needs VOD through Tentacle on (the default) and Tentacle's
+    own address as players reach it (vod_base_url_for). An M3U provider's
+    client uses it only for the films of its own panel login (M3UClient._link)."""
     from routers.vod import vod_enabled
     from services import vod_tokens
-    if not vod_enabled(db) or (provider.provider_type or "xtream") != "xtream":
+    if not vod_enabled(db):
         return None
     base = vod_base_url_for(db)
     if not base:
@@ -478,13 +478,18 @@ def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
     their playlist is pending (client.repoint_all, #149): then any listed
     file that plays another address follows the playlist."""
     if not isinstance(client, XtreamClient):
-        if not getattr(client, "repoint_all", False) or not expected:
+        if not expected:
             return False
         try:
             current = strm_file.read_text(encoding="utf-8").strip()
         except (OSError, UnicodeDecodeError):
             return False
-        return current != expected
+        if getattr(client, "repoint_all", False):
+            return current != expected
+        # The same film of the provider's own panel, to or from Tentacle's
+        # VOD route (M3UClient._link)
+        have = _m3u_stream_of(current, client)
+        return current != expected and have is not None and have == _m3u_stream_of(expected, client)
     try:
         current = strm_file.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):
@@ -540,6 +545,24 @@ def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
         return True                                        # the provider moved
     ref = _direct_ref(current, prefix=prefix)
     return ref is not None and ref == exp and exp[0] == provider_host
+
+
+def _m3u_stream_of(url_text: str, client):
+    """(kind, panel stream id) of a .strm address that plays a film or episode
+    of an M3U provider's own panel login: Tentacle's VOD link for this
+    provider, or the panel's direct URL. Else None."""
+    from urllib.parse import unquote
+    from services import vod_tokens
+    from services.m3u_parser import panel_link
+    m = vod_tokens._TOKEN_URL.search(url_text or "")
+    if m is not None:
+        return (m.group(1), int(m.group(3))) if int(m.group(2)) == getattr(client, "provider_id", None) else None
+    link = panel_link(url_text or "")
+    p = getattr(client, "provider", None)
+    if (link is None or link.kind not in ("movie", "series") or p is None or not p.server_url
+            or (link.base, unquote(link.user), unquote(link.pw)) != (p.server_url, p.username, p.password)):
+        return None
+    return link.kind, int(link.stream_id)
 
 
 # A direct Xtream stream URL without a path prefix: host, kind, user,
@@ -610,41 +633,48 @@ def _m3u_id(s: str) -> int:
 class M3UClient:
     """XtreamClient-compatible adapter backed by a parsed M3U playlist."""
 
-    def __init__(self, provider: Provider):
+    def __init__(self, provider: Provider, db: Session = None):
         self.provider = provider
+        self.db = db                   # set: what the playlist says is kept (m3u_source.learn)
+        self.provider_id = getattr(provider, "id", None)
+        self.vod_links = None          # Tentacle's VOD route for the panel's films (vod_links_for)
         self._loaded = False
+        self.playlist = None
         self._movies: dict = {}        # group-title -> [stream dict]
         self._series: dict = {}        # group-title -> { show -> { season(str) -> [ep dict] } }
         self._series_info: dict = {}   # series_id -> {"episodes": {season: [ep dict]}}
         self._urls: dict = {}          # stream_id / ep_id -> direct url
+        self.live_count = 0
+        self.unplaced_episodes = 0
 
     def _load(self):
         if self._loaded:
             return
-        ua = self.provider.user_agent or "TiviMate/4.7.0 (Linux; Android 12)"
+        from services import m3u_source
         try:
-            if self.provider.provider_type == "m3u_file":
-                from services.m3u_parser import parse_m3u_from_file
-                entries = parse_m3u_from_file(self.provider.m3u_url)
-            else:
-                from services.m3u_parser import parse_m3u_from_url
-                entries = parse_m3u_from_url(self.provider.m3u_url, user_agent=ua)
+            playlist = m3u_source.read(self.provider)
         except Exception as e:
             raise ProviderConnectionError(self.provider.name, str(e))
+        self.playlist = playlist
+        if self.db is not None:
+            m3u_source.learn(self.db, self.provider, playlist)
 
-        for e in entries:
+        for e, kind in zip(playlist.entries, playlist.kinds):
             url = (e.get("stream_url") or "").strip()
             name = (e.get("name") or "").strip()
             if not url or not name:
                 continue
+            if kind == "live":
+                # A channel: Live TV's, never a film (#M3U lists both)
+                self.live_count += 1
+                continue
             group = (e.get("group_title") or "").strip() or "Uncategorized"
-            low = url.lower()
             container = container_from_url(url)
-            ep = episode_from_title(name)
-            is_series = ("/series/" in low) or (ep is not None and "/movie/" not in low)
-            if is_series:
+            if kind == "series":
+                ep = episode_from_title(name)
                 if not ep:
-                    continue  # series-ish but no parseable SxxExx — can't place it
+                    self.unplaced_episodes += 1
+                    continue  # an episode with no SxxExx in its name: no season or number to file it under
                 show, season, epnum = ep
                 if not show:
                     show = name
@@ -662,6 +692,9 @@ class M3UClient:
                     "container_extension": container, "stream_icon": e.get("logo_url") or "",
                 })
 
+        if self.unplaced_episodes:
+            logger.info(f"[M3U] {self.provider.name}: {self.unplaced_episodes} episode(s) skipped: "
+                        f"no season and episode number (S01E02) in their names")
         for group, shows in self._series.items():
             for show, seasons in shows.items():
                 self._series_info[_m3u_id(f"{group}|{show}")] = {"episodes": seasons}
@@ -705,17 +738,33 @@ class M3UClient:
         except (TypeError, ValueError):
             return {"episodes": {}}
 
-    def movie_stream_url(self, stream_id, container="mp4") -> str:
+    def _link(self, key) -> str:
+        """The .strm address for one entry: Tentacle's VOD route when the
+        entry is a film or episode of the provider's own panel login (the
+        relay rebuilds exactly this URL from server_url, username, password),
+        else the playlist's URL as listed."""
         try:
-            return self._urls.get(int(stream_id), "")
+            url = self._urls.get(int(key), "")
         except (TypeError, ValueError):
             return ""
+        if not url or self.vod_links is None:
+            return url
+        from urllib.parse import unquote
+        from services.m3u_parser import panel_link
+        link = panel_link(url)
+        p = self.provider
+        if (link is None or link.kind not in ("movie", "series") or not p.server_url
+                or (link.base, unquote(link.user), unquote(link.pw)) != (p.server_url, p.username, p.password)):
+            return url
+        if link.kind == "series":
+            return self.vod_links.episode(int(link.stream_id), link.ext)
+        return self.vod_links.movie(int(link.stream_id), link.ext)
+
+    def movie_stream_url(self, stream_id, container="mp4") -> str:
+        return self._link(stream_id)
 
     def episode_stream_url(self, episode_id, container="mp4") -> str:
-        try:
-            return self._urls.get(int(episode_id), "")
-        except (TypeError, ValueError):
-            return ""
+        return self._link(episode_id)
 
 
 def _unhidden(name: str) -> str:
@@ -2167,6 +2216,8 @@ def sync_provider(
 
         tmdb = TMDBService(bearer_token, data_dir, match_threshold)
         client = make_provider_client(provider)
+        if isinstance(client, M3UClient):
+            client.db = db             # what its playlist says is kept (m3u_source.learn)
         # The sync stands aside for live TV / a recording at every category
         # boundary (services.provider_activity), so a recording that starts
         # mid-sync is not competed with either. One budget for the whole run.

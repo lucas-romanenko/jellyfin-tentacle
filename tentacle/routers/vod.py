@@ -746,12 +746,15 @@ def _resolve(db, kind: str, token_file: str):
     if not parsed or not secret or not vod_tokens.verify(secret, kind, parsed):
         raise HTTPException(404, "Unknown stream")
     provider = db.query(Provider).filter(Provider.id == parsed["provider_id"]).first()
-    if not provider or (provider.provider_type or "xtream") != "xtream" or not provider.server_url:
+    # An Xtream provider, or an M3U one whose films are its panel's
+    # (services/m3u_source.py keeps that panel's login the same way)
+    if not provider or not provider.server_url:
         raise HTTPException(404, "Unknown stream")
     path = "movie" if kind == "movie" else "series"
     login = f"{quote_cred(provider.username)}/{quote_cred(provider.password)}"
     url = f"{provider.server_url.rstrip('/')}/{path}/{login}/{parsed['stream_id']}.{parsed['container']}"
-    guard = lan_origin_guard(provider.server_url)
+    from services.m3u_source import guard_origin
+    guard = lan_origin_guard(guard_origin(provider))
     if not guard(url):
         raise HTTPException(502, "Stream URL points to a non-public host")
     owner = f"vod:{kind}:{provider.id}:{parsed['stream_id']}"
