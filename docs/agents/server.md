@@ -1005,6 +1005,19 @@ User docs: `docs/features/live-tv.md`.
   its own group (the one already on it, else its name, first listed wins,
   else `NAME (id)`). Matching by name alone crashed the sync or moved an
   enabled group to the other category.
+- A failed guide download keeps the old guide, so it is retried
+  (`run_guide_top_up`, every 5 min, #709): a failed sync (nightly, manual or
+  a retry: 403, timeout, a bad or partial feed) again after 5, 15, 30 min,
+  then hourly until one works, one download each, longer when the provider
+  sends Retry-After (6 h at most), hourly while provider health finds its
+  server refusing. A guide that worked is synced again when it ends within
+  12 h (at most every 6 h). The record (`livetv_guide_top_up_<pid>`) survives
+  a restart. It waits for VOD syncs, the nightly job until its guide step,
+  and protected recordings. A guide failing 6 h or run out is an admin alert
+  (`admin_alerts._seen_guides`) and a line on the dashboard's provider
+  banner. Feeds often reach only a day ahead, and a provider that refuses the
+  account for a while after the nightly VOD sync's burst refused the 07:00
+  UTC download night after night.
 - After an EPG sync Tentacle deletes and re-adds its XMLTV listing provider
   in Jellyfin, then runs RefreshGuide: re-POSTing a listing provider with
   the same id does *not* remap new channels. `services/jellyfin_guide.py`

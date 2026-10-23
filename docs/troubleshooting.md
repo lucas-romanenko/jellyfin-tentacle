@@ -272,6 +272,7 @@ If titles appear without posters or proper names:
 1. Run an EPG sync in Tentacle (usually auto-chains after channel sync)
 2. In Jellyfin, refresh the TV guide
 3. EPG badges in Tentacle show "Has EPG" / "No EPG" based on actual data — if "No EPG", the provider may not have guide data for that channel
+4. If the guide download fails (the provider refuses it, times out or sends a broken feed), Tentacle keeps the old guide and tries again after 5, 15 and 30 minutes, then every hour until it works. If it still fails after 6 hours, or the stored guide runs out, admins get a message in Jellyfin (and on Pushover when it's set up) and the dashboard shows it
 
 ### Streams not playing
 

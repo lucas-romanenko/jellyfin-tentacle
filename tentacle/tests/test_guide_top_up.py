@@ -381,6 +381,30 @@ class GuideTopUp(unittest.TestCase):
         self.assertTrue(livetv.guide_top_up_due(self.db, provider, at + timedelta(minutes=61)),
                         "still once an hour: the guide must not stay empty")
 
+    def test_a_verdict_hours_old_does_not_hold_the_guide_back(self):
+        # The hourly check stood aside (live TV all evening): the provider may
+        # have recovered since; one download per back-off step finds out.
+        self.store_guide_ending(datetime.utcnow() - timedelta(hours=1))
+        self.server.refuse = False
+        self.provider_health_says("failing", "api", checked_ago=timedelta(hours=3))
+        livetv.run_guide_top_up()
+        self.assertEqual(1, self.server.requests)
+
+    def test_a_refused_stream_or_a_guide_from_another_host_is_still_downloaded(self):
+        self.store_guide_ending(datetime.utcnow() - timedelta(hours=1))
+        self.server.refuse = False
+        self.provider_health_says("failing", "stream")   # streams refused: the guide is an API download
+        livetv.run_guide_top_up()
+        self.assertEqual(1, self.server.requests)
+        provider = self.db.get(mdb.Provider, self.pid)
+        provider.server_url = "http://192.0.2.10"         # the guide comes from another host
+        self.db.commit()
+        self.provider_health_says("failing", "api")
+        self.assertFalse(livetv._guide_server_refuses(self.db, provider))
+        provider.epg_url = None                           # Xtream's own xmltv.php, on the refusing server
+        self.db.commit()
+        self.assertTrue(livetv._guide_server_refuses(self.db, provider))
+
     # ── Telling the admin ────────────────────────────────────────────────────
 
     def admin_alerts_check(self):
