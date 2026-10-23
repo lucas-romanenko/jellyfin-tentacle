@@ -1558,9 +1558,15 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 .rec-pv-what .rec-chan { font-size: 12px; margin-left: 6px; }
 .rec-pv-more { margin-top: 10px; font-size: 13px; }
 .rec-pv-more summary { cursor: pointer; color: var(--accent-text); padding: 6px 0; }
+.rec-preview-box > summary { padding: 12px 14px; cursor: pointer; font-size: 13px; color: var(--text2); list-style-position: inside; }
+.rec-preview-box > summary .mych-hint { margin-left: 8px; }
+.rec-preview-box[open] > summary { border-bottom: 1px solid var(--border); }
+.rec-preview-box .mych-name { color: var(--text2); }
 @media (max-width: 760px) {
-  .rec-time { width: 92px; font-size: 11px; }
-  .rec-row { flex-wrap: wrap; }
+  .rec-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; column-gap: 8px; }
+  .rec-row .rec-time { grid-column: 1 / -1; width: auto; font-size: 11px; color: var(--text3); }
+  .rec-row .mych-meta { flex-wrap: nowrap; overflow: hidden; white-space: nowrap; }
+  .rec-row .mych-meta > span { overflow: hidden; text-overflow: ellipsis; }
   .rec-ed { grid-template-columns: 1fr; max-height: none; overflow-y: auto; }
   .rec-ed-form { border-right: none; border-bottom: 1px solid var(--border); }
   .rec-pv-when { width: 96px; }
@@ -4932,7 +4938,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 <script src="/static/js/welcome.js?v=50"></script>
 <script src="/static/js/live.js?v=4"></script>
 <script src="/static/js/myyoutube.js?v=48"></script>
-<script src="/static/js/recordings.js?v=1"></script>
+<script src="/static/js/recordings.js?v=2"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {

@@ -115,15 +115,32 @@ function _recPill(state, extra) {
 function recRenderUpcoming() {
   const el = document.getElementById('rec-panel-upcoming');
   const up = rec.upcoming || { rules: [], jellyfin: [] };
-  const items = up.rules.map(b => ({ ...b, src: 'rule' })).concat(up.jellyfin.map(t => ({ ...t, src: 'jellyfin' })));
-  items.sort((a, b) => a.start.localeCompare(b.start));
-  if (!items.length) {
-    const none = rec.rules && rec.rules.rules.length
-      ? 'Nothing coming up in the TV guide yet. The guide reaches a day or two ahead: games appear as it fills in.'
-      : 'Nothing set to record. Follow a team under My teams, or set a rule under Rules.';
-    el.innerHTML = `<div class="card rec-card"><div class="mych-none">${none}</div></div>`;
-    return;
+  const all = up.rules.map(b => ({ ...b, src: 'rule' })).concat(up.jellyfin.map(t => ({ ...t, src: 'jellyfin' })));
+  all.sort((a, b) => a.start.localeCompare(b.start));
+  // What really records first; what teams and rules in preview would, folded away.
+  const real = all.filter(it => it.state !== 'preview');
+  const preview = all.filter(it => it.state === 'preview');
+  const parts = [];
+  if (real.length) {
+    parts.push(`<div class="card rec-card rec-list">${_recByDay(real)}</div>`);
+  } else {
+    const none = rec.rules && rec.rules.rules.some(r => r.mode === 'record')
+      ? 'Nothing to record in the TV guide yet. The guide reaches a day or two ahead: games appear as it fills in.'
+      : rec.rules && rec.rules.rules.length
+        ? 'Nothing set to record yet: your teams and rules are in preview. Switch on “Record their games” under My teams when the preview looks right.'
+        : 'Nothing set to record. Follow a team under My teams, or set a rule under Rules.';
+    parts.push(`<div class="card rec-card"><div class="mych-none">${none}</div></div>`);
   }
+  if (preview.length) {
+    parts.push(`<details class="card rec-card rec-list rec-preview-box"${real.length ? '' : ' open'}>
+      <summary>In preview: would record ${preview.length} <span class="mych-hint">nothing is booked for these</span></summary>
+      ${_recByDay(preview)}</details>`);
+  }
+  parts.push(`<p class="rec-foot">Recordings are in Jellyfin (Live TV → Recordings), for everyone. Times are yours (${escHtml(Intl.DateTimeFormat().resolvedOptions().timeZone || 'local')}).</p>`);
+  el.innerHTML = parts.join('');
+}
+
+function _recByDay(items) {
   let day = '';
   const rows = [];
   for (const it of items) {
@@ -131,32 +148,32 @@ function recRenderUpcoming() {
     if (d !== day) { day = d; rows.push(`<div class="rec-day">${escHtml(d)}</div>`); }
     rows.push(_recUpcomingRow(it));
   }
-  el.innerHTML = `<div class="card rec-card rec-list">${rows.join('')}</div>`
-    + `<p class="rec-foot">Recordings go to Jellyfin&rsquo;s Recordings, for everyone. Times are yours (${escHtml(Intl.DateTimeFormat().resolvedOptions().timeZone || 'local')}).</p>`;
+  return rows.join('');
 }
 
 function _recUpcomingRow(it) {
-  const why = [];
+  const meta = [];
+  const chan = it.from_event ? 'Event channel' : (it.channel || '');
+  meta.push(`<span class="rec-chan">${escHtml(chan)}</span>`);
   if (it.src === 'rule') {
-    if (it.rule) why.push(`<span class="via">${escHtml(it.rule)}</span>`);
-    if (it.state === 'waiting' || it.state === 'failed') why.push(`<span class="warn">${escHtml(it.reason || '')}</span>`);
-    else if (it.why) why.push(`<span>${escHtml(it.why)}</span>`);
-    if (it.state !== 'preview' && (it.pre_padding_minutes || it.post_padding_minutes))
-      why.push(`<span>${it.pre_padding_minutes} min before, ${it.post_padding_minutes} after</span>`);
+    if (it.rule) meta.push(`<span class="via">${escHtml(it.rule)}</span>`);
+    // Why, only where the title doesn't say it ("NHL Hockey" after the Leafs' pregame show)
+    if (it.why && /^(same time|follows)/.test(it.why)) meta.push(`<span>${escHtml(it.why.replace(/ \(.*\)$/, ''))}</span>`);
+    if (it.state === 'waiting' || it.state === 'failed' || it.state === 'lost') meta.push(`<span class="warn">${escHtml(it.reason || '')}</span>`);
   } else {
-    why.push(`<span>${escHtml(it.reason || 'Set in Jellyfin')}</span>`);
+    meta.push(`<span>${escHtml(it.reason || 'Set in Jellyfin')}</span>`);
   }
-  const pill = it.src === 'jellyfin'
-    ? _recPill(it.state === 'recording' ? 'recording' : 'covered', it.state === 'recording' ? '' : 'Set in Jellyfin')
-    : _recPill(it.state);
+  let pill = '';
+  if (it.src === 'jellyfin') pill = _recPill(it.state === 'recording' ? 'recording' : 'covered');
+  else if (it.state !== 'preview') pill = _recPill(it.state);
   const skip = it.src === 'rule' && ['preview', 'booked', 'waiting', 'failed'].includes(it.state) && rec.rules?.can_record
     ? `<button class="mych-icon rec-skip" data-id="${it.id}" title="Skip this showing" aria-label="Skip ${escHtml(it.title)}">✕</button>`
     : '';
   const sub = it.sub_title ? ` <span class="rec-subt">${escHtml(it.sub_title)}</span>` : '';
-  return `<div class="mych-row rec-row${it.state === 'preview' ? ' rec-preview' : ''}">
+  return `<div class="mych-row rec-row">
     <span class="rec-time">${escHtml(_recSpan(it))}</span>
     <span class="mych-text"><span class="mych-name">${escHtml(it.title || '')}${sub}</span>
-      <span class="mych-meta"><span class="rec-chan">${escHtml(it.channel || '')}</span>${why.join('')}</span></span>
+      <span class="mych-meta">${meta.join('')}</span></span>
     ${pill}${skip}</div>`;
 }
 
