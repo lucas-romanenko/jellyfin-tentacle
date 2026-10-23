@@ -1665,6 +1665,10 @@ PRUNE_MIN_ALLOWANCE = 50
 # for this long. It is then processed gradually, at most the allowance per run,
 # instead of being refused (and leaving dead .strm files in Jellyfin) forever.
 PRUNE_BLOCKED_GRACE = timedelta(days=7)
+# The two strikes are two nights, not two syncs: a "Sync now" minutes after the
+# nightly (or a provider's bad hour spanning both) is still the first strike.
+# Under a day, so one nightly run to the next always counts.
+PRUNE_MIN_AGE = timedelta(hours=20)
 
 
 def _clear_provider_marks(db: Session, provider: Provider, Model, seen_ids: set) -> None:
@@ -1691,8 +1695,9 @@ def _prune_removed_content(db: Session, provider: Provider, media_type: str, see
     Two guards make a transient provider response harmless:
 
     * **Two strikes.** A title missing for the first time is only marked
-      (``provider_missing_since``); it is deleted on the next run that still doesn't
-      see it. Anything that reappears has the mark cleared.
+      (``provider_missing_since``); it is deleted on a run at least
+      ``PRUNE_MIN_AGE`` later (the next night) that still doesn't see it.
+      Anything that reappears has the mark cleared.
     * **Blast radius.** A run refuses to delete more than 5% of the provider's
       rows (floor 50) and logs loudly instead, so a partial outage that slips
       past the per-category guard still can't wipe the library.
@@ -1724,7 +1729,8 @@ def _prune_removed_content(db: Session, provider: Provider, media_type: str, see
     # First sighting of an absence is recorded, not acted on. Only this guard's
     # own mark counts as a first strike — a file that went missing on disk says
     # nothing about whether the provider still lists the title.
-    confirmed = [r for r in stale if r.provider_missing_since is not None]
+    confirmed = [r for r in stale if r.provider_missing_since is not None
+                 and now - r.provider_missing_since >= PRUNE_MIN_AGE]
     newly_missing = [r for r in stale if r.provider_missing_since is None]
     for record in newly_missing:
         record.provider_missing_since = now
@@ -1732,7 +1738,7 @@ def _prune_removed_content(db: Session, provider: Provider, media_type: str, see
         logger.info(
             f"[Sync] {len(newly_missing)} {media_type}(s) missing from provider "
             f"{provider.name} for the first time — marked, will be removed if "
-            f"they are still gone next sync"
+            f"they are still gone at tomorrow's sync"
         )
 
     if not confirmed:

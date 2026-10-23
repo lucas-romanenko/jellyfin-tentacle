@@ -15,7 +15,7 @@ from pathlib import Path as _RealPath
 
 import services.sync as sync
 from models.database import Movie
-from nightly_harness import NightlyHarness, FakeTMDB
+from nightly_harness import NightlyHarness, FakeTMDB, age_prune_marks
 
 
 class _Clock:
@@ -169,6 +169,7 @@ class TestCategoryOutageAcrossSyncs(NightlyHarness):
         self.sync_only()
         self.client.movies["2"] = []
         for _ in range(6):
+            age_prune_marks(self.db)             # one sync a day
             self.sync_only()
         self.assertEqual(self.db.query(Movie).count(), 400)
 

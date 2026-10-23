@@ -8,6 +8,7 @@ client, TMDB, and the /media/vod roots (redirected to a temp dir).
 import logging
 import shutil
 import unittest
+from datetime import timedelta
 from pathlib import Path as _RealPath
 
 from sqlalchemy import create_engine
@@ -17,6 +18,14 @@ import models.database as mdb
 from models.database import Movie, Series, Provider, ProviderCategory
 import services.sync as sync
 from tmp_dirs import temp_dir
+
+
+def age_prune_marks(db, by=timedelta(days=1)):
+    """Make every prune mark (provider_missing_since) older, as if a night passed."""
+    for Model in (Movie, Series):
+        for r in db.query(Model).filter(Model.provider_missing_since.isnot(None)).all():
+            r.provider_missing_since -= by
+    db.commit()
 
 
 
@@ -153,7 +162,9 @@ class NightlyHarness(unittest.TestCase):
         self.db.expire_all()
 
     def night(self):
-        """One run_scheduled_sync: provider sync (with prune), then the VOD sweep."""
+        """One run_scheduled_sync: provider sync (with prune), then the VOD sweep.
+        A night is a day after the one before: the prune's marks are a day older."""
+        age_prune_marks(self.db)
         self.sync_only()
         sync.sweep_orphaned_vod_records(self.db)
         self.db.expire_all()

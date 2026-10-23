@@ -17,6 +17,7 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 from models.database import Movie, Provider, ProviderCategory
 import services.sync as sync
+from nightly_harness import age_prune_marks
 from tmp_dirs import temp_dir
 
 
@@ -51,6 +52,7 @@ class TestPruneRemovedContent(unittest.TestCase):
     def test_second_absence_deletes(self):
         seen = set(range(1000, 1197))
         self._prune(seen)
+        age_prune_marks(self.db)                 # the next night
         self.assertEqual(self._prune(seen), 3)
         self.assertEqual(self.db.query(Movie).count(), 197)
 
@@ -210,6 +212,7 @@ class TestGuardsAreIndependent(unittest.TestCase):
         self.assertIsNotNone(row.provider_missing_since,
                              "the sweep erased the prune's first strike")
         # Second night: the provider still doesn't list it, so it is removed.
+        age_prune_marks(self.db)
         self.assertEqual(self._prune(seen), 1)
 
     def test_prunes_mark_is_not_a_first_strike_for_the_sweep(self):

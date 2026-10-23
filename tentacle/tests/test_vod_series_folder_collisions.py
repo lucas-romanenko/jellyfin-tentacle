@@ -6,7 +6,7 @@ path is the only place _claim_vod_name alone keeps two titles apart.
 """
 from pathlib import Path as _RealPath
 
-from nightly_harness import FakeTMDB, NightlyHarness
+from nightly_harness import FakeTMDB, NightlyHarness, age_prune_marks
 
 
 class SeriesFolderCollisions(NightlyHarness):
@@ -39,6 +39,7 @@ class SeriesFolderCollisions(NightlyHarness):
     def test_pruning_one_show_keeps_the_others_episodes(self):
         self.client.series["s1"] = [("Brothers?", 31)]   # the provider drops "Brothers"
         self.sync_only()
+        age_prune_marks(self.db)           # the next night
         self.sync_only()
         self.assertIsNone(self.series_row(6002))
         a = self.series_row(6001)
@@ -52,6 +53,7 @@ class SeriesFolderCollisions(NightlyHarness):
         self.db.commit()
         self.client.series["s1"] = [("Brothers?", 31)]
         self.sync_only()
+        age_prune_marks(self.db)           # the next night
         self.sync_only()
         self.assertIsNone(self.series_row(6002))
         self.assertEqual(1, len(self._episodes(self.series_row(6001))),
