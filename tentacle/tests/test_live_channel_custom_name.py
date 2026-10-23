@@ -64,6 +64,14 @@ class CustomChannelName(unittest.TestCase):
         self.assertIn(",NHL TOR\n", self.client.get("/api/live/playlist.m3u").text + "\n")
         self.assertIn("<display-name>NHL TOR</display-name>", self.client.get("/hdhr/xmltv.xml").text)
 
+    def test_the_playlist_m3u_keeps_a_name_jellyfin_would_cut(self):
+        # #769: Jellyfin drops a first word that reads as a number and keeps
+        # only the text after the last comma; such names go in tvg-name.
+        self._rename("3 Sport")
+        self.assertIn(' tvg-name="3 Sport",\n', self.client.get("/api/live/playlist.m3u").text)
+        self._rename("Leafs, Live")
+        self.assertIn(' tvg-name="Leafs, Live",\n', self.client.get("/api/live/playlist.m3u").text)
+
     def test_a_channel_sync_keeps_the_rename(self):
         self._rename("NHL TOR")
         self._sync()
