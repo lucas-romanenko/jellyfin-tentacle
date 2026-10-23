@@ -1323,7 +1323,12 @@ def _build_tentacle_m3u_ids(db) -> "dict[str, str]":
     urls = [u for u in dict.fromkeys(urls) if u]
     if not urls:
         return {}
-    entries = L.lineup(db)
+    channels = L.pool(db)
+    entries = L.lineup(db, channels)
+    # Event channels with no event now are out of the lineup, but Jellyfin
+    # keeps them until its next guide refresh, and a timer may be on one.
+    shown = {e["key"] for e in entries}
+    entries += [c for c in channels if c["key"] not in shown]
     # pool key -> the LiveChannel it streams (a network's or a place's: the
     # variant it plays now; YouTube channels are not the provider's)
     cid_of = {}
