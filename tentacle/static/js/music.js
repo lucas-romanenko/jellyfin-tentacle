@@ -720,7 +720,8 @@ async function requestMusicAlbum(mbid, btn, tracks) {
     const body = { mbid };
     if (tracks) body.tracks = tracks;
     const r = await api('/api/music/request', { method: 'POST', body });
-    toast(`Requested ${r.title || 'the album'} — Tentacle pins the original release, then Lidarr searches`, 'success', 6000);
+    if (r.pending) toast(r.detail || 'Sent for approval', 'success', 6000);
+    else toast(`Requested ${r.title || 'the album'} — Tentacle pins the original release, then Lidarr searches`, 'success', 6000);
     if (btn && btn.classList.contains('lib-card-add-btn')) btn.remove();
     musicState.listCache = {};
     if (_musicDiscoverVisible()) setTimeout(_loadMusicDiscover, 1500);   // the badge turns "Wanted"
