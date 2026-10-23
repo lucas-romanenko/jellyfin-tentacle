@@ -806,6 +806,9 @@ td.primary { color: var(--text); font-weight: 500; }
 .provider-live-limits label { display: flex; align-items: center; gap: 6px; }
 .provider-live-limits input { width: 64px; padding: 4px 8px; font-size: 12px; }
 .provider-live-limits input.wide { width: 110px; }
+/* More on a provider's card: backup addresses, channel numbers */
+.provider-more { border-top: 1px solid var(--border); padding-top: 12px; margin-bottom: 14px; }
+.provider-more .provider-live-limits { margin-left: 0; }
 @media (max-width: 600px) {
   .addr-row:not(.in-use) { flex-wrap: wrap; }
   .addr-row:not(.in-use) .addr-actions { width: 100%; justify-content: flex-end; }
@@ -1502,12 +1505,9 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
   .myt-row .btn { padding: 6px 10px; }
 }
 
-/* ── Sources → Live TV → Channels: the pool (mychannels.js) ── */
-.pool-checker { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; font-size: 12px; color: var(--text2); padding: 10px 14px; margin-bottom: 12px;
-  background: var(--bg1); border: 1px solid var(--border); border-radius: 3px; }
-.pool-checker .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: var(--text3); vertical-align: middle; }
-.pool-checker .dot.on { background: var(--green); }
-.pool-checker .dot.paused { background: var(--amber); }
+/* ── Sources → Live TV → Household channels: the pool (mychannels.js) ── */
+.pool-total { font-size: 20px; font-weight: 600; color: var(--text); margin-bottom: 2px; }
+.pool-total small { font-size: 13px; font-weight: 400; color: var(--text2); }
 .pool-count { font-size: 12px; color: var(--text2); margin-bottom: 4px; }
 .pool-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); }
 .pool-tools .form-input { padding: 5px 10px; font-size: 12px; }
@@ -1536,7 +1536,14 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 .pool-logo { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border: 1px solid var(--border2); border-radius: 2px; background: none; color: var(--text2); font-size: 11px; cursor: pointer; max-width: 260px; }
 .pool-logo.on { border-color: var(--accent); color: var(--text); }
 .pool-logo span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pool-region { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; color: var(--text3); padding: 10px 16px; border-top: 1px solid var(--border); }
+.pool-region { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; color: var(--text3); margin-top: 8px; }
+/* Sources → Live TV → More: one row per rare thing */
+.live-more { padding: 0; }
+.live-more-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+.live-more-row:last-child { border-bottom: none; }
+.live-more-title { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.live-more-hint { font-size: 12px; color: var(--text3); line-height: 1.5; max-width: 720px; }
+.live-more-row .mych-setup-status { margin-top: 6px; font-size: 12px; }
 .pool-region .form-input { width: 280px; max-width: 100%; padding: 5px 10px; font-size: 12px; }
 @media (max-width: 760px) {
   .pool-row { flex-wrap: wrap; padding: 10px 12px; }
@@ -1552,7 +1559,7 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
   .pool-detail { padding-left: 14px; }
   .pool-tools .grow { flex-basis: 100%; }
   .pool-tools select.form-input { flex: 1 1 0; width: auto !important; min-width: 0; }
-  .pool-checker .note { display: none; }
+  .live-more-row { flex-direction: column; gap: 10px; padding: 14px 16px; }
 }
 
 /* ── Sources → Live TV → New from your provider, and new categories (newgroups.js) ── */
@@ -2187,7 +2194,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
   .settings-grid { grid-template-columns: 1fr; gap: 16px; }
   .form-row { grid-template-columns: 1fr; }
   .guide-grid { grid-template-columns: 1fr; }
-  #dup-stats, #live-stats { grid-template-columns: repeat(2, 1fr) !important; }
+  #dup-stats { grid-template-columns: repeat(2, 1fr) !important; }
   .grid-2col { grid-template-columns: 1fr !important; }
 
   /* Poster grids: three across on a phone */
@@ -2918,24 +2925,11 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
         <div class="sources-panel" id="sources-tab-live" style="display:none">
           <div id="page-live-tv">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">
-          <div id="live-provider-pick" style="display:none;align-items:center;gap:8px">
-            <label class="form-label" for="live-provider-select" style="margin:0">Provider</label>
-            <select class="form-input" id="live-provider-select" style="width:220px;padding:5px 10px;font-size:13px" onchange="onLiveProviderChange(this.value)"></select>
-          </div>
-          <span id="live-sync-status" style="font-size:12px;color:var(--text3);margin-left:auto"></span>
-        </div>
-        <!-- Stats row -->
-        <div id="live-stats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px"></div>
-
-        <!-- Tab bar -->
+        <!-- Tab bar: the household's channels, what's new, and the rare things under More -->
         <div class="live-tabs">
-          <button class="live-tab active" data-livetab="pool" onclick="showLiveTab('pool')">Channels</button>
-          <button class="live-tab" data-livetab="new" onclick="showLiveTab('new')">New from your provider <span class="nav-badge nav-badge-accent" id="live-new-badge" style="display:none;margin-left:6px">0</span></button>
-          <button class="live-tab" data-livetab="channels" onclick="showLiveTab('channels')">Provider list</button>
-          <button class="live-tab" data-livetab="people" onclick="showLiveTab('people')">People</button>
-          <button class="live-tab" data-livetab="recordings" onclick="showLiveTab('recordings')">Recordings</button>
-          <button class="live-tab" data-livetab="setup" onclick="showLiveTab('setup')">In Jellyfin</button>
+          <button class="live-tab active" data-livetab="pool" onclick="showLiveTab('pool')">Household channels</button>
+          <button class="live-tab" data-livetab="new" onclick="showLiveTab('new')">New groups <span class="nav-badge nav-badge-accent" id="live-new-badge" style="display:none;margin-left:6px">0</span></button>
+          <button class="live-tab" data-livetab="more" onclick="showLiveTab('more')">More</button>
         </div>
 
         <!-- No provider warning -->
@@ -2944,37 +2938,30 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         </div>
 
 
-        <!-- Tab: Channels -- the pool people pick from: folded networks, types, guide and works marks (mychannels.js) -->
+        <!-- Tab: Household channels -- the one lineup everyone gets: folded networks, types, guide and works marks (mychannels.js) -->
         <div class="live-tab-panel active" id="live-panel-pool">
-          <div class="pool-checker" id="pool-checker"></div>
           <div class="card mych-panel">
             <div class="mych-panel-head">
               <div>
-                <div class="card-title">The household&rsquo;s channels</div>
+                <div class="pool-total" id="pool-total" aria-live="polite"></div>
                 <div class="pool-count" id="pool-count"></div>
-                <div class="mych-hint">The channel groups switched on for a provider, with the same network in many places or qualities shown once. This is the household&rsquo;s lineup: everyone gets these channels in Jellyfin, with the same numbers, and stars their favourites under <strong>My Channels</strong>.</div>
+                <div class="mych-hint">Everyone in the house gets these channels in Jellyfin, with the same numbers, and stars their own favourites under <strong>My Channels</strong>. They come from the channel groups you picked on the provider&rsquo;s card; a channel the provider has in several places or qualities is shown once.</div>
               </div>
             </div>
             <div class="pool-tools">
               <input class="form-input grow" id="pool-search" placeholder="Search channels" aria-label="Search channels" oninput="poolRender()">
               <select class="form-input" id="pool-type" aria-label="Show one type" onchange="poolRender()" style="width:140px"><option value="">All types</option></select>
               <select class="form-input" id="pool-show" aria-label="Show" onchange="poolRender()" style="width:170px">
-                <option value="">Everything</option>
-                <option value="networks">Networks (folded)</option>
+                <option value="">In the guide</option>
+                <option value="networks">Folded from several</option>
                 <option value="broken">Not working</option>
-                <option value="noguide">No guide</option>
-                <option value="noevent">Event slots with no event</option>
+                <option value="noguide">No listings</option>
+                <option value="noevent">Event slots with nothing on</option>
                 <option value="out">Taken out</option>
               </select>
               <button class="btn btn-secondary btn-sm" id="pool-merge-btn" onclick="poolMerge()" disabled>Merge selected</button>
             </div>
             <div id="pool-list"><div class="loading-state"><div class="spinner"></div></div></div>
-            <div class="pool-region">
-              <label for="pool-region">Your region (picks each network&rsquo;s default place)</label>
-              <input class="form-input" id="pool-region" placeholder="e.g. CA: Toronto, Ontario, Buffalo">
-              <button class="btn btn-secondary btn-sm" onclick="poolSaveRegion()">Save</button>
-              <span id="pool-region-note"></span>
-            </div>
           </div>
         </div>
 
@@ -3034,6 +3021,14 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         </div>
 
         <div class="live-tab-panel" id="live-panel-channels">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+            <button class="nfp-back" onclick="showLiveTab('more')">&larr; Back to More</button>
+            <div id="live-provider-pick" style="display:none;align-items:center;gap:8px">
+              <label class="form-label" for="live-provider-select" style="margin:0">Provider</label>
+              <select class="form-input" id="live-provider-select" style="width:220px;padding:5px 10px;font-size:13px" onchange="onLiveProviderChange(this.value)"></select>
+            </div>
+            <span id="live-sync-status" style="font-size:12px;color:var(--text3);margin-left:auto"></span>
+          </div>
           <!-- YouTube channels are Live TV channels too. They come from the
                YouTube page, where Live TV is chosen when the channel is added;
                this is where they sit alongside everything else in the lineup,
@@ -3047,7 +3042,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           </div>
           <div class="card">
             <div class="card-header">
-              <div class="card-title">The provider&rsquo;s channels <span id="live-ch-count" style="color:var(--text3);font-weight:400"></span></div>
+              <div class="card-title">Every channel the provider lists <span id="live-ch-count" style="color:var(--text3);font-weight:400"></span></div>
               <div style="display:flex;gap:8px;align-items:center">
                 <input class="form-input" id="live-ch-search" placeholder="Search channels..." style="width:200px;padding:5px 10px;font-size:12px" oninput="searchLiveChannels()">
                 <select class="form-input" id="live-ch-group-filter" aria-label="Filter channels by group" style="width:160px;padding:5px 10px;font-size:12px" onchange="filterLiveChannels()">
@@ -3074,38 +3069,40 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           </div>
         </div>
 
-        <!-- Tab: People -- who sees which channels (mychannels.js) -->
-        <div class="live-tab-panel" id="live-panel-people">
-          <div class="card">
-            <div class="card-header">
-              <div class="card-title">Who watches what</div>
-              <span style="font-size:12px;color:var(--text3)">Everyone has the same channels; each person stars their favourites under <strong>My Channels</strong>. Kids profiles see the kids channels only.</span>
-            </div>
-            <div id="live-people"></div>
-          </div>
-        </div>
-
-        <!-- Tab: Recordings -->
-        <div class="live-tab-panel" id="live-panel-recordings">
-          <div class="card">
-            <h3 style="margin-bottom:4px">Recordings</h3>
-            <p style="color:var(--text3);font-size:13px;margin-bottom:12px">You schedule and watch recordings in Jellyfin (Live TV &rarr; Guide &rarr; Record; they appear under Live TV &rarr; Recordings). Tentacle is the tuner they record from. Recordings and recording schedules are the household&rsquo;s: everyone sees them, like a family recorder, whoever scheduled them.</p>
-            <ul style="font-size:13px;color:var(--text2);line-height:1.7;margin:0 0 0 18px">
-              <li>A recording keeps its connection to the provider: if the provider drops it, Tentacle reconnects and the recording carries on.</li>
-              <li>How many channels can record at once is <strong>Streams at once</strong> on each provider&rsquo;s card under <a href="#" onclick="showSourcesTab('providers');return false" style="color: var(--accent-text)">IPTV providers</a>.</li>
-              <li>Problems with a recording (a damaged file, a channel the provider replaced with a placeholder) are listed on the <a href="#" onclick="showPage('health');return false" style="color: var(--accent-text)">Health</a> page.</li>
-            </ul>
-          </div>
-        </div>
-
-        <!-- Tab: In Jellyfin -- set up by Tentacle itself (services/livetv_tuners.py) -->
-        <div class="live-tab-panel" id="live-panel-setup">
-          <div class="card">
-            <h3 style="margin-bottom:4px">Live TV in Jellyfin</h3>
-            <p style="color:var(--text3);font-size:13px;margin-bottom:16px">Tentacle sets this up in Jellyfin itself: one tuner with the household&rsquo;s channels and one TV guide. Everyone&rsquo;s favourites (starred under <strong>My Channels</strong>) are Jellyfin&rsquo;s own, so every app shows them; kids profiles see the kids channels only.</p>
-            <div id="live-setup-status" class="mych-setup-status"></div>
-            <div style="display:flex;gap:8px;margin-top:16px">
+        <!-- Tab: More -- the rare things: Jellyfin's setup, recordings, the region, the provider's own list -->
+        <div class="live-tab-panel" id="live-panel-more">
+          <div class="card live-more">
+            <div class="live-more-row">
+              <div>
+                <div class="live-more-title">Live TV in Jellyfin</div>
+                <div class="live-more-hint">Tentacle sets this up in Jellyfin itself: one tuner with the household&rsquo;s channels and one TV guide.</div>
+                <div id="live-setup-status" class="mych-setup-status"></div>
+              </div>
               <button class="btn btn-secondary btn-sm" onclick="liveSetupNow(this)">Set up again now</button>
+            </div>
+            <div class="live-more-row">
+              <div>
+                <div class="live-more-title">Your region</div>
+                <div class="live-more-hint">Picks each network&rsquo;s place when the provider has it in several (CTV Toronto or CTV Vancouver). Where each person watches from is set on <a href="#" onclick="showPage('people');return false" style="color: var(--accent-text)">People</a>.</div>
+                <div class="pool-region">
+                  <input class="form-input" id="pool-region" placeholder="e.g. CA: Toronto, Ontario, Buffalo" aria-label="Your region">
+                  <button class="btn btn-secondary btn-sm" onclick="poolSaveRegion()">Save</button>
+                  <span id="pool-region-note"></span>
+                </div>
+              </div>
+            </div>
+            <div class="live-more-row">
+              <div>
+                <div class="live-more-title">Every channel the provider lists</div>
+                <div class="live-more-hint">The provider&rsquo;s own list, before Tentacle folds it: switch single channels on or off and rename them. YouTube channels on Live TV are here too.</div>
+              </div>
+              <button class="btn btn-secondary btn-sm" onclick="showLiveTab('channels')">Open</button>
+            </div>
+            <div class="live-more-row">
+              <div>
+                <div class="live-more-title">Recordings</div>
+                <div class="live-more-hint">People schedule and watch recordings in Jellyfin (Guide &rarr; Record); they are the household&rsquo;s, like a family recorder. How many channels can play or record at once is <strong>Streams at once</strong> on the provider&rsquo;s card; problems with a recording are on <a href="#" onclick="showPage('health');return false" style="color: var(--accent-text)">Health</a>.</div>
+              </div>
             </div>
           </div>
         </div>
@@ -4807,10 +4804,10 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="/static/js/app.js?v=46"></script>
-<script src="/static/js/sources.js?v=45"></script>
-<script src="/static/js/pages.js?v=50"></script>
+<script src="/static/js/sources.js?v=46"></script>
+<script src="/static/js/pages.js?v=51"></script>
 <script src="/static/js/music.js?v=45"></script>
-<script src="/static/js/mychannels.js?v=48"></script>
+<script src="/static/js/mychannels.js?v=49"></script>
 <script src="/static/js/newgroups.js?v=45"></script>
 <script src="/static/js/family.js?v=47"></script>
 <script src="/static/js/welcome.js?v=50"></script>

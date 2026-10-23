@@ -58,14 +58,14 @@ When you save it, Tentacle tests the connection. If the account has live channel
 
 ### Several providers
 
-Any number of providers can be used for Live TV: switch **Use for Live TV** on for each. Under it, each card has:
+Any number of providers can be used for Live TV: switch **Use for Live TV** on for each. On each card:
 
 - **Streams at once**: how many channels that provider's account can play or record at the same time (its "connections"). Live TV, recordings and films played through Tentacle share them. The card shows what the account says; empty means 6. Jellyfin gets as many tuners as all providers' streams together.
-- **Channel numbers +**: what is added to the provider's own channel numbers, so two providers never give Jellyfin the same number. The first Live TV provider keeps its own numbers (0); every other one is given its own range once and keeps it. Change it only if you have a reason: Jellyfin then sees that provider's channels under new numbers, and recordings set up on the old ones need setting up again.
+- **Channel numbers +** (under **More** on the card): what is added to the provider's own channel numbers, so two providers never give Jellyfin the same number. The first Live TV provider keeps its own numbers (0); every other one is given its own range once and keeps it. Change it only if you have a reason: Jellyfin then sees that provider's channels under new numbers, and recordings set up on the old ones need setting up again.
 
 ### Several addresses
 
-Providers often have more than one address and send a list of others when one stops working (an internet provider blocking one address in the evening, for example). On the provider's card, **Address → Addresses** keeps them:
+Providers often have more than one address and send a list of others when one stops working (an internet provider blocking one address in the evening, for example). On the provider's card, **More → Backup addresses → Addresses** keeps them:
 
 1. Paste the provider's whole message: Tentacle picks out the addresses (a login or a path in them is dropped) and adds them as backups.
 2. **Test all** checks each address from the server, one at a time: whether the name resolves, whether it is behind Cloudflare, whether the login works (account status, connections in use), and how long a live channel and a film take to start. Stream tests are skipped while anyone is watching, so a one-connection account is never cut off. The list is ranked best first, with how often each worked over the last day.
@@ -95,7 +95,7 @@ You can enable or disable multiple groups at once, or filter groups by keyword t
 
 ### New groups from your provider
 
-Providers add groups all the time. **Sources → Live TV → New from your provider** lists the ones added since you last looked, with clean names (the provider's "ES| DAZN BALONCESTO ᴿᴬᵂ" shows as *DAZN Baloncesto*, with a Spain flag and a *Raw* label), how many channels each has, and a few of its channels with their logos.
+Providers add groups all the time. **Sources → Live TV → New groups** lists the ones added since you last looked, with clean names (the provider's "ES| DAZN BALONCESTO ᴿᴬᵂ" shows as *DAZN Baloncesto*, with a Spain flag and a *Raw* label), how many channels each has, and a few of its channels with their logos.
 
 - **Probably for you** comes first: new groups from the countries your channels already come from, your own country and your language.
 - Everything else is folded by country or language, each with **Dismiss all**.
@@ -104,26 +104,26 @@ Providers add groups all the time. **Sources → Live TV → New from your provi
 
 ## The channels people pick from
 
-**Sources → Live TV → Channels** shows the household's lineup: the channels of the groups switched on, with the same network in different places or qualities folded into one entry.
+**Sources → Live TV → Household channels** shows the household's lineup: the channels of the groups switched on, with the same network in different places or qualities folded into one entry. Its number on top ("2,291 channels in your household's guide") is exactly what everyone gets in Jellyfin; under it, how many of them are checked and working. Nothing personal is on this page: each person's favourites, the admin's included, are under **My Channels**.
 
 - **Networks.** "US: NBC 4 (WDIV) DETROIT", "NBC (KNBC) LOS ANGELES" and "NBC HD" are one network, **NBC**, shown as "NBC · from US: NBC 4 (WDIV) DETROIT · 16 versions". People only ever see "NBC". The dropdown on its row chooses which version feeds it; each version is listed with its guide and works marks, working ones first. Tentacle chooses one by itself (one that works, then your region, then one with a guide); changing it later keeps everyone's favourites and recordings on the channel. Different channels of a network (NBC Sports, NBC News, NBC Golf) stay separate.
-- **Your region** (at the bottom, e.g. `CA: Toronto, Ontario, Buffalo`) is what Tentacle prefers when it chooses a version by itself. Empty: the server's time zone.
+- **Your region** (under **More**, e.g. `CA: Toronto, Ontario, Buffalo`) is what Tentacle prefers when it chooses a version by itself. Empty: the server's time zone.
 - **Edit** on a row: correct the channel's types (the quick picks people see; **Automatic types** goes back to Tentacle's), and for a network see every version, **Split ticked ones off** (a wrong fold) or **Undo this fold**, and **Rename** it.
 - **Merge selected**: tick two or more rows that are really one network (a missed fold) and merge them.
-- The switch on a row takes a channel out of what people pick from (a single channel is switched off; switch it on again in **Provider list**). A network taken out is listed under **Show: Taken out**, with **Put back**.
-- **Guide ✓ / No guide** and **✓ Works / ✗ Not working / Not checked yet** are on every row; **Show** filters to networks, channels that don't work, channels without a guide, or event slots with nothing on (which people don't see).
+- The switch on a row takes a channel out of what people pick from (a single channel is switched off; switch it on again under **More → Every channel the provider lists**). A network taken out is listed under **Show: Taken out**, with **Put back**.
+- **Guide ✓ / No guide** and **✓ Works / ✗ Not working / Not checked yet** are on every row; **Show** filters to channels folded from several, channels that don't work, channels without listings, or event slots with nothing on (left out of the list and the count, as people don't see them).
 
 ### Stream checker
 
-The line above the list is the stream checker: in the background Tentacle opens each channel for a few seconds to see whether it works, one channel at a time and only while nobody watches or records (it stops the moment anyone starts), spread over the day. It shows what it is doing and how many channels work, don't work, or haven't been checked yet.
+The line under the channel count is the stream checker's: in the background Tentacle opens each channel for a few seconds to see whether it works, one channel at a time and only while nobody watches or records (it stops the moment anyone starts), spread over the day. It shows what it is doing and how many channels work, don't work, or haven't been checked yet.
 
 ### Event and PPV channels
 
 Many event channels have no guide of their own but carry the event in their name ("NHL: Toronto Maple Leafs @ 7:00 PM", "PPV 3: UFC 300 - 10/22 8PM ET"). Tentacle reads the title and time from the name and puts it in the TV guide, so Jellyfin's guide shows what's on. Event slots with no event in the name show **No event** and are left out of the lineup until the provider names an event in them.
 
-## Provider list
+## Every channel the provider lists
 
-**Sources → Live TV → Provider list** is every channel of the groups switched on, as the provider lists them. It lets you:
+**Sources → Live TV → More → Every channel the provider lists** is every channel of the groups switched on, as the provider lists them. It lets you:
 
 - **Enable/disable** individual channels (then click **Save Channels**)
 - **Rename** a channel as Jellyfin's guide shows it
@@ -140,7 +140,7 @@ Tentacle downloads XMLTV guide data from your provider and stores it in the data
 ### EPG Refresh
 
 - **Automatic** — EPG syncs automatically after channel sync (auto-chaining)
-- **Manual** — Click **Update TV guide** under **Provider list** to refresh guide data
+- **Manual** — Click **Update TV guide** under **More → Every channel the provider lists** to refresh guide data
 - **Cache** — EPG data is cached on disk for 8 hours to avoid repeated downloads
 
 ### Shared EPG IDs
@@ -149,7 +149,7 @@ Multiple channels can share the same EPG data (e.g., an HD channel and its backu
 
 ## Connecting to Jellyfin
 
-There is nothing to set up in Jellyfin. Once Tentacle is connected to Jellyfin (the setup wizard, or **Settings → Services**) and a provider has Live TV channels, Tentacle adds the tuner and the TV guide to Jellyfin itself within a few minutes, and keeps them in line: when the admin switches groups or channels on or off, when the kids channels change, and every hour (which also catches people added in Jellyfin). **Sources → Live TV → In Jellyfin** shows when it last did so, and **Set up again now** runs it at once. **People** on the same page shows how many favourites each person has.
+There is nothing to set up in Jellyfin. Once Tentacle is connected to Jellyfin (the setup wizard, or **Settings → Services**) and a provider has Live TV channels, Tentacle adds the tuner and the TV guide to Jellyfin itself within a few minutes, and keeps them in line: when the admin switches groups or channels on or off, when the kids channels change, and every hour (which also catches people added in Jellyfin). **Sources → Live TV → More → Live TV in Jellyfin** shows when it last did so, and **Set up again now** runs it at once.
 
 Kids channels are tagged in Jellyfin and every other channel is blocked for kids profiles (Jellyfin's per-user "blocked tags"); a channel new to the lineup is blocked for kids until an admin makes it a kids channel. Tentacle manages only its own tags: blocked tags an admin set by hand are kept.
 
@@ -194,7 +194,7 @@ The HDHomeRun endpoints (`/hdhr/discover.json`, `/hdhr/lineup.json`, `/hdhr/devi
 ## Troubleshooting
 
 !!! warning "Channels missing after enable"
-    Tentacle refreshes Jellyfin's guide a few seconds after you switch groups or channels on; Jellyfin then takes a few minutes for a large lineup. If they still don't appear, open **Sources → Live TV → In Jellyfin**: it says why the last try didn't work (Jellyfin not reachable, for example). **Set up again now** tries again.
+    Tentacle refreshes Jellyfin's guide a few seconds after you switch groups or channels on; Jellyfin then takes a few minutes for a large lineup. If they still don't appear, open **Sources → Live TV → More**: it says why the last try didn't work (Jellyfin not reachable, for example). **Set up again now** tries again.
 
 !!! warning "No EPG data"
     EPG badges in Tentacle ("Has EPG" / "No EPG") reflect actual program data in the database. If channels show "No EPG" after a fresh setup, run an EPG sync first. The auto-chain after channel sync usually handles this automatically.

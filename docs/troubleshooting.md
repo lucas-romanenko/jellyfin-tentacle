@@ -264,7 +264,7 @@ If titles appear without posters or proper names:
 
 1. Verify the HDHomeRun tuner is added in Jellyfin (Dashboard → Live TV → Tuner Devices)
 2. Make sure channels are enabled in Tentacle (not just the groups)
-3. Save Tentacle's address in **Settings → Services**, then click **Update TV guide** on Sources → Live TV → Channels — when it finishes, Tentacle recreates the XMLTV listing provider in Jellyfin, forcing a full channel remap
+3. Save Tentacle's address in **Settings → Services**, then click **Update TV guide** on Sources → Live TV → More → Every channel the provider lists — when it finishes, Tentacle recreates the XMLTV listing provider in Jellyfin, forcing a full channel remap
 4. Simply refreshing guide data in Jellyfin alone won't pick up new channels
 
 ### No EPG data for channels
