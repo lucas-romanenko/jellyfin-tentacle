@@ -109,6 +109,24 @@ def current() -> Optional[str]:
     return stamped() or _derived["version"]
 
 
+def _newest_server_release(get: Callable) -> Optional[dict]:
+    """The newest published server release (vX.Y.Z) as GitHub lists it. Not
+    /releases/latest: the plugin's releases (plugin-vX) are in the same list
+    and usually published last, so "latest" is often the plugin's."""
+    r = get(f"{API}/releases?per_page=30")
+    if r.status_code != 200:
+        logger.info(f"[Version] GitHub answered HTTP {r.status_code} for the releases")
+        return None
+    for rel in r.json():
+        tag = str(rel.get("tag_name") or "")
+        if rel.get("draft") or rel.get("prerelease") or not tag.startswith("v"):
+            continue
+        v = normalize(tag)
+        if v and "+" not in v:
+            return {"tag": tag, "version": v, "page": rel.get("html_url") or f"{RELEASES_PAGE}/tag/{tag}"}
+    return None
+
+
 def derive(commit: str, fetch: Optional[Callable] = None) -> Optional[str]:
     """For a build without a stamp: the newest release and how many commits
     the build's commit is ahead of it, asked of GitHub once per commit.
@@ -121,9 +139,9 @@ def derive(commit: str, fetch: Optional[Callable] = None) -> Optional[str]:
     get = fetch or (lambda url: requests.get(url, timeout=10, headers={"Accept": "application/vnd.github+json"}))
     value = None
     try:
-        rel = get(f"{API}/releases/latest")
-        tag = rel.json().get("tag_name") if rel.status_code == 200 else None
-        if normalize(tag or "") and "+" not in normalize(tag):
+        rel = _newest_server_release(get)
+        if rel:
+            tag = rel["tag"]
             cmp = get(f"{API}/compare/{tag}...{commit}")
             if cmp.status_code == 200:
                 data = cmp.json()
@@ -163,14 +181,9 @@ def latest_release(fetch: Optional[Callable] = None) -> Optional[dict]:
     value = None
     try:
         get = fetch or (lambda url: requests.get(url, timeout=10, headers={"Accept": "application/vnd.github+json"}))
-        r = get(f"{API}/releases/latest")
-        if r.status_code == 200:
-            data = r.json()
-            v = normalize(str(data.get("tag_name") or ""))
-            if v:
-                value = {"version": v, "page": data.get("html_url") or f"{RELEASES_PAGE}/tag/{v}"}
-        else:
-            logger.info(f"[Version] GitHub answered HTTP {r.status_code} for the newest release")
+        rel = _newest_server_release(get)
+        if rel:
+            value = {"version": rel["version"], "page": rel["page"]}
     except (requests.RequestException, ValueError, TypeError) as e:
         logger.info(f"[Version] Newest release not read from GitHub: {type(e).__name__}")
     with _latest_lock:

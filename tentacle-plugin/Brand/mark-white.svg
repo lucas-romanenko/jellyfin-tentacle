@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="222 182 214 338" width="214" height="338" role="img" aria-label="Tentacle">
+<title>Tentacle</title>
+<defs><mask id="mcut"><rect x="222" y="182" width="214" height="338" fill="#fff"/><ellipse cx="329" cy="296" rx="61" ry="10" fill="#000"/></mask></defs>
+<g fill="#fff" stroke="#fff">
+<path d="M241,276 C241,222 281,186 329,186 C377,186 417,222 417,276 C417,292 380,303 329,303 C278,303 241,292 241,276 Z" stroke="none" mask="url(#mcut)"/>
+<g fill="none" stroke-linecap="round" stroke-width="2.6">
+<path d="M278,304 L278,343"/>
+<path d="M304,304 L303,368"/>
+<path d="M329,304 L329,391"/>
+<path d="M354,304 L355,368"/>
+<path d="M380,304 L380,343"/>
+<path d="M278,343 L243,387"/>
+<path d="M278,343 L303,368"/>
+<path d="M278,343 L282,410"/>
+<path d="M303,368 L243,387"/>
+<path d="M303,368 L282,410"/>
+<path d="M303,368 L329,391"/>
+<path d="M243,387 L282,410"/>
+<path d="M282,410 L329,391"/>
+<path d="M282,410 L329,438"/>
+<path d="M329,391 L329,438"/>
+<path d="M329,391 L355,368"/>
+<path d="M355,368 L415,387"/>
+<path d="M355,368 L376,410"/>
+<path d="M380,343 L355,368"/>
+<path d="M380,343 L415,387"/>
+<path d="M380,343 L376,410"/>
+<path d="M415,387 L376,410"/>
+<path d="M376,410 L329,438"/>
+<path d="M243,387 C236,402 238,420 238,436"/>
+<path d="M282,410 C280,430 279,450 279,469"/>
+<path d="M329,438 L329,494"/>
+<path d="M376,410 C378,430 379,450 379,469"/>
+<path d="M415,387 C422,402 421,420 421,436"/>
+</g><g stroke="none">
+<circle cx="238" cy="448" r="12"/>
+<circle cx="279" cy="481" r="12"/>
+<circle cx="329" cy="506" r="12"/>
+<circle cx="379" cy="481" r="12"/>
+<circle cx="421" cy="448" r="12"/>
+<circle cx="278" cy="343" r="4.5"/>
+<circle cx="380" cy="343" r="4.5"/>
+<circle cx="303" cy="368" r="4.5"/>
+<circle cx="355" cy="368" r="4.5"/>
+<circle cx="243" cy="387" r="4.5"/>
+<circle cx="329" cy="391" r="4.5"/>
+<circle cx="415" cy="387" r="4.5"/>
+<circle cx="282" cy="410" r="4.5"/>
+<circle cx="376" cy="410" r="4.5"/>
+<circle cx="329" cy="438" r="4.5"/>
+</g></g>
+</svg>
