@@ -57,6 +57,18 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   those pages, never on home. With tabs shown the JS also sets
   `body.tentacle-page-tabs`, and the CSS moves Jellyfin's tab bar and the
   page below Tentacle's header (`--tentacle-tabs-top`), so they never overlap.
+- **Details page** (`tentacle-details.js`): an overlay over whatever is
+  open. A card click opens it with a history entry of its own (Back closes
+  it, Forward brings the title back). The address `#/details?id=…` opens it
+  too (`onRoute`, on boot / `hashchange` / `viewshow` / `popstate`): links
+  from Tentacle, reloads, Back/Forward, the redirect after signing in and
+  scripts that set the hash. It does that for Movie, Series, Season, Episode,
+  Person and BoxSet; Live TV channels, music and everything else keep
+  Jellyfin's page. `html.tentacle-details-route` keeps Jellyfin's page hidden
+  from the script's first line, so it never flashes. Closing a page opened
+  from outside goes home (Back would leave Jellyfin). Play from Tentacle
+  (`tentacle-play.js`): the page stays closed while `TentaclePlay.pending()`
+  is true, until the `tentacle-play-done` event.
 - **Live TV guide** (`tentacle-livetv.js`): replaces `#/livetv` with no tab,
   tab 0 and tab 1 (Programs, Guide); Channels, Recordings, Schedule and
   Series stay native. Favorites / All is saved in Jellyfin display

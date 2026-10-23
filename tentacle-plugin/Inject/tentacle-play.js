@@ -17,6 +17,7 @@
   var WAIT_MS = 5 * 60 * 1000;     // a sign-in in between
   var TRY_MS = 400;
   var timer = null;
+  var starting = false;            // from play() until the player has opened (or not)
 
   function parse(hash) {
     var m = /^#!?\/details\?(.*)$/.exec(hash || '');
@@ -117,20 +118,27 @@
       });
   }
 
+  // Tells tentacle-details.js, which keeps its page closed meanwhile.
+  function done(started) {
+    starting = false;
+    try { window.dispatchEvent(new CustomEvent('tentacle-play-done', { detail: { started: started } })); } catch (e) { }
+  }
+
   function play(req) {
     forget();
+    starting = true;
     var a = api();
     get('Users/' + a.getCurrentUserId() + '/Items/' + req.id)
       .then(choose)
       .then(function (what) {
-        if (!what) return;   // nothing playable: the page is shown
+        if (!what) { done(false); return; }   // nothing playable: the page is shown
         return window.playbackManager.play({
           ids: [what[0]],
           startPositionTicks: what[1] || 0,
           serverId: (a.serverId && a.serverId()) || req.serverId
-        });
+        }).then(function () { done(true); });
       })
-      .catch(function (e) { console.warn('[Tentacle] Play from Tentacle failed; the page is shown', e); });
+      .catch(function (e) { console.warn('[Tentacle] Play from Tentacle failed; the page is shown', e); done(false); });
   }
 
   function attempt() {
@@ -150,6 +158,8 @@
   document.addEventListener('viewshow', check);
   check();
 
-  // For the unit tests (tests/test_watch_links.py)
-  window.TentaclePlay = { internals: { parse: parse, withoutFlag: withoutFlag, choose: choose } };
+  // For tentacle-details.js and the unit tests (tests/test_watch_links.py)
+  // pending(): a Play link waits to play (tentacle-details.js keeps its page closed).
+  window.TentaclePlay = { pending: function () { return starting || !!pending(); },
+    internals: { parse: parse, withoutFlag: withoutFlag, choose: choose } };
 })();

@@ -39,7 +39,7 @@ function _el(tag) {
     set: function (v) { html = String(v); (e._writes = e._writes || []).push(html); } });
   return e;
 }
-var document = { body: _el('body'), head: _el('head'), readyState: 'complete',
+var document = { body: _el('body'), head: _el('head'), documentElement: _el('html'), readyState: 'complete',
   createElement: function (t) { return _el(t); }, getElementById: function () { return null; },
   querySelector: function () { return null; }, querySelectorAll: function () { return []; },
   addEventListener: function () {}, removeEventListener: function () {} };

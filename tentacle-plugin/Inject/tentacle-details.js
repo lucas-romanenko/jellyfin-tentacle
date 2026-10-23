@@ -9,6 +9,18 @@ var Details = {
     _trailerPreviousFocus: null,
     _trailerPlayer: null,
     _settingsChangedHandler: null,
+    // Opened by the address itself (#/details?id=…) rather than a card click:
+    // see onRoute(). _routeId is the title that address holds (being fetched or
+    // shown); _sawOtherRoute says this tab was on another Jellyfin page first.
+    _route: false,
+    _routeId: null,
+    _routeSeq: 0,
+    _routeRetry: null,
+    _playWait: null,
+    _routeHold: null,
+    _sawOtherRoute: false,
+    _nativeIds: {},
+    ROUTE_TYPES: ['Movie', 'Series', 'Episode', 'Season', 'Person', 'BoxSet'],
     FAVORITE_INDICATOR_SVG: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="m480-120-58-52q-101-91-167-157T150-447.5Q111-500 95.5-544T80-634q0-94 63-157t157-63q52 0 99 22t81 62q34-40 81-62t99-22q94 0 157 63t63 157q0 46-15.5 90T810-447.5Q771-395 705-329T538-172l-58 52Z"/></svg>',
     WATCHED_INDICATOR_SVG: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 7L9 19l-5.5-5.5 1.41-1.41L9 16.17 19.59 5.59 21 7z"/></svg>',
 
@@ -255,9 +267,118 @@ var Details = {
         }
     },
 
-    showDetails: function(itemId, itemType) {
+    // The item id in a details address (#/details?id=…&serverId=…), or null.
+    routeItemId: function(hash) {
+        var m = /^#!?\/details\?(.*)$/.exec(hash || '');
+        if (!m) return null;
+        var id = /(?:^|&)id=([^&]+)/.exec(m[1]);
+        if (!id) return null;
+        try { return decodeURIComponent(id[1]).replace(/-/g, ''); } catch (e) { return null; }
+    },
+
+    // Jellyfin Web shows its own details page for #/details?id=…; only card
+    // clicks were turned into this one. Anything else that opens the address
+    // (Tentacle's Play / Open in Jellyfin links, a bookmark, a reload,
+    // Back/Forward, the redirect after signing in, scripts that set the hash)
+    // got the stock page. So the address opens it too, for the types drawn here,
+    // over Jellyfin's page, which html.tentacle-details-route keeps hidden
+    // meanwhile (tentacle-details.css). Other types keep Jellyfin's page.
+    onRoute: function() {
         var self = this;
+        var root = document.documentElement;
+        var hash = window.location.hash || '';
+        var id = this.routeItemId(hash);
+        if (!id) {
+            if (!/^#!?\/(login|selectserver|addserver|forgotpassword|wizard|startup)/i.test(hash)) this._sawOtherRoute = true;
+            root.classList.remove('tentacle-details-route');
+            if (this._route && this.isVisible) this.hide(true);
+            this._route = false;
+            this._routeId = null;
+            this._routeHold = null;
+            return;
+        }
+        if (this._routeHold === id) return;   // closed for the player: see _showAgainLater
+        this._routeHold = null;
+        if (this._routeId === id && (this._routeSeq < 0 || this.isVisible)) return;   // already there (hashchange + viewshow)
+        if (this._nativeIds[id]) { root.classList.remove('tentacle-details-route'); return; }
+        var api = window.ApiClient;
+        var signedIn = false;
+        try { signedIn = !!(api && api.getCurrentUserId() && api.accessToken()); } catch (e) { }
+        if (!signedIn) return;   // the sign-in brings Jellyfin back here: viewshow again
+        root.classList.add('tentacle-details-route');
+        if (this._playPending(hash)) {
+            // A Play link (tentacle-play.js): the player opens instead, so this
+            // page waits until it has or hasn't (then shows the page).
+            this._routeId = null;
+            this._waitForPlay();
+            return;
+        }
+        this._routeId = id;
+        var seq = this._routeSeq = -(Math.abs(this._routeSeq) + 1);   // < 0: being fetched
+        var stop = function() {
+            if (self._routeSeq !== seq) return false;
+            self._routeSeq = -seq;
+            return self.routeItemId(window.location.hash) === id;
+        };
+        this.fetchItem(api, id).then(function(item) {
+            if (!stop()) return;
+            if (self.ROUTE_TYPES.indexOf(item.Type) === -1) {
+                self._nativeIds[id] = true;
+                root.classList.remove('tentacle-details-route');
+                return;
+            }
+            self.showDetails(id, item.Type, { route: true });
+        }, function() {
+            if (!stop()) return;
+            self._nativeIds[id] = true;   // Jellyfin's page says what's wrong
+            root.classList.remove('tentacle-details-route');
+        });
+    },
+
+    _playPending: function(hash) {
+        if (/[?&]tentaclePlay=1(&|$)/.test(hash)) return true;
+        var tp = window.TentaclePlay;
+        try { return !!(tp && tp.pending && tp.pending()); } catch (e) { return false; }
+    },
+
+    _waitForPlay: function() {
+        var self = this;
+        if (this._playWait) return;
+        var done = function(e) {
+            window.removeEventListener('tentacle-play-done', done);
+            clearTimeout(self._playWait);
+            self._playWait = null;
+            if (e && e.detail && e.detail.started) self._showAgainLater();
+            else self.onRoute();
+        };
+        window.addEventListener('tentacle-play-done', done);
+        this._playWait = setTimeout(function() { done(null); }, 20000);
+    },
+
+    // Still on the details address with this page closed (Play, a menu action):
+    // Jellyfin's page stays hidden, and this one comes back unless something
+    // plays (playback that failed to start leaves the person here).
+    _showAgainLater: function() {
+        var self = this;
+        this._routeId = null;
+        this._routeHold = this.routeItemId(window.location.hash);
+        if (this._routeRetry) clearTimeout(this._routeRetry);
+        this._routeRetry = setTimeout(function() {
+            self._routeRetry = null;
+            self._routeHold = null;
+            var pm = window.playbackManager;
+            try { if (pm && pm.isPlaying && pm.isPlaying()) return; } catch(e) {}
+            if (!self.isVisible) self.onRoute();
+        }, 15000);
+    },
+
+    // opts.route: opened by the address (onRoute), which is in history already.
+    // opts.restore: Forward back onto a title a card had opened.
+    showDetails: function(itemId, itemType, opts) {
+        var self = this;
+        opts = opts || {};
         this.closeTrailerOverlay();
+        if (this._routeRetry) { clearTimeout(this._routeRetry); this._routeRetry = null; }
 
         var api = window.ApiClient;
         if (!api) return;
@@ -268,8 +389,10 @@ var Details = {
         }
 
         var wasAlreadyVisible = this.isVisible;
+        if (opts.route) this._route = true;
+        else if (!wasAlreadyVisible) this._route = false;
 
-        if (wasAlreadyVisible && this.currentItem && this.currentItem.Id && this.currentItem.Id !== itemId && !this._navigatingBack) {
+        if (wasAlreadyVisible && !opts.route && this.currentItem && this.currentItem.Id && this.currentItem.Id !== itemId && !this._navigatingBack) {
             this._itemHistory.push({ id: this.currentItem.Id, type: this.currentItem.Type });
         }
 
@@ -285,15 +408,15 @@ var Details = {
         document.body.classList.add('moonfin-details-visible');
         this._updateBackButtons();
 
-        if (!wasAlreadyVisible) {
-            history.pushState({ moonfinDetails: true }, '');
+        if (!wasAlreadyVisible && !this._route && !opts.restore) {
+            history.pushState({ moonfinDetails: true, id: itemId, type: itemType || null }, '');
         }
 
         this.fetchItem(api, itemId).then(function(item) {
             self.currentItem = item;
 
-            var supportedTypes = ['Movie', 'Series', 'Episode', 'Season', 'Person', 'BoxSet'];
-            if (supportedTypes.indexOf(item.Type) === -1) {
+            if (self.ROUTE_TYPES.indexOf(item.Type) === -1) {
+                self._nativeIds[itemId] = true;
                 self.hide(true);
                 window.location.hash = '#/details?id=' + itemId;
                 return;
@@ -3634,6 +3757,22 @@ var Details = {
         document.body.classList.remove('moonfin-details-visible');
         this._updateBackButtons();
 
+        var onRoute = this._route;
+        this._route = false;
+        if (onRoute && !skipHistoryBack) {
+            // Closed: leave the address. Opened from outside Jellyfin (a link from
+            // Tentacle, a bookmark), Back would leave Jellyfin, so go home instead.
+            try {
+                if (this._sawOtherRoute) history.back();
+                else window.location.replace(window.location.pathname + window.location.search + '#/home');
+            } catch(e) {}
+            return;
+        }
+        if (onRoute) {
+            this._showAgainLater();
+            return;
+        }
+
         if (!skipHistoryBack) {
             try { history.back(); } catch(e) {}
         }
@@ -3644,8 +3783,14 @@ var Details = {
 // Config loading moved to tentacle-mdblist.js (loads first) so window.TentacleConfig
 // is available to all scripts without race conditions.
 (function() {
+    // Loaded on a details address: keep Jellyfin's page hidden from the start
+    // (onRoute shows it again for a type it doesn't draw).
+    if (!(window.TentacleStandAside && window.TentacleStandAside()) && Details.routeItemId(window.location.hash)) {
+        document.documentElement.classList.add('tentacle-details-route');
+    }
+
     function boot() {
-        if (window.TentacleStandAside && window.TentacleStandAside()) return; // TV layout — native details page
+        if (window.TentacleStandAside && window.TentacleStandAside()) return; // TV layout — native details page (the CSS stands aside too)
         if (window.ApiClient) {
             console.log('[Tentacle] Details overlay initializing');
             if (typeof MdbList !== 'undefined') MdbList.init();
@@ -3655,12 +3800,22 @@ var Details = {
                 hide: function() { Details.hide(); }
             };
 
-            // Close overlay when user presses browser back button
+            // Back/Forward. Onto a details address: onRoute. Onto the entry a card
+            // click pushed: that title again. Anywhere else: close it.
             window.addEventListener('popstate', function(e) {
-                if (Details.isVisible && !(e.state && e.state.moonfinDetails)) {
-                    Details.hide(true); // skipHistoryBack — browser already popped
+                var st = e.state;
+                if (Details.routeItemId(window.location.hash)) {
+                    Details.onRoute();
+                } else if (st && st.moonfinDetails) {
+                    if (!Details.isVisible && st.id) Details.showDetails(st.id, st.type || null, { restore: true });
+                } else {
+                    if (Details.isVisible) Details.hide(true); // skipHistoryBack — browser already popped
+                    Details.onRoute();
                 }
             });
+            window.addEventListener('hashchange', function() { Details.onRoute(); });
+            document.addEventListener('viewshow', function() { Details.onRoute(); });
+            Details.onRoute();
         } else {
             setTimeout(boot, 500);
         }

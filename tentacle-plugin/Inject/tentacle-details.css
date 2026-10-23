@@ -2298,3 +2298,10 @@ body.moonfin-details-visible .moonfin-nav-back {
 .tfm-frame { margin: 0; }
 .tfm-frame img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; background: #000; display: block; }
 .tfm-frame figcaption { font-size: 11px; color: rgba(255,255,255,.55); margin-top: 3px; }
+
+/* On a details address (#/details?id=…: a link from Tentacle, a reload,
+   Back/Forward) the styled page opens over Jellyfin's own; this keeps
+   Jellyfin's hidden meanwhile, so it doesn't flash (tentacle-details.js onRoute). */
+html.tentacle-details-route:not(.layout-tv) .itemDetailPage {
+    visibility: hidden;
+}
