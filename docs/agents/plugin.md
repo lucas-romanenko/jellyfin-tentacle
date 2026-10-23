@@ -184,6 +184,18 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   back the same way, once. Only the plugin gives these back: the TV app
   must not call `LiveStreams/Close` itself (it would close a stream shared
   with a recording twice).
+  A share is given back only while the device still holds it (#794): a
+  reported stop already released it (Jellyfin's stop closes the stream
+  once), so the filter marks the play session stopped (after the stop
+  request ran, before its answer; `ISessionManager.PlaybackStopped` for
+  other stops, which Jellyfin queues on the thread pool and may arrive
+  after the next open) and from then on only asks the session manager.
+  M3U live stream ids are one per channel (a later open of the channel by
+  anyone gets the same id), so the filter keeps the `ILiveStream` object
+  it saw open and acts only while `GetLiveStreamInfo` still returns that
+  object. Before: flipping onto a channel being recorded and away closed
+  the recording's stream (it stops being written and still says
+  recording, no retry).
 - **The guide plays in its own tab** (`tentacle-livetv.js`): Jellyfin Web
   10.11 has no global `playbackManager`, and `sendPlayCommand` makes the
   server send Play to the browser's newest websocket, which may be another

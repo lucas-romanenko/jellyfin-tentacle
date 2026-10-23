@@ -54,6 +54,18 @@ namespace Jellyfin.Plugin.Tentacle.Services;
 /// device's share is given back the same way (once; a recording sharing the
 /// stream keeps it). Done here rather than by the app so the share is only
 /// ever given back by one party.
+///
+/// A share is given back only while the device still holds it (#794). A
+/// player that reported its stop has already given its share back
+/// (Jellyfin's stop closes the stream once): the filter sees the stop (the
+/// stop request itself, and Jellyfin's PlaybackStopped for any other stop)
+/// and from then on only asks the session manager, which releases nothing
+/// it no longer holds. Otherwise the switch or the 45 s check took a second
+/// share, and a stream shared with a recording of the channel or another TV
+/// closed under it (the recording stops being written and still says
+/// recording). And M3U live stream ids are one per channel, so a remembered
+/// id also names any later stream of that channel: only the stream object
+/// the device opened is ever given back.
 /// </summary>
 public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
 {
@@ -61,6 +73,14 @@ public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
     {
         ("MediaInfo", "GetPostedPlaybackInfo"),
         ("MediaInfo", "OpenLiveStream"),
+    };
+
+    // A player's stop report (Jellyfin gives the device's share back on it)
+    private static readonly HashSet<(string Controller, string Action)> StopActions = new()
+    {
+        ("Playstate", "ReportPlaybackStopped"),
+        ("Playstate", "OnPlaybackStopped"),
+        ("Playstate", "OnPlaybackStoppedLegacy"),
     };
 
     // The claim Jellyfin's authentication puts the caller's device id in
@@ -95,13 +115,24 @@ public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
         _transcodeManager = transcodeManager;
         _appHost = appHost;
         _logger = logger;
+        _sessionManager.PlaybackStopped += OnPlaybackStopped;
     }
 
     // How long a device has to start playing a stream it opened
     internal static readonly TimeSpan UnusedGrace = TimeSpan.FromSeconds(45);
 
-    // A live stream a device opened: its play session and its channel
-    private sealed record Opened(string PlaySessionId, Guid ChannelId);
+    // A live stream a device opened: its play session, its channel, the
+    // stream object Jellyfin opened, and whether the player reported its stop
+    private sealed class Opened(string playSessionId, Guid channelId, ILiveStream stream)
+    {
+        public string PlaySessionId { get; } = playSessionId;
+
+        public Guid ChannelId { get; } = channelId;
+
+        public ILiveStream Stream { get; } = stream;
+
+        public volatile bool Stopped;
+    }
 
     /// <inheritdoc />
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
@@ -111,6 +142,13 @@ public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
         var playSessionId = string.Empty;
         try
         {
+            if (context.ActionDescriptor is ControllerActionDescriptor stop
+                && StopActions.Contains((stop.ControllerName, stop.ActionName)))
+            {
+                await OnStopRequest(context, next).ConfigureAwait(false);
+                return;
+            }
+
             if (context.ActionDescriptor is ControllerActionDescriptor action
                 && Actions.Contains((action.ControllerName, action.ActionName)))
             {
@@ -226,10 +264,12 @@ public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
     // off the device's list): its transcode stopped, its consumer once.
     private async Task CloseOne(string deviceId, string liveStreamId, Opened opened, string why)
     {
+        // Already closed (the player stopped), or a later stream of the
+        // channel under the same id: not this device's
         var stream = _mediaSourceManager.GetLiveStreamInfo(liveStreamId);
-        if (stream is null)
+        if (stream is null || !ReferenceEquals(stream, opened.Stream))
         {
-            return; // already closed (the player stopped)
+            return;
         }
 
         try
@@ -247,14 +287,17 @@ public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
             // This device's share of the stream, once: through the session
             // manager when a player reported it (it then won't close it a
             // second time on its stop), else straight away. A stream
-            // others share stays open for them.
+            // others share stays open for them. After a reported stop only
+            // the session manager: the stop gave the share back already.
             var consumers = stream.ConsumerCount;
             if (!string.IsNullOrEmpty(opened.PlaySessionId))
             {
                 await _sessionManager.CloseLiveStreamIfNeededAsync(liveStreamId, opened.PlaySessionId).ConfigureAwait(false);
             }
 
-            if (_mediaSourceManager.GetLiveStreamInfo(liveStreamId) is not null && stream.ConsumerCount == consumers)
+            if (!opened.Stopped
+                && ReferenceEquals(_mediaSourceManager.GetLiveStreamInfo(liveStreamId), stream)
+                && stream.ConsumerCount == consumers)
             {
                 await _mediaSourceManager.CloseLiveStream(liveStreamId).ConfigureAwait(false);
             }
@@ -298,11 +341,73 @@ public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
         var open = _streams.GetOrAdd(deviceId, _ => new ConcurrentDictionary<string, Opened>(StringComparer.OrdinalIgnoreCase));
         foreach (var (liveStreamId, session) in opened)
         {
-            // a stream the device already had (the same channel again) keeps its first play session
-            var entry = new Opened(session, channelId);
-            if (open.TryAdd(liveStreamId, entry))
+            var stream = _mediaSourceManager.GetLiveStreamInfo(liveStreamId);
+            if (stream is null)
+            {
+                continue;
+            }
+
+            // A stream the device already holds (the same channel again)
+            // keeps its first play session; one it stopped, or an older
+            // stream under the same id, is replaced by this share
+            var entry = new Opened(session, channelId, stream);
+            var kept = open.AddOrUpdate(
+                liveStreamId,
+                entry,
+                (_, had) => had.Stopped || !ReferenceEquals(had.Stream, stream) ? entry : had);
+            if (ReferenceEquals(kept, entry))
             {
                 _ = CloseIfUnusedLater(deviceId, liveStreamId, entry);
+            }
+        }
+    }
+
+    // The stop request ran (Jellyfin gave the device's share back): its play
+    // session's streams are no longer this device's to give back. Marked
+    // before the answer, so the next channel the player opens already sees it.
+    private async Task OnStopRequest(ActionExecutingContext context, ActionExecutionDelegate next)
+    {
+        await next().ConfigureAwait(false);
+        try
+        {
+            var args = context.ActionArguments;
+            var body = args.TryGetValue("playbackStopInfo", out var b) ? b : null;
+            var playSessionId = (args.TryGetValue("playSessionId", out var ps) ? ps as string : null)
+                ?? body?.GetType().GetProperty("PlaySessionId")?.GetValue(body) as string;
+            MarkStopped(context.HttpContext.User.FindFirst(DeviceIdClaim)?.Value, playSessionId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Tentacle] Could not check a Live TV stop");
+        }
+    }
+
+    // Any other stop (a session that ended, a stop over the websocket)
+    private void OnPlaybackStopped(object? sender, PlaybackStopEventArgs e)
+    {
+        try
+        {
+            MarkStopped(e.DeviceId, e.PlaySessionId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Tentacle] Could not check a Live TV stop");
+        }
+    }
+
+    private void MarkStopped(string? deviceId, string? playSessionId)
+    {
+        if (string.IsNullOrEmpty(deviceId) || string.IsNullOrEmpty(playSessionId)
+            || !_streams.TryGetValue(deviceId, out var open))
+        {
+            return;
+        }
+
+        foreach (var opened in open.Values)
+        {
+            if (string.Equals(opened.PlaySessionId, playSessionId, StringComparison.OrdinalIgnoreCase))
+            {
+                opened.Stopped = true;
             }
         }
     }
@@ -317,10 +422,13 @@ public sealed class OneLiveStreamPerDeviceFilter : IAsyncActionFilter
             await gate.WaitAsync().ConfigureAwait(false);
             try
             {
-                // Still this device's (not closed by a channel switch meanwhile), still open, and unplayed
+                // Still this device's (not closed by a channel switch meanwhile,
+                // not stopped: played and given back), still the stream it
+                // opened, and unplayed
                 if (!_streams.TryGetValue(deviceId, out var open)
                     || !open.TryGetValue(liveStreamId, out var now) || !ReferenceEquals(now, opened)
-                    || _mediaSourceManager.GetLiveStreamInfo(liveStreamId) is null
+                    || opened.Stopped
+                    || !ReferenceEquals(_mediaSourceManager.GetLiveStreamInfo(liveStreamId), opened.Stream)
                     || InUse(deviceId, liveStreamId, opened))
                 {
                     return;
