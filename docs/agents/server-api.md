@@ -198,7 +198,7 @@ provider names, URLs or logins).
 | GET | `/api/live/recordings/marks` | signed in | recordings.py:recordings_marks (for the guides: Jellyfin channel id + start) |
 | POST | `/api/live/recordings/{id}/skip` | can record | recordings.py:skip_booking |
 | POST | `/api/live/recordings/{id}/restore` | can record | recordings.py:restore_booking |
-| POST | `/api/live/recordings/cancelled` | admin or internal | recordings.py:timer_cancelled (the plugin: a person cancelled a timer in Jellyfin) |
+| POST | `/api/live/recordings/cancelled` | none; confirmed with Jellyfin (`/Tentacle/TimerCancelled/{id}`) unless admin or internal | recordings.py:timer_cancelled (the plugin: a person cancelled a timer in Jellyfin) |
 | POST | `/api/live/sync-channels/{provider_id}` | admin | livetv.py:sync_live_channels |
 | POST | `/api/live/sync-epg/{provider_id}` | admin | livetv.py:sync_epg |
 | GET | `/api/live/sync-status` | admin | livetv.py:sync_status_endpoint |

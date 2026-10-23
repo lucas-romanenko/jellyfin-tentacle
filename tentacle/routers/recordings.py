@@ -8,6 +8,7 @@ or an updater that waits for "nothing playing" would restart the server in
 the middle of a game. GET /api/live/recordings/busy says when it is safe.
 """
 import logging
+import re
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -579,13 +580,41 @@ class CancelledBody(BaseModel):
     timer_id: str
 
 
-@router.post("/api/live/recordings/cancelled", dependencies=[Depends(require_internal_or_admin)])
-def timer_cancelled(body: CancelledBody, db: Session = Depends(get_db)):
+def _cancel_confirmed(db: Session, timer_id: str) -> bool:
+    """The plugin has no secret shared with Tentacle: Tentacle asks Jellyfin
+    (with its own key) whether that timer was really cancelled there."""
+    import requests
+    url = (get_setting(db, "jellyfin_url", "") or "").strip().rstrip("/")
+    key = (get_setting(db, "jellyfin_api_key", "") or "").strip()
+    if not url or not key:
+        return False
+    try:
+        r = requests.get(f"{url}/Tentacle/TimerCancelled/{timer_id}", headers={"X-Emby-Token": key}, timeout=5)
+        return r.status_code == 200
+    except requests.RequestException:
+        return False
+
+
+@router.post("/api/live/recordings/cancelled")
+def timer_cancelled(body: CancelledBody, request: Request, db: Session = Depends(get_db)):
     """From the plugin: someone cancelled a recording in Jellyfin. If a rule
     made it, that showing is skipped (never booked again): a person's no is
-    kept, where a guide refresh deleting it would be booked again."""
+    kept, where a guide refresh deleting it would be booked again. Anyone may
+    say so; it counts once Jellyfin confirms it (or an admin says it)."""
+    from routers.auth import _has_internal_secret
     from services.recording_rules import book
     tid = (body.timer_id or "").replace("-", "")
+    if not re.fullmatch(r"[0-9a-fA-F]{8,64}", tid):
+        raise HTTPException(422, "timer_id is a Jellyfin timer id")
+    trusted = _has_internal_secret(request, db)
+    if not trusted:
+        try:
+            user = _caller(request, db)
+            trusted = user is None or bool(user.is_admin)
+        except HTTPException:
+            trusted = False
+    if not trusted and not _cancel_confirmed(db, tid):
+        raise HTTPException(403, "Jellyfin doesn't know that cancel")
     rows = [b for b in db.query(RecordingBooking).filter(RecordingBooking.jellyfin_timer_id.isnot(None)).all()
             if b.jellyfin_timer_id.replace("-", "") == tid]
     for b in rows:

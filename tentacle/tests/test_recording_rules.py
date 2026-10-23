@@ -517,8 +517,16 @@ class Api(unittest.TestCase):
                              jellyfin_timer_id="abc")
         self.db.add(b)
         self.db.commit()
-        with mock.patch.object(B, "notify", lambda: None):
-            out = self.R.timer_cancelled(self.R.CancelledBody(timer_id="abc"), self.db)
+        with mock.patch.object(B, "notify", lambda: None), \
+                mock.patch.object(self.R, "_cancel_confirmed", lambda db, t: t == "abc"), \
+                mock.patch("routers.auth._has_internal_secret", lambda r, db: False), \
+                mock.patch.object(self.R, "_caller", lambda r, db: self.ann):
+            with self.assertRaises(self.R.HTTPException):
+                self.R.timer_cancelled(self.R.CancelledBody(timer_id="abcd0000"), None, self.db)
+            self.db.query(RecordingBooking).filter_by(id=b.id).update({"jellyfin_timer_id": "abcd1234"})
+            self.db.commit()
+            with mock.patch.object(self.R, "_cancel_confirmed", lambda db, t: t == "abcd1234"):
+                out = self.R.timer_cancelled(self.R.CancelledBody(timer_id="abcd1234"), None, self.db)
         self.assertEqual(1, out["skipped"])
         self.assertEqual("skipped", self.db.get(RecordingBooking, b.id).state)
 
