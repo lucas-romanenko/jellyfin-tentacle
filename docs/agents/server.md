@@ -1030,7 +1030,16 @@ User docs: `docs/features/live-tv.md`.
   `channel_number_offset` (the first Live TV provider 0, every other one a
   round number above all ids, given once by `ensure_channel_offsets` and
   kept); Jellyfin's `hdhr_<n>` from timers and reservations maps back with
-  `channels_for_guide_numbers`. A number two channels would share is left
+  `channels_for_guide_numbers`. On Tentacle's own M3U tuners (the lineup,
+  and the per-person tuners of before) a timer says `m3u_` + MD5(tuner URL)
+  + MD5(stream URL): `_tentacle_m3u_ids` makes those ids from the SAVED
+  tuner URLs (`livetv_all_tuner_url`, `LiveUserLineup.tuner_url`) and each
+  lineup entry's stream path (and old keys' paths), mapped to the GuideNumber
+  of the channel the entry streams now (#760; before, every lineup recording
+  was a viewer). A viewer whose slot a recording takes (or recording
+  protection stops) is stopped through Jellyfin's Sessions API and sent the
+  message "Stopped for a recording" (`_tell_stopped_for_recording`; web and
+  the TV app both act on Stop and DisplayMessage), instead of freezing. A number two channels would share is left
   out of the lineup, XMLTV and M3U (logged), never handed out twice.
 - Several addresses per provider (#704, `services/provider_addresses.py`,
   table `provider_addresses`): the address in use is `server_url`, the rest
