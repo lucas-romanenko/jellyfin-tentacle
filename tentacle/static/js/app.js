@@ -594,20 +594,29 @@ window.addEventListener('hashchange', () => {
   if (want !== state.currentPage || tab) showRouteFromHash();
 });
 
-// The sidebar shows the build that is running, not a number typed into the page.
+// The sidebar shows the release that is running ("v1.23.0", or "v1.23.0 + 3
+// changes" for a build of main after it); the commit is in the tooltip.
+function versionLabel(v) {
+  const commit = (v.commit && v.commit !== 'unknown') ? v.commit.slice(0, 7) : '';
+  const m = /^(v[^+]+)(?:\+(\d+))?$/.exec(v.version || '');
+  if (!m) return commit ? `build ${commit}` : 'development build';
+  const n = Number(m[2] || 0);
+  return n ? `${m[1]} + ${n} change${n === 1 ? '' : 's'}` : m[1];
+}
+
 async function loadVersionLabel() {
   const el = document.getElementById('logo-version');
   if (!el) return;
   try {
     const v = await (await fetch('/api/version')).json();
-    const commit = (v.commit && v.commit !== 'unknown') ? v.commit.slice(0, 7) : '';
     let built = '';
     if (v.built && v.built !== 'unknown') {
       const d = new Date(v.built);
       if (!isNaN(d)) built = d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
     }
-    el.textContent = commit ? `build ${commit}` : 'development build';
-    el.title = [commit && `Commit ${v.commit}`, built && `built ${built}`].filter(Boolean).join(', ');
+    const commit = v.commit && v.commit !== 'unknown' ? v.commit : '';
+    el.textContent = versionLabel(v);
+    el.title = [commit && `Commit ${commit.slice(0, 7)}`, built && `built ${built}`].filter(Boolean).join(', ');
   } catch (e) { el.textContent = ''; }
 }
 
@@ -679,6 +688,85 @@ function showSettingsSection(name) {
   document.querySelector(`.settings-nav-item[data-section="${name}"]`)?.classList.add('active');
   if (state.currentPage === 'settings') setRoute('settings', name);
   if (name === 'signin' && typeof famLoadServer === 'function') famLoadServer();
+  if (name === 'about') loadAbout();
+}
+
+// ── Settings → About: which versions run (GET /api/about) ──────────────────
+
+async function loadAbout() {
+  const el = document.getElementById('about-versions');
+  if (!el) return;
+  let d;
+  try {
+    d = await api('/api/about');
+  } catch (e) {
+    el.innerHTML = `<div class="fam-error">Couldn’t read the versions: ${escHtml(e.message)}</div>`;
+    return;
+  }
+  el.innerHTML = _aboutRender(d);
+}
+
+function _aboutRow(label, value, extra = '') {
+  return `<div class="about-row"><div class="about-label">${label}</div><div><div class="about-value">${value}</div>${extra}</div></div>`;
+}
+
+function _aboutRender(d) {
+  const ok = '<span class="about-ok">&#10003; up to date</span>';
+  const s = d.server || {};
+  const built = s.built ? new Date(s.built) : null;
+  const sub = [s.commit && `commit ${escHtml(s.commit.slice(0, 7))}`,
+               built && !isNaN(built) && `built ${built.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}`]
+    .filter(Boolean).join(', ');
+  let serverNote = '';
+  if (s.update) {
+    serverNote = `<div class="fam-note warn"><span>New version available: <strong>${escHtml(s.latest.version)}</strong>. Pull the new image to update.</span>
+      <a class="fam-link" href="${escHtml(s.latest.page)}" target="_blank" rel="noopener">Release notes</a></div>`;
+  } else if (!s.latest) {
+    serverNote = `<div class="fam-hint">GitHub couldn’t be asked for the newest release just now. <a class="fam-link" href="${escHtml(s.releases)}" target="_blank" rel="noopener">Releases</a></div>`;
+  }
+  let html = _aboutRow('Tentacle server',
+    `${escHtml(versionLabel(s))}${s.update || !s.latest || !s.version ? '' : ok}${sub ? `<span class="about-sub">${sub}</span>` : ''}`,
+    serverNote);
+
+  if (d.problem) {
+    return html + `<div class="fam-error" style="padding:12px 0">${escHtml(d.problem)}</div>`;
+  }
+  const p = d.plugin || {};
+  let pluginNote = '';
+  if (!p.version) {
+    pluginNote = `<div class="fam-note warn"><span>The Tentacle plugin isn’t installed in Jellyfin: Jellyfin’s home screen, Discover and live updates need it. Install it from Jellyfin’s catalogue (Dashboard → Plugins).</span></div>`;
+  } else if (p.too_old) {
+    const fix = p.restart_for
+      ? `${escHtml(p.restart_for)} is installed already: restart Jellyfin to run it.`
+      : 'Update it in Jellyfin (Dashboard → Plugins → Catalog → Tentacle), then restart Jellyfin.';
+    pluginNote = `<div class="fam-note warn"><span><strong>This plugin is older than this server needs</strong> (${escHtml(p.minimum)} or newer): parts of Jellyfin’s home screen and Live TV may not work. ${fix}</span></div>`;
+  } else if (p.restart_for) {
+    pluginNote += `<div class="fam-hint">${escHtml(p.restart_for)} is installed and runs after Jellyfin restarts.</div>`;
+  }
+  if (p.version && p.catalog === false) {
+    pluginNote += `<div class="fam-hint">Jellyfin updates the plugin itself only from Tentacle’s catalogue, which isn’t in its list: add <span class="mono">${escHtml(p.catalog_url)}</span> under Dashboard → Plugins → Repositories.</div>`;
+  } else if (p.version) {
+    pluginNote += `<div class="fam-hint">Jellyfin updates it from Tentacle’s catalogue by itself (Scheduled tasks → Update Plugins, daily); a new version runs after Jellyfin restarts.</div>`;
+  }
+  html += _aboutRow('Jellyfin plugin',
+    p.version ? `${escHtml(p.version)}${p.too_old ? '' : `<span class="about-sub">needs ${escHtml(p.minimum)} or newer</span>`}` : 'Not installed',
+    pluginNote);
+
+  const j = d.jellyfin || {};
+  html += _aboutRow('Jellyfin', escHtml(j.version || 'unknown'));
+
+  const newest = d.tv_latest && d.tv_latest.version;
+  const tvs = (d.tv_apps || []).map(t => {
+    const state = t.up_to_date || !newest ? '<span class="about-ok">&#10003;</span>'
+      : `<span class="fam-warn-text" title="The TV offers the new version the next time Tentacle opens">${escHtml(newest)} waiting</span>`;
+    const waiting = (t.waiting || []).length
+      ? `<div class="fam-hint fam-warn-text">Needs a newer Tentacle server or plugin for: ${t.waiting.map(escHtml).join('; ')}</div>` : '';
+    return `<div class="about-tv"><span>${escHtml(t.name)}</span><span style="color:var(--text3)">${escHtml(t.version)}</span>${state}</div>${waiting}`;
+  }).join('');
+  html += _aboutRow('TV app',
+    newest ? `Newest ${escHtml(newest)}` : 'Tentacle Android TV',
+    tvs ? `<div style="margin-top:6px">${tvs}</div>` : '<div class="fam-hint">Nobody has signed in on the Tentacle TV app yet.</div>');
+  return html;
 }
 
 // Escape text before it is interpolated into an innerHTML string. Jellyfin

@@ -888,6 +888,9 @@ async def lifespan(app: FastAPI):
     # Live updates: Radarr/Sonarr queue changes reach open screens (services/live_updates.py)
     from services import live_updates
     live_updates.start()
+    # An image without a release stamp asks GitHub which release it follows
+    from services import versions
+    versions.derive_in_background(BUILD_COMMIT)
     logger.info("Tentacle ready")
     yield
     live_updates.stop()
@@ -988,6 +991,8 @@ logging.getLogger("uvicorn.error").addFilter(vod_router.EarlyRangeEndFilter())
 app.include_router(notifications_router.router)
 from routers import updates as updates_router  # noqa: E402
 app.include_router(updates_router.router)
+from routers import about as about_router  # noqa: E402
+app.include_router(about_router.router)
 app.include_router(health_router.router)
 app.include_router(youtube_router.router)
 app.include_router(music_router.router)
@@ -1056,6 +1061,8 @@ app.add_middleware(NoCacheStatic)
 # being there.
 BUILD_COMMIT = (os.environ.get("TENTACLE_COMMIT") or "").strip() or "unknown"
 BUILD_DATE = (os.environ.get("TENTACLE_BUILD_DATE") or "").strip() or "unknown"
+# The release version ("v1.23.0", or "v1.23.0+3" for a build of main 3
+# commits after it): services/versions.py.
 
 
 @app.get("/api/health")
@@ -1110,8 +1117,12 @@ def version():
     """What this container is. Unauthenticated on purpose: it is the first
     thing to check when something is missing, and needing to log in to find
     out you are on an old build is the wrong way round. Reports no
-    configuration and no data — a commit, a date, and which API paths exist."""
+    configuration and no data — a version, a commit, a date, and which API
+    paths exist."""
+    from services import versions
     return {
+        # None when the image has no stamp and GitHub hasn't said (yet).
+        "version": versions.current(),
         "commit": BUILD_COMMIT,
         "built": BUILD_DATE,
         "assets": _asset_version(),

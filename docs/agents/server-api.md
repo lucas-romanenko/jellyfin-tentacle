@@ -27,13 +27,16 @@ parameters, or a helper it calls):
 
 Declared on the app in `main.py` (no router, all **none**; listed in
 `tests/test_route_auth_inventory.py` MAIN_PUBLIC): `GET /api/health`
-(liveness), `GET /api/version` (build identity), `GET /api/provider-status`
+(liveness), `GET /api/version` (build identity: `version` "v1.23.0", or
+"v1.23.0+3" for a build of main 3 commits after it, null when unknown;
+`commit`, `built`, `code`, `endpoints`), `GET /api/provider-status`
 (the provider health check for a monitor: 200 `{"status": "ok"}`, or 503
 `{"status": "failing", "since", "checked_at", "problems": [reason]}`; no
 provider names, URLs or logins).
 
 | Method | Path | Auth | Handler |
 |---|---|---|---|
+| GET | `/api/about` | admin | about.py:about (Settings → About: server version and the newest release on GitHub, the Jellyfin plugin against `MIN_PLUGIN_VERSION`, Jellyfin's version, each person's TV app; services/versions.py) |
 | GET | `/api/activity` | user | activity.py:get_activity |
 | POST | `/api/activity/arr/check` | user | activity.py:check_releases |
 | POST | `/api/activity/arr/grab` | user | activity.py:grab_release |
