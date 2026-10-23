@@ -158,7 +158,7 @@ def scan(db: Session, jf=None, now: Optional[datetime] = None, airings: Optional
             return limits[pid]
 
         plans = [P.plan_rule(r, items, now) for r in rules]
-        P.fit(plans, held, limit_of)
+        fit_plans(plans, held, limit_of)
         summary = {"rules": len(rules), "listings": len(items), "booked": 0, "preview": 0, "waiting": 0,
                    "covered": 0, "cancelled": 0, "changed": False}
         if timers_known:
@@ -178,6 +178,17 @@ def scan(db: Session, jf=None, now: Optional[datetime] = None, airings: Optional
         if summary["changed"]:
             notify()
         return summary
+
+
+def fit_plans(plans: list, held: list, limit_of) -> None:
+    """Connections: rules that record first (together, by priority); then
+    each rule in preview on its own against what is really booked, so
+    previews show what would happen if switched on without blocking each
+    other or a rule that records."""
+    taken = P.fit([p for p in plans if p.rule.mode == "record"], held, limit_of)
+    for p in plans:
+        if p.rule.mode != "record":
+            P.fit([p], taken, limit_of)
 
 
 def _covering(timers: Optional[list], jid: Optional[str], start: datetime, ours: set) -> Optional[dict]:

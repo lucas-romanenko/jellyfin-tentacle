@@ -417,7 +417,7 @@ def preview_rule(body: RuleBody, request: Request, db: Session = Depends(get_db)
             limits[pid] = provider_stream_limit(db, db.get(Provider, pid) if pid else None)
         return limits[pid]
 
-    P.fit(others + [pl], [], limit_of)
+    book.fit_plans(others + [pl], [], limit_of)
     guide_until = max((a.stop for a in items), default=None)
     return {"name": name, "events": [_event_json(e) for e in pl.events],
             "near": [{"airing": _airing_json(n.airing), "reason": n.reason} for n in pl.near],

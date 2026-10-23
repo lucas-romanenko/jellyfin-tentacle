@@ -290,13 +290,14 @@ def _in_use(windows: list, provider_id, start: datetime, stop: datetime, pool_ke
     return out
 
 
-def fit(plans: list, held: list, limit_of) -> None:
+def fit(plans: list, held: list, limit_of) -> list:
     """Choose, for each event, the first airing a connection is free for:
     rules by priority, then earliest first. `held`: the windows recordings
     made elsewhere take (Jellyfin's Record button, series). `limit_of(provider
     id)`: Streams at once (0 = no limit). A first showing that can't get a
     connection is replaced by its replay; failing that the event waits, with
-    the reason. Sets event.chosen / state / reason in place."""
+    the reason. Sets event.chosen / state / reason in place; returns every
+    window taken (held ones included)."""
     windows = list(held)
     events = [e for p in plans for e in p.events]
     events.sort(key=lambda e: (-e.rule.priority, e.best.airing.start))
@@ -329,6 +330,7 @@ def fit(plans: list, held: list, limit_of) -> None:
                 windows.append(_window(r, r.options[c]))
                 decided.add(id(r))
                 break
+    return windows
 
 
 def _padded(e: Event, o: Option) -> tuple:
