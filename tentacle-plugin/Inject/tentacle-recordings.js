@@ -125,7 +125,7 @@
         apiGet('TentacleDiscover/Recordings/rules', { userId: uid }).catch(function () { return null; }),
         apiGet('LiveTv/Timers', { IsActive: false }).catch(function () { return null; }),
       ]).then(function (r) { return renderSchedule(r[0], r[1], r[2]); })
-      : apiGet('LiveTv/Recordings', { UserId: uid, Fields: 'Overview', EnableImageTypes: 'Primary,Thumb', ImageTypeLimit: 1, Limit: 300 })
+      : apiGet('LiveTv/Recordings', { UserId: uid, Fields: 'Overview,DateCreated,PremiereDate', EnableImageTypes: 'Primary,Thumb', ImageTypeLimit: 1, Limit: 300 })
         .then(renderRecordings, function () { return '<div class="tr-none">Recordings couldn’t be read from Jellyfin.</div>'; });
     p.then(function (html) {
       if (seq !== R.seq || !R.active || R.tab !== tab) return;
@@ -200,13 +200,15 @@
   function renderRecordings(r) {
     var items = (r && r.Items) || [];
     if (!items.length) return '<div class="tr-none">No recordings yet. Record from the guide, or follow a team in Tentacle.</div>';
-    items.sort(function (a, b) { return Date.parse(b.DateCreated || b.StartDate || 0) - Date.parse(a.DateCreated || a.StartDate || 0); });
+    // finished recordings have no StartDate: DateCreated (asked for in Fields) is when it recorded; no date → no time
+    var whenOf = function (i) { return Date.parse(i.StartDate || i.DateCreated || i.PremiereDate) || 0; };
+    items.sort(function (a, b) { return whenOf(b) - whenOf(a); });
     var now = items.filter(function (i) { return i.Status === 'InProgress'; });
     var done = items.filter(function (i) { return i.Status !== 'InProgress'; });
     var card = function (i) {
       var tag = i.ImageTags && (i.ImageTags.Thumb || i.ImageTags.Primary);
       var img = tag ? api().getUrl('Items/' + i.Id + '/Images/' + (i.ImageTags.Thumb ? 'Thumb' : 'Primary'), { tag: tag, maxWidth: 360 }) : '';
-      var when = Date.parse(i.StartDate || i.DateCreated || 0);
+      var when = whenOf(i);
       var name = i.EpisodeTitle && i.Name ? i.Name + ': ' + i.EpisodeTitle : (i.Name || '');
       return '<button class="tr-card" data-item="' + esc(i.Id) + '" title="' + esc(name) + '">' +
         '<span class="tr-img"' + (img ? ' style="background-image:url(\'' + esc(img) + '\')"' : '') + '>' +
