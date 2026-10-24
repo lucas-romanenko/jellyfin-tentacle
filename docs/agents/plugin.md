@@ -177,7 +177,10 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   of the genre pool), studio 3; >= 20 shown, ties by year distance, rating,
   name; one per TMDB id / PresentationUniqueKey; fewer than 4 topped up.
   Ids cached per (item, user) 6 h, cleared on ItemAdded/ItemRemoved; the
-  server's answer 6 h here (5 min after a failure; 3 s timeout). Nothing
+  server's answer 6 h here (5 min after a failure; 3 s timeout); the
+  lookups run side by side (6 at a time), one computation per title and
+  user at a time (Jellyfin Web asks twice per page), logged with its time;
+  copies are also told apart by name + year. Nothing
   found, an unknown caller or an error: Jellyfin's own answer. Every
   details page (Tentacle's, Jellyfin's, the TV app) reads this endpoint, so
   no client changed.
