@@ -19,7 +19,9 @@ logger = logging.getLogger(__name__)
 # a PO token nor a JS runtime — and MPEG-TS matters, because jellyfin-ffmpeg
 # 7.1.3 cannot seek HLS whose segments are fMP4 (it produces NAL-unit errors and
 # corrupt output). web_embedded covers "made for kids" videos, which visionos
-# reports as UNPLAYABLE, but only offers DASH.
+# reports as UNPLAYABLE (yt-dlp then asks web_embedded by itself). It needs
+# YouTube's JS challenge solved (Deno + yt-dlp-ejs) and gets HLS only since
+# yt-dlp 2026.10.21 (#814).
 PLAYER_CLIENTS = ["visionos", "web_embedded"]
 
 _BASE_OPTS = {
