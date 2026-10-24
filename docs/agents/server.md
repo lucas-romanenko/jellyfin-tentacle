@@ -1103,6 +1103,18 @@ User docs: `docs/features/live-tv.md`.
   message "Stopped for a recording" (`_tell_stopped_for_recording`; web and
   the TV app both act on Stop and DisplayMessage), instead of freezing. A number two channels would share is left
   out of the lineup, XMLTV and M3U (logged), never handed out twice.
+- Recording phases (#300): the timer lookup's answer (`_RecordingAnswer`)
+  carries each recorded GuideNumber's phase, `pre` / `programme` (StartDate
+  to EndDate, 10 s grace) / `post`, and the programme's end;
+  `sync_recordings(..., phases=)` puts them on the leases (`lease.phase`,
+  `programme_end`; a reservation, or no answer, is `programme`). At the
+  limit, a recording not in `post` takes the slot of the `post` recording
+  whose programme ended first (`_padding_victim`), only on an answer issued
+  after it began to open (`fresh_since`), after any viewer or film; it waits
+  up to 20 s for that answer when a running recording's programme is just
+  ending. `pre` and `programme` are never taken by a recording. #184's rival
+  test ranks `post` at 5 (`_rank`). `/api/live/streams` shows
+  `recording_phase`, `/api/live/capacity` `padding_handovers`.
 - Several addresses per provider (#704, `services/provider_addresses.py`,
   table `provider_addresses`): the address in use is `server_url`, the rest
   backups. `add_from_text` picks addresses out of a pasted message
