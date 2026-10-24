@@ -63,6 +63,11 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<PublicUsersFilter>();
         serviceCollection.Configure<MvcOptions>(options => options.Filters.AddService<PublicUsersFilter>());
 
+        // "More Like This" from TMDB and the library's own metadata, not
+        // Jellyfin 10.11's random sample (#292): every details page and the TV app
+        serviceCollection.AddSingleton<SimilarItemsFilter>();
+        serviceCollection.Configure<MvcOptions>(options => options.Filters.AddService<SimilarItemsFilter>());
+
         logger?.LogInformation("[Tentacle] Services registered successfully.");
     }
 }

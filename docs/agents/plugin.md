@@ -27,6 +27,7 @@ Playlists/, Tasks/                      PlaylistManager, SmartListConfig, Playli
 Services/                               LibraryDeleteHandler (Jellyfin ItemRemoved → server, 2 s debounce), MdbListCacheService,
                                         VodNoVideoCopyFilter (Tentacle VOD as HLS: re-encode the video, never copy it),
                                         PublicUsersFilter (/Users/Public is empty outside Jellyfin's local network),
+                                        SimilarItemsFilter (/Items/{id}/Similar: TMDB + library score instead of 10.11's random sample, #292),
                                         OneLiveStreamPerDeviceFilter (a device opening a channel closes its previous live stream first)
 Inject/                                 the injected tentacle-*.js/.css and the logo (embedded resources)
 Web/                                    per-user settings page
@@ -161,6 +162,25 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   fetch behind a per-user `lock` starved Jellyfin's thread pool on a burst of
   home loads and stalled all of Jellyfin (#256). Never add
   `.GetAwaiter().GetResult()` or `.Result` on a request path.
+- **More Like This** (`SimilarItemsFilter`, a global MVC action filter on
+  `Library.GetSimilarItems`, #292): Jellyfin 10.11 picks `/Items/{id}/Similar`
+  at random among items sharing any genre or tag, and Tentacle's own tags
+  are on most items. For a Movie or Series (an Episode or Season: its
+  series) the filter answers instead: candidates from the server's
+  `GET /api/similar/{movie|tv}/{tmdb}` (TMDB collection, recommendations,
+  similar; mapped with `HasAnyProviderId` Tmdb), the director's and first
+  five actors' titles (`InternalItemsQuery.Person`, by name), and 300
+  top-rated titles sharing a genre, all queried as the caller (libraries,
+  parental rating, blocked tags). Score: collection 100, recommendation
+  40-r, similar 15-r/2, director 20, actor 10, genre 10 each, keyword tag 5
+  each (max 5; not the server's `tentacle_tags`, not a tag on over a sixth
+  of the genre pool), studio 3; >= 20 shown, ties by year distance, rating,
+  name; one per TMDB id / PresentationUniqueKey; fewer than 4 topped up.
+  Ids cached per (item, user) 6 h, cleared on ItemAdded/ItemRemoved; the
+  server's answer 6 h here (5 min after a failure; 3 s timeout). Nothing
+  found, an unknown caller or an error: Jellyfin's own answer. Every
+  details page (Tentacle's, Jellyfin's, the TV app) reads this endpoint, so
+  no client changed.
 - **Names on the login screen only at home** (`PublicUsersFilter`, a
   global MVC action filter like the one below): `GET /Users/Public`
   (`User.GetPublicUsers`; Jellyfin Web asks for `/users/public`) answers

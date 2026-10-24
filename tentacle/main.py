@@ -1000,6 +1000,8 @@ app.include_router(tags_router.router)
 app.include_router(collections_router.router)
 app.include_router(smartlists_router.router)
 app.include_router(discover_router.router)
+from routers import similar as similar_router  # noqa: E402
+app.include_router(similar_router.router)
 app.include_router(activity_router.router)
 app.include_router(livetv_router.router)
 from routers import my_livetv as my_livetv_router
