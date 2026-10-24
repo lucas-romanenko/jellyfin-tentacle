@@ -168,7 +168,9 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   are on most items. For a Movie or Series (an Episode or Season: its
   series) the filter answers instead: candidates from the server's
   `GET /api/similar/{movie|tv}/{tmdb}` (TMDB collection, recommendations,
-  similar; mapped with `HasAnyProviderId` Tmdb), the director's and first
+  similar; its `library` gives the Jellyfin ids Tentacle knows for them,
+  checked in one `ItemIds` query as the caller; at most 10 others looked up
+  with `HasAnyProviderId` Tmdb), the director's and first
   five actors' titles (`InternalItemsQuery.Person`, by name), and 300
   top-rated titles sharing a genre, all queried as the caller (libraries,
   parental rating, blocked tags). Score: collection 100, recommendation
@@ -176,7 +178,9 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   each (max 5; not the server's `tentacle_tags`, not a tag on over a sixth
   of the genre pool), studio 3; >= 20 shown, ties by year distance, rating,
   name; one per TMDB id / PresentationUniqueKey; fewer than 4 topped up.
-  Ids cached per (item, user) 6 h, cleared on ItemAdded/ItemRemoved; the
+  Ids cached per (item, user) 6 h (a removed title drops out when the row
+  is built; not cleared on every library change, which made most opens
+  cold); the
   server's answer 6 h here (5 min after a failure; 3 s timeout); the
   lookups run side by side (6 at a time), one computation per title and
   user at a time (Jellyfin Web asks twice per page), logged with its time;
