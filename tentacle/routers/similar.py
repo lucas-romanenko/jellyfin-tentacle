@@ -41,10 +41,30 @@ def related(media_type: str, tmdb_id: int, db: Session = Depends(get_db)):
     except Exception as e:   # the row falls back to the library alone
         logger.warning(f"[Similar] {media_type}/{tmdb_id}: {e}")
     ok, rel = rel is not None, rel or {}
-    return {
+    out = {
         "tmdb_ok": ok,
         "collection": rel.get("collection") or [],
         "recommendations": rel.get("recommendations") or [],
         "similar": rel.get("similar") or [],
         "tentacle_tags": sorted(tentacle_owned_tags(db)),
     }
+    out["library"] = _library_ids(db, media_type, out["collection"] + out["recommendations"] + out["similar"])
+    return out
+
+
+def _library_ids(db: Session, media_type: str, tmdb_ids: list) -> dict:
+    """{tmdb id: [Jellyfin item ids]} of the ones Tentacle knows in the
+    library, so the plugin checks them in one query as the caller instead
+    of one lookup per id."""
+    from models.database import Movie, Series
+    model = Movie if media_type == "movie" else Series
+    wanted = sorted({int(i) for i in tmdb_ids if isinstance(i, int) and i > 0})
+    out = {}
+    for start in range(0, len(wanted), 500):
+        rows = db.query(model.tmdb_id, model.jellyfin_item_id).filter(
+            model.tmdb_id.in_(wanted[start:start + 500]), model.jellyfin_item_id.isnot(None)).all()
+        for tmdb_id, item_id in rows:
+            item_id = (item_id or "").replace("-", "").lower()
+            if item_id and item_id not in out.setdefault(str(tmdb_id), []):
+                out[str(tmdb_id)].append(item_id)
+    return out

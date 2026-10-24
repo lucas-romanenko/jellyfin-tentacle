@@ -96,11 +96,18 @@ class Route(unittest.TestCase):
         self.client = TestClient(app)
 
     def test_ids_and_tentacles_own_tags(self):
+        from models.database import Movie
+        self.db.add_all([Movie(tmdb_id=862, title="Toy Story", source="vod", jellyfin_item_id="AAAA-1"),
+                         Movie(tmdb_id=585, title="Monsters, Inc.", source="vod"),
+                         Movie(tmdb_id=999, title="Not related", source="vod", jellyfin_item_id="cccc3")])
+        self.db.commit()
         rel = {"collection": [862], "recommendations": [585], "similar": []}
         with mock.patch.object(TMDBService, "get_related", return_value=rel):
             r = self.client.get("/api/similar/movie/863")
         self.assertEqual(200, r.status_code, r.text)
         body = r.json()
+        # The library's copies of the related titles, as Jellyfin ids without dashes.
+        self.assertEqual({"862": ["aaaa1"]}, body["library"])
         self.assertTrue(body["tmdb_ok"])
         self.assertEqual([862], body["collection"])
         self.assertIn("Recently Added Movies", body["tentacle_tags"])

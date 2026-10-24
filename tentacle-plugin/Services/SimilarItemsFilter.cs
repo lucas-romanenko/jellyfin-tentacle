@@ -47,8 +47,8 @@ namespace Jellyfin.Plugin.Tentacle.Services;
 ///   3. Fewer than four: topped up with the highest-rated titles sharing a
 ///      genre. Nothing at all: Jellyfin answers as before.
 ///
-/// The ids are kept per title and user for six hours (cleared when the
-/// library gains or loses an item); TMDB's answer is kept by the Tentacle
+/// The ids are kept per title and user for six hours (a title removed
+/// meanwhile is left out when the row is built); TMDB's answer is kept by the Tentacle
 /// server for a week, here for six hours; when TMDB or Tentacle can't be
 /// reached within <see cref="BackendTimeout"/> the row is the local score
 /// alone. The same title gives the same row at every visit.
@@ -64,6 +64,7 @@ public sealed class SimilarItemsFilter : IAsyncActionFilter
     private const int MinScore = 20;
     private const int MinResults = 4;
     private const int DefaultLimit = 12;
+    private const int MaxIdLookups = 10;   // TMDB ids Tentacle couldn't map, looked up one by one
 
     private static readonly ConcurrentDictionary<(Guid Item, Guid User), (Guid[] Ids, DateTime At)> Results = new();
     // One computation per title and user at a time: Jellyfin Web asks twice per page.
@@ -86,11 +87,10 @@ public sealed class SimilarItemsFilter : IAsyncActionFilter
         _auth = auth;
         _http = http;
         _logger = logger;
-        _library.ItemAdded += (_, _) => Results.Clear();
-        _library.ItemRemoved += (_, _) => Results.Clear();
     }
 
-    internal sealed record Related(int[] Collection, int[] Recommendations, int[] Similar, HashSet<string> TentacleTags);
+    internal sealed record Related(int[] Collection, int[] Recommendations, int[] Similar, HashSet<string> TentacleTags,
+        Dictionary<int, Guid[]> Library);
 
     private static bool IsSimilar(ActionExecutingContext context) =>
         context.ActionDescriptor is ControllerActionDescriptor action
@@ -206,7 +206,8 @@ public sealed class SimilarItemsFilter : IAsyncActionFilter
     /// <summary>Tentacle's answer for the title, or an empty one.</summary>
     private async Task<Related> RelatedAsync(BaseItem item, ActionExecutingContext context)
     {
-        var none = new Related(Array.Empty<int>(), Array.Empty<int>(), Array.Empty<int>(), new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+        var none = new Related(Array.Empty<int>(), Array.Empty<int>(), Array.Empty<int>(), new HashSet<string>(StringComparer.OrdinalIgnoreCase),
+            new Dictionary<int, Guid[]>());
         var tmdb = item.GetProviderId(MetadataProvider.Tmdb);
         var baseUrl = Plugin.Instance?.Configuration?.TentacleUrl?.TrimEnd('/');
         if (string.IsNullOrEmpty(baseUrl))
@@ -245,8 +246,22 @@ public sealed class SimilarItemsFilter : IAsyncActionFilter
                 }
             }
 
+            var library = new Dictionary<int, Guid[]>();
+            if (root.TryGetProperty("library", out var lib) && lib.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var entry in lib.EnumerateObject())
+                {
+                    if (int.TryParse(entry.Name, out var tmdbId) && entry.Value.ValueKind == JsonValueKind.Array)
+                    {
+                        library[tmdbId] = entry.Value.EnumerateArray()
+                            .Select(e => Guid.TryParse(e.GetString(), out var g) ? g : Guid.Empty)
+                            .Where(g => !g.Equals(Guid.Empty)).ToArray();
+                    }
+                }
+            }
+
             var ok = root.TryGetProperty("tmdb_ok", out var okEl) && okEl.ValueKind == JsonValueKind.True;
-            var value = new Related(Ids("collection"), Ids("recommendations"), Ids("similar"), tags);
+            var value = new Related(Ids("collection"), Ids("recommendations"), Ids("similar"), tags, library);
             RelatedCache[cacheKey] = (value, DateTime.UtcNow + (ok || id == 0 ? RelatedTtl : RelatedFailTtl));
             return value;
         }
@@ -301,20 +316,47 @@ public sealed class SimilarItemsFilter : IAsyncActionFilter
             return _library.GetItemList(q);
         }
 
-        // TMDB: the franchise, then its recommendations and similar titles,
-        // looked up side by side (one indexed query per id).
-        var wanted = related.Collection.Take(30).Select(id => (id, 100))
-            .Concat(related.Recommendations.Take(20).Select((id, r) => (id, 40 - r)))
-            .Concat(related.Similar.Take(20).Select((id, r) => (id, 15 - (r / 2))))
+        // TMDB: the franchise, then its recommendations and similar titles.
+        // The ones Tentacle knows in the library come with their Jellyfin
+        // ids: one query as the caller keeps those the caller may see. The
+        // rest are looked up by TMDB id, at most MaxIdLookups of them.
+        var wanted = related.Collection.Take(30).Select(id => (Id: id, Points: 100))
+            .Concat(related.Recommendations.Take(20).Select((id, r) => (Id: id, Points: 40 - r)))
+            .Concat(related.Similar.Take(20).Select((id, r) => (Id: id, Points: 15 - (r / 2))))
             .ToList();
-        var found = new BaseItem[wanted.Count][];
-        Parallel.For(0, wanted.Count, new ParallelOptions { MaxDegreeOfParallelism = 6 },
-            k => found[k] = ByTmdb(wanted[k].Item1).ToArray());
-        for (var k = 0; k < wanted.Count; k++)
+        var known = wanted.Where(w => related.Library.ContainsKey(w.Id)).SelectMany(w => related.Library[w.Id]).Distinct().ToArray();
+        var visible = new Dictionary<Guid, BaseItem>();
+        if (known.Length > 0)
         {
-            foreach (var i in found[k])
+            var q = Query();
+            q.ItemIds = known;
+            foreach (var i in _library.GetItemList(q))
             {
-                Add(i).Score += wanted[k].Item2;
+                visible[i.Id] = i;
+            }
+        }
+
+        var lookups = 0;
+        foreach (var (id, points) in wanted)
+        {
+            IEnumerable<BaseItem> hits;
+            if (related.Library.TryGetValue(id, out var ids))
+            {
+                hits = ids.Where(visible.ContainsKey).Select(g => visible[g]);
+            }
+            else if (lookups < MaxIdLookups)
+            {
+                lookups++;
+                hits = ByTmdb(id);
+            }
+            else
+            {
+                continue;
+            }
+
+            foreach (var i in hits)
+            {
+                Add(i).Score += points;
             }
         }
 
