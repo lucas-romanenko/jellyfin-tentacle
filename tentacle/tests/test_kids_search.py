@@ -169,6 +169,7 @@ window.document = document;
 window.location = { hash: '#/search.html', pathname: '/web/' };
 window.getComputedStyle = function () { return { display: 'block' }; };
 window.addEventListener = function () {};
+window.removeEventListener = function () {};
 window.MutationObserver = function () { return { observe: function () {}, disconnect: function () {} }; };
 var searches = [];
 window.ApiClient = {
@@ -177,6 +178,8 @@ window.ApiClient = {
   serverId: function () { return 's1'; },
   getJSON: function (url) {
     if (url.indexOf('TentacleDiscover/Search') === 0) { searches.push(url); return Promise.resolve(JSON.parse(JSON.stringify(ANSWER))); }
+    // Live TV channels: Jellyfin's own search, with the person's token
+    if (url.indexOf('IncludeItemTypes=LiveTvChannel') !== -1) return Promise.resolve({ Items: [{ Id: 'c1', Name: 'Bluey TV', ChannelNumber: '5' }], TotalRecordCount: 1 });
     return Promise.resolve({ show: false });
   },
   fetch: function () { return Promise.resolve({}); }
@@ -216,7 +219,8 @@ input.value = 'bluey';
 KIDS_ANSWER = {"items": [], "kids": True}           # what the server answers a kid with this change
 UNAUTHORIZED = {"items": [], "error": "unauthorized",  # what the plugin turns today's 403 into
                 "message": "Tentacle didn't accept this account. Open the Tentacle dashboard once to finish setup."}
-ADULT_ANSWER = {"items": [{"media_type": "channel", "title": "Bluey TV", "channel_id": 1}]}
+# Tentacle's channel hits carry the provider's stream name, which Jellyfin doesn't know
+ADULT_ANSWER = {"items": [{"media_type": "channel", "title": "US| BLUEY RAW", "channel_id": 1}]}
 
 
 @unittest.skipUnless(HAVE_NODE, "node is not installed")
@@ -236,7 +240,10 @@ class KidsSearchInJellyfinWeb(unittest.TestCase):
         out = search_page("adult1", ADULT_ANSWER)
         self.assertFalse(out["first"]["nativeShown"])
         self.assertTrue(out["first"]["ours"])
+        # Channels as Jellyfin names them (and plays them by id), not the provider's stream name
         self.assertIn("Bluey TV", out["first"]["text"])
+        self.assertIn('data-channel-id="c1"', out["first"]["text"])
+        self.assertNotIn("US| BLUEY", out["first"]["text"])
         self.assertEqual(2, out["searches"])
 
     def test_a_refused_account_still_reads_why(self):

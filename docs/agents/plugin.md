@@ -69,6 +69,19 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   from outside goes home (Back would leave Jellyfin). Play from Tentacle
   (`tentacle-play.js`): the page stays closed while `TentaclePlay.pending()`
   is true, until the `tentacle-play-done` event.
+- **Search** (`tentacle-search.js`): Jellyfin's search box stays (it drives
+  the search); the results are a fixed layer on `<body>` whose `top` is set
+  from the box's real bottom (`placeResults`, on show and resize), never a
+  fixed offset (it put the filters on top of the box at ~1400 px). Movies and
+  shows come from `TentacleDiscover/Search`; Live TV channels from Jellyfin
+  itself with the person's token (`Users/{id}/Items?SearchTerm=…&IncludeItemTypes=LiveTvChannel`):
+  the names, numbers and logos their guide shows, only channels they may
+  watch, played by id. The server's channel hits are provider stream names
+  Jellyfin doesn't know, so the client drops them. Under "All": one row of
+  channels (`See all N` = the Live TV filter), then Movies & Shows.
+- **Back on a details page** is the header's (`.moonfin-nav-back`, which
+  calls `Details.goBack()`); the overlay's own `.moonfin-details-back` only
+  shows without Tentacle's header. It used to sit under the header's logo.
 - **Live TV guide** (`tentacle-livetv.js`): replaces `#/livetv` with no tab,
   tab 0 and tab 1 (Programs, Guide); Channels and Series stay native.
   A dot marks what will record: `GET LiveTv/Timers` plus Tentacle's

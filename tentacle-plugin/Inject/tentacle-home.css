@@ -964,3 +964,99 @@ body.tentacle-video-active .backgroundContainer {
   .mh-row-items { gap: 16px; }
   .mh-row-title { font-size: 1.6em; }
 }
+
+/* ── Jellyfin's own controls in Tentacle's purple ─────────────────────
+   Pages Tentacle doesn't draw (the player, settings, menus, the dashboard)
+   kept Jellyfin's blue (#00a4dc): sliders, checkboxes, links, focus rings,
+   spinners. Same rules as Jellyfin's dark theme, accent swapped. */
+
+html:root,
+html[data-theme="dark"] {
+    --jf-palette-primary-main: #7c6cf6;
+    --jf-palette-primary-light: #9b8fff;
+    --jf-palette-primary-dark: #5b4ccf;
+    --jf-palette-primary-contrastText: #fff;
+    --jf-palette-primary-mainChannel: 124 108 246;
+    --jf-palette-primary-lightChannel: 155 143 255;
+    --jf-palette-primary-darkChannel: 91 76 207;
+    --jf-palette-primary-contrastTextChannel: 255 255 255;
+}
+
+html .mdl-slider { color: #8b80ff; }
+
+html .mdl-slider-background-lower,
+html .playbackProgress > div,
+html .iconOsdProgressInner,
+html .sliderMarker.watched,
+html .itemProgressBarForeground,
+html progress::-webkit-progress-value,
+html progress[aria-valuenow]::before { background-color: #8b80ff; }
+
+html progress::-moz-progress-bar { background-color: #8b80ff; }
+
+html .mdl-slider::-webkit-slider-thumb { background: #8b80ff; }
+
+html .mdl-slider::-moz-range-thumb { background: #8b80ff; }
+
+html .mdl-spinner__layer-1,
+html .mdl-spinner__layer-2,
+html .mdl-spinner__layer-3,
+html .mdl-spinner__layer-4,
+html .progressring-spiner { border-color: #8b80ff; }
+
+html .button-submit { background: #7c6cf6; color: #fff; }
+
+html .button-flat:hover,
+html .button-link,
+html .button-accent-flat,
+html .inputLabelFocused,
+html .selectLabelFocused,
+html .textareaLabelFocused,
+html .metadataSidebarIcon,
+html .upNextDialog-countdownText,
+html .emby-tab-button:hover,
+html .guide-date-tab-button.emby-tab-button-active { color: #a79bff !important; }
+
+html .buttonActive { color: #a79bff !important; }
+
+html .emby-checkbox:checked + span + .checkboxOutline { background-color: #7c6cf6; border-color: #7c6cf6; }
+
+html .emby-checkbox:focus:not(:checked) + span + .checkboxOutline,
+html .emby-input:focus,
+html .emby-textarea:focus { border-color: #8b80ff; }
+
+html .emby-select-withcolor:focus { border-color: #8b80ff !important; }
+
+html .countIndicator,
+html .fullSyncIndicator,
+html .mediaSourceIndicator,
+html .playedIndicator,
+html .listItemIcon:not(.listItemIcon-transparent),
+html .selectionCommandsPanel { background: #7c6cf6; }
+
+html .itemSelectionPanel { border-color: #7c6cf6; }
+
+html .navMenuOption-selected { background: #7c6cf6 !important; }
+
+html .emby-button.detailFloatingButton { background-color: #7c6cf6; }
+
+html .emby-button.show-focus:focus,
+html .emby-select-tv-withcolor:focus,
+html .guide-date-tab-button.show-focus:focus,
+html .alphaPickerButton-tv:focus { background-color: #7c6cf6 !important; color: #fff !important; }
+
+html .guide-channelHeaderCell:focus,
+html .programCell:focus { background-color: #7c6cf6 !important; }
+
+html .card:focus .cardBox.visualCardBox,
+html .card:focus .cardBox:not(.visualCardBox) .cardScalable { border-color: #8b80ff !important; }
+
+html .paper-icon-button-light.show-focus:focus { color: #a79bff; }
+
+
+html .paper-icon-button-light:active:not(:disabled) { background-color: rgba(139, 128, 255, 0.2); color: #a79bff; }
+
+html .listItemImageButton:hover { background: rgba(139, 128, 255, 0.2); color: #a79bff; }
+@media (hover: hover) and (pointer: fine) {
+    html .paper-icon-button-light:hover:not(:disabled) { background-color: rgba(139, 128, 255, 0.2); color: #a79bff; }
+}

@@ -307,23 +307,29 @@ body.moonfin-navbar-active .cardOverlayContainer {
     padding: 10px 18px;
 }
 
-/* Activity badge */
+/* Activity badge: on the icon's top-right corner, in the button's flow right
+   after the icon (no width of its own), so it never covers the icon or the
+   "Activity" label of the open tab */
 .moonfin-activity-badge {
-    position: absolute;
-    top: 4px;
-    right: 4px;
-    min-width: 18px;
-    height: 18px;
-    padding: 0 5px;
-    border-radius: 9px;
-    background: #9b59b6;
+    position: relative;
+    align-self: flex-start;
+    top: -2px;
+    margin-left: -10px;
+    margin-right: -6px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    box-sizing: border-box;
+    border-radius: 8px;
+    background: #8b5cf6;
+    box-shadow: 0 0 0 2px #0b0a14;
     color: #fff;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 700;
-    line-height: 18px;
+    line-height: 16px;
     text-align: center;
     pointer-events: none;
-    transition: transform 0.3s ease;
+    flex-shrink: 0;
 }
 
 .moonfin-activity-badge.hidden {
@@ -505,5 +511,34 @@ body.moonfin-navbar-active .cardOverlayContainer {
     .moonfin-expandable-btn:not(.active):hover,
     .moonfin-expandable-btn:not(.active):focus {
         padding: 8px 10px;
+    }
+}
+
+/* Phones: icons only. With the open page's label ("Favorites", "Search")
+   and the back button the pill ran past the screen's edge and its last
+   button couldn't be reached; the open page keeps its highlight. */
+@media (max-width: 480px) {
+    .moonfin-expandable-btn .moonfin-expand-label,
+    .moonfin-expandable-btn.active .moonfin-expand-label {
+        max-width: 0;
+        opacity: 0;
+        margin-left: 0;
+    }
+
+    .moonfin-expandable-btn.active,
+    .moonfin-expandable-btn.active:hover,
+    .moonfin-expandable-btn.active:focus {
+        padding: 8px 10px;
+    }
+}
+
+/* Small phones (360 px): a little less room around each icon */
+@media (max-width: 380px) {
+    .moonfin-nav-btn,
+    .moonfin-expandable-btn.active,
+    .moonfin-expandable-btn:hover,
+    .moonfin-expandable-btn:focus {
+        padding: 8px 7px;
+        min-width: 36px;
     }
 }
