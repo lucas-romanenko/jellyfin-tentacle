@@ -111,6 +111,10 @@ def _hit(rule: Rule, a):
         if not lg or not tm:
             return False, "", None, "", []
         h = M.match_team(lst, lg, tm, LG.foreign_names(rule.league, rule.team))
+        bad = M.any_of(lst.text(), rule.excludes) if h.matched else None
+        if bad:
+            # the rule's "Leave out" words ("Women's", "U-17", "Highlights")
+            return False, "", None, f"{h.why}, but it says “{bad}”", []
         if h.matched and a.from_event and not h.game:
             # an event channel's slot is three hours whatever it is: "The
             # Rebuild: Inside the Montreal Canadiens" isn't a game

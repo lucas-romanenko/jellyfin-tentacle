@@ -42,7 +42,9 @@ def summary() -> list:
             "id": lg["id"], "name": lg["name"], "sport": lg.get("sport"), "kind": lg.get("kind", "teams"),
             "country": lg.get("country"),
             "min_minutes": lg.get("min_minutes"), "post_padding_minutes": lg.get("post_padding_minutes"),
-            "teams": [{"id": t["id"], "name": t["name"], "short": t.get("short"), "abbr": t.get("abbr")}
+            "teams": [{"id": t["id"], "name": t["name"], "short": t.get("short"), "abbr": t.get("abbr"),
+                       # other names, for the picker's search ("Suède", "Ρεάλ Μαδρίτης")
+                       "also": [n for n in [t.get("fr")] + list(t.get("nicknames") or []) if n]}
                       for t in sorted(lg.get("teams") or [], key=lambda t: t["name"])],
         })
     return out
@@ -56,13 +58,21 @@ def foreign_names(league_id: str, team_id: str) -> tuple:
     from services.recording_rules.match import fold
     t = team(league_id, team_id) or {}
     words = [fold(w).strip() for w in [t.get("city"), t.get("short")] + list(t.get("nicknames") or []) if w]
+    if league(league_id) and league(league_id).get("needs_context"):
+        words += [fold(w).strip() for w in (t.get("name"), t.get("fr")) if w]
+    # the same name in another league ("Canada" in football and in hockey,
+    # "Real Madrid" the football and the basketball club) is this team's own
+    own = {fold(w) for w in [t.get("name"), t.get("fr"), t.get("short")] + list(t.get("nicknames") or []) if w}
     out = []
     for lg in leagues():
         for o in lg.get("teams") or []:
             if lg["id"] == league_id and o["id"] == team_id:
                 continue
-            for n in (o.get("name"), o.get("fr")):
+            names = [o.get("name"), o.get("fr")]
+            if lg.get("needs_context"):
+                names += list(o.get("nicknames") or [])   # "Irlanda del Norte" for Ireland
+            for n in names:
                 fn = fold(n)
-                if n and any(f" {w} " in fn for w in words if w):
+                if n and fn not in own and any(f" {w} " in fn for w in words if w):
                     out.append(n)
     return tuple(out)
