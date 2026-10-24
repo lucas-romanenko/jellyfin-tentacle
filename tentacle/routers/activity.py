@@ -309,6 +309,53 @@ def _fetch_sonarr_file_counts(url: str, api_key: str, series=None) -> dict:
         return {}
 
 
+# Episodes are read by id this many at a time: a long pick's ids would not fit
+# in one address (Sonarr refuses a request line over 8 KB).
+EPISODE_READ_CHUNK = 100
+
+
+def _sonarr_episode_searches(url: str, api_key: str) -> dict:
+    """Episode id → when it was asked for, for every EpisodeSearch Sonarr has
+    queued or is running. Manage Episodes, Download More and an add with
+    picked episodes all search this way, and Sonarr works through the picks
+    one at a time: 105 of them took 22 minutes. Empty if it can't be read."""
+    try:
+        r = requests.get(f"{url.rstrip('/')}/api/v3/command", headers={"X-Api-Key": api_key}, timeout=3)
+        r.raise_for_status()
+        commands = r.json()
+    except Exception as e:
+        logger.debug(f"Sonarr command list read failed: {e}")
+        return {}
+    asked: dict = {}
+    for c in commands if isinstance(commands, list) else []:
+        if not isinstance(c, dict) or c.get("name") != "EpisodeSearch" \
+                or c.get("status") not in ("queued", "started"):
+            continue
+        at = _parse_dt(c.get("queued")) or datetime.utcnow()
+        for eid in (c.get("body") or {}).get("episodeIds") or []:
+            if eid not in asked or at > asked[eid]:
+                asked[eid] = at
+    return asked
+
+
+def _read_sonarr_episodes(url: str, api_key: str, ids: list) -> list:
+    """Sonarr's records for these episodes, each with its series (the shape
+    wanted/missing gives). What was read before a failure is kept."""
+    out = []
+    for i in range(0, len(ids), EPISODE_READ_CHUNK):
+        try:
+            r = requests.get(f"{url.rstrip('/')}/api/v3/episode", headers={"X-Api-Key": api_key},
+                             params={"episodeIds": ids[i:i + EPISODE_READ_CHUNK], "includeSeries": "true"},
+                             timeout=15)
+            r.raise_for_status()
+            body = r.json()
+        except Exception as e:
+            logger.debug(f"Sonarr episode read failed: {e}")
+            break
+        out += [ep for ep in body if isinstance(ep, dict)] if isinstance(body, list) else []
+    return out
+
+
 def _fetch_sonarr_searching(url: str, api_key: str, file_counts: Optional[dict] = None) -> list:
     """Monitored series with aired episodes Sonarr has not found yet.
 
@@ -317,7 +364,15 @@ def _fetch_sonarr_searching(url: str, api_key: str, file_counts: Optional[dict] 
     `waiting_since` is when the newest of those became wanted — the later of
     the series being added and the episode airing — so a new episode of a
     long-followed show counts from its air date, not from years ago.
+
+    Plus the episodes Sonarr is searching for right now, whatever their show:
+    a show added for a few picked episodes is left unmonitored itself
+    (services/sonarr.py), and Sonarr's Wanted list leaves out every episode of
+    an unmonitored show — so picks showed nowhere until each one was grabbed.
+    They count from when they were asked for.
     """
+    asked = _sonarr_episode_searches(url, api_key)
+
     def page(sort_key: str, size: int) -> list:
         r = requests.get(
             f"{url.rstrip('/')}/api/v3/wanted/missing",
@@ -343,6 +398,10 @@ def _fetch_sonarr_searching(url: str, api_key: str, file_counts: Optional[dict] 
         records += [ep for ep in page("episodes.lastSearchTime", 50) if ep.get("id") not in seen_ids]
     except Exception as e:
         logger.debug(f"Sonarr wanted/missing (recently searched) fetch failed: {e}")
+    # Episodes being searched that neither page has: an unmonitored show's
+    # picks, or old picks in a long backlog.
+    listed = {ep.get("id") for ep in records}
+    records += _read_sonarr_episodes(url, api_key, [eid for eid in asked if eid not in listed])
 
     now = datetime.utcnow()
     by_series: dict = {}
@@ -353,21 +412,23 @@ def _fetch_sonarr_searching(url: str, api_key: str, file_counts: Optional[dict] 
         if not aired or aired > now:
             continue
         series = ep.get("series") or {}
-        if series.get("monitored") is False:
+        # Sonarr looks for an unmonitored show's episodes only while a search
+        # someone asked for runs; after it, not at all.
+        if series.get("monitored") is False and ep.get("id") not in asked:
             continue
         sid = ep.get("seriesId") or series.get("id")
         if not sid:
             continue
         added = _parse_dt(series.get("added"))
-        wanted_since = max(d for d in (aired, added) if d)
+        wanted_since = max(d for d in (aired, added, asked.get(ep.get("id"))) if d)
         entry = by_series.get(sid)
         if entry is None:
             entry = by_series[sid] = {
-                "series": series, "episodes": [], "ids": [], "wanted_since": wanted_since, "last_searched": None,
+                "series": series, "episodes": {}, "ids": [], "wanted_since": wanted_since, "last_searched": None,
             }
         key = (ep.get("seasonNumber", 0), ep.get("episodeNumber", 0))
-        if key not in entry["episodes"]:
-            entry["episodes"].append(key)
+        if key not in entry["episodes"]:    # a dict: a whole show's pick is thousands
+            entry["episodes"][key] = None
             if ep.get("id") is not None:
                 entry["ids"].append(ep["id"])
         searched = _parse_dt(ep.get("lastSearchTime"))
@@ -380,7 +441,8 @@ def _fetch_sonarr_searching(url: str, api_key: str, file_counts: Optional[dict] 
     for sid, entry in by_series.items():
         series = entry["series"]
         eps = sorted(entry["episodes"])
-        first = f"S{eps[0][0]:02d}E{eps[0][1]:02d}"
+        labels = [f"S{a:02d}E{b:02d}" for a, b in eps]
+        first = labels[0]
         searching.append({
             "tmdb_id": series.get("tmdbId") or 0,
             "tvdb_id": series.get("tvdbId") or 0,
@@ -392,7 +454,7 @@ def _fetch_sonarr_searching(url: str, api_key: str, file_counts: Optional[dict] 
             "status": "searching",
             "episode": first if len(eps) == 1 else f"{first} +{len(eps) - 1}",
             "missing_episodes": len(eps),
-            "missing_labels": [f"S{a:02d}E{b:02d}" for a, b in eps[:50]],
+            "missing_labels": labels[:50],
             # Anything on disk: removing the show would delete it, so clients
             # offer "stop looking for the missing episodes" instead.
             "episodes_on_disk": (file_counts or {}).get(sid, 0),
@@ -404,6 +466,9 @@ def _fetch_sonarr_searching(url: str, api_key: str, file_counts: Optional[dict] 
             # never reaches past what the person was shown.
             "_missing_ids": list(entry["ids"]),
             "_sonarr_id": sid,
+            # Server-side only too: every label, so a download takes just its
+            # own episode off the card (get_activity).
+            "_labels": labels,
         })
     return searching
 
@@ -1019,15 +1084,42 @@ def get_activity(request: Request, db: Session = Depends(get_db),
                         and item["tvdb_id"] in downloading_tvdb_ids))
 
     unreleased = [u for u in unreleased if not _is_downloading(u)]
+
     # Same for searching: the moment a grab lands in the queue it is a download.
+    # For a show, that episode is: the rest of its card is still being looked
+    # for. Dropping the whole card at the first grab hid the other 104
+    # episodes of a 105-episode pick until each one was grabbed.
+    busy_episodes: dict = {}
+    for d in downloads:
+        if d.get("media_type") == "series":
+            for key in (("tmdb", d.get("tmdb_id")), ("tvdb", d.get("tvdb_id"))):
+                if key[1]:
+                    busy_episodes.setdefault(key, set()).add(d.get("episode") or "")
+
+    def _still_searching(item: dict) -> Optional[dict]:
+        """The card without what is downloading, or None if that is all of it."""
+        if not _is_downloading(item):
+            return item
+        labels = item.get("_labels")
+        busy = busy_episodes.get(("tmdb", item.get("tmdb_id")), set()) \
+            | busy_episodes.get(("tvdb", item.get("tvdb_id")), set())
+        if item.get("media_type") != "series" or labels is None or "" in busy:
+            return None     # a movie, or a download of no known episode: the whole title
+        left = [label for label in labels if label not in busy]
+        if not left:
+            return None
+        item.update(episode=left[0] if len(left) == 1 else f"{left[0]} +{len(left) - 1}",
+                    missing_episodes=len(left), missing_labels=left[:50], _labels=left)
+        return item
+
     # A movie Tentacle already holds a Radarr file for is found, whatever the
     # cached list says.
     searching_movie_ids = [x["tmdb_id"] for x in searching
                            if x.get("media_type") == "movie" and x.get("tmdb_id")]
     have_movie_file = {tid for (tid,) in db.query(Movie.tmdb_id).filter(
         Movie.source == "radarr", Movie.tmdb_id.in_(searching_movie_ids)).all()} if searching_movie_ids else set()
-    searching = [x for x in searching
-                 if not _is_downloading(x)
+    searching = [x for x in map(_still_searching, searching)
+                 if x is not None
                  and not (x.get("media_type") == "movie" and x.get("tmdb_id") in have_movie_file)]
 
     is_admin = user and user.is_admin
@@ -1052,8 +1144,8 @@ def get_activity(request: Request, db: Session = Depends(get_db),
                           if req_key(u) in user_requests and not _is_downloading(u)][:20]
             _enrich_posters(db, unreleased)
         if "_searching_all" in wanted:
-            searching = [dict(x) for x in wanted["_searching_all"]
-                         if req_key(x) in user_requests and not _is_downloading(x)]
+            searching = [s for s in (_still_searching(dict(x)) for x in wanted["_searching_all"]
+                                     if req_key(x) in user_requests) if s is not None]
             mine = [x["tmdb_id"] for x in searching if x.get("media_type") == "movie" and x.get("tmdb_id")]
             have = {tid for (tid,) in db.query(Movie.tmdb_id).filter(
                 Movie.source == "radarr", Movie.tmdb_id.in_(mine)).all()} if mine else set()
@@ -1063,6 +1155,9 @@ def get_activity(request: Request, db: Session = Depends(get_db),
         unreleased = [u for u in unreleased if req_key(u) in user_requests]
         searching = [x for x in searching if req_key(x) in user_requests]
         recently_downloaded = [r for r in recently_downloaded if req_key(r) in user_requests]
+
+    for x in searching:
+        x.pop("_labels", None)      # server-side only (_still_searching)
 
     if is_admin:
         # Admin: attach requester name to each item, and "for": whose it is

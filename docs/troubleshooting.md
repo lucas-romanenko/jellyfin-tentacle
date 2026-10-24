@@ -49,6 +49,8 @@ This is almost always a **category mismatch** between Radarr/Sonarr and your dow
 
 Searches you start in Radarr or Sonarr themselves (say, re-monitoring an episode and pressing Search) show up here within a few seconds, at the top of the list, with the wait counted from that search.
 
+Episodes you pick (**Manage Episodes**, **Download More**) show up here the same way while Sonarr searches for them, also on a show you don't follow. Sonarr goes through them one at a time, so a long pick can take a while. Each episode moves to Downloading when it's grabbed, and the rest stay here. On a show you don't follow, Sonarr only looks for the picked episodes during that search, so the ones it finds nothing for drop off the list when the search ends.
+
 Open the title from Activity (on the TV, select the card) to act on it:
 
 - **Search again** asks Radarr/Sonarr to search right now (for a series, only the missing aired episodes).
