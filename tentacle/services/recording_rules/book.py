@@ -213,10 +213,12 @@ def _apply(db: Session, p: P.RulePlan, jf, timers, fwd: dict, back: dict, now: d
     for ev in p.events:
         if ev.state == "replay":
             continue
-        # A booking already holding one of this event's airings stays the one.
-        held = next((existing[k] for o in ev.options
-                     for k in [(o.airing.pool_key, o.airing.start)]
-                     if k in existing and existing[k].state in ACTIVE + ("skipped", "ended")), None)
+        # A booking this rule already has for the same game stays the one: the
+        # same listing, or another listing of it (a team plays one game at a
+        # time; words: the same programme at about the same time). Seen live:
+        # once the booked channel's listing had ended (the recording still in
+        # its padding), the game's event-channel slot was booked as well.
+        held = _held_booking(rule, ev, existing)
         if held is not None:
             keep.add((held.pool_key, held.start))
             continue
@@ -264,6 +266,24 @@ def _apply(db: Session, p: P.RulePlan, jf, timers, fwd: dict, back: dict, now: d
             db.delete(row)
             summary["changed"] = True
     db.flush()
+
+
+def _held_booking(rule: P.Rule, ev: P.Event, existing: dict) -> Optional[RecordingBooking]:
+    from services.recording_rules import match as M
+    for o in ev.options:
+        b = existing.get((o.airing.pool_key, o.airing.start))
+        if b is not None and b.state in ACTIVE + ("skipped", "ended"):
+            return b
+    same_game = rule.kind in ("team", "series")
+    window = P.TEAM_WINDOW if same_game else P.GAME_WINDOW
+    idents = {M.identity(o.airing.title, o.airing.description) for o in ev.options}
+    for b in existing.values():
+        if b.state not in ACTIVE + ("skipped", "ended"):
+            continue
+        if any(abs(b.start - o.airing.start) <= window for o in ev.options) and (
+                same_game or M.identity(b.title, b.description) in idents):
+            return b
+    return None
 
 
 def journal(db: Session, row: Optional[RecordingBooking], actor: str, action: str, detail: str = "",
