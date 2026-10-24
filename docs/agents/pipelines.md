@@ -22,7 +22,10 @@ The code wins where they differ. Internals: [server.md](server.md).
      (#266). One with neither `</movie>` nor `</tvshow>` (a metadata-URL
      NFO, a release `.nfo`) is left alone and not counted as written, else
      every scan triggered a full library scan (#628). The scans run one at
-     a time per app (`_scan_lock`, #268).
+     a time per app (`_scan_lock`, #268). The tag push lists Jellyfin
+     *before* the scan asks Jellyfin for a library scan: during a full
+     library scan the 10,000-row listing doesn't answer within 15 s and
+     nothing was pushed (#819).
 2. **Tags**: VOD through NFO; downloads through the API
    (`set_item_tags`): "Downloaded Movies", "Recently Added Movies", list
    tags (e.g. "IMDB TOP 250"). Source tags carry the type suffix.

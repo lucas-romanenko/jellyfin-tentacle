@@ -1155,20 +1155,13 @@ def _scan_sonarr_library(db: Session) -> dict:
 
     db.commit()
 
-    # Trigger Jellyfin library scan so it picks up new NFOs
+    # Push tags to Jellyfin, then trigger a library scan so it picks up new NFOs
     jellyfin_url = get_setting(db, "jellyfin_url")
     jellyfin_key = get_setting(db, "jellyfin_api_key")
     jellyfin_uid = get_setting(db, "jellyfin_user_id", "")
     if jellyfin_url and jellyfin_key:
         from services.jellyfin import JellyfinService
         jf = JellyfinService(jellyfin_url, jellyfin_key, jellyfin_uid)
-
-        if stats["nfo_written"] > 0 or stats["new"] > 0 or stats["strm_only_released"] > 0:
-            try:
-                jf.trigger_library_scan()
-                logger.info("Triggered Jellyfin library scan after Sonarr NFO updates")
-            except Exception as e:
-                logger.warning(f"Failed to trigger Jellyfin scan: {e}")
 
         # Push tags to Jellyfin via API for all downloaded series.
         # NFO tags are ignored by Jellyfin for real video files — API is the only way.
@@ -1215,6 +1208,17 @@ def _scan_sonarr_library(db: Session) -> dict:
             )
         except Exception as e:
             logger.warning(f"Jellyfin tag push failed (series): {e}")
+
+        # Only now ask Jellyfin to scan in the new NFOs/files: while it scans every
+        # library, the full listing above doesn't answer within its timeout and
+        # nothing would be pushed (#819). A title new in this scan isn't in
+        # Jellyfin yet either way.
+        if stats["nfo_written"] > 0 or stats["new"] > 0 or stats["strm_only_released"] > 0:
+            try:
+                jf.trigger_library_scan()
+                logger.info("Triggered Jellyfin library scan after Sonarr NFO updates")
+            except Exception as e:
+                logger.warning(f"Failed to trigger Jellyfin scan: {e}")
 
     logger.info(
         f"Sonarr scan complete: {stats['new']} new, {stats['updated']} updated, "
