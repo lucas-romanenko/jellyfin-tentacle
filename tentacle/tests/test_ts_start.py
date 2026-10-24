@@ -200,6 +200,17 @@ class NormalStream(unittest.TestCase):
         first_v = next(t for pid, t in pes_starts(out) if pid == V)
         self.assertAlmostEqual(first_v, 1001.0, delta=0.01)
 
+    def test_a_keyframe_before_the_tables_gets_them_in_front(self):
+        # The provider's panels open with the keyframe and the PAT/PMT a few
+        # packets later (seen on every channel, 2026-10-24): a demuxer drops
+        # what comes before the PMT, so the first picture waited a GOP.
+        ps = packets(stream(skew=0.0))
+        tables = ps[:2]
+        src = b"".join(ps[2:6] + tables + ps[6:])
+        out, _ = run(src)
+        self.assertEqual(out[:376], pat() + pmt())
+        self.assertEqual(out[376:], src, "the stream after the tables changed")
+
     def test_audio_slightly_late_in_the_mux_still_starts_at_once(self):
         src = stream(skew=-0.5)
         out, _ = run(src)
