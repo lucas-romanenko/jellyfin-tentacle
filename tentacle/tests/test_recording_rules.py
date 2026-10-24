@@ -445,6 +445,18 @@ class Booking(unittest.TestCase):
         actions = [e.action for e in self.db.query(RecordingBookingEvent).order_by(RecordingBookingEvent.id)]
         self.assertEqual(["book", "booked"], actions)
 
+    def test_upcoming_follows_a_recording_starting_and_ending(self):
+        self.scan()
+        # booked 23:00-01:30 with 5 min before, 60 after: the next change is 22:55, then 02:30
+        self.assertEqual(at(22, 55), B.next_change(self.db, NOW))
+        self.assertEqual(at(2, 30, 25), B.next_change(self.db, at(23, 0)))
+        asked = []
+        with mock.patch.object(B, "request_scan", lambda delay=3.0: asked.append(delay)):
+            B._look_again_at(at(22, 55), at(22, 50))
+            B._look_again_at(at(23, 55), at(22, 50))      # past the next regular scan: no
+            B._look_again_at(None, at(22, 50))
+        self.assertEqual([360.0], asked)
+
     def test_date_precision_doesnt_matter(self):
         self.assertTrue(B._same_start(B._parse("2026-10-24T23:00:00.0000000Z"), B._parse("2026-10-24T23:00:00.000Z")))
         self.assertTrue(B._same_start(B._parse("2026-10-24T23:00:00+00:00"), at(23)))

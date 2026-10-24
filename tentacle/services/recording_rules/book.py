@@ -134,6 +134,7 @@ def scan(db: Session, jf=None, now: Optional[datetime] = None, airings: Optional
     that record, Jellyfin) in line. Returns counts."""
     from services import livetv_tuners as T
     now = now or datetime.utcnow()
+    airings_given = airings is not None
     with _lock:
         rules = load_rules(db)
         jf = jf if jf is not None else T.jellyfin_for(db)
@@ -175,6 +176,8 @@ def scan(db: Session, jf=None, now: Optional[datetime] = None, airings: Optional
                 logger.exception(f"[Recordings] rule {p.rule.id} ({p.rule.name}): {e}")
         db.commit()
         _last.update(at=now, summary=summary, error=None)
+        if not airings_given:
+            _look_again_at(next_change(db, now), now)
         if summary["changed"]:
             notify()
         return summary
@@ -438,6 +441,27 @@ def run_scan() -> Optional[dict]:
         return None
     finally:
         db.close()
+
+
+def next_change(db: Session, now: datetime) -> Optional[datetime]:
+    """When a booking next starts recording or ends (padding included):
+    Upcoming should say so then, not at the next half-hourly scan."""
+    times = []
+    for b in db.query(RecordingBooking).filter(RecordingBooking.state.in_(("booked", "recording"))).all():
+        start = b.start - timedelta(seconds=b.pre_padding_seconds or 0)
+        end = b.stop + timedelta(seconds=b.post_padding_seconds or 0)
+        times += [t for t in (start, end) if t > now]
+    return min(times) if times else None
+
+
+def _look_again_at(when: Optional[datetime], now: datetime) -> None:
+    """A scan a minute after `when`, if that is before the next regular one
+    (Jellyfin marks a timer InProgress once it has opened the stream)."""
+    if when is None:
+        return
+    delay = (when - now).total_seconds() + 60
+    if 0 < delay < SCAN_MINUTES * 60:
+        request_scan(delay=delay)
 
 
 def request_scan(delay: float = 3.0) -> None:
