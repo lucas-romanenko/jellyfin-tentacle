@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from models.database import (RecordingBooking, RecordingRule, RecordingRuleChannel, RecordingRuleTerm,
                              TentacleUser, get_db, get_setting)
-from routers.auth import get_user_from_request, require_internal_or_admin
+from routers.auth import get_user_from_request, require_admin, require_internal_or_admin
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -624,3 +624,28 @@ def timer_cancelled(body: CancelledBody, request: Request, db: Session = Depends
     if rows:
         book.notify()
     return {"skipped": len(rows)}
+
+
+# ── Pictures for recordings (services/recording_art) ────────────────────────
+
+class ArtworkBody(BaseModel):
+    enabled: bool
+
+
+@router.get("/api/live/recordings/artwork", dependencies=[Depends(require_admin)])
+def recording_artwork(db: Session = Depends(get_db)):
+    """Whether Tentacle gives recordings pictures, how many it gave from
+    where, and why it can't when that's so."""
+    from services.recording_art import job
+    return job.status(db)
+
+
+@router.put("/api/live/recordings/artwork", dependencies=[Depends(require_admin)])
+def recording_artwork_set(body: ArtworkBody, db: Session = Depends(get_db)):
+    """On: a pass starts at once. Off: Tentacle's own pictures are removed
+    (what people set stays)."""
+    from services import live_updates
+    from services.recording_art import job
+    job.set_enabled(db, body.enabled)
+    live_updates.publish("recordings", admins=True)
+    return job.status(db)

@@ -1201,6 +1201,30 @@ class RecordingBookingEvent(Base):
     detail = Column(String, nullable=True)
 
 
+class RecordingArtwork(Base):
+    """A picture Tentacle gave a Live TV recording (or a title folder of
+    them) in Jellyfin, with the image tags Jellyfin gave it, so it only ever
+    replaces or removes its own (services/recording_art). state: set (ours,
+    still there), left (a person changed or removed it: never touched
+    again), theirs (it had a picture Tentacle didn't set: never touched),
+    failed (no picture could be made or saved; tried again later).
+    item_id is Jellyfin's, without dashes."""
+    __tablename__ = "recording_artwork"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    item_id = Column(String, nullable=False, unique=True)
+    kind = Column(String, nullable=False, default="recording")   # recording | folder
+    name = Column(String, nullable=True)                          # display only
+    state = Column(String, nullable=False, default="set", index=True)
+    source = Column(String, nullable=True)       # matchup | league | tmdb | guide | frame | title | child
+    detail = Column(String, nullable=True)       # what it shows, or why it failed
+    primary_tag = Column(String, nullable=True)
+    thumb_tag = Column(String, nullable=True)
+    made_from = Column(String, nullable=True)    # folders: what the picture came from (a child's id, a league)
+    attempts = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
 class EPGProgram(Base):
     __tablename__ = "epg_programs"
     id = Column(Integer, primary_key=True, autoincrement=True)
