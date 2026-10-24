@@ -949,6 +949,24 @@ User docs: `docs/features/live-tv.md`.
   only the frame starts let a provider's verbatim loop hide the unique
   packets in front of it). A verbatim loop can at worst be joined one loop
   period off, which repeats or skips only bytes already sent.
+- A viewer's stream starts on a keyframe with sound (`services/ts_start.py`,
+  `AvStart` in `_subscriber_body`). Some encoders mux the audio seconds
+  ahead of the video (TSN 2, 2026-10-24: ~9 s): a client joining gets that
+  much picture without sound, Jellyfin's remux writes its first HLS segments
+  without audio, and Jellyfin Web (hls.js: no audio SourceBuffer,
+  bufferAppendError) froze at ~6 s every time. `AvStart` holds the client's
+  first bytes until the first video keyframe (random-access flag) at or
+  after the first audio PTS less 1 s, then sends PAT, PMT and the stream
+  from that keyframe; a stream in step is untouched from there. When the
+  audio runs ahead, `_AudioMover` also sends each audio PES next to the
+  video it plays with for the rest of the stream (sent first as a block,
+  Jellyfin's 3 s probe saw only audio and remuxed without the video); a
+  video jump over 5 s (a re-dial) or 8 MB waiting flushes it. Not TS, no
+  video+audio programme, no keyframe flags within 4 s or no start within
+  20 s / 48 MB: as it came. Panels open with ~20-30 s of buffer, so the hold
+  costs ~0.05-0.7 s. A viewer joining a running TS upstream starts in its
+  backlog (last 15 s / 32 MB). Recordings (the opener's `lease.kind`, a
+  joiner by `_recording_channel_ids`) get neither: the bytes as they come.
 - The HLS worker (`hls_to_mpegts()`) classifies statuses with the same
   `_raw_retryable()`: a 5xx on a playlist, a re-resolve or a segment is
   waited out (a 5xx segment is fetched again, not skipped). An expired token

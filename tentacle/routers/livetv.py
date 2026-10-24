@@ -1794,6 +1794,12 @@ _PENDING_OPEN_WAIT = 45.0
 # sends on every re-dial). Dropping it then cut that much out of a recording.
 _SUBSCRIBER_QUEUE_MAX = 32
 _SUBSCRIBER_QUEUE_BYTES = 64 * 1024 * 1024
+# A viewer joining a running MPEG-TS upstream starts inside its last bytes
+# (services/ts_start finds a keyframe with sound in them) instead of waiting
+# for the next ones: on a channel whose audio runs ~9 s ahead that wait is 9 s
+# of live time. Recordings never get it: they start where they joined.
+_BACKLOG_BYTES = 32 * 1024 * 1024
+_BACKLOG_SECONDS = 15.0
 
 
 class _ClientQueue(asyncio.Queue):
@@ -2127,13 +2133,33 @@ class _SharedUpstream:
         # here instead (the response's close_upstream, see _stream_proxy_inner).
         self._close_upstream = close_upstream
         self._pump_started = False
+        self._backlog = deque()      # (loop time, piece) of the last MPEG-TS pieces
+        self._backlog_bytes = 0
+        self._is_ts = None
 
-    def subscribe(self) -> "asyncio.Queue":
+    def subscribe(self, backlog: bool = False) -> "asyncio.Queue":
         q = _ClientQueue()
+        if backlog:
+            for _, piece in self._backlog:
+                q.put_nowait(piece)
         self.subscribers.add(q)
         return q
 
+    def _keep(self, piece) -> None:
+        if self._is_ts is None:
+            self._is_ts = piece[:1] == b"G"
+        if not self._is_ts:
+            return
+        now = asyncio.get_running_loop().time()
+        self._backlog.append((now, piece))
+        self._backlog_bytes += len(piece)
+        while self._backlog and (self._backlog_bytes > _BACKLOG_BYTES
+                                 or now - self._backlog[0][0] > _BACKLOG_SECONDS):
+            self._backlog_bytes -= len(self._backlog.popleft()[1])
+
     def _publish(self, item):
+        if item:
+            self._keep(item)
         for q in list(self.subscribers):
             q.put_nowait(item)
             # Past its slack, drop this client's oldest piece rather than
@@ -2244,9 +2270,9 @@ class _SubscriberResponse(StreamingResponse):
     never came back. Unsubscribing when the response finishes, however it
     finishes, closes that; `unsubscribe` is idempotent."""
 
-    def __init__(self, shared: "_SharedUpstream", q):
+    def __init__(self, shared: "_SharedUpstream", q, viewer: bool = False):
         super().__init__(
-            _subscriber_body(shared, q),
+            _subscriber_body(shared, q, viewer),
             media_type="video/mp2t",
             headers={
                 "Connection": "close",
@@ -2264,13 +2290,28 @@ class _SubscriberResponse(StreamingResponse):
             await self._shared.unsubscribe(self._q)
 
 
-async def _subscriber_body(shared: "_SharedUpstream", q):
-    """Per-client view of a shared upstream."""
+async def _subscriber_body(shared: "_SharedUpstream", q, viewer: bool = False):
+    """Per-client view of a shared upstream. A viewer's starts on a keyframe
+    that has its sound with it (services/ts_start); a recording's is the
+    upstream's bytes as they come."""
+    from services.ts_start import AvStart
+    start = AvStart() if viewer else None
     try:
         while True:
             piece = await q.get()
             if piece is None:
+                if start is not None:
+                    rest = start.flush()
+                    if rest:
+                        yield rest
                 return
+            if start is not None:
+                held = not start.done
+                piece = start.feed(piece)
+                if held and start.done:
+                    logger.info(f"[LiveTV] Channel {shared.channel_id}: a viewer's stream starts {start.result}")
+                if not piece:
+                    continue
             yield piece
     finally:
         await shared.unsubscribe(q)
@@ -4932,14 +4973,19 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
     # starting the same minute, exactly when the sharing matters. The first
     # arrival registers as the opener; the rest wait for it and attach.
     loop = asyncio.get_running_loop()
+    # A viewer joining starts inside the upstream's last seconds, on a
+    # keyframe with sound (services/ts_start); a recording as it is now.
+    viewer = None
     while True:
+        if viewer is None and (channel_id in _shared_streams or channel_id in _pending_opens):
+            viewer = channel_id not in await _recording_channel_ids(db)
         async with _get_shared_lock():
             shared = _shared_streams.get(channel_id)
             if shared is not None and not shared._closed:
-                q = shared.subscribe()
+                q = shared.subscribe(backlog=bool(viewer))
                 logger.info(f"[LiveTV] Channel {channel_id} already streaming — "
-                            f"attaching client ({len(shared.subscribers)} now)")
-                return _SubscriberResponse(shared, q)
+                            f"attaching {'viewer' if viewer else 'recording'} ({len(shared.subscribers)} now)")
+                return _SubscriberResponse(shared, q, viewer=bool(viewer))
             pending = _pending_opens.get(channel_id)
             if pending is None:
                 pending = loop.create_future()
@@ -5107,7 +5153,7 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
         shared.task = asyncio.create_task(shared._pump(upstream.body_iterator))
         if not pending.done():
             pending.set_result(shared)
-        return _SubscriberResponse(shared, q)
+        return _SubscriberResponse(shared, q, viewer=lease.kind == "live")
     except _PlaceholderRefusal:
         _release_sem()
         slate = await _nothing_on_response(channel_id, _placeholder_lines(ch)) if lease.kind == "live" else None
