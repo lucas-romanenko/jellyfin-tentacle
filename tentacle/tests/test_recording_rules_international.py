@@ -71,8 +71,15 @@ class EuroLeague(unittest.TestCase):
         h = hit("euroleague", "rma", "EuroLeague Basketball: Real Madrid vs. FC Barcelona", "From Movistar Arena in Madrid.")
         self.assertTrue(h.matched)
         self.assertTrue(h.home)
-        self.assertFalse(hit("euroleague", "bar", "EuroLeague Basketball: Real Madrid vs. FC Barcelona",
-                             "From Movistar Arena in Madrid.").home)
+        self.assertIs(False, hit("euroleague", "bar", "EuroLeague Basketball: Real Madrid vs. FC Barcelona",
+                                 "From Movistar Arena in Madrid.").home)
+
+    def test_only_the_titles_teams_play(self):
+        # the description's standings name other clubs
+        d = "EuroLeague 2026/27. Ο Ολυμπιακός (5-1) και η Φενέρμπαχτσε (5-1), μπροστά από Μπαρτσελόνα και Παρτίζαν."
+        self.assertTrue(hit("euroleague", "oly", "Ολυμπιακός - Φενέρμπαχτσε (Ζ) : EuroLeague 2026/27", d).matched)
+        self.assertFalse(hit("euroleague", "bar", "Ολυμπιακός - Φενέρμπαχτσε (Ζ) : EuroLeague 2026/27", d).matched)
+        self.assertFalse(hit("euroleague", "par", "Ολυμπιακός - Φενέρμπαχτσε (Ζ) : EuroLeague 2026/27", d).matched)
 
     def test_greek_guide(self):
         # Novasports: "Basketball: Maccabi Tel Aviv - Real Madrid", "EuroLeague 2026/27." below
@@ -124,6 +131,16 @@ class Fifa(unittest.TestCase):
         self.assertTrue(hit("fifa", "can", "Soccer: Canada vs. Mexico").matched, "the sport and two countries")
         self.assertTrue(hit("fifa", "usa", "Live: Fútbol: Estados Unidos vs. México", "Eliminatorias.").matched)
         self.assertTrue(hit("fifa", "can", "Coupe du monde de la FIFA : Canada c. Qatar").matched)
+
+    def test_the_host_country_is_not_playing(self):
+        d = "Coverage of the tenth edition of the annual international women's soccer tournament. From Morocco."
+        self.assertFalse(hit("fifa", "mar", "Live: 2026 FIFA U-17 Women's World Cup", d).matched)
+        d = "Morocco is hosting the 10th edition of the FIFA U-17 Women's World Cup; Jordan hosted 2016."
+        self.assertFalse(hit("fifa", "mar", "Spain vs Australia - FIFA U-17 Women's World Cup 2026", d).matched)
+        self.assertFalse(hit("fifa", "jor", "Spain vs Australia - FIFA U-17 Women's World Cup 2026", d).matched)
+        self.assertTrue(hit("fifa", "esp", "Spain vs Australia - FIFA U-17 Women's World Cup 2026", d).matched)
+        # a matchup in the description, when the title names no team
+        self.assertTrue(hit("fifa", "can", "Live: FIFA World Cup Qualifying", "Canada vs. Honduras. From BMO Field.").matched)
 
     def test_greek_guide(self):
         t = "Ποδόσφαιρο: Κροατία - Αγγλία"

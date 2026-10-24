@@ -183,8 +183,11 @@ def match_team(listing: Listing, league: dict, team: dict, foreign_names: Iterab
     raw = " ".join([listing.title or "", listing.sub_title or "", listing.description or ""])
     alone, weak = _team_names(team, league)
     strong = any_of(full, alone)
-    named = any_of(text, weak)
     venue = any_of(text, team.get("venue") or [])
+    body = text                     # the league's words may be anywhere
+    if league.get("needs_context"):
+        text = _names_text(listing, league, foreign_names)
+    named = any_of(text, weak)
     if not (strong or named or venue) and _codes(league) and _abbr(raw, team.get("abbr")):
         named = team["abbr"]
     if not (strong or named or venue):
@@ -192,7 +195,7 @@ def match_team(listing: Listing, league: dict, team: dict, foreign_names: Iterab
     bad = excluded(listing, league)
     if bad:
         return TeamHit(False, near=f"“{strong or named or venue}” but it says “{bad}”")
-    around = text + fold(listing.category) + fold(listing.channel)
+    around = body + fold(listing.category) + fold(listing.channel)
     ctx = league_context(around, league)
     mine = [n for n in (alone + weak + [team.get("abbr") if _codes(league) else None]) if n]
     others = {k: v for k, v in teams_named(text, raw, league, mine).items() if k != team["id"]}
@@ -222,7 +225,7 @@ def match_team(listing: Listing, league: dict, team: dict, foreign_names: Iterab
         home = True
     else:
         other_venue = next((t for t in league.get("teams") or []
-                            if t["id"] != team["id"] and any_of(text, t.get("venue") or [])), None)
+                            if t["id"] != team["id"] and any_of(body, t.get("venue") or [])), None)
         if other_venue is not None:
             home = False
         else:
@@ -232,6 +235,40 @@ def match_team(listing: Listing, league: dict, team: dict, foreign_names: Iterab
         (f" vs {next(iter(others.values()))}" if others and not ctx and not strong else "")
     return TeamHit(True, why=why, home=home, teams=[team["id"], *others],
                    game=bool(ctx or others))
+
+
+_VS = re.compile(r" (vs|v|versus|at|@|c|contre|contra|x) ")
+_NAMES: dict = {}
+
+
+def _league_names(league: dict) -> tuple:
+    """Every name of every team of a league, folded, longest first."""
+    if league["id"] not in _NAMES:
+        names = {fold(n) for t in league.get("teams") or []
+                 for n in [t.get("name"), t.get("fr"), t.get("short")] + list(t.get("nicknames") or []) if n}
+        _NAMES[league["id"]] = tuple(sorted((n for n in names if n.strip()), key=len, reverse=True))
+    return _NAMES[league["id"]]
+
+
+def _names_text(listing: Listing, league: dict, foreign_names: Iterable[str]) -> str:
+    """Where a league of everyday names looks for its teams: the title, or,
+    when the title names none of them, only a matchup in the description
+    ("Canada vs. Czechia."). A description also names hosts ("From
+    Morocco.") and standings ("... Barcelona and Partizan are 4-2"), which
+    aren't the game's teams."""
+    head = without(listing.text(description=False), foreign_names)
+    names = _league_names(league)
+    if any(n in head for n in names):
+        return head
+    desc = without(fold(listing.description), foreign_names)
+    out = []
+    for m in _VS.finditer(desc):
+        left, right = desc[:m.start() + 1], desc[m.end() - 1:]
+        a = next((n for n in names if left.endswith(n)), None)
+        b = next((n for n in names if right.startswith(n)), None)
+        if a and b:
+            out.append(f"{a}{m.group(1)}{b}")
+    return " " + " | ".join(o.strip() for o in out) + " " if out else " "
 
 
 def venue_team(text: str, league: dict) -> Optional[dict]:
