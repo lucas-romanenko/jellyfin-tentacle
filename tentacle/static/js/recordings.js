@@ -19,6 +19,7 @@ const rec = {
   upcoming: null,     // GET /api/live/recordings/upcoming
   history: null,
   league: null,       // the league open in the team picker
+  find: '',           // its search box (long lists)
   edit: null,         // the rule in the editor: {id?, body}
   previewSeq: 0,
   previewTimer: null,
@@ -210,9 +211,14 @@ function recRenderTeams() {
       const have = mine.some(r => r.kind === 'series' && r.league === lg.id && r.mine);
       teams = `<div class="rec-teams"><button class="rec-team${have ? ' on' : ''}" data-series="${escHtml(lg.id)}">${have ? '✓ ' : ''}Follow ${escHtml(lg.name)}</button></div>`;
     } else if (lg) {
-      teams = `<div class="rec-teams">${lg.teams.map(t => {
+      // a long list (211 national teams) gets a search box: any of a team's names
+      const find = lg.teams.length > 40
+        ? `<div class="rec-find"><input class="form-input" id="rec-find" type="search" placeholder="Find a team" value="${escHtml(rec.find || '')}" autocomplete="off"></div>` : '';
+      teams = `${find}<div class="rec-teams">${lg.teams.map(t => {
         const have = mine.some(r => r.kind === 'team' && r.league === lg.id && r.team === t.id && r.mine);
-        return `<button class="rec-team${have ? ' on' : ''}" data-team="${escHtml(t.id)}" title="${escHtml(t.name)}">`
+        const words = _recFold([t.name, t.short, t.abbr, ...(t.also || [])].join(' '));
+        const hide = find && rec.find && !words.includes(_recFold(rec.find)) ? ' hidden' : '';
+        return `<button class="rec-team${have ? ' on' : ''}" data-team="${escHtml(t.id)}" data-find="${escHtml(words)}" title="${escHtml(t.name)}"${hide}>`
           + `<span class="abbr">${escHtml(t.abbr || '')}</span><span>${have ? '✓ ' : ''}${escHtml(t.name)}</span></button>`;
       }).join('')}</div>`;
     }
@@ -224,6 +230,16 @@ function recRenderTeams() {
     picker = `<div class="card rec-card"><div class="mych-none">Your account can&rsquo;t set recordings. An admin can allow it under People (Can record).</div></div>`;
   }
   el.innerHTML = `<div class="card rec-card rec-list">${followed}</div>${picker}`;
+}
+
+function _recFold(v) {
+  return String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
+
+function recFindTeam(v) {
+  rec.find = v;
+  const q = _recFold(v);
+  document.querySelectorAll('#rec-panel-teams .rec-team[data-find]').forEach(b => { b.hidden = !!q && !b.dataset.find.includes(q); });
 }
 
 function _recModeText(r) {
@@ -512,11 +528,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const skip = t.closest('.rec-skip'); if (skip) { recSkip(Number(skip.dataset.id)); return; }
     const edit = t.closest('.rec-edit'); if (edit) { recOpenEditor(Number(edit.dataset.id)); return; }
     const restore = t.closest('.rec-restore'); if (restore) { recRestore(Number(restore.dataset.id)); return; }
-    const lg = t.closest('[data-league]'); if (lg) { rec.league = rec.league === lg.dataset.league ? null : lg.dataset.league; recRenderTeams(); return; }
+    const lg = t.closest('[data-league]'); if (lg) { rec.league = rec.league === lg.dataset.league ? null : lg.dataset.league; rec.find = ''; recRenderTeams(); return; }
     const team = t.closest('[data-team]'); if (team) { recFollowTeam(rec.league, team.dataset.team); return; }
     const series = t.closest('[data-series]'); if (series) { recFollowTeam(series.dataset.series, null); return; }
     if (t.closest('#rec-new-rule')) recOpenEditor(null);
   });
+  page.addEventListener('input', ev => { if (ev.target.id === 'rec-find') recFindTeam(ev.target.value); });
   page.addEventListener('change', ev => {
     const m = ev.target.closest('.rec-mode');
     if (m) recSetMode(Number(m.dataset.id), m.checked);

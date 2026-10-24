@@ -1098,7 +1098,13 @@ schedule or score service: games are found in the guide Tentacle serves.
 - `leagues.json`: the built-in leagues and teams (full/short name, nicknames,
   code, city, French name, venues; per league the context words, the shortest
   listing that is a game, padding, playoff words; motor racing as `series`
-  with terms). Edited by hand.
+  with terms). Edited by hand. Per league also: `needs_context` (EuroLeague,
+  FIFA, IIHF: no name is enough alone; the league's words, or its sport /
+  a `weak_context` word plus a second team of it), `exclude` (words of
+  another sport or competition: never this league's game, checked in the
+  listing and its category, not the channel name; the football leagues
+  exclude basketball), `others` (replaces the global other-leagues list),
+  `match_abbr: false` (country codes are display only).
 - `match.py`: fold (NFKD, casefold, `&` = and, `Live:`/`New:` off), whole-word
   phrases. A team's full name is enough; any other name needs the league
   (a context word in the listing, its category or the channel's raw name) or a
@@ -1106,6 +1112,8 @@ schedule or score service: games are found in the guide Tentacle serves.
   "hockey"), and other teams' full names that contain the city ("Toronto
   Raptors") are taken out first. A listing naming a league not in the list
   (AHL, NCAA, ...) isn't the team's. Venue = home; "X at/@ Y" = Y at home.
+  The same name in another league ("Canada" in FIFA and IIHF) is never a
+  foreign name. A team rule's "Leave out" words apply too (`plan._hit`).
 - `guide.py`: listings per lineup entry (pool key), mapped exactly like
   `hdhr_xmltv` (epg ids, folded networks' guides, `event_programmes()` for
   event channels; not stored anywhere).
