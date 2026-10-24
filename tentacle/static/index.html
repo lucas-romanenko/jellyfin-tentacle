@@ -1416,7 +1416,7 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 .mych-title { font-size: 16px; font-weight: 600; }
 .mych-total { font-weight: 400; color: var(--text3); font-size: 13px; margin-left: 6px; }
 .mych-sub { font-size: 13px; color: var(--text2); margin-top: 4px; max-width: 720px; }
-.mych-count { opacity: .75; font-family: 'DM Mono', monospace; font-size: 11px; margin-left: 4px; }
+.mych-count { color: var(--text3); font-family: 'DM Mono', monospace; font-size: 11px; margin-left: 4px; }
 .mych-status { width: 100%; font-size: 12px; color: var(--text3); }
 .mych-status:empty { display: none; }
 .mych-status.ok { color: var(--green); }
@@ -1966,7 +1966,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
   background: rgb(79, 70, 229); color: #fff;
 }
 .discover-tabs-bar .live-tab.activity-tab.active {
-  color: rgb(79, 70, 229); border-bottom-color: rgb(79, 70, 229);
+  color: var(--accent-text); border-bottom-color: rgb(79, 70, 229);
 }
 .activity-section-title {
   font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 10px;
@@ -1980,7 +1980,13 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 .activity-card:hover { border-color: var(--border2); }
 .list-fetch-note { font-size: 12px; color: var(--amber); margin-top: 6px; line-height: 1.4; }
 .activity-card[data-open] { cursor: pointer; }
-.activity-card[data-open]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.activity-open {
+  font: inherit; color: inherit; background: none; border: 0; padding: 0; margin: 0;
+  max-width: 100%; text-align: left; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.activity-open:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; border-radius: 2px; }
+.activity-card:has(.activity-open:focus-visible) { border-color: var(--border2); }
 .activity-poster {
   width: 60px; min-width: 60px; aspect-ratio: 2/3;
   border-radius: 6px; overflow: hidden; background: var(--bg3);
@@ -2711,14 +2717,14 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                   <div style="font-size:11px;color:var(--text3);margin-top:2px">Show one merged row (in-progress items + next episodes, sorted by recency) instead of two separate rows. Applies to both Jellyfin and Android TV.</div>
                 </div>
                 <label style="position:relative;display:inline-block;width:40px;height:22px;flex-shrink:0">
-                  <input type="checkbox" id="merge-continue-checkbox" onchange="saveMergeContinueWatching(this.checked)" style="opacity:0;width:0;height:0">
+                  <input type="checkbox" id="merge-continue-checkbox" aria-label="Combine Continue Watching and Next Up" onchange="saveMergeContinueWatching(this.checked)" style="opacity:0;width:0;height:0">
                   <span style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:var(--bg3);border-radius:11px;transition:.2s"></span>
                   <span id="merge-continue-slider" style="position:absolute;height:16px;width:16px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.2s"></span>
                 </label>
               </div>
               <div id="add-row-inline" style="display:none;margin-bottom:8px">
                 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-                  <select id="add-row-select" class="form-input" style="flex:1">
+                  <select id="add-row-select" aria-label="Playlist to add as a row" class="form-input" style="flex:1">
                     <option value="">Select a playlist...</option>
                   </select>
                   <button class="btn btn-primary btn-sm" onclick="confirmAddHomeRow()">Add</button>
@@ -3233,7 +3239,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               </div>
               <div style="width:120px">
                 <label class="form-label">Keep newest</label>
-                <input type="number" id="yt-keep" class="form-input" value="10" min="1" max="100">
+                <input type="number" id="yt-keep" aria-label="Keep newest videos" class="form-input" value="10" min="1" max="100">
               </div>
               <div style="width:170px">
                 <label class="form-label" for="yt-for">For</label>
@@ -3330,7 +3336,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
             <div class="form-group">
               <div class="form-label">Radarr webhook</div>
               <div style="display:flex;gap:8px;flex-wrap:wrap">
-                <input class="form-input mono" id="radarr-webhook-url" readonly style="flex:1;min-width:240px;font-size:12px;background:var(--bg3)">
+                <input aria-label="Radarr webhook" class="form-input mono" id="radarr-webhook-url" readonly style="flex:1;min-width:240px;font-size:12px;background:var(--bg3)">
                 <button class="btn btn-secondary" onclick="copyWebhookUrl()">Copy</button>
                 <button class="btn btn-secondary" onclick="testWebhookUrl()">Test</button>
               </div>
@@ -3338,7 +3344,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
             <div class="form-group" style="margin-bottom:0">
               <div class="form-label">Sonarr webhook</div>
               <div style="display:flex;gap:8px;flex-wrap:wrap">
-                <input class="form-input mono" id="sonarr-webhook-url" readonly style="flex:1;min-width:240px;font-size:12px;background:var(--bg3)">
+                <input aria-label="Sonarr webhook" class="form-input mono" id="sonarr-webhook-url" readonly style="flex:1;min-width:240px;font-size:12px;background:var(--bg3)">
                 <button class="btn btn-secondary" onclick="copySonarrWebhookUrl()">Copy</button>
                 <button class="btn btn-secondary" onclick="testSonarrWebhookUrl()">Test</button>
               </div>
@@ -3398,7 +3404,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                 <div class="section-title">Discover</div>
                 <div class="form-group">
                   <div class="form-label">Chart country</div>
-                  <select class="form-input" id="music_chart_country" style="max-width:240px"><option value="us">United States</option><option value="ca">Canada</option><option value="gb">United Kingdom</option><option value="au">Australia</option><option value="ie">Ireland</option><option value="nz">New Zealand</option><option value="de">Germany</option><option value="fr">France</option><option value="es">Spain</option><option value="it">Italy</option><option value="nl">Netherlands</option><option value="be">Belgium</option><option value="se">Sweden</option><option value="no">Norway</option><option value="dk">Denmark</option><option value="fi">Finland</option><option value="pl">Poland</option><option value="pt">Portugal</option><option value="br">Brazil</option><option value="mx">Mexico</option><option value="ar">Argentina</option><option value="jp">Japan</option><option value="kr">South Korea</option><option value="in">India</option><option value="za">South Africa</option></select>
+                  <select aria-label="Chart country" class="form-input" id="music_chart_country" style="max-width:240px"><option value="us">United States</option><option value="ca">Canada</option><option value="gb">United Kingdom</option><option value="au">Australia</option><option value="ie">Ireland</option><option value="nz">New Zealand</option><option value="de">Germany</option><option value="fr">France</option><option value="es">Spain</option><option value="it">Italy</option><option value="nl">Netherlands</option><option value="be">Belgium</option><option value="se">Sweden</option><option value="no">Norway</option><option value="dk">Denmark</option><option value="fi">Finland</option><option value="pl">Poland</option><option value="pt">Portugal</option><option value="br">Brazil</option><option value="mx">Mexico</option><option value="ar">Argentina</option><option value="jp">Japan</option><option value="kr">South Korea</option><option value="in">India</option><option value="za">South Africa</option></select>
                   <div class="form-hint">Whose Apple Music charts Discover &rarr; Music shows under Trending and New releases. Top of all time is worldwide.</div>
                 </div>
 
@@ -3406,7 +3412,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                 <div class="section-title">Reconcile</div>
                 <div class="form-group">
                   <div class="form-label">Daily check at</div>
-                  <input class="form-input" id="music_reconcile_time" type="time" value="04:00" style="max-width:160px">
+                  <input aria-label="Daily check at" class="form-input" id="music_reconcile_time" type="time" value="04:00" style="max-width:160px">
                   <div class="form-hint">Checks monitored albums once a day, at low priority. Anything that isn&rsquo;t right goes to review.</div>
                 </div>
 
@@ -3424,7 +3430,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                 <div class="form-group">
                   <div class="form-label">Webhook URL <span style="font-weight:400;color:var(--text3)">&mdash; Method: POST; Username and Password empty</span></div>
                   <div style="display:flex;gap:8px;flex-wrap:wrap">
-                    <input class="form-input mono" id="music-webhook-url" readonly style="flex:1;min-width:240px;font-size:12px;background:var(--bg3)">
+                    <input aria-label="Lidarr webhook URL" class="form-input mono" id="music-webhook-url" readonly style="flex:1;min-width:240px;font-size:12px;background:var(--bg3)">
                     <button class="btn btn-secondary" onclick="copyMusicWebhookUrl()">Copy</button>
                     <button class="btn btn-secondary" onclick="regenerateMusicWebhookSecret()">New secret</button>
                   </div>
@@ -3432,7 +3438,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                 </div>
                 <div class="form-group">
                   <div class="form-label">Status for monitoring <span style="font-weight:400;color:var(--text3)">&mdash; last check, counts, needs review, last error, health; cheap to poll</span></div>
-                  <input class="form-input mono" id="music-status-url" readonly style="font-size:12px;background:var(--bg3)">
+                  <input aria-label="Music status URL for monitoring" class="form-input mono" id="music-status-url" readonly style="font-size:12px;background:var(--bg3)">
                 </div>
                 <button class="btn btn-secondary" onclick="testMusicWebhook()">Send test</button>
                 <span id="music-webhook-last" class="form-hint" style="margin-left:8px"></span>
@@ -3709,12 +3715,12 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <div class="form-row">
                 <div class="form-group">
                   <div class="form-label">Default quality profile</div>
-                  <select class="form-input" id="radarr_quality_profile_id"><option value="">Enter the URL and key, then Test</option></select>
+                  <select aria-label="Radarr default quality profile" class="form-input" id="radarr_quality_profile_id"><option value="">Enter the URL and key, then Test</option></select>
                   <div class="form-hint">Used by every request: Tentacle, the Jellyfin plugin and Android TV. With none picked, requests are refused instead of guessed.</div>
                 </div>
                 <div class="form-group">
                   <div class="form-label">Root folder</div>
-                  <select class="form-input" id="radarr_root_folder"><option value="">Automatic (first folder that isn't a VOD folder)</option></select>
+                  <select aria-label="Radarr root folder" class="form-input" id="radarr_root_folder"><option value="">Automatic (first folder that isn't a VOD folder)</option></select>
                 </div>
               </div>
               <div class="svc-checks" id="checks-radarr"></div>
@@ -3740,12 +3746,12 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <div class="form-row">
                 <div class="form-group">
                   <div class="form-label">Default quality profile</div>
-                  <select class="form-input" id="sonarr_quality_profile_id"><option value="">Enter the URL and key, then Test</option></select>
+                  <select aria-label="Sonarr default quality profile" class="form-input" id="sonarr_quality_profile_id"><option value="">Enter the URL and key, then Test</option></select>
                   <div class="form-hint">Used by every request: Tentacle, the Jellyfin plugin and Android TV. With none picked, requests are refused instead of guessed.</div>
                 </div>
                 <div class="form-group">
                   <div class="form-label">Root folder</div>
-                  <select class="form-input" id="sonarr_root_folder"><option value="">Automatic (first folder that isn't a VOD folder)</option></select>
+                  <select aria-label="Sonarr root folder" class="form-input" id="sonarr_root_folder"><option value="">Automatic (first folder that isn't a VOD folder)</option></select>
                 </div>
               </div>
               <div class="svc-checks" id="checks-sonarr"></div>
@@ -3806,17 +3812,17 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                 <div class="form-row">
                   <div class="form-group">
                     <div class="form-label">Root folder</div>
-                    <select class="form-input" id="lidarr_root_folder"><option value="">Enter the URL and key, then Test</option></select>
+                    <select aria-label="Lidarr root folder" class="form-input" id="lidarr_root_folder"><option value="">Enter the URL and key, then Test</option></select>
                   </div>
                   <div class="form-group">
                     <div class="form-label">Quality profile</div>
-                    <select class="form-input" id="lidarr_quality_profile_id"><option value="">Enter the URL and key, then Test</option></select>
+                    <select aria-label="Lidarr quality profile" class="form-input" id="lidarr_quality_profile_id"><option value="">Enter the URL and key, then Test</option></select>
                   </div>
                 </div>
                 <div class="form-row">
                   <div class="form-group">
                     <div class="form-label">Metadata profile</div>
-                    <select class="form-input" id="lidarr_metadata_profile_id"><option value="">Enter the URL and key, then Test</option></select>
+                    <select aria-label="Lidarr metadata profile" class="form-input" id="lidarr_metadata_profile_id"><option value="">Enter the URL and key, then Test</option></select>
                   </div>
                   <div class="form-hint" style="align-self:end;margin-bottom:16px">Artists Tentacle adds to Lidarr get these, with only the requested album monitored.</div>
                 </div>
@@ -3832,7 +3838,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                   </div>
                   <div class="form-group">
                     <div class="form-label">Username</div>
-                    <input class="form-input" id="navidrome_username" autocomplete="off">
+                    <input aria-label="Navidrome username" class="form-input" id="navidrome_username" autocomplete="off">
                   </div>
                 </div>
                 <div class="form-group">
@@ -3844,7 +3850,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                   <div class="form-group">
                     <div class="form-label">Password</div>
                     <div style="display:flex;gap:8px">
-                      <input class="form-input mono" id="navidrome_password" type="password" autocomplete="new-password">
+                      <input aria-label="Navidrome password" class="form-input mono" id="navidrome_password" type="password" autocomplete="new-password">
                       <button class="btn btn-secondary" onclick="testService('navidrome')">Test</button>
                     </div>
                   </div>
@@ -3858,7 +3864,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                 <div class="form-group">
                   <div class="form-label">Music library</div>
                   <div style="display:flex;gap:8px;flex-wrap:wrap">
-                    <select class="form-input" id="jellyfin_music_library_id" style="flex:1;min-width:200px"><option value="">Loading…</option></select>
+                    <select aria-label="Music library" class="form-input" id="jellyfin_music_library_id" style="flex:1;min-width:200px"><option value="">Loading…</option></select>
                     <button class="btn btn-secondary" onclick="toggleCreateMusicLibrary()">Create one</button>
                     <button class="btn btn-secondary" onclick="testService('jellyfin_music')">Test</button>
                   </div>
@@ -3907,7 +3913,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
               <div class="form-group">
                 <div class="form-label">Sync every day at</div>
-                <input class="form-input" id="sync_schedule_time" type="time" value="03:00" style="max-width:160px">
+                <input aria-label="Sync every day at" class="form-input" id="sync_schedule_time" type="time" value="03:00" style="max-width:160px">
                 <div class="form-hint" id="sync_schedule_hint">Runs every day at this time.</div>
               </div>
 
@@ -3979,7 +3985,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
               <div class="form-group">
                 <div class="form-label">Where extra episodes of an IPTV series go</div>
-                <select class="form-input" id="hybrid_series_layout" style="max-width:460px">
+                <select aria-label="Where extra episodes of an IPTV series go" class="form-input" id="hybrid_series_layout" style="max-width:460px">
                   <option value="vod_root">Download into the VOD folder (needs a VOD root folder in Sonarr)</option>
                   <option value="shared_library">Shared Jellyfin library — same folder name, separate roots</option>
                 </select>
@@ -4045,7 +4051,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
     <div class="form-group">
       <div class="form-label">What your provider gave you</div>
-      <select class="form-input" id="p-type" onchange="onProviderTypeChange()">
+      <select aria-label="What your provider gave you" class="form-input" id="p-type" onchange="onProviderTypeChange()">
         <option value="xtream">Xtream Codes login (server, username, password)</option>
         <option value="m3u_url">Playlist link (M3U URL)</option>
         <option value="m3u_file">Playlist file on the server (M3U)</option>
@@ -4091,7 +4097,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
     <div class="form-group">
       <div class="form-label">Order</div>
-      <input class="form-input" id="p-priority" type="number" value="1" min="1" max="10">
+      <input aria-label="Provider order" class="form-input" id="p-priority" type="number" value="1" min="1" max="10">
       <div class="form-hint">When two providers have the same title, the one with the lower number is used.</div>
     </div>
 
@@ -4195,12 +4201,12 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
     <div class="form-group">
       <div class="form-label">From Provider</div>
-      <select class="form-input" id="migrate-from"></select>
+      <select aria-label="Move from provider" class="form-input" id="migrate-from"></select>
     </div>
 
     <div class="form-group">
       <div class="form-label">To Provider</div>
-      <select class="form-input" id="migrate-to"></select>
+      <select aria-label="Move to provider" class="form-input" id="migrate-to"></select>
     </div>
 
     <div id="migrate-preview" style="display:none;background:var(--bg2);border-radius:var(--radius-sm);padding:12px;margin-bottom:16px;font-size:12px;font-family:'DM Mono',monospace;color:var(--text2)"></div>
@@ -4238,7 +4244,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
     <input type="hidden" id="l-tag">
 
     <div class="form-group" style="display:flex;align-items:center;gap:10px">
-      <input type="checkbox" id="l-auto-fetch" checked style="width:15px;height:15px;accent-color:var(--accent)">
+      <input type="checkbox" id="l-auto-fetch" aria-label="Fetch list after adding" checked style="width:15px;height:15px;accent-color:var(--accent)">
       <div>
         <div class="form-label" style="margin:0">Fetch list after adding</div>
         <div class="form-hint">Immediately fetch and resolve all items from this list</div>
@@ -4364,7 +4370,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
       </div>
       <div class="form-group" style="flex:1">
         <div class="form-label">Media Type</div>
-        <select class="form-input" id="tr-apply-to" onchange="_scheduleMatchCount()">
+        <select aria-label="Media Type" class="form-input" id="tr-apply-to" onchange="_scheduleMatchCount()">
           <option value="both">All</option>
           <option value="movies">Movies</option>
           <option value="series">Series</option>
@@ -4397,7 +4403,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
     <div class="form-group" id="tr-simple-filters">
       <div class="form-label" style="display:flex;align-items:center;gap:8px">
         Genres <span style="font-weight:400;color:var(--text3)">(select one or more)</span>
-        <select id="tr-genre-logic" onchange="_scheduleMatchCount()" style="font-size:11px;padding:2px 6px;background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:4px;cursor:pointer;display:none">
+        <select id="tr-genre-logic" aria-label="How genres combine" onchange="_scheduleMatchCount()" style="font-size:11px;padding:2px 6px;background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:4px;cursor:pointer;display:none">
           <option value="and">Match ALL (AND)</option>
           <option value="or">Match ANY (OR)</option>
         </select>
@@ -4434,7 +4440,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
     <input type="hidden" id="tr-tag">
     <div class="form-group" style="display:flex;align-items:center;gap:10px">
-      <input type="checkbox" id="tr-active" checked style="width:15px;height:15px;accent-color:var(--accent)">
+      <input type="checkbox" id="tr-active" aria-label="Active" checked style="width:15px;height:15px;accent-color:var(--accent)">
       <div class="form-label" style="margin:0">Active</div>
     </div>
 
@@ -4619,12 +4625,12 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
     <div id="add-radarr-movie-info" style="display:flex;gap:16px;margin-bottom:20px"></div>
     <div class="form-group" id="add-radarr-quality-group">
       <div class="form-label">Quality Profile</div>
-      <select class="form-input" id="add-radarr-quality"></select>
+      <select aria-label="Quality Profile" class="form-input" id="add-radarr-quality"></select>
     </div>
     <div id="sonarr-extra-fields" style="display:none">
       <div class="form-group">
         <div class="form-label">Episodes</div>
-        <select class="form-input" id="add-sonarr-monitor" onchange="onMonitorPresetChange(this.value)">
+        <select aria-label="Episodes" class="form-input" id="add-sonarr-monitor" onchange="onMonitorPresetChange(this.value)">
           <option value="all">All Episodes (including future)</option>
           <option value="firstSeason">First Season</option>
           <option value="lastSeason">Last Season</option>
@@ -4742,7 +4748,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
       </div>
       <div class="form-group">
         <div class="form-label">API Key</div>
-        <input class="form-input mono" id="setup-jellyfin-key" type="password">
+        <input aria-label="Jellyfin API key" class="form-input mono" id="setup-jellyfin-key" type="password">
         <div class="form-hint">Jellyfin → Dashboard → API Keys → +</div>
       </div>
       <div style="margin-bottom:16px">
@@ -4762,11 +4768,11 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
       <div class="form-group">
         <div class="form-label">Jellyfin Username</div>
-        <input class="form-input" id="setup-jf-username">
+        <input aria-label="Jellyfin Username" class="form-input" id="setup-jf-username">
       </div>
       <div class="form-group">
         <div class="form-label">Jellyfin Password</div>
-        <input class="form-input" id="setup-jf-password" type="password">
+        <input aria-label="Jellyfin Password" class="form-input" id="setup-jf-password" type="password">
       </div>
       <div id="setup-jf-login-error" style="color:var(--red);font-size:12px;margin-bottom:12px;display:none"></div>
       <div id="setup-jf-login-success" style="color:var(--green);font-size:12px;margin-bottom:12px;display:none"></div>
@@ -4788,7 +4794,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
       </div>
       <div class="form-group">
         <div class="form-label">Radarr API Key</div>
-        <input class="form-input mono" id="setup-radarr-key" type="password">
+        <input aria-label="Radarr API Key" class="form-input mono" id="setup-radarr-key" type="password">
       </div>
       <div style="margin-bottom:16px">
         <button class="btn btn-secondary" onclick="testSetupArr('radarr')" style="font-size:12px">Test Radarr</button>
@@ -4796,7 +4802,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
       </div>
       <div class="form-group" id="setup-radarr-profile-wrap" style="display:none">
         <div class="form-label">Default quality profile</div>
-        <select class="form-input" id="setup-radarr-profile"></select>
+        <select aria-label="Radarr default quality profile" class="form-input" id="setup-radarr-profile"></select>
         <div class="form-hint">Every request uses it. Tentacle never guesses one (Radarr&rsquo;s first profile is usually &ldquo;Any&rdquo;).</div>
       </div>
 
@@ -4808,7 +4814,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
       </div>
       <div class="form-group">
         <div class="form-label">Sonarr API Key</div>
-        <input class="form-input mono" id="setup-sonarr-key" type="password">
+        <input aria-label="Sonarr API Key" class="form-input mono" id="setup-sonarr-key" type="password">
       </div>
       <div style="margin-bottom:16px">
         <button class="btn btn-secondary" onclick="testSetupArr('sonarr')" style="font-size:12px">Test Sonarr</button>
@@ -4816,7 +4822,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
       </div>
       <div class="form-group" id="setup-sonarr-profile-wrap" style="display:none">
         <div class="form-label">Default quality profile</div>
-        <select class="form-input" id="setup-sonarr-profile"></select>
+        <select aria-label="Sonarr default quality profile" class="form-input" id="setup-sonarr-profile"></select>
         <div class="form-hint">Every request uses it. Tentacle never guesses one (Sonarr&rsquo;s first profile is usually &ldquo;Any&rdquo;).</div>
       </div>
 
@@ -4844,7 +4850,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <div id="setup-webhook-radarr-section" style="display:none;margin-bottom:16px">
           <div class="form-label">Radarr Webhook URL</div>
           <div style="display:flex;gap:8px;align-items:center">
-            <input class="form-input mono" id="setup-radarr-webhook-url" readonly style="flex:1;font-size:12px;background:var(--bg3)">
+            <input aria-label="Radarr Webhook URL" class="form-input mono" id="setup-radarr-webhook-url" readonly style="flex:1;font-size:12px;background:var(--bg3)">
             <button class="btn btn-secondary btn-sm" onclick="copySetupWebhook('radarr')">Copy</button>
           </div>
           <div class="form-hint" style="margin-top:6px">Radarr → Settings → Connect → + → Webhook<br>Triggers: On Import, On Movie Added, On Movie Delete, On Movie File Delete</div>
@@ -4853,7 +4859,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <div id="setup-webhook-sonarr-section" style="display:none">
           <div class="form-label">Sonarr Webhook URL</div>
           <div style="display:flex;gap:8px;align-items:center">
-            <input class="form-input mono" id="setup-sonarr-webhook-url" readonly style="flex:1;font-size:12px;background:var(--bg3)">
+            <input aria-label="Sonarr Webhook URL" class="form-input mono" id="setup-sonarr-webhook-url" readonly style="flex:1;font-size:12px;background:var(--bg3)">
             <button class="btn btn-secondary btn-sm" onclick="copySetupWebhook('sonarr')">Copy</button>
           </div>
           <div class="form-hint" style="margin-top:6px">Sonarr → Settings → Connect → + → Webhook<br>Triggers: On Import, On Series Delete, On Episode File Delete</div>
@@ -4879,13 +4885,13 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
       <div class="form-group">
         <div class="form-label">Trakt Client ID</div>
-        <input class="form-input mono" id="setup-trakt" type="password">
+        <input aria-label="Trakt Client ID" class="form-input mono" id="setup-trakt" type="password">
         <div class="form-hint">For subscribing to Trakt lists. Get one at trakt.tv/oauth/applications</div>
       </div>
 
       <div class="form-group">
         <div class="form-label">Logo.dev API Key</div>
-        <input class="form-input mono" id="setup-logodev" type="password">
+        <input aria-label="Logo.dev API Key" class="form-input mono" id="setup-logodev" type="password">
         <div class="form-hint">For auto-generated playlist artwork. Get one at logo.dev</div>
       </div>
 
@@ -4918,7 +4924,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
       <div class="form-group">
         <div class="form-label">Plugin Manifest URL</div>
         <div style="display:flex;gap:8px">
-          <input class="form-input mono" id="setup-plugin-url" readonly
+          <input aria-label="Plugin Manifest URL" class="form-input mono" id="setup-plugin-url" readonly
             value="https://raw.githubusercontent.com/lucas-romanenko/jellyfin-tentacle/main/tentacle-plugin/manifest.json"
             style="font-size:12px">
           <button class="btn btn-secondary" onclick="copyPluginUrl()" style="white-space:nowrap">Copy</button>
