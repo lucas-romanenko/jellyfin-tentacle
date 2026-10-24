@@ -6036,10 +6036,11 @@ function showLiveTab(name) {
   if (name === 'channels') page.querySelector('[data-livetab="more"]')?.classList.add('active');
 }
 
-// More: Jellyfin's setup and the region.
+// More: Jellyfin's setup, the region, pictures for recordings.
 function loadLiveMore() {
   loadLiveSetup();
   _poolLoadRegion();
+  if (typeof recArtLoad === 'function') recArtLoad();
 }
 
 // ── Groups ────────────────────────────────────────────────────────────────

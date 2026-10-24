@@ -566,7 +566,11 @@ class SonarrService:
             return False
         series_id = series["id"]
         series["monitorNewItems"] = "all" if follow else "none"
-        series["monitored"] = True  # Keep monitored so existing episode state stays intact
+        # Sonarr grabs nothing for an unmonitored series, so following turns it
+        # on. Unfollowing leaves it as it is: re-monitoring an unmonitored show
+        # would make Sonarr grab its missing episodes (#821).
+        if follow:
+            series["monitored"] = True
         try:
             r = self.session.put(
                 f"{self.url}/api/v3/series/{series_id}",

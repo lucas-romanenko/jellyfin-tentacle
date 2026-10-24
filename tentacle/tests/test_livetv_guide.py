@@ -184,14 +184,17 @@ PLACE = """
 @unittest.skipUnless(HAVE_NODE, "node is not installed")
 class KeepsYourPlace(unittest.TestCase):
     def test_back_where_it_was_rows_and_time(self):
+        # a time far from now (it failed every evening at 23:08-23:38, when
+        # the fixed 23:00 was "now")
         got = run(PLACE + """
-          sc.scrollTop = 300 * 66 + 20; sc.scrollLeft = Math.round((mid + 23 * H - G.days[0].start) / 60000 * 6.5);
+          var h = (new Date().getHours() + 12) % 24;
+          sc.scrollTop = 300 * 66 + 20; sc.scrollLeft = Math.round((mid + h * H - G.days[0].start) / 60000 * 6.5);
           T.keepPlace();
           var p = G.place; sc.scrollTop = 0; sc.scrollLeft = 0;
           T.restorePlace(p);
-          return [sc.scrollTop, sc.scrollLeft, p.view, p.day === mid, p.atNow];
+          return [sc.scrollTop, sc.scrollLeft - Math.round(h * 60 * 6.5), p.view, p.day === mid, p.atNow];
         """)
-        self.assertEqual([300 * 66 + 20, round(23 * 60 * 6.5), "all", True, False], got)
+        self.assertEqual([300 * 66 + 20, 0, "all", True, False], got)
 
     def test_rows_that_came_meanwhile_do_not_shift_it(self):
         got = run(PLACE + """

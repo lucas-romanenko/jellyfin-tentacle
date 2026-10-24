@@ -224,6 +224,8 @@ def _apply(db: Session, p: P.RulePlan, jf, timers, fwd: dict, back: dict, now: d
             continue
         opt = ev.options[ev.chosen] if ev.chosen is not None else ev.best
         a = opt.airing
+        if a.from_event and _stale_slot(a, existing):
+            continue
         key = (a.pool_key, a.start)
         keep.add(key)
         row = existing.get(key)
@@ -246,6 +248,11 @@ def _apply(db: Session, p: P.RulePlan, jf, timers, fwd: dict, back: dict, now: d
         elif ev.state == "waiting":
             row.state, row.reason = "waiting", ev.reason
             summary["waiting"] += 1
+        elif a.from_event and a.start - now > EVENT_SLOT_AHEAD:
+            row.state = "waiting"
+            row.reason = (f"An event channel's slot names only a time: booked from {EVENT_SLOT_AHEAD_HOURS} "
+                          f"hours before it, when its date is sure")
+            summary["waiting"] += 1
         else:
             cover = _covering(timers, row.jellyfin_channel_id, a.start, ours)
             if cover is not None:
@@ -266,6 +273,27 @@ def _apply(db: Session, p: P.RulePlan, jf, timers, fwd: dict, back: dict, now: d
             db.delete(row)
             summary["changed"] = True
     db.flush()
+
+
+# Event and pay-per-view channels name a time without a date ("NHL | 01 -
+# 8pm Canadiens at Blackhawks"); the guide puts it at the next such time. A
+# slot still named after a game that has been played moves to the next day,
+# and a Sunday game named on Friday lands on Saturday. So a slot is booked
+# only this close to its start, and never when it repeats one this rule had
+# a day earlier (seen 24 Oct: tomorrow 8pm "Canadiens at Blackhawks").
+EVENT_SLOT_AHEAD_HOURS = 6
+EVENT_SLOT_AHEAD = timedelta(hours=EVENT_SLOT_AHEAD_HOURS)
+
+
+def _stale_slot(a, existing: dict) -> bool:
+    """The same event channel, the same name, about a day after a booking of
+    it: the slot's name outlived its event."""
+    day = timedelta(hours=24)
+    for b in existing.values():
+        if b.pool_key == a.pool_key and (b.title or "") == (a.title or "") \
+                and abs((a.start - b.start) - day) <= timedelta(hours=2) and b.state != "waiting":
+            return True
+    return False
 
 
 def _held_booking(rule: P.Rule, ev: P.Event, existing: dict) -> Optional[RecordingBooking]:

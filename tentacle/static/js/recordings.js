@@ -555,3 +555,63 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 });
+
+// ── Pictures for recordings (admins: Sources → Live TV → More) ─────────────
+// GET/PUT /api/live/recordings/artwork (services/recording_art).
+
+const REC_ART_SOURCES = {
+  matchup: 'game cards', league: 'league cards', tmdb: 'show and film pictures',
+  guide: 'guide pictures', frame: 'frames from the recording', title: 'title cards',
+};
+
+function _recArtText(d) {
+  if (!d.enabled) return 'Off. Recordings keep whatever picture Jellyfin has.';
+  if (d.blocked) return d.blocked;
+  const set = Object.values(d.sources || {}).reduce((a, b) => a + b, 0);
+  const parts = Object.entries(d.sources || {}).filter(([, n]) => n)
+    .map(([k, n]) => `${n} ${REC_ART_SOURCES[k] || k}`);
+  let text = set ? `${set} recording${set === 1 ? '' : 's'} with a picture from Tentacle: ${parts.join(', ')}.`
+    : 'On. Recordings get a picture about 10 minutes after they finish.';
+  const own = (d.counts || {}).theirs || 0, left = (d.counts || {}).left || 0;
+  if (own) text += ` ${own} had a picture already and keep it.`;
+  if (left) text += ` ${left} changed or removed by someone, left as they are.`;
+  if (d.note) text += ' ' + d.note;
+  return text;
+}
+
+async function recArtLoad() {
+  const btn = document.getElementById('rec-art-toggle');
+  const el = document.getElementById('rec-art-status');
+  if (!btn || !el) return;
+  try {
+    const d = await api('/api/live/recordings/artwork');
+    _setLiveToggle(btn, d.enabled);
+    el.textContent = _recArtText(d);
+  } catch (e) {
+    el.textContent = 'Couldn’t read this: ' + (e.message || e);
+  }
+}
+
+async function recArtToggle() {
+  const btn = document.getElementById('rec-art-toggle');
+  const el = document.getElementById('rec-art-status');
+  if (!btn || btn.disabled) return;
+  const on = !btn.classList.contains('on');
+  btn.disabled = true;
+  _setLiveToggle(btn, on);
+  try {
+    const d = await api('/api/live/recordings/artwork', { method: 'PUT', body: JSON.stringify({ enabled: on }) });
+    _setLiveToggle(btn, d.enabled);
+    el.textContent = on ? 'On. Recordings get their pictures over the next minutes.'
+      : 'Off. Tentacle’s pictures are being removed.';
+  } catch (e) {
+    _setLiveToggle(btn, !on);
+    el.textContent = 'Not saved: ' + (e.message || e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('rec-art-toggle')?.addEventListener('click', recArtToggle);
+});

@@ -949,6 +949,24 @@ User docs: `docs/features/live-tv.md`.
   only the frame starts let a provider's verbatim loop hide the unique
   packets in front of it). A verbatim loop can at worst be joined one loop
   period off, which repeats or skips only bytes already sent.
+- A viewer's stream starts on a keyframe with sound (`services/ts_start.py`,
+  `AvStart` in `_subscriber_body`). Some encoders mux the audio seconds
+  ahead of the video (TSN 2, 2026-10-24: ~9 s): a client joining gets that
+  much picture without sound, Jellyfin's remux writes its first HLS segments
+  without audio, and Jellyfin Web (hls.js: no audio SourceBuffer,
+  bufferAppendError) froze at ~6 s every time. `AvStart` holds the client's
+  first bytes until the first video keyframe (random-access flag) at or
+  after the first audio PTS less 1 s, then sends PAT, PMT and the stream
+  from that keyframe; a stream in step is untouched from there. When the
+  audio runs ahead, `_AudioMover` also sends each audio PES next to the
+  video it plays with for the rest of the stream (sent first as a block,
+  Jellyfin's 3 s probe saw only audio and remuxed without the video); a
+  video jump over 5 s (a re-dial) or 8 MB waiting flushes it. Not TS, no
+  video+audio programme, no keyframe flags within 4 s or no start within
+  20 s / 48 MB: as it came. Panels open with ~20-30 s of buffer, so the hold
+  costs ~0.05-0.7 s. A viewer joining a running TS upstream starts in its
+  backlog (last 15 s / 32 MB). Recordings (the opener's `lease.kind`, a
+  joiner by `_recording_channel_ids`) get neither: the bytes as they come.
 - The HLS worker (`hls_to_mpegts()`) classifies statuses with the same
   `_raw_retryable()`: a 5xx on a playlist, a re-resolve or a segment is
   waited out (a 5xx segment is fetched again, not skipped). An expired token
@@ -1137,7 +1155,12 @@ schedule or score service: games are found in the guide Tentacle serves.
   window `ended`. A timer someone else set on the same channel and start
   makes the row `covered` (never touched). Rules gone, off or back in preview
   cancel their own `booked` timers that haven't started. A guide that lost a
-  listing never cancels a booking.
+  listing never cancels a booking. A booking holds its whole game (any of
+  its listings within the team window), also after its own listing ended.
+  Event-channel slots (a time, no date) are booked only within
+  `EVENT_SLOT_AHEAD_HOURS` (6) of their start, and never when the same
+  channel and name were booked a day earlier (a played game's name rolls
+  over to the next day).
 - Tables (plain columns): `recording_rules` (+ `recording_rule_terms`,
   `recording_rule_channels`), `recording_bookings` (unique rule, pool key,
   start; states preview/booked/recording/waiting/covered/failed/lost/ended/
@@ -1149,6 +1172,49 @@ schedule or score service: games are found in the guide Tentacle serves.
   (plugin Notify), after every change and scan that changed something.
 - `GET /api/live/recordings/busy`: Jellyfin recording or a padded start
   within 20 min; the maintainer's deploy gate checks the same.
+
+## Pictures for recordings (`services/recording_art/`, #815)
+
+One 16:9 JPEG (1280x720) per finished Live TV recording, uploaded as both
+Primary and Thumb (`POST /Items/{id}/Images/{type}`, base64 body), so the TV
+app's Recordings grid (sized from Primary), Recorded TV (Thumb first) and
+Jellyfin Web show one shape. Setting `recording_art_enabled` (default on);
+GET/PUT `/api/live/recordings/artwork`; Sources → Live TV → More.
+
+- `job.py`: `recording_art` job every 10 min (first 5 min after start),
+  `PER_PASS` (4) recordings, newest first, one at a time. Recordings = items
+  of the libraries whose locations hold Jellyfin's recordings folder
+  (`/System/Configuration/livetv`); a library with `SaveLocalMetadata`
+  is skipped with the reason on the settings page (the recordings folder is
+  never written to). A recording waits until `DateCreated + RunTimeTicks +
+  10 min`, and while a timer of the same name records (or its booking is
+  `recording`).
+- Sources in order (`make_picture`): game → matchup card, league event →
+  league card (`cards.py`); show/film → TMDB backdrop through
+  `TMDBService` at `tmdb_match_threshold`, `strict=True` (TMDB down = next
+  source); the EPG programme's `icon_url` when about 16:9 (`is_safe_url`, no
+  redirects, 8 MB cap); a frame (`frames.py`); a title card.
+- What it is (`what.py`, pure): the booking (rule kind/league/team, its
+  `why` quotes the listing that named the opponent) or the title,
+  sub-title and description with `leagues.json` and `recording_rules.match`
+  (folded names, codes, arenas = home, "A at/@ B" = B home).
+  Recording ↔ booking: same folded title, `DateCreated` inside the padded
+  window. Recording ↔ EPG programme: same title, starting 0–45 min after
+  `DateCreated`.
+- Frames: MPEG-TS only; `GET /Videos/{id}/stream?static=true` with a
+  `Range` of `READ_BYTES` (6 MB) at 30/50/70 % of the programme after the
+  pre-padding (byte offset ∝ time); ffmpeg `-skip_frame nokey` from stdin,
+  `signalstats` (black: YAVG < 26, flat: YHIGH-YLOW < 22), the most
+  edges wins; `nice 19`, 30 s timeout. Not while Jellyfin records or a
+  recording starts within 20 min (`busy_from_timers`): the item waits.
+- Safety (`recording_artwork`, plain columns: item id, kind recording/folder,
+  state, source, the Primary/Thumb tags Jellyfin gave): an item with any
+  picture Tentacle didn't set → `theirs`, never touched; a `set` row whose
+  tags no longer match → `left`, never set again (also checked when turning
+  off). Off: deletes only images whose tag is still the stored one.
+  Title folders (Jellyfin makes a Folder for 2+ files): the newest child's
+  picture, or the league card when it is a game; follows the newest while
+  still Tentacle's. The key is only ever in the `X-Emby-Token` header.
 
 ## YouTube per person (`services/youtube/follows.py`, `routers/my_youtube.py`, dashboard `static/js/myyoutube.js`)
 

@@ -3203,6 +3203,15 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                 <div class="live-more-hint">People follow their teams and set recording rules on <a href="#" onclick="showPage('recordings');return false" style="color: var(--accent-text)">Recordings</a>, and record single programmes in Jellyfin (Guide &rarr; Record); recordings are the household&rsquo;s, like a family recorder. How many channels can play or record at once is <strong>Streams at once</strong> on the provider&rsquo;s card; problems with a recording are on <a href="#" onclick="showPage('health');return false" style="color: var(--accent-text)">Health</a>.</div>
               </div>
             </div>
+            <!-- Pictures for recordings (services/recording_art; recordings.js recArt*) -->
+            <div class="live-more-row" id="rec-art-row">
+              <div>
+                <div class="live-more-title">Pictures for recordings</div>
+                <div class="live-more-hint">Every finished recording gets one wide picture in Jellyfin, so recordings look the same everywhere: a card with both teams for a game, the show&rsquo;s or film&rsquo;s picture, the guide&rsquo;s, a frame from the recording, or a card with the title. Pictures someone set themselves are never replaced. Switching this off removes only the pictures Tentacle added.</div>
+                <div id="rec-art-status" class="mych-setup-status" aria-live="polite"></div>
+              </div>
+              <button type="button" class="live-toggle" id="rec-art-toggle" aria-label="Pictures for recordings" aria-pressed="false" style="flex-shrink:0"></button>
+            </div>
           </div>
         </div>
           </div>
@@ -4935,15 +4944,15 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="/static/js/app.js?v=47"></script>
 <script src="/static/js/sources.js?v=46"></script>
-<script src="/static/js/pages.js?v=51"></script>
+<script src="/static/js/pages.js?v=52"></script>
 <script src="/static/js/music.js?v=45"></script>
 <script src="/static/js/mychannels.js?v=50"></script>
 <script src="/static/js/newgroups.js?v=45"></script>
 <script src="/static/js/family.js?v=47"></script>
 <script src="/static/js/welcome.js?v=50"></script>
-<script src="/static/js/live.js?v=4"></script>
+<script src="/static/js/live.js?v=5"></script>
 <script src="/static/js/myyoutube.js?v=48"></script>
-<script src="/static/js/recordings.js?v=3"></script>
+<script src="/static/js/recordings.js?v=4"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {
