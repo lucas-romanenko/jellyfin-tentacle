@@ -9,6 +9,8 @@
     background: #110f1e;
     overflow-y: auto;
     overflow-x: hidden;
+    /* The end of the rows must not scroll the window behind them */
+    overscroll-behavior: contain;
     padding: 96px 4vw 40px;
     box-sizing: border-box;
     display: none;
@@ -21,8 +23,9 @@ body.tentacle-favorites-active #tentacleFavoritesContainer {
     display: block;
 }
 
-/* Hide native home/favorites content behind the overlay */
-body.tentacle-favorites-active .view {
+/* Hide Jellyfin's own home page (with its Favorites tab) behind the rows:
+   laid out, it makes the window scroll under the see-through navbar strip */
+body.tentacle-favorites-active #indexPage {
     display: none !important;
 }
 
