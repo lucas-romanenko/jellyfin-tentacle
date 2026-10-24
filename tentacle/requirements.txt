@@ -10,4 +10,9 @@ apscheduler==3.10.4
 Pillow==10.4.0
 # YouTube source. Updated often — YouTube breaks older versions regularly,
 # and the dashboard exposes an in-place update for the gaps between releases.
-yt-dlp==2026.8.19
+yt-dlp==2026.10.21
+# yt-dlp's JS challenge solver scripts (run by Deno, see the Dockerfile). The
+# web_embedded client, the only one that plays "made for kids" videos, gets no
+# formats without it. Keep it at the version yt-dlp's `default` extra pins:
+# yt-dlp skips a solver of another major.minor.
+yt-dlp-ejs==0.8.0
