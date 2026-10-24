@@ -663,6 +663,34 @@ def _media_segments(playlist_text: str, base_url: str) -> list:
 # channel; a recording that is cut off is gone for good.
 _LEASE_PRIORITY = {"recording": 0, "live": 10, "vod": 20}
 
+# Where a recording is in its timer (#300), from the Jellyfin timer the
+# recording lookup reads anyway: "pre" (its pre-padding), "programme"
+# (StartDate to EndDate, _PHASE_GRACE_SECONDS either side) or "post" (its
+# post-padding: the programme is over). Jellyfin pads 5 min before / 30 min
+# after (sports 15 / 90), so on an account that carries one stream, a
+# recording in its post-padding held the only slot while the next programme
+# on another channel was refused until that one had passed. Now:
+#   * at the limit, a recording whose programme has NOT ended (pre or
+#     programme) may take the slot of a recording in its post-padding -- the
+#     one whose programme ended first -- on a lookup answer issued after the
+#     newcomer began to open. Jellyfin never reopens a recording after its
+#     EndDate: the stopped one ends as one file, its programme complete;
+#   * a recording in its pre-padding is never stopped (Jellyfin does not
+#     reopen a tuner stream that ended: it would lose its whole programme),
+#     and two recordings inside their programmes never take from each other
+#     (#150's rule);
+#   * with no current answer from Jellyfin every recording counts as inside
+#     its programme: nothing is stopped for another recording;
+#   * #184's rival test ranks a recording in its post-padding just above a
+#     viewer (_PADDING_PRIORITY), so a recording inside its programme may
+#     take an account back from it.
+_PHASE_GRACE_SECONDS = 10.0
+_PADDING_PRIORITY = 5
+# A recording that opens just as another's programme ends (back to back)
+# waits this long for the lookup that sees the other in its post-padding,
+# instead of being refused into Jellyfin's one-minute retry.
+_HANDOVER_WAIT_SECONDS = 20.0
+
 # Recording protection (setting `livetv_protect_recordings`, default off).
 #
 # Some accounts carry ONE heavy connection well and punish a second one on
@@ -713,7 +741,7 @@ PROTECTED_REFUSAL_DETAIL = ("A recording is running and recording protection is 
 class _Lease:
     """One upstream pull's claim on a connection slot."""
     __slots__ = ("id", "kind", "priority", "owner", "stream_key", "started", "preempted", "on_preempt",
-                 "provider_id", "channel_id", "account")
+                 "provider_id", "channel_id", "account", "phase", "programme_end")
 
     def __init__(self, lease_id: int, kind: str, owner: "str | None", stream_key: "str | None" = None):
         self.id = lease_id
@@ -730,6 +758,10 @@ class _Lease:
         self.provider_id = None
         self.channel_id = None
         self.account = None     # (server host, username): two provider rows, one account
+        # A recording's phase and its programme's end (UTC), #300; a recording
+        # counts as inside its programme until a lookup says otherwise.
+        self.phase = "programme"
+        self.programme_end = None
 
 
 class _StreamSlots:
@@ -748,6 +780,7 @@ class _StreamSlots:
         self.leases: "dict[int, _Lease]" = {}
         self.refused = 0
         self.preempted_since_start = 0
+        self.padding_handovers = 0     # #300: recordings in post-padding stopped for one starting
         self.last_refused: "dict | None" = None
         self._next_id = 1
         # Replaced (not cleared) each time it fires, so a waiter that took a
@@ -908,7 +941,8 @@ class _StreamSlots:
         theirs = self._waiting_provider.get(waiter_id)
         return theirs is None or provider_id is None or theirs == provider_id
 
-    def sync_recordings(self, stream_keys, issued_at: "float | None" = None) -> int:
+    def sync_recordings(self, stream_keys, issued_at: "float | None" = None,
+                        phases: "dict | None" = None) -> int:
         """Bring running pulls into line with which channels are recorded NOW.
 
         Promote: Jellyfin marks a timer InProgress only AFTER its tuner
@@ -920,7 +954,11 @@ class _StreamSlots:
         Demote: a recording that has ended while a viewer keeps watching the
         same channel must go back to viewer priority, or it would hold a
         recording's rank for ever and the next scheduled recording on another
-        channel could be refused for it. Returns how many changed."""
+        channel could be refused for it.
+
+        Phases (#300): `phases` maps a stream key to (phase, programme end);
+        a key it lacks (a reservation), or no `phases` at all, is inside its
+        programme. Returns how many ranks or phases changed."""
         keys = set(stream_keys or ())
         n = 0
         for lease in self.leases.values():
@@ -935,6 +973,15 @@ class _StreamSlots:
                 lease.kind, lease.priority = "live", _LEASE_PRIORITY["live"]
                 n += 1
                 logger.info(f"[LiveTV] '{lease.owner}' is no longer being recorded — back to viewer priority")
+            phase, end = ((phases or {}).get(lease.stream_key) or ("programme", None)) \
+                if lease.kind == "recording" else ("programme", None)
+            if (lease.phase, lease.programme_end) != (phase, end):
+                if lease.kind == "recording" and phase != lease.phase:
+                    n += 1
+                    if phase == "post" and end is not None:
+                        logger.info(f"[LiveTV] '{lease.owner}' is in its post-padding (its programme ended "
+                                    f"{end:%H:%M} UTC): a recording whose programme is starting may take its slot")
+                lease.phase, lease.programme_end = phase, end
         if n:
             self._wake()        # a demoted pull may now be a waiting recording's to take
         if self.protect:
@@ -944,6 +991,30 @@ class _StreamSlots:
             # is stopped as soon as Jellyfin says it is not a recording.
             self._enforce_soon(live_before=issued_at)
         return n
+
+    def reset_phases(self) -> None:
+        """Jellyfin could not be asked: every recording counts as inside its
+        programme again (#300), so nothing is stopped for another recording."""
+        for lease in self.leases.values():
+            lease.phase, lease.programme_end = "programme", None
+
+    def _padding_victim(self, provider_id=None, own_full: bool = False) -> "_Lease | None":
+        """#300: the recording in its post-padding whose programme ended
+        first (of the full account's when that is what is full)."""
+        candidates = [l for l in self.leases.values()
+                      if l.kind == "recording" and l.phase == "post" and not l.preempted
+                      and (not own_full or l.provider_id == provider_id)]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda l: (l.programme_end or datetime.max, l.started))
+
+    def _handover_due(self) -> bool:
+        """A running recording's programme ends within _HANDOVER_WAIT_SECONDS
+        (or has ended): a recording opening now may get its slot soon."""
+        soon = datetime.utcnow() + timedelta(seconds=_HANDOVER_WAIT_SECONDS + _PHASE_GRACE_SECONDS)
+        return any(l.kind == "recording" and not l.preempted and l.phase != "pre"
+                   and l.programme_end is not None and l.programme_end <= soon
+                   for l in self.leases.values())
 
     def _wake(self):
         if self._freed is not None:
@@ -970,8 +1041,14 @@ class _StreamSlots:
         self.leases.pop(victim.id, None)
         lease = self._grant(kind, owner, stream_key, provider_id)
         self.preempted_since_start += 1
-        logger.warning(f"[LiveTV] At capacity: {kind} '{owner}' takes the slot of {victim.kind} "
-                       f"'{victim.owner}', which is stopped")
+        if victim.kind == "recording" and victim.phase == "post":
+            self.padding_handovers += 1
+            logger.warning(f"[LiveTV] At capacity: recording '{owner}' takes the slot of recording "
+                           f"'{victim.owner}', which is stopped — its programme is over; only its "
+                           f"post-padding is lost")
+        else:
+            logger.warning(f"[LiveTV] At capacity: {kind} '{owner}' takes the slot of {victim.kind} "
+                           f"'{victim.owner}', which is stopped")
         if victim.on_preempt is not None:
             try:
                 result = victim.on_preempt()
@@ -996,7 +1073,8 @@ class _StreamSlots:
     async def acquire_lease(self, limit: int, wait: float, kind: str = "live",
                             owner: "str | None" = None, stream_key: "str | None" = None,
                             certain: bool = True, provider_id: "int | None" = None,
-                            provider_limit: int = 0) -> "_Lease | None":
+                            provider_limit: int = 0, phase: str = "programme",
+                            fresh_since: "float | None" = None) -> "_Lease | None":
         """A slot for one upstream pull, or None when refused at capacity.
 
         With recording protection on (self.protect): a recording first stops
@@ -1007,7 +1085,13 @@ class _StreamSlots:
         recording) and a recording stops films only.
 
         `provider_id` / `provider_limit`: the account this pull is on and how
-        many streams it carries at once (0: no limit of its own)."""
+        many streams it carries at once (0: no limit of its own).
+
+        `phase` (#300): where this recording is in its timer. One whose
+        programme has not ended may take the slot of a recording in its
+        post-padding, on a lookup answer issued at or after `fresh_since`
+        (when it began to open); it waits up to _HANDOVER_WAIT_SECONDS for
+        that answer when a running recording's programme is just ending."""
         # The background stream checker never holds a connection anyone
         # wants: its check in flight is stopped (and closed) first.
         await _preempt_checker(f"{kind} '{owner}' is opening")
@@ -1028,9 +1112,18 @@ class _StreamSlots:
         if self._fits(limit, pid, plimit) and not any(
                 p <= prio for k, (p, _) in self._waiting.items() if self._competes(k, pid)):
             return self._grant(kind, owner, stream_key, pid)
-        victim = self._victim_for(kind, pid, self._own_full(pid, plimit))
+        def victim_now():
+            v = self._victim_for(kind, pid, self._own_full(pid, plimit))
+            if v is None and kind == "recording" and phase != "post" \
+                    and _recording_answer_is_current(since=fresh_since):
+                v = self._padding_victim(pid, self._own_full(pid, plimit))
+            return v
+
+        victim = victim_now()
         if victim is not None:
             return await self._take_from(victim, kind, owner, stream_key, pid)
+        if kind == "recording" and phase != "post" and self._handover_due():
+            wait = max(wait, _HANDOVER_WAIT_SECONDS)
         if self._freed is None:
             self._freed = asyncio.Event()
         loop = asyncio.get_running_loop()
@@ -1049,7 +1142,7 @@ class _StreamSlots:
                     return self._grant(kind, owner, stream_key, pid)
                 # Something may have become takeable while we waited (a
                 # recording demoted back to a viewer when its timer ended).
-                victim = self._victim_for(kind, pid, self._own_full(pid, plimit))
+                victim = victim_now()
                 if victim is not None and self._first_in_line(me):
                     return await self._take_from(victim, kind, owner, stream_key, pid)
                 remaining = deadline - loop.time()
@@ -1460,15 +1553,51 @@ def _timer_guide_number(ext: str, m3u_ids) -> "str | None":
     return None
 
 
+class _RecordingAnswer(set):
+    """GuideNumbers being recorded, plus `phases`: GuideNumber -> (phase,
+    programme end UTC), see _timer_phase (#300)."""
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.phases: "dict[str, tuple]" = {}
+
+
+_PHASE_ORDER = {"programme": 0, "pre": 1, "post": 2}
+
+
+def _timer_phase(timer: dict, now: "datetime") -> tuple:
+    """(phase, programme end) of a timer being recorded: "pre" before its
+    StartDate, "post" after its EndDate (_PHASE_GRACE_SECONDS of grace each
+    side), else "programme". A timer without dates is inside its programme."""
+    start, end = _parse_timer_date(timer.get("StartDate")), _parse_timer_date(timer.get("EndDate"))
+    grace = timedelta(seconds=_PHASE_GRACE_SECONDS)
+    if start is not None and now < start - grace:
+        return "pre", end
+    if end is not None and now > end + grace:
+        return "post", end
+    return "programme", end
+
+
+def _add_phase(phases: dict, number: str, phase: tuple) -> None:
+    """A channel with several timers (back to back) takes the most protected
+    phase: inside a programme, else pre-padding; the latest end."""
+    old = phases.get(number)
+    if old is None or _PHASE_ORDER[phase[0]] < _PHASE_ORDER[old[0]]:
+        phases[number] = phase
+    elif _PHASE_ORDER[phase[0]] == _PHASE_ORDER[old[0]] and phase[1] and (old[1] is None or phase[1] > old[1]):
+        phases[number] = phase
+
+
 def _recording_stream_ids_from_jellyfin(url: str, key: str, m3u_ids=None) -> "set[str] | None":
     """GuideNumbers of the channels Jellyfin is recording, or None if it
     gave no usable answer. Blocking; run it off the event loop. Raises when
     Jellyfin cannot be asked at all. `m3u_ids`: Tentacle's M3U channel ids
-    (default _tentacle_m3u_ids, read only when a timer has such an id)."""
+    (default _tentacle_m3u_ids, read only when a timer has such an id).
+    The answer's `phases` say where each recording is in its timer (#300)."""
     data = _jellyfin_timers(url, key)
     if not isinstance(data, dict):
         return None
-    out = set()
+    out = _RecordingAnswer()
     now = datetime.utcnow()
     items = data.get("Items") or []
     m3u = m3u_ids if m3u_ids is not None else _tentacle_m3u_ids
@@ -1482,6 +1611,7 @@ def _recording_stream_ids_from_jellyfin(url: str, key: str, m3u_ids=None) -> "se
         if status == "InProgress":
             _remember_fired_timer(timer, now)
             out.add(number)
+            _add_phase(out.phases, number, _timer_phase(timer, now))
         elif _timer_counts(timer, now):
             # Jellyfin opens the tuner stream BEFORE it marks the timer
             # InProgress, so the pull that starts a recording would be a
@@ -1489,6 +1619,7 @@ def _recording_stream_ids_from_jellyfin(url: str, key: str, m3u_ids=None) -> "se
             # cannot take a slot from a viewer. A timer that is due counts
             # as recording already.
             out.add(number)
+            _add_phase(out.phases, number, _timer_phase(timer, now))
     present = {t.get("Id") for t in items}
     for tid, expiry in list(_fired_timers.items()):
         if tid not in present or now >= expiry:
@@ -1745,6 +1876,8 @@ def _recording_lookup_done(task):
     if failure is not None:
         cache["failures"] = cache.get("failures", 0) + 1
         cache["retry_at"] = now + min(60.0, _RECORDING_LOOKUP_TTL * 2 ** (cache["failures"] - 1))
+        cache["phases"] = {}
+        _stream_slots.reset_phases()      # #300: no answer, every recording is inside its programme
         if cache["failures"] == 1:
             logger.warning(f"[LiveTV] Could not ask Jellyfin which channels are recording ({failure}); "
                            f"keeping the last answer and retrying at most once a minute")
@@ -1755,9 +1888,15 @@ def _recording_lookup_done(task):
     if sids is not None:
         cache["ok_at"] = cache["at"]     # a lookup Jellyfin actually answered
         cache["sids"] = set(sids)
+        cache["phases"] = dict(getattr(sids, "phases", None) or {})
         cache["answer_issued_at"] = issued if issued is not None else now
         reserved_keys = {r["stream_key"] for r in _reserved_channels.values() if r.get("stream_key")}
-        _stream_slots.sync_recordings(cache["sids"] | reserved_keys, issued_at=cache["answer_issued_at"])
+        _stream_slots.sync_recordings(cache["sids"] | reserved_keys, issued_at=cache["answer_issued_at"],
+                                      phases={k: v for k, v in cache["phases"].items() if k not in reserved_keys})
+        if _stream_slots._waiting:
+            # A recording waiting at the limit decides on this answer (#300):
+            # the one it may take over may have been in its post-padding already.
+            _stream_slots._wake()
 
 
 # One upstream pull per channel, fanned out to every client watching it.
@@ -2062,6 +2201,14 @@ def _same_account(a: "_Lease", b: "_Lease") -> bool:
     return a.provider_id is not None and a.provider_id == b.provider_id
 
 
+def _rank(lease: "_Lease") -> int:
+    """A pull's rank for #184's rival test: a recording in its post-padding
+    ranks just above a viewer (#300), below a recording inside its programme."""
+    if lease.kind == "recording" and lease.phase == "post":
+        return _PADDING_PRIORITY
+    return lease.priority
+
+
 def _rival_delivering(lease: "_Lease | None") -> "_Lease | None":
     """#184: another pull on the same provider account, of equal or higher
     priority (a recording for a recording; a recording or a viewer for a
@@ -2074,7 +2221,7 @@ def _rival_delivering(lease: "_Lease | None") -> "_Lease | None":
         if (other is lease or other.preempted or not _same_account(other, lease)
                 or other.channel_id is None or other.channel_id == lease.channel_id):
             continue
-        prio = other.priority
+        prio = _rank(other)
         if other.kind == "live" and _recording_cache.get("ok_at", -1e9) < other.started + _CLASSIFY_GRACE:
             # Jellyfin has not answered a lookup made well after this pull
             # opened (it marks a timer InProgress only AFTER the tuner stream
@@ -2082,7 +2229,7 @@ def _rival_delivering(lease: "_Lease | None") -> "_Lease | None":
             # not promoted yet. Never take the account from it on a guess
             # (fuzz seeds 34, 7007, 7095).
             prio = _LEASE_PRIORITY["recording"]
-        if prio > lease.priority:
+        if prio > _rank(lease):
             continue
         st = _stream_status.get(other.channel_id)
         if st and st.get("reviving_at") is not None and now - st["reviving_at"] <= _RIVAL_FRESH:
@@ -2488,6 +2635,8 @@ def _stream_snapshot(db) -> list:
             # the GuideNumber Jellyfin knows this channel by (hdhr_<stream_id>)
             "stream_id": guide_number(ch, _offsets(db)) if ch else None,
             "kind": lease.kind if lease else None,
+            # #300: "pre" / "programme" / "post" (padding) for a recording
+            "recording_phase": lease.phase if lease is not None and lease.kind == "recording" else None,
             "state": st["state"],
             "for_seconds": round(max(0.0, now - st["since"]), 1),
             "open_seconds": round(max(0.0, now - st["opened_at"]), 1),
@@ -2533,6 +2682,7 @@ def live_streams(db: Session = Depends(get_db)):
         "limit": overall_stream_limit(db),
         "active": _stream_slots.active,
         "preempted_since_start": _stream_slots.preempted_since_start,
+        "padding_handovers": _stream_slots.padding_handovers,
         "reconnect_budget_seconds": _reconnect_budget(db),
         "reserved_channel_ids": sorted(list(_reserved_channels)),
         # Channels the provider answered with a placeholder (black.ts) instead
@@ -5062,12 +5212,18 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
         slate = await _nothing_on_response(channel_id, lines) if lines else None
         if slate is not None:
             return slate
+    stream_key = guide_number(ch, _offsets(db)) if ch else None
+    # #300: a reservation is inside its programme; a timer says where it is.
+    reserved_now = channel_id in _reserved_channels
+    phase = "programme" if reserved_now else ((_recording_cache.get("phases") or {}).get(stream_key)
+                                              or ("programme", None))[0]
     try:
         lease = await _stream_slots.acquire_lease(limit, _SLOT_WAIT_SECONDS, kind, f"channel:{channel_id}",
-                                                  stream_key=guide_number(ch, _offsets(db)) if ch else None,
+                                                  stream_key=stream_key,
                                                   certain=certain,
                                                   provider_id=ch.provider_id if ch else None,
-                                                  provider_limit=provider_limit)
+                                                  provider_limit=provider_limit,
+                                                  phase=phase, fresh_since=open_began)
     except RecordingProtected:
         raise _TunerRefusal(PROTECTED_REFUSAL_DETAIL)
     if lease is None:
