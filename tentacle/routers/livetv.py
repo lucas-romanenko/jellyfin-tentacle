@@ -4947,6 +4947,20 @@ async def stream_head(channel_id: int, db: Session = Depends(get_db)):
     )
 
 
+@router.get("/api/live/logo/{name}")
+def channel_logo_copy(name: str):
+    """Tentacle's copy of a channel logo (services/channel_logos.py, #137):
+    what the guide gets for a provider logo that went dead. Open like the
+    tuner's own addresses (Jellyfin fetches it without a sign-in); the name
+    is the copy's hash, nothing else is reachable."""
+    from services import channel_logos
+    found = channel_logos.cached_file(name)
+    if not found:
+        raise HTTPException(404, "No such logo")
+    path, media_type = found
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "public, max-age=86400"})
+
+
 @router.get("/api/live/stream/{channel_id}")
 async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
     """Stream proxy for IPTV channels.

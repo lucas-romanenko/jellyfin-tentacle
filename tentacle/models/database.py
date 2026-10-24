@@ -928,6 +928,14 @@ class LiveChannel(Base):
     # The admin's own logo (a URL): channel syncs rewrite `logo_url` from the
     # provider and never touch this, so it wins (a provider's wrong logo).
     custom_logo_url = Column(String, nullable=True)
+    # The logo the fallback chain found when the provider's is missing, dead,
+    # not a picture, or one group picture many different channels share
+    # (services/channel_logos.py, #137), and where it came from: "same
+    # channel" (another feed of it), "guide" (the guide feed's icon),
+    # "library" (the open logo library) or "cache" (Tentacle's copy of the
+    # provider's logo from when it still worked). NULL: the provider's is fine.
+    auto_logo_url = Column(String, nullable=True)
+    auto_logo_source = Column(String, nullable=True)
     group_title = Column(String, nullable=True)  # Category/group from provider
     epg_channel_id = Column(String, nullable=True)  # tvg-id for EPG matching
     # The admin's own guide id for the channel. Channel syncs never touch it,
@@ -966,8 +974,14 @@ class LiveChannel(Base):
 
     @property
     def guide_logo(self):
-        """The logo people see: the admin's, else the provider's."""
-        return (self.custom_logo_url or "").strip() or self.logo_url or None
+        """The logo people see: the admin's, else the one the fallback chain
+        found (services/channel_logos.py), else the provider's."""
+        return (self.custom_logo_url or "").strip() or self.auto_logo_url or self.logo_url or None
+
+    @property
+    def automatic_logo(self):
+        """guide_logo without the admin's: what the channel shows by itself."""
+        return self.auto_logo_url or self.logo_url or None
 
     @property
     def guide_epg_id(self):
@@ -1089,6 +1103,22 @@ class LiveKeyAlias(Base):
     old_key = Column(String, primary_key=True)
     new_key = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class LiveLogo(Base):
+    """A channel logo address Tentacle checked and keeps a copy of
+    (services/channel_logos.py, #137), keyed by the address without its query
+    (panels add a cache buster per channel). state: "ok" (a picture; its copy
+    is `file` in the logo cache), "bad" (answers, but no picture or a tiny
+    placeholder) or "dead" (fails twice in a row: `fails`). A copy outlives a
+    logo that went dead, so the guide keeps it."""
+    __tablename__ = "live_logos"
+    url = Column(String, primary_key=True)
+    state = Column(String, nullable=True)
+    fails = Column(Integer, default=0)
+    file = Column(String, nullable=True)
+    detail = Column(String, nullable=True)
+    checked_at = Column(DateTime, nullable=True)
 
 
 class LivePoolArrival(Base):

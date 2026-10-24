@@ -37,6 +37,7 @@ ALLOW = {
     ("DELETE", "/api/library/item/{media_type}/{tmdb_id}"): "plugin ItemRemoved hook: internal secret, admin, "
                                                             "or confirmed by Jellyfin in the handler (#139)",
     ("GET", "/api/live/stream/{channel_id}"): "HDHomeRun tuner, Jellyfin cannot send credentials",
+    ("GET", "/api/live/logo/{name}"): "a channel logo's copy for Jellyfin's guide (#137); hash names only",
     ("GET", "/api/live/playlist.m3u"): "M3U tuner",
     ("GET", "/api/live/tuner/all.m3u"): "M3U tuner Tentacle gives Jellyfin (everyone's channels)",
     ("GET", "/api/live/users/{user_id}/tuner.m3u"): "M3U tuner Tentacle gives Jellyfin (one person's channels)",
