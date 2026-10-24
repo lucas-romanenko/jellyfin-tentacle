@@ -66,6 +66,8 @@ public sealed class SimilarItemsFilter : IAsyncActionFilter
     private const int DefaultLimit = 12;
 
     private static readonly ConcurrentDictionary<(Guid Item, Guid User), (Guid[] Ids, DateTime At)> Results = new();
+    // One computation per title and user at a time: Jellyfin Web asks twice per page.
+    private static readonly ConcurrentDictionary<(Guid Item, Guid User), Lazy<Task<Guid[]>>> InFlight = new();
     private static readonly ConcurrentDictionary<string, (Related Value, DateTime Until)> RelatedCache = new();
 
     private readonly ILibraryManager _library;
@@ -166,9 +168,26 @@ public sealed class SimilarItemsFilter : IAsyncActionFilter
         }
         else
         {
-            var related = await RelatedAsync(item, context).ConfigureAwait(false);
-            ids = Rank(item, user, related).Select(i => i.Id).ToArray();
-            Results[key] = (ids, DateTime.UtcNow);
+            var task = InFlight.GetOrAdd(key, _ => new Lazy<Task<Guid[]>>(async () =>
+            {
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                var related = await RelatedAsync(item, context).ConfigureAwait(false);
+                var backend = clock.ElapsedMilliseconds;
+                var row = await Task.Run(() => Rank(item, user, related)).ConfigureAwait(false);
+                var found = row.Select(i => i.Id).ToArray();
+                Results[key] = (found, DateTime.UtcNow);
+                _logger.LogInformation("[Tentacle] More Like This for {Name}: {Count} titles in {Ms} ms (Tentacle {Backend} ms)",
+                    item.Name, found.Length, clock.ElapsedMilliseconds, backend);
+                return found;
+            })).Value;
+            try
+            {
+                ids = await task.ConfigureAwait(false);
+            }
+            finally
+            {
+                InFlight.TryRemove(key, out _);
+            }
         }
 
         var items = ids.Select(id => _library.GetItemById<BaseItem>(id, user)).Where(i => i is not null)
@@ -282,28 +301,20 @@ public sealed class SimilarItemsFilter : IAsyncActionFilter
             return _library.GetItemList(q);
         }
 
-        // TMDB: the franchise, then its recommendations and similar titles.
-        foreach (var id in related.Collection.Take(30))
+        // TMDB: the franchise, then its recommendations and similar titles,
+        // looked up side by side (one indexed query per id).
+        var wanted = related.Collection.Take(30).Select(id => (id, 100))
+            .Concat(related.Recommendations.Take(20).Select((id, r) => (id, 40 - r)))
+            .Concat(related.Similar.Take(20).Select((id, r) => (id, 15 - (r / 2))))
+            .ToList();
+        var found = new BaseItem[wanted.Count][];
+        Parallel.For(0, wanted.Count, new ParallelOptions { MaxDegreeOfParallelism = 6 },
+            k => found[k] = ByTmdb(wanted[k].Item1).ToArray());
+        for (var k = 0; k < wanted.Count; k++)
         {
-            foreach (var i in ByTmdb(id))
+            foreach (var i in found[k])
             {
-                Add(i).Score += 100;
-            }
-        }
-
-        for (var r = 0; r < Math.Min(related.Recommendations.Length, 20); r++)
-        {
-            foreach (var i in ByTmdb(related.Recommendations[r]))
-            {
-                Add(i).Score += 40 - r;
-            }
-        }
-
-        for (var r = 0; r < Math.Min(related.Similar.Length, 20); r++)
-        {
-            foreach (var i in ByTmdb(related.Similar[r]))
-            {
-                Add(i).Score += 15 - (r / 2);
+                Add(i).Score += wanted[k].Item2;
             }
         }
 
@@ -311,44 +322,54 @@ public sealed class SimilarItemsFilter : IAsyncActionFilter
         var people = _library.GetPeople(item);
         var director = people.FirstOrDefault(p => p.Type == PersonKind.Director);
         var actors = people.Where(p => p.Type == PersonKind.Actor).OrderBy(p => p.SortOrder ?? int.MaxValue).Take(5).ToList();
-        void ByPerson(PersonInfo? p, int points)
+        IReadOnlyList<BaseItem> ByPerson(PersonInfo? p)
         {
             // By name: GetPerson(name) would make a Person item for a name the
             // library doesn't have, and PersonIds wants Person item ids.
             if (p is null || string.IsNullOrWhiteSpace(p.Name))
             {
-                return;
+                return Array.Empty<BaseItem>();
             }
 
             var q = Query();
             q.Person = p.Name;
             q.Limit = PersonPool;
-            foreach (var i in _library.GetItemList(q))
-            {
-                Add(i).Score += points;
-            }
+            return _library.GetItemList(q);
         }
 
-        ByPerson(director, 20);
-        foreach (var a in actors)
-        {
-            ByPerson(a, 10);
-        }
-
-        // The genre pool: the most-rated titles sharing a genre.
+        // The genre pool: the most-rated titles sharing a genre. Side by side
+        // with the people's titles.
         var genres = item.Genres ?? Array.Empty<string>();
+        var who = new List<(PersonInfo? Person, int Points)> { (director, 20) };
+        who.AddRange(actors.Select(a => ((PersonInfo?)a, 10)));
+        var byPerson = new IReadOnlyList<BaseItem>[who.Count];
         var genrePool = new List<BaseItem>();
-        if (genres.Length > 0)
-        {
-            var q = Query();
-            q.Genres = genres;
-            q.Limit = GenrePool;
-            q.OrderBy = new[] { (ItemSortBy.CommunityRating, SortOrder.Descending), (ItemSortBy.SortName, SortOrder.Ascending) };
-            genrePool = _library.GetItemList(q).ToList();
-            foreach (var i in genrePool)
+        Parallel.Invoke(new ParallelOptions { MaxDegreeOfParallelism = 6 },
+            new Action[]
             {
-                Add(i);
+                () =>
+                {
+                    if (genres.Length > 0)
+                    {
+                        var q = Query();
+                        q.Genres = genres;
+                        q.Limit = GenrePool;
+                        q.OrderBy = new[] { (ItemSortBy.CommunityRating, SortOrder.Descending), (ItemSortBy.SortName, SortOrder.Ascending) };
+                        genrePool = _library.GetItemList(q).ToList();
+                    }
+                },
+            }.Concat(Enumerable.Range(0, who.Count).Select(k => (Action)(() => byPerson[k] = ByPerson(who[k].Person)))).ToArray());
+        for (var k = 0; k < who.Count; k++)
+        {
+            foreach (var i in byPerson[k])
+            {
+                Add(i).Score += who[k].Points;
             }
+        }
+
+        foreach (var i in genrePool)
+        {
+            Add(i);
         }
 
         // Keywords: the title's own tags, without Tentacle's and without the
@@ -390,10 +411,19 @@ public sealed class SimilarItemsFilter : IAsyncActionFilter
             seen.Add("key:" + item.PresentationUniqueKey);
         }
 
+        seen.Add("name:" + (item.Name ?? string.Empty).Trim().ToLowerInvariant() + ":"
+                 + (item.ProductionYear?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "?"));
+
         bool First(BaseItem i)
         {
             var tmdb = i.GetProviderId(MetadataProvider.Tmdb);
-            var keys = new[] { string.IsNullOrEmpty(tmdb) ? null : "tmdb:" + tmdb, string.IsNullOrEmpty(i.PresentationUniqueKey) ? null : "key:" + i.PresentationUniqueKey }
+            var keys = new[]
+                {
+                    string.IsNullOrEmpty(tmdb) ? null : "tmdb:" + tmdb,
+                    string.IsNullOrEmpty(i.PresentationUniqueKey) ? null : "key:" + i.PresentationUniqueKey,
+                    // Two copies of one title, one without a TMDB id: "Up" (2009) twice.
+                    "name:" + (i.Name ?? string.Empty).Trim().ToLowerInvariant() + ":" + (i.ProductionYear?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "?"),
+                }
                 .Where(k => k is not null).Cast<string>().ToList();
             if (keys.Any(seen.Contains))
             {
