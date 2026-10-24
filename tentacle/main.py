@@ -816,6 +816,12 @@ def setup_scheduler(db):
     scheduler.add_job(_rec_book.run_scan, IntervalTrigger(minutes=_rec_book.SCAN_MINUTES,
                                                           start_date=datetime.now() + timedelta(seconds=240)),
                       id="recording_rules", replace_existing=True, max_instances=1, coalesce=True)
+    # Pictures for Live TV recordings (services/recording_art): a few finished
+    # recordings per pass; the job checks its setting itself.
+    from services.recording_art import job as _rec_art
+    scheduler.add_job(_rec_art.run_scheduled, IntervalTrigger(minutes=_rec_art.PASS_MINUTES,
+                                                              start_date=datetime.now() + timedelta(seconds=300)),
+                      id="recording_art", replace_existing=True, max_instances=1, coalesce=True)
     # The welcome's "You now have access to N movies, N TV shows and N live TV
     # channels" for everyone it is still due for, kept counted (services/welcome.py).
     from services.welcome import warm_everyone_due as _welcome_counts

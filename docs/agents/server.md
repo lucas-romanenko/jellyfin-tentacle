@@ -1173,6 +1173,49 @@ schedule or score service: games are found in the guide Tentacle serves.
 - `GET /api/live/recordings/busy`: Jellyfin recording or a padded start
   within 20 min; the maintainer's deploy gate checks the same.
 
+## Pictures for recordings (`services/recording_art/`, #815)
+
+One 16:9 JPEG (1280x720) per finished Live TV recording, uploaded as both
+Primary and Thumb (`POST /Items/{id}/Images/{type}`, base64 body), so the TV
+app's Recordings grid (sized from Primary), Recorded TV (Thumb first) and
+Jellyfin Web show one shape. Setting `recording_art_enabled` (default on);
+GET/PUT `/api/live/recordings/artwork`; Sources → Live TV → More.
+
+- `job.py`: `recording_art` job every 10 min (first 5 min after start),
+  `PER_PASS` (4) recordings, newest first, one at a time. Recordings = items
+  of the libraries whose locations hold Jellyfin's recordings folder
+  (`/System/Configuration/livetv`); a library with `SaveLocalMetadata`
+  is skipped with the reason on the settings page (the recordings folder is
+  never written to). A recording waits until `DateCreated + RunTimeTicks +
+  10 min`, and while a timer of the same name records (or its booking is
+  `recording`).
+- Sources in order (`make_picture`): game → matchup card, league event →
+  league card (`cards.py`); show/film → TMDB backdrop through
+  `TMDBService` at `tmdb_match_threshold`, `strict=True` (TMDB down = next
+  source); the EPG programme's `icon_url` when about 16:9 (`is_safe_url`, no
+  redirects, 8 MB cap); a frame (`frames.py`); a title card.
+- What it is (`what.py`, pure): the booking (rule kind/league/team, its
+  `why` quotes the listing that named the opponent) or the title,
+  sub-title and description with `leagues.json` and `recording_rules.match`
+  (folded names, codes, arenas = home, "A at/@ B" = B home).
+  Recording ↔ booking: same folded title, `DateCreated` inside the padded
+  window. Recording ↔ EPG programme: same title, starting 0–45 min after
+  `DateCreated`.
+- Frames: MPEG-TS only; `GET /Videos/{id}/stream?static=true` with a
+  `Range` of `READ_BYTES` (6 MB) at 30/50/70 % of the programme after the
+  pre-padding (byte offset ∝ time); ffmpeg `-skip_frame nokey` from stdin,
+  `signalstats` (black: YAVG < 26, flat: YHIGH-YLOW < 22), the most
+  edges wins; `nice 19`, 30 s timeout. Not while Jellyfin records or a
+  recording starts within 20 min (`busy_from_timers`): the item waits.
+- Safety (`recording_artwork`, plain columns: item id, kind recording/folder,
+  state, source, the Primary/Thumb tags Jellyfin gave): an item with any
+  picture Tentacle didn't set → `theirs`, never touched; a `set` row whose
+  tags no longer match → `left`, never set again (also checked when turning
+  off). Off: deletes only images whose tag is still the stored one.
+  Title folders (Jellyfin makes a Folder for 2+ files): the newest child's
+  picture, or the league card when it is a game; follows the newest while
+  still Tentacle's. The key is only ever in the `X-Emby-Token` header.
+
 ## YouTube per person (`services/youtube/follows.py`, `routers/my_youtube.py`, dashboard `static/js/myyoutube.js`)
 
 - `youtube_follows` (channel_fk, jellyfin_user_id without dashes, added_by =

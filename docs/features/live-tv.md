@@ -42,6 +42,20 @@ It stays quick with thousands of channels and works on a phone. (Jellyfin's TV l
 
 Recordings are made in Jellyfin as ordinary recordings, exactly like its Record button, so they play everywhere and keep recording if the rule is switched off. Tentacle only ever cancels the recordings it made, and never one that has started; what people set in Jellyfin themselves is left alone. Anyone whose account may record (People → Can record; admins always, kids never) can follow teams and make rules; they see everyone's, and change their own (admins change any). The list of leagues and teams is built in: Tentacle doesn't ask any league's schedule, so it finds the games your guide lists (usually a day or two ahead).
 
+### Pictures for recordings
+
+Every finished recording gets one wide (16:9) picture in Jellyfin, about 10 minutes after it ends, so recordings show in one shape everywhere: the TV app's Recordings and Recorded TV, Jellyfin Web, and home rows. Tentacle uses the first of these that works:
+
+1. **A game**: a card with the league, both teams (code and name), the date and the channel. Tentacle knows the teams from the team that booked it, or from the title and description ("NHL: Toronto Maple Leafs - Montreal Canadiens", "Canadiens at Blackhawks", "TOR @ MTL"). A race or a league with no teams named gets the league's card. No team logos, and no sports service is asked.
+2. **A show or film**: its picture from TMDB, only when the title matches well (and the year, when the title has one).
+3. **The guide's own picture** for the programme, when it is wide.
+4. **A frame from the recording**: three are taken (at 30%, 50% and 70% of the programme), black and blank ones are left out, and the one with the most in it wins. Never while Jellyfin is recording.
+5. **A card with the title**, the channel and the date.
+
+A folder of several recordings of one title gets the newest recording's picture, or the league's card for games.
+
+Tentacle only adds pictures: recordings, their files and what people have watched stay as they are. It never replaces a picture it didn't set (Jellyfin's own, or one someone chose), and a picture someone changed or removed is never set again. Switch it off under **Sources → Live TV → More → Pictures for recordings**: that removes only the pictures Tentacle added. If Jellyfin's Recordings library saves pictures into the media folders ("Save artwork into media folders"), Tentacle adds none and says so there.
+
 ## My Channels
 
 Everyone (admins too) has **My Channels** in Tentacle's sidebar once the household has Live TV channels.
