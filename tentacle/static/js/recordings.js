@@ -217,7 +217,7 @@ function recRenderTeams() {
       teams = `${find}<div class="rec-teams">${lg.teams.map(t => {
         const have = mine.some(r => r.kind === 'team' && r.league === lg.id && r.team === t.id && r.mine);
         const words = _recFold([t.name, t.short, t.abbr, ...(t.also || [])].join(' '));
-        const hide = find && rec.find && !words.includes(_recFold(rec.find)) ? ' hidden' : '';
+        const hide = find && !_recFound(words, rec.find) ? ' hidden' : '';
         return `<button class="rec-team${have ? ' on' : ''}" data-team="${escHtml(t.id)}" data-find="${escHtml(words)}" title="${escHtml(t.name)}"${hide}>`
           + `<span class="abbr">${escHtml(t.abbr || '')}</span><span>${have ? '✓ ' : ''}${escHtml(t.name)}</span></button>`;
       }).join('')}</div>`;
@@ -236,10 +236,15 @@ function _recFold(v) {
   return String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 }
 
+// the start of any of a team's names or words ("can" finds Canada, not Africa)
+function _recFound(words, q) {
+  q = _recFold(q);
+  return !q || (' ' + words).includes(' ' + q);
+}
+
 function recFindTeam(v) {
   rec.find = v;
-  const q = _recFold(v);
-  document.querySelectorAll('#rec-panel-teams .rec-team[data-find]').forEach(b => { b.hidden = !!q && !b.dataset.find.includes(q); });
+  document.querySelectorAll('#rec-panel-teams .rec-team[data-find]').forEach(b => { b.hidden = !_recFound(b.dataset.find, v); });
 }
 
 function _recModeText(r) {
