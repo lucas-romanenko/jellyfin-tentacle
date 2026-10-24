@@ -1044,7 +1044,7 @@ function _renderSeasons() {
     return `<div class="ep-picker-season" data-season="${s.season_number}">
       <div class="ep-picker-season-header" onclick="toggleSeasonAccordion(${s.season_number})">
         <span class="ep-arrow" id="ep-arrow-${s.season_number}">▶</span>
-        <input type="checkbox" class="ep-picker-season-check" onclick="event.stopPropagation();toggleSeasonAll(${s.season_number}, this.checked)">
+        <input type="checkbox" class="ep-picker-season-check" aria-label="${escapeAttr(s.name || 'Season ' + s.season_number)}: every episode" onclick="event.stopPropagation();toggleSeasonAll(${s.season_number}, this.checked)">
         <span>${escapeAttr(s.name || 'Season ' + s.season_number)}${airYear}</span>
         <span class="ep-count">${s.episode_count} ep</span>
       </div>
@@ -1259,7 +1259,7 @@ async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
       return `<div class="ep-picker-season" data-season="${sn}">
         <div class="ep-picker-season-header" onclick="toggleSeasonAccordion(${sn})">
           <span class="ep-arrow" id="ep-arrow-${sn}">▶</span>
-          <input type="checkbox" class="ep-picker-season-check" onclick="event.stopPropagation();toggleSeasonAll(${sn}, this.checked)" ${allMonitored ? 'checked' : ''}>
+          <input type="checkbox" class="ep-picker-season-check" aria-label="Season ${sn}: every episode" onclick="event.stopPropagation();toggleSeasonAll(${sn}, this.checked)" ${allMonitored ? 'checked' : ''}>
           <span>Season ${sn}</span>
           <span class="ep-count">${eps.length} ep</span>
         </div>
@@ -1456,7 +1456,7 @@ function _renderSeasonsWithVod() {
     return `<div class="ep-picker-season" data-season="${sn}">
       <div class="ep-picker-season-header" onclick="toggleSeasonAccordion(${sn})">
         <span class="ep-arrow" id="ep-arrow-${sn}">▶</span>
-        <input type="checkbox" class="ep-picker-season-check" ${checked ? 'checked' : ''} ${haveCount >= aired && aired > 0 ? 'disabled' : ''} onclick="event.stopPropagation();toggleSeasonAll(${sn}, this.checked)">
+        <input type="checkbox" class="ep-picker-season-check" aria-label="Season ${sn}: every episode" ${checked ? 'checked' : ''} ${haveCount >= aired && aired > 0 ? 'disabled' : ''} onclick="event.stopPropagation();toggleSeasonAll(${sn}, this.checked)">
         <span>Season ${sn}${airYear}</span>
         <span class="${countClass}">${countText}</span>${unairedLabel}
       </div>
@@ -3844,7 +3844,7 @@ function renderHomeRows() {
     const isBuiltin = row.type === 'builtin';
     // On Now is Tentacle's own row (favourite channels), not one of Jellyfin's
     const badge = isBuiltin && row.section_id !== 'onnow'
-      ? '<span style="font-size:9px;padding:2px 6px;border-radius:3px;background:var(--blue);color:#fff;white-space:nowrap">Jellyfin</span>'
+      ? '<span style="font-size:9px;padding:2px 6px;border-radius:3px;background:#2563eb;color:#fff;white-space:nowrap">Jellyfin</span>'
       : '<span style="font-size:9px;padding:2px 6px;border-radius:3px;background:var(--purple);color:#fff;white-space:nowrap">Tentacle</span>';
     const maxItemsInput = isBuiltin ? '' : `
       <input type="number" min="5" max="30" value="${Math.min(row.max_items || 20, 30)}"
@@ -4466,8 +4466,8 @@ async function addRuleCondition(field = 'genre', operator = 'contains', value = 
   row.style.marginBottom = '8px';
   row.style.alignItems = 'center';
   row.innerHTML = `
-    <select class="form-input" style="flex:1" onchange="updateCondOps(this)" data-cond-field>${fieldOpts}</select>
-    <select class="form-input" style="flex:1" data-cond-op></select>
+    <select class="form-input" style="flex:1" aria-label="Filter on" onchange="updateCondOps(this)" data-cond-field>${fieldOpts}</select>
+    <select class="form-input" style="flex:1" aria-label="Condition" data-cond-op></select>
     <div data-cond-val-wrap style="flex:1"></div>
     <button class="btn btn-danger btn-sm" onclick="this.parentElement.remove()" style="flex-shrink:0;padding:4px 8px">&#10005;</button>`;
   el.appendChild(row);
@@ -4487,19 +4487,19 @@ function _renderCondValueInput(row, field, value) {
     const opts = (_conditionOptions?.sources || []).map(s =>
       `<option value="${escapeAttr(s)}" ${s === value ? 'selected' : ''}>${escapeAttr(s)}</option>`
     ).join('');
-    wrap.innerHTML = `<select class="form-input" data-cond-val><option value="">Select source...</option>${opts}</select>`;
+    wrap.innerHTML = `<select class="form-input" aria-label="Value" data-cond-val><option value="">Select source...</option>${opts}</select>`;
   } else if (field === 'list') {
     const opts = (_conditionOptions?.lists || []).map(l =>
       `<option value="${escapeAttr(l.tag)}" ${l.tag === value ? 'selected' : ''}>${escapeAttr(l.name)}</option>`
     ).join('');
-    wrap.innerHTML = `<select class="form-input" data-cond-val><option value="">Select list...</option>${opts}</select>`;
+    wrap.innerHTML = `<select class="form-input" aria-label="Value" data-cond-val><option value="">Select list...</option>${opts}</select>`;
   } else if (field === 'downloaded') {
-    wrap.innerHTML = `<select class="form-input" data-cond-val>
+    wrap.innerHTML = `<select class="form-input" aria-label="Value" data-cond-val>
       <option value="yes" ${value === 'yes' || !value ? 'selected' : ''}>Yes (Radarr)</option>
       <option value="no" ${value === 'no' ? 'selected' : ''}>No (VOD only)</option>
     </select>`;
   } else {
-    wrap.innerHTML = `<input class="form-input" placeholder="Value" value="${escapeAttr(value)}" data-cond-val>`;
+    wrap.innerHTML = `<input class="form-input" aria-label="Value" placeholder="Value" value="${escapeAttr(value)}" data-cond-val>`;
   }
 }
 
@@ -5322,15 +5322,22 @@ function _actOpenAttrs(item) {
   const tmdb = parseInt(item.tmdb_id) || 0, tvdb = parseInt(item.tvdb_id) || 0;
   const type = item.media_type === 'series' ? 'series' : 'movie';
   if (!tmdb && !(type === 'series' && tvdb)) return '';
-  return ` role="button" tabindex="0" data-open="${type}:${tmdb}:${tvdb}"`;
+  return ` data-open="${type}:${tmdb}:${tvdb}"`;
 }
-// One listener for the whole tab: it re-renders every 3 seconds. The card's
-// own buttons and links keep their clicks.
+// The card's title. On a card that opens, it is the card's one keyboard and
+// screen-reader control (a real button), so the card itself stays a plain box
+// around its own buttons (#281: no control inside another control).
+function _actTitle(item, text) {
+  return `<div class="activity-title">${_actOpenAttrs(item)
+    ? `<button type="button" class="activity-open">${text}</button>` : text}</div>`;
+}
+// One listener for the whole tab: it re-renders every 3 seconds. A click
+// anywhere on the card opens it; the card's own buttons and links keep theirs.
+// Enter/Space on the title button arrive here as its click.
 function _activityCardOpen(e) {
-  if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
   const card = e.target.closest('.activity-card[data-open]');
   if (!card) return;
-  if (e.type === 'keydown' ? e.target !== card : e.target.closest('button, a, input, label')) return;
+  if (!e.target.closest('.activity-open') && e.target.closest('button, a, input, label')) return;
   e.preventDefault();
   const [type, tmdb, tvdb] = card.dataset.open.split(':');
   showDiscoverDetail(+tmdb, type, undefined, undefined, undefined, undefined, +tvdb);
@@ -5347,7 +5354,6 @@ function renderActivity(data) {
   if (!content._actOpen) {
     content._actOpen = true;
     content.addEventListener('click', _activityCardOpen);
-    content.addEventListener('keydown', _activityCardOpen);
   }
   if (!data) data = _activityData;
   if (!data) { content.innerHTML = '<div class="activity-empty">Loading…</div>'; return; }
@@ -5384,7 +5390,7 @@ function renderActivity(data) {
       return `<div class="activity-card" data-morph-key="dl:${escapeAttr(String(dl.source || ''))}:${escapeAttr(String(dl.queue_id ?? dl.title ?? ''))}"${_actOpenAttrs(dl)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
-          <div class="activity-title">${escapeAttr(dl.title)}${epLabel}</div>
+          ${_actTitle(dl, escapeAttr(dl.title) + epLabel)}
           <div class="activity-meta">${dl.year || ''}${metaParts ? ' · ' + metaParts : ''} ${reqByLabel}</div>
           <div class="activity-progress">
             <div class="activity-progress-bar"><div class="activity-progress-fill ${statusClass}" style="width:${pct}%"></div></div>
@@ -5417,7 +5423,7 @@ function renderActivity(data) {
       return `<div class="activity-card" data-morph-key="s:${escapeAttr(key)}"${_actOpenAttrs(item)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
-          <div class="activity-title">${escapeAttr(item.title)}${item.episode ? ' · ' + escapeAttr(item.episode) : ''}</div>
+          ${_actTitle(item, escapeAttr(item.title) + (item.episode ? ' · ' + escapeAttr(item.episode) : ''))}
           <div class="activity-meta">${escapeAttr(item.year || '')} · Looking for a release ${reqByLabel}</div>
           ${item.check ? `<div class="activity-check ${escapeAttr(item.check.state)}" title="${escapeAttr(item.check.summary)}">${escapeAttr(item.check.short)}</div>` : ''}
           <div class="activity-countdown activity-searching">${waited ? 'Searching for ' + escapeAttr(waited) : 'Searching'}</div>
@@ -5445,7 +5451,7 @@ function renderActivity(data) {
       return `<div class="activity-card" data-morph-key="r:${escapeAttr(item.media_type || '')}:${escapeAttr(String(item.tmdb_id || 0))}:${escapeAttr(item.episode || '')}"${_actOpenAttrs(item)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
-          <div class="activity-title">${escapeAttr(item.title)}${item.episode ? ' · ' + escapeAttr(item.episode) : ''}</div>
+          ${_actTitle(item, escapeAttr(item.title) + (item.episode ? ' · ' + escapeAttr(item.episode) : ''))}
           <div class="activity-meta">${item.year || ''} · Ready to watch ${_actFor(item)}</div>
           ${hrs ? `<div class="activity-countdown" style="color:var(--green)">${hrs}</div>` : ''}
           ${_watchOk(item.jellyfin) ? `<div class="activity-actions">${watchButtons(item.jellyfin, 'btn btn-xs')}</div>` : ''}
@@ -5461,7 +5467,7 @@ function renderActivity(data) {
     html += coming.map(item => `<div class="activity-card" data-morph-key="c:${escapeAttr(String(item.tmdb_id || item.tvdb_id || 0))}:${escapeAttr(item.episode || '')}"${_actOpenAttrs(item)}>
         <div class="activity-poster">${_activityPoster(item.poster_path)}</div>
         <div class="activity-info">
-          <div class="activity-title">${escapeAttr(item.title)} · ${escapeAttr(item.episode)}</div>
+          ${_actTitle(item, escapeAttr(item.title) + ' · ' + escapeAttr(item.episode))}
           <div class="activity-meta">${escapeAttr(item.episode_title || '')} ${_actFor(item)}</div>
           <div class="coming-day">${escapeAttr(_airDay(item.air_date_utc))}</div>
         </div>
@@ -5483,7 +5489,7 @@ function renderActivity(data) {
       return `<div class="activity-card" data-morph-key="u:${escapeAttr(item.media_type || '')}:${escapeAttr(String(item.tmdb_id || item.tvdb_id || 0))}"${_actOpenAttrs(item)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
-          <div class="activity-title">${escapeAttr(item.title)}</div>
+          ${_actTitle(item, escapeAttr(item.title))}
           <div class="activity-meta">${item.year || ''} · ${escapeAttr(item.release_date || '')} ${_actFor(item)}</div>
           ${daysUntil ? `<div class="activity-countdown">${escapeAttr(daysUntil)}</div>` : ''}
         </div>

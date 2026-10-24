@@ -42,17 +42,21 @@ function click(target) {
 function button(inside) {
   return { closest(sel) { return sel === 'button, a, input, label' ? this : (sel.startsWith('.activity-card') ? inside : null); } };
 }
+// The title: a button too, and the card's own open control.
+function title(inside) {
+  return { closest(sel) { return sel === '.activity-open' || sel === 'button, a, input, label' ? this : (sel.startsWith('.activity-card') ? inside : null); } };
+}
 const out = {};
 const movie = card({ tmdb_id: 603, media_type: 'movie' });
 const show = card({ tmdb_id: 0, tvdb_id: 81189, media_type: 'series' });
 const tvdbMovie = card({ tmdb_id: 0, tvdb_id: 5, media_type: 'movie' });
-out.role = movie.attrs.includes('role="button" tabindex="0"');
+out.role = /role=|tabindex=/.test(movie.attrs);
+out.title = _actTitle({ tmdb_id: 603, media_type: 'movie' }, 'The Matrix');
+out.plain_title = _actTitle({ tmdb_id: 0, media_type: 'movie' }, 'Unknown');
 out.tvdb_movie_attrs = tvdbMovie.attrs;
 click(movie); click(show);
 click(button(movie));   // the card's own Search again / Remove button
-_activityCardOpen({ type: 'keydown', key: 'Enter', target: movie, preventDefault() {} });
-_activityCardOpen({ type: 'keydown', key: 'a', target: movie, preventDefault() {} });
-_activityCardOpen({ type: 'keydown', key: ' ', target: button(movie), preventDefault() {} });
+click(title(movie));    // Enter/Space on the title button arrive as its click
 out.opened = opened;
 process.stdout.write(JSON.stringify(out));
 """
@@ -69,17 +73,21 @@ class ActivityCardsOpen(unittest.TestCase):
         for attrs in cards:
             self.assertRegex(attrs, r"\$\{_actOpenAttrs\((dl|item)\)\}")
         self.assertIn("content.addEventListener('click', _activityCardOpen);", self.render)
-        self.assertIn("content.addEventListener('keydown', _activityCardOpen);", self.render)
+        # The card is no control of its own (#281: its buttons would sit inside one).
+        self.assertNotIn("keydown", self.render)
+        self.assertEqual(5, self.render.count("${_actTitle("))
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
-    def test_click_and_keyboard_open_the_title_and_buttons_keep_theirs(self):
-        run = subprocess.run(["node", "-e", SCRIPT % (_fn("_actOpenAttrs"), _fn("_activityCardOpen"))],
+    def test_click_and_the_title_button_open_the_title_and_buttons_keep_theirs(self):
+        run = subprocess.run(["node", "-e", SCRIPT % (_fn("_actOpenAttrs") + _fn("_actTitle"), _fn("_activityCardOpen"))],
                              capture_output=True, text=True, timeout=30)
         if run.returncode:
             raise AssertionError(run.stderr)
         out = json.loads(run.stdout)
-        self.assertTrue(out["role"])
-        # Clicked movie, clicked TVDB-only show, Enter on the movie: nothing else.
+        self.assertFalse(out["role"])
+        self.assertEqual('<div class="activity-title"><button type="button" class="activity-open">The Matrix</button></div>', out["title"])
+        self.assertEqual('<div class="activity-title">Unknown</div>', out["plain_title"])
+        # Clicked movie, clicked TVDB-only show, the movie's title button: nothing else.
         self.assertEqual([[603, "movie", 0], [0, "series", 81189], [603, "movie", 0]], out["opened"])
         self.assertEqual("", out["tvdb_movie_attrs"], "a movie has no TVDB detail to open")
 

@@ -346,8 +346,10 @@ function recOpenEditor(id) {
   recPreview();
 }
 
+const REC_SELECT_NAMES = { pre_padding_minutes: 'Start early', post_padding_minutes: 'Keep going after',
+  playoff_extra_minutes: 'More for playoff games' };
 function _recSelect(name, values, cur, unit) {
-  return `<select class="form-input rec-in" data-k="${name}">${values.map(v =>
+  return `<select class="form-input rec-in" data-k="${name}" aria-label="${REC_SELECT_NAMES[name] || name}">${values.map(v =>
     `<option value="${v}"${Number(cur) === v ? ' selected' : ''}>${v} ${unit}</option>`).join('')}</select>`;
 }
 
