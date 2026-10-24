@@ -471,6 +471,31 @@ class Booking(unittest.TestCase):
         self.assertEqual(1, len([w for w in self.jf.writes if w[0] == "POST"]))
         self.assertEqual(["c5"], [b.pool_key for b in self.rows()])
 
+    def _slot(self, start):
+        self.jf.programmes.append({"Id": f"slot{start:%d%H}", "ChannelId": "jf7", "Name": "Penguins at Maple Leafs",
+                                   "StartDate": start.strftime("%Y-%m-%dT%H:%M:%S.0000000Z"),
+                                   "EndDate": (start + timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%S.0000000Z")})
+        return airing("c7", "Penguins at Maple Leafs", start, 180, "Penguins at Maple Leafs", event=True,
+                      raw="NHL | 01 - 7pm Penguins at Maple Leafs")
+
+    def test_an_event_slot_is_booked_only_close_to_its_start(self):
+        with mock.patch.object(B, "channel_ids", lambda db, entries=None: ({"c7": "jf7"}, {"jf7": "c7"})):
+            slot = self._slot(at(23))
+            self.scan(now=at(9), items=[slot])                  # 14 h ahead: its date isn't sure yet
+            self.assertEqual([], self.jf.writes)
+            self.assertEqual(["waiting"], [b.state for b in self.rows()])
+            self.scan(now=at(18), items=[slot])                 # 5 h ahead
+            self.assertEqual(["booked"], [b.state for b in self.rows()])
+
+    def test_a_slot_named_after_a_played_game_isnt_booked_again_the_next_day(self):
+        with mock.patch.object(B, "channel_ids", lambda db, entries=None: ({"c7": "jf7"}, {"jf7": "c7"})):
+            self.scan(now=at(18), items=[self._slot(at(23))])
+            self.jf.timers[0]["Status"] = "Completed"
+            # the game is over; the channel still has its name, which now reads as tomorrow 7pm
+            self.scan(now=at(19, 0, 25), items=[self._slot(at(23, 0, 25))])
+            self.assertEqual(1, len([w for w in self.jf.writes if w[0] == "POST"]))
+            self.assertEqual(["ended"], [b.state for b in self.rows()])
+
     def test_date_precision_doesnt_matter(self):
         self.assertTrue(B._same_start(B._parse("2026-10-24T23:00:00.0000000Z"), B._parse("2026-10-24T23:00:00.000Z")))
         self.assertTrue(B._same_start(B._parse("2026-10-24T23:00:00+00:00"), at(23)))

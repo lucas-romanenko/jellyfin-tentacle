@@ -1137,7 +1137,12 @@ schedule or score service: games are found in the guide Tentacle serves.
   window `ended`. A timer someone else set on the same channel and start
   makes the row `covered` (never touched). Rules gone, off or back in preview
   cancel their own `booked` timers that haven't started. A guide that lost a
-  listing never cancels a booking.
+  listing never cancels a booking. A booking holds its whole game (any of
+  its listings within the team window), also after its own listing ended.
+  Event-channel slots (a time, no date) are booked only within
+  `EVENT_SLOT_AHEAD_HOURS` (6) of their start, and never when the same
+  channel and name were booked a day earlier (a played game's name rolls
+  over to the next day).
 - Tables (plain columns): `recording_rules` (+ `recording_rule_terms`,
   `recording_rule_channels`), `recording_bookings` (unique rule, pool key,
   start; states preview/booked/recording/waiting/covered/failed/lost/ended/
