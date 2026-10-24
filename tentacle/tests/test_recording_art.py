@@ -555,10 +555,36 @@ class Safety(Base):
         self.assertIn("next to the recordings", st["blocked"])
         self.assertIn("Save artwork into media folders", st["blocked"])
 
+    def test_one_of_two_libraries_saving_next_to_the_media(self):
+        get = self.jf.get
+
+        def two(path, **p):
+            if path == "/Library/VirtualFolders":
+                local = dict(get(path)[0], Name="Recordings2", ItemId="lib2", LibraryOptions={"SaveLocalMetadata": True})
+                return get(path) + [local]
+            return get(path, **p)
+        self.jf.get = two
+        self.jf.add("r1", "Canadiens at Blackhawks", NOW - timedelta(hours=4))
+        self.run_pass()
+        self.assertEqual([], self.jf.writes)
+        self.assertIn("“Recordings2”", J.status(self.db)["blocked"])
+
     def test_no_recordings_library(self):
         self.jf.get = lambda path, **p: [] if path == "/Library/VirtualFolders" else {}
         self.run_pass()
         self.assertIn("no library", J.status(self.db)["blocked"])
+
+    def test_two_libraries_with_the_same_folder(self):
+        get = self.jf.get
+
+        def two(path, **p):
+            if path == "/Library/VirtualFolders":
+                return get(path) + [dict(get(path)[0], Name="Recordings2", ItemId="lib2")]
+            return get(path, **p)
+        self.jf.get = two
+        self.jf.add("r1", "Canadiens at Blackhawks", NOW - timedelta(hours=4))
+        self.run_pass()
+        self.assertEqual([("upload", "r1", "Primary"), ("upload", "r1", "Thumb")], self.jf.writes)
 
     def test_a_deleted_recording_drops_its_row(self):
         self.jf.add("r1", "Canadiens at Blackhawks", NOW - timedelta(hours=4))
@@ -594,6 +620,16 @@ class Folders(Base):
         self.run_pass()
         row = self.row("f1")
         self.assertEqual(("set", "league", "league:nhl"), (row.state, row.source, row.made_from))
+
+    def test_the_recordings_folder_itself_gets_nothing(self):
+        # Jellyfin lists the recordings folder as a Folder too; a title folder
+        # with one recording is shown as that recording, whose parent it is
+        self.jf.add("root", "recordings", NOW - timedelta(days=30), folder=True)
+        self.jf.items["root"]["Path"] = "/config/data/livetv/recordings"
+        self.jf.add("r1", "Jeopardy!", NOW - timedelta(days=2), parent="root")
+        self.jf.add("r2", "Canadiens at Blackhawks", NOW - timedelta(days=1), parent="root")
+        self.run_pass()
+        self.assertEqual({"r1", "r2"}, {w[1] for w in self.jf.writes})
 
     def test_a_folder_of_shows_follows_the_newest(self):
         self.jf.add("f1", "Jeopardy!", NOW - timedelta(days=3), folder=True)

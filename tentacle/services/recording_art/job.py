@@ -147,9 +147,12 @@ def recordings_libraries(jf) -> tuple:
         if (lib.get("LibraryOptions") or {}).get("SaveLocalMetadata"):
             local.append(lib.get("Name") or "Recordings")
         else:
-            ok.append({"id": _id(lib.get("ItemId")), "name": lib.get("Name")})
+            ok.append({"id": _id(lib.get("ItemId")), "name": lib.get("Name"), "roots": set(locs) | paths})
     why = None
     if local:
+        # an item in two libraries over one folder may be saved by either:
+        # any of them saving next to the media rules the folder out
+        ok = []
         names = ", ".join(f"“{n}”" for n in local)
         why = (f"Jellyfin's {names} library saves pictures next to the recordings (“Save artwork into "
                f"media folders”), and Tentacle never writes into the recordings folder. To get pictures, "
@@ -434,15 +437,18 @@ def give_picture(db: Session, jf, item: dict, row: RecordingArtwork, tmdb=None, 
     return row.state
 
 
-def _folders(db: Session, jf, folders: list, videos: list, rows: dict) -> int:
+def _folders(db: Session, jf, folders: list, videos: list, rows: dict, roots: set = frozenset()) -> int:
     """Title folders of several recordings: the newest recording's picture,
-    or the league card when they are games. Returns pictures set."""
+    or the league card when they are games. Returns pictures set. The
+    recordings folder itself (`roots`) is the library's, never a title's."""
     by_parent: dict = {}
     for v in videos:
         by_parent.setdefault(_id(v.get("ParentId")), []).append(v)
     n = 0
     for f in folders:
         fid = _id(f.get("Id"))
+        if (f.get("Path") or "").rstrip("/\\") in roots or f.get("Type") in ("CollectionFolder", "UserRootFolder"):
+            continue
         kids = by_parent.get(fid) or []
         if not kids:
             continue
@@ -530,10 +536,12 @@ def run_pass(db: Session, jf=None, now: Optional[datetime] = None, tmdb=None, gr
         _last.update(blocked=why if not libs else None, note=why if libs else None)
         if not libs:
             return out
-        videos, folders = [], []
+        videos, folders = {}, {}
         for lib in libs:
-            videos += _children(jf, lib["id"], folders=False)
-            folders += _children(jf, lib["id"], folders=True)
+            # two libraries may hold the same folder: one item each
+            videos.update((_id(i.get("Id")), i) for i in _children(jf, lib["id"], folders=False))
+            folders.update((_id(i.get("Id")), i) for i in _children(jf, lib["id"], folders=True))
+        videos, folders = list(videos.values()), list(folders.values())
         rows = {r.item_id: r for r in db.query(RecordingArtwork).all()}
         items = {_id(i.get("Id")): i for i in videos + folders}
         out["left"] = reconcile(db, rows, items)
@@ -576,7 +584,8 @@ def run_pass(db: Session, jf=None, now: Optional[datetime] = None, tmdb=None, gr
                 out["failed"] += 1
                 logger.warning(f"[Recording art] “{item.get('Name')}”: no picture: {e}")
             db.commit()
-        out["folders"] = _folders(db, jf, folders, videos, rows)
+        roots = set().union(*(lib.get("roots") or set() for lib in libs))
+        out["folders"] = _folders(db, jf, folders, videos, rows, roots)
         db.commit()
     return out
 
