@@ -205,6 +205,14 @@ class Handover(unittest.IsolatedAsyncioTestCase):
         self.assertLess(rank(a), rank(v))
 
 
+class Reported(unittest.TestCase):
+    def test_capacity_and_streams_say_how_many_handovers(self):
+        import inspect
+        from routers import livetv
+        self.assertIn('"padding_handovers": _stream_slots.padding_handovers', inspect.getsource(livetv.live_capacity))
+        self.assertIn('"recording_phase"', inspect.getsource(livetv))
+
+
 class WithoutPadding(unittest.IsolatedAsyncioTestCase):
     """No padding, no change: random sequences decide exactly as #150's rule
     (recordings inside their programmes) did before phases existed."""

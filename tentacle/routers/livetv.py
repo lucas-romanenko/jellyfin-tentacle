@@ -2613,6 +2613,8 @@ def live_capacity(db: Session = Depends(get_db)):
                       if p.live_tv_enabled or p.active],
         "refused_since_start": _stream_slots.refused,
         "last_refused": _stream_slots.last_refused,
+        # #300: recordings in their post-padding stopped for one whose programme starts
+        "padding_handovers": _stream_slots.padding_handovers,
         "reconnect_budget_seconds": _reconnect_budget(db),
         "streams": _stream_snapshot(db),
         **_protection_snapshot(db),
