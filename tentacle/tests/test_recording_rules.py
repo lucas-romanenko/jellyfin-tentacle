@@ -457,6 +457,20 @@ class Booking(unittest.TestCase):
             B._look_again_at(None, at(22, 50))
         self.assertEqual([360.0], asked)
 
+    def test_once_the_booked_listing_ends_the_games_other_listing_isnt_booked_too(self):
+        # Seen on production (23 Oct): TSN 2's listing ended at 02:30 while its
+        # recording ran on in the padding; the next scan booked the game's
+        # event-channel slot (to 03:00) as well, a second recording of one game.
+        slot = airing("c7", "Penguins at Maple Leafs", at(23), 180, "Penguins at Maple Leafs", event=True,
+                      raw="NHL | 01 - 7pm Penguins at Maple Leafs")
+        self.game = airing("c5", "Sportsnet Ontario", at(23), 150, "Live: NHL Hockey", "From Scotiabank Arena in Toronto.")
+        self.scan(items=[self.game, slot])
+        self.assertEqual(["c5"], [b.pool_key for b in self.rows()])
+        self.jf.timers[0]["Status"] = "InProgress"
+        self.scan(now=at(1, 40, 25), items=[slot])      # Sportsnet's listing is over; the slot runs to 02:00
+        self.assertEqual(1, len([w for w in self.jf.writes if w[0] == "POST"]))
+        self.assertEqual(["c5"], [b.pool_key for b in self.rows()])
+
     def test_date_precision_doesnt_matter(self):
         self.assertTrue(B._same_start(B._parse("2026-10-24T23:00:00.0000000Z"), B._parse("2026-10-24T23:00:00.000Z")))
         self.assertTrue(B._same_start(B._parse("2026-10-24T23:00:00+00:00"), at(23)))
