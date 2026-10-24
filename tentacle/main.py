@@ -822,6 +822,12 @@ def setup_scheduler(db):
     scheduler.add_job(_rec_art.run_scheduled, IntervalTrigger(minutes=_rec_art.PASS_MINUTES,
                                                               start_date=datetime.now() + timedelta(seconds=300)),
                       id="recording_art", replace_existing=True, max_instances=1, coalesce=True)
+    # Live TV channel logos (services/channel_logos): the fallback chain and
+    # the logo cache, a few logos checked per pass.
+    from services import channel_logos as _logos
+    scheduler.add_job(_logos.run_scheduled, IntervalTrigger(minutes=_logos.PASS_MINUTES,
+                                                            start_date=datetime.now() + timedelta(seconds=420)),
+                      id="channel_logos", replace_existing=True, max_instances=1, coalesce=True)
     # The welcome's "You now have access to N movies, N TV shows and N live TV
     # channels" for everyone it is still due for, kept counted (services/welcome.py).
     from services.welcome import warm_everyone_due as _welcome_counts

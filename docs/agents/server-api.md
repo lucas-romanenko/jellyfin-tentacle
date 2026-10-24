@@ -183,6 +183,7 @@ provider names, URLs or logins).
 | DELETE | `/api/live/reserve/{channel_id}` | admin or internal | livetv.py:live_unreserve |
 | POST | `/api/live/setup` | admin | my_livetv.py:live_setup_now |
 | GET | `/api/live/status` | admin | livetv.py:live_status |
+| GET | `/api/live/logo/{name}` | none | livetv.py:channel_logo_copy (Tentacle's copy of a channel logo that went dead, services/channel_logos.py; only hash-named files of the logo cache) |
 | GET | `/api/live/stream/{channel_id}` | none | livetv.py:stream_proxy |
 | GET | `/api/live/streams` | admin or internal | livetv.py:live_streams |
 | GET | `/api/live/recordings/busy` | admin or internal | recordings.py:recordings_busy (Jellyfin recording now, or a timer whose padded start is within `soon_minutes`, default 20; `known` false when Jellyfin could not be asked) |

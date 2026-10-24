@@ -872,6 +872,18 @@ User docs: `docs/features/live-tv.md`.
   none (GuideManager), so the sync keeps the logos it gave Jellyfin
   (`livetv_lineup_logos`) and, for a changed one, deletes the channel's
   Primary image before the refresh.
+- **Automatic logos** (#137, `services/channel_logos.py`, hourly pass):
+  for a provider logo that is missing, dead (fails twice), no picture, or a
+  group picture (3+ different names share it and no word is in 60 % of
+  them), the pass picks the same channel elsewhere (same
+  `channel_name_key`), the guide feed's `<icon>`, then iptv-org's open
+  logo library (by guide id, else by name in the channel's country);
+  stored on `LiveChannel.auto_logo_url` / `auto_logo_source` (NULL = the
+  provider's), so `guide_logo` = admin's, else automatic, else provider's,
+  and a network votes with `automatic_logo`. Every logo it uses is checked
+  and copied into `DATA_DIR/channel_logos` (`LiveLogo` rows); a dead one
+  with a copy is served from `GET /api/live/logo/<file>`. A changed pick
+  schedules the Live TV sync, whose `stale_logos` swaps Jellyfin's image.
 - **Fast start** (jellyfin-notes.md "How long a live channel takes to
   start"): the lineup tuner never has Jellyfin's "Read at native frame
   rate" (not carried from an old tuner; switched off once on a tuner that

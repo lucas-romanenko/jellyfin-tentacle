@@ -1076,15 +1076,18 @@ def network_logo(n: LiveNetwork, variant: Optional[LiveChannel], members: list) 
         return n.custom_logo_url.strip()
     if variant is not None and (variant.custom_logo_url or "").strip():
         return variant.custom_logo_url.strip()
-    logos = [m.logo_url for m in members if m.logo_url]
-    if variant is not None and variant.logo_url and variant not in members:
-        logos.append(variant.logo_url)
+    # Each version's own logo, after the fallback chain (services/channel_logos.py):
+    # versions on a group picture vote for the logo found for them instead.
+    logos = [m.automatic_logo for m in members if m.automatic_logo]
+    mine = variant.automatic_logo if variant is not None else None
+    if mine and variant not in members:
+        logos.append(mine)
     if not logos:
         return None
     counts = Counter(_logo_base(u) for u in logos)
     top = max(counts.values())
-    if variant is not None and variant.logo_url and counts[_logo_base(variant.logo_url)] == top:
-        return variant.logo_url
+    if mine and counts[_logo_base(mine)] == top:
+        return mine
     return next(u for u in logos if counts[_logo_base(u)] == top)
 
 

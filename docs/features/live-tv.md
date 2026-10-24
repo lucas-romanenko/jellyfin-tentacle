@@ -146,6 +146,10 @@ Providers add groups all the time. **Sources → Live TV → New groups** lists 
 
 The line under the channel count is the stream checker's: in the background Tentacle opens each channel for a few seconds to see whether it works, one channel at a time and only while nobody watches or records (it stops the moment anyone starts), spread over the day. It shows what it is doing and how many channels work, don't work, or haven't been checked yet.
 
+### Channel logos
+
+Providers often give a whole group one picture, so the guide shows the same image for MTV, TBS and PBS, or a logo address stops working. In the background Tentacle checks every channel logo it uses and keeps a copy. When a channel's own logo is missing, broken, or a picture many different channels share, it uses, in this order: the same channel's logo from another of your channels, the logo in your guide data, then the [iptv-org](https://github.com/iptv-org/database) open logo library. A logo that stops working is shown from Tentacle's copy. A logo you set yourself (Edit → Name and logo) always comes first. Jellyfin's guide picks up the new logos at the next Live TV sync, a few seconds after they change.
+
 ### Event and PPV channels
 
 Many event channels have no guide of their own but carry the event in their name ("NHL: Toronto Maple Leafs @ 7:00 PM", "PPV 3: UFC 300 - 10/22 8PM ET"). Tentacle reads the title and time from the name and puts it in the TV guide, so Jellyfin's guide shows what's on. Event slots with no event in the name show **No event** and are left out of the lineup until the provider names an event in them.

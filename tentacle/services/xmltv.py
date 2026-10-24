@@ -401,7 +401,8 @@ def stream_parse_xmltv(
 
 
 def read_feed_channels(path: str) -> list[dict]:
-    """The <channel> elements of a cached feed: [{"id", "names": [display-names]}].
+    """The <channel> elements of a cached feed: [{"id", "names": [display-names],
+    "icon": the first <icon src> or None}].
 
     The DTD puts every <channel> before the first <programme>, so reading stops
     there: a pass over the head of the file, not the whole guide.
@@ -418,7 +419,9 @@ def read_feed_channels(path: str) -> list[dict]:
                 continue
             if elem.tag == "channel":
                 names = [(n.text or "").strip() for n in elem.findall("display-name")]
-                out.append({"id": elem.get("id", ""), "names": [n for n in names if n]})
+                icon = next((src for src in ((i.get("src") or "").strip() for i in elem.findall("icon"))
+                             if src.lower().startswith(("http://", "https://"))), None)
+                out.append({"id": elem.get("id", ""), "names": [n for n in names if n], "icon": icon})
                 root.clear()
     return out
 
