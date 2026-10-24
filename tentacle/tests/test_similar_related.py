@@ -94,6 +94,11 @@ class Route(unittest.TestCase):
         app.dependency_overrides[get_db] = lambda: self.db
         app.dependency_overrides[get_user_from_request] = lambda: self.db.get(TentacleUser, 1)
         self.client = TestClient(app)
+        # Jellyfin's library listing is never asked for in these tests.
+        self.no_map = mock.patch.object(similar, "_jellyfin_map", return_value={})
+        self.no_map.start()
+        self.addCleanup(self.no_map.stop)
+        self.similar = similar
 
     def test_ids_and_tentacles_own_tags(self):
         from models.database import Movie
@@ -112,6 +117,22 @@ class Route(unittest.TestCase):
         self.assertEqual([862], body["collection"])
         self.assertIn("Recently Added Movies", body["tentacle_tags"])
         self.assertIn("Oscar Winners", body["tentacle_tags"])
+
+    def test_jellyfins_own_listing_maps_the_rest_and_is_never_waited_for(self):
+        from routers import discover
+        self.no_map.stop()
+        self.similar._refreshing.update(movie=False, series=False)
+        cache = {"movie": {585: "dddd-4"}, "series": None, "ts": {"movie": 0, "series": 0}}
+        rel = {"collection": [862], "recommendations": [585], "similar": []}
+        with mock.patch.dict(discover._jf_ids_cache, cache), \
+                mock.patch.object(discover, "_get_jellyfin_tmdb_items") as fetch, \
+                mock.patch.object(TMDBService, "get_related", return_value=rel):
+            body = self.client.get("/api/similar/movie/863").json()
+            for t in __import__("threading").enumerate():
+                if t.name.startswith("similar-map-"):
+                    t.join(5)
+        self.assertEqual({"585": ["dddd4"]}, body["library"], "the stale map is used as it is")
+        fetch.assert_called_once_with("movie")   # ...and fetched again for the next open
 
     def test_tmdb_down_still_answers_with_the_tags(self):
         with mock.patch.object(TMDBService, "get_related", side_effect=TMDBConnectionError("down")):

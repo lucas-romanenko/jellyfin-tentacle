@@ -297,7 +297,7 @@ provider names, URLs or logins).
 | GET | `/api/settings/jellyfin-music/libraries` | admin | settings.py:jellyfin_music_libraries |
 | GET | `/api/settings/paths` | admin | settings.py:check_paths |
 | GET | `/api/settings/plugin-keys` | user | settings.py:get_plugin_keys |
-| GET | `/api/similar/{media_type}/{tmdb_id}` | user | similar.py:related (TMDB collection / recommendations / similar ids for the plugin's More Like This, kept 7 days, plus `tentacle_tags` and `library`: the Jellyfin ids of those in the library; #292) |
+| GET | `/api/similar/{media_type}/{tmdb_id}` | user | similar.py:related (TMDB collection / recommendations / similar ids for the plugin's More Like This, kept 7 days, plus `tentacle_tags` and `library`: the Jellyfin ids of those in the library, from Discover's cached library map (`_get_jellyfin_tmdb_items`, refreshed in the background, never waited for) and Tentacle's rows; #292) |
 | GET | `/api/settings/raw` | admin | settings.py:get_settings_raw |
 | GET | `/api/settings/schedule-info` | admin | settings.py:schedule_info |
 | POST | `/api/settings/service-options` | admin | settings.py:service_options |
