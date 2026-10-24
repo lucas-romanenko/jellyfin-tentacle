@@ -385,6 +385,47 @@ class TMDBService:
                 return f"https://www.youtube.com/watch?v={v['key']}"
         return None
 
+    RELATED_TTL_SECONDS = 7 * 86400
+
+    def get_related(self, media_type: str, tmdb_id: int) -> Optional[dict]:
+        """TMDB's titles related to one ("More Like This", #292): ids only,
+        {"collection": the other films of its collection by release date,
+        "recommendations": [...], "similar": [...]} in TMDB's order. One
+        details request (recommendations and similar appended) plus one for
+        a film's collection; kept 7 days. None when TMDB could not answer
+        (not kept: the next open asks again); empty lists for an id TMDB
+        doesn't know."""
+        if media_type not in ("movie", "tv") or not self._valid_id(tmdb_id):
+            return None
+        cache_key = f"related:{media_type}:{int(tmdb_id)}"
+        hit, cached = self._cache_lookup(cache_key, ttl_seconds=self.RELATED_TTL_SECONDS)
+        if hit and cached is not None:
+            return cached
+        empty = {"collection": [], "recommendations": [], "similar": []}
+        self._tl.status = None
+        data = self._request(f"{media_type}/{int(tmdb_id)}", {"append_to_response": "recommendations,similar"})
+        if not data:
+            if getattr(self._tl, "status", None) == 404:
+                self._cache_set(cache_key, empty, ttl_seconds=self.MISSING_DETAILS_TTL_SECONDS)
+                return empty
+            return None
+
+        def ids(block):
+            return [r["id"] for r in ((data.get(block) or {}).get("results") or [])
+                    if isinstance(r, dict) and self._valid_id(r.get("id")) and r["id"] != int(tmdb_id)]
+        out = {**empty, "recommendations": ids("recommendations"), "similar": ids("similar")}
+        ttl = self.RELATED_TTL_SECONDS
+        coll = data.get("belongs_to_collection") or {}
+        if media_type == "movie" and self._valid_id(coll.get("id")):
+            answer = self._request(f"collection/{int(coll['id'])}")
+            if answer is None:
+                ttl = 3600     # the collection didn't answer: ask again soon
+            parts = [p for p in ((answer or {}).get("parts") or [])
+                     if isinstance(p, dict) and self._valid_id(p.get("id")) and p["id"] != int(tmdb_id)]
+            out["collection"] = [p["id"] for p in sorted(parts, key=lambda p: (p.get("release_date") or "9999", p["id"]))]
+        self._cache_set(cache_key, out, ttl_seconds=ttl)
+        return out
+
     def get_movie_details(self, tmdb_id: int) -> Optional[dict]:
         if not self._valid_id(tmdb_id):
             return None
