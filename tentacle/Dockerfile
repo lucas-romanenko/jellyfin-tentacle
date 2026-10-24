@@ -25,9 +25,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Deno powers yt-dlp's JavaScript challenges for YouTube. Optional: without it
-# the YouTube source still resolves most videos (the visionos player client
-# needs no JS runtime), but some fall back or fail, so it is worth the ~40MB.
+# Deno runs yt-dlp's solver for YouTube's JavaScript challenges (yt-dlp-ejs, in
+# requirements.txt). Optional: without it the YouTube source still resolves
+# most videos (the visionos player client needs no JS runtime), but "made for
+# kids" videos play only through web_embedded, which needs it.
 ARG DENO_VERSION=v2.9.6
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \

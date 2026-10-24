@@ -10,4 +10,10 @@ apscheduler==3.10.4
 Pillow==10.4.0
 # YouTube source. Updated often — YouTube breaks older versions regularly,
 # and the dashboard exposes an in-place update for the gaps between releases.
-yt-dlp==2026.8.19
+# 2026.10.21 is the first whose web_embedded client gets HLS: that client is
+# the only one YouTube plays "made for kids" videos to.
+yt-dlp==2026.10.21
+# yt-dlp's solver for YouTube's JavaScript challenges, run with the image's
+# Deno. Without it web_embedded returns no formats at all. The version must be
+# the one this yt-dlp names (its "default" extra).
+yt-dlp-ejs==0.8.0
