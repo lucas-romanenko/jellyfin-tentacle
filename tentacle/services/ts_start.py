@@ -14,7 +14,8 @@ AvStart holds the first bytes of one client's stream until it can start it
 where both exist: the first video keyframe whose timestamp is at or after the
 first audio timestamp seen, less START_TOLERANCE (so a normal stream starts
 on its first keyframe, as a player would anyway). The client gets the PAT
-and PMT, then everything from that keyframe on, and nothing is re-timed.
+and PMT (also when they came after the keyframe, as the panels send them),
+then everything from that keyframe on, and nothing is re-timed.
 
 - A normal stream (audio held before the keyframe plays at most
   START_TOLERANCE after it) is passed on untouched from the keyframe.
@@ -107,6 +108,7 @@ class AvStart:
         self._keys = []              # (offset, pts) of video keyframes
         self._audio_pes = []         # (offset, pid, pts) of audio PES starts
         self._flagged = False        # any random-access flag seen
+        self._early = []             # PES starts before the PMT said whose they are
         self._mover = None           # _AudioMover once the audio runs ahead
 
     def feed(self, piece: bytes) -> bytes:
@@ -176,13 +178,19 @@ class AvStart:
             elif self._pmt:
                 self._pmt.append(at)
             return
-        kind = self._kinds.get(pid) if self._kinds else None
-        if kind is None or not pusi:
+        if not pusi:
             return
         times = _pes_times(p, at, i)
         if times is None:
             return
-        pts = times[0]
+        if self._kinds is None:
+            # The panels open with a keyframe and send the tables after it.
+            self._early.append((at, pid, times[0], rai))
+            return
+        self._pes(at, pid, times[0], rai)
+
+    def _pes(self, at: int, pid: int, pts: int, rai: bool) -> None:
+        kind = self._kinds.get(pid)
         if kind == "a":
             if self._a0 is None:
                 self._a0 = pts
@@ -234,6 +242,9 @@ class AvStart:
             k += 5 + elen
         if kinds:
             self._kinds = kinds
+            for early in self._early:
+                self._pes(*early)
+            self._early = []
 
     def _start(self):
         """The keyframe to start on, once there is one with sound."""
@@ -256,10 +267,12 @@ class AvStart:
                 break
             if pid not in kept and _later(pts, key_pts) >= -tol:
                 kept[pid] = at
+        # The tables go first, also when they came after the keyframe (the
+        # panels open with it): a demuxer drops what precedes the PMT, and the
+        # first picture would wait a GOP. Repeated where they came: harmless.
         out = bytearray()
         for at in [self._pat] + self._pmt:
-            if at < key_at:
-                out += buf[at:at + 188]
+            out += buf[at:at + 188]
         skew = _later(self._a0, self._v0) / 90000
         where = (f"on a keyframe {_later(key_pts, self._v0) / 90000:.1f}s in "
                  f"(audio {skew:+.1f}s from video), {key_at / 1e6:.1f} MB held")
