@@ -1203,7 +1203,7 @@ Two JPEGs per finished Live TV recording (`POST /Items/{id}/Images/{type}`,
 base64 body), as Jellyfin has them for films: a 2:3 poster (800x1200) as
 Primary for poster cards and grids, and a 16:9 picture (1280x720) as Thumb for
 wide cards (the TV app's Recordings screen, Continue Watching on wide rows,
-Jellyfin Web's thumb cards). Until #840 both were the 16:9 picture, which a
+Jellyfin Web's thumb cards). Until #839 both were the 16:9 picture, which a
 poster row cut down to its middle third; `upgrade_posters` gives those rows
 (`primary_shape` empty) their poster, `POSTERS_PER_PASS` (8) a pass, only
 while both tags are still Tentacle's. Setting `recording_art_enabled` (default on);
