@@ -1199,10 +1199,14 @@ schedule or score service: games are found in the guide Tentacle serves.
 
 ## Pictures for recordings (`services/recording_art/`, #815)
 
-One 16:9 JPEG (1280x720) per finished Live TV recording, uploaded as both
-Primary and Thumb (`POST /Items/{id}/Images/{type}`, base64 body), so the TV
-app's Recordings grid (sized from Primary), Recorded TV (Thumb first) and
-Jellyfin Web show one shape. Setting `recording_art_enabled` (default on);
+Two JPEGs per finished Live TV recording (`POST /Items/{id}/Images/{type}`,
+base64 body), as Jellyfin has them for films: a 2:3 poster (800x1200) as
+Primary for poster cards and grids, and a 16:9 picture (1280x720) as Thumb for
+wide cards (the TV app's Recordings screen, Continue Watching on wide rows,
+Jellyfin Web's thumb cards). Until #839 both were the 16:9 picture, which a
+poster row cut down to its middle third; `upgrade_posters` gives those rows
+(`primary_shape` empty) their poster, `POSTERS_PER_PASS` (8) a pass, only
+while both tags are still Tentacle's. Setting `recording_art_enabled` (default on);
 GET/PUT `/api/live/recordings/artwork`; Sources → Live TV → More.
 
 - `job.py`: `recording_art` job every 10 min (first 5 min after start),
@@ -1217,7 +1221,11 @@ GET/PUT `/api/live/recordings/artwork`; Sources → Live TV → More.
   league card (`cards.py`); show/film → TMDB backdrop through
   `TMDBService` at `tmdb_match_threshold`, `strict=True` (TMDB down = next
   source); the EPG programme's `icon_url` when about 16:9 (`is_safe_url`, no
-  redirects, 8 MB cap); a frame (`frames.py`); a title card.
+  redirects, 8 MB cap); a frame (`frames.py`); a title card. Posters: the
+  cards have poster layouts (`matchup_poster`, `league_poster`,
+  `title_poster`), TMDB's `poster_path` (w780, `to_2x3`); a picture with no
+  poster (guide, frame, TMDB without one) goes on a poster with the title
+  over a blurred copy of itself (`poster_from_wide`).
 - What it is (`what.py`, pure): the booking (rule kind/league/team, its
   `why` quotes the listing that named the opponent) or the title,
   sub-title and description with `leagues.json` and `recording_rules.match`

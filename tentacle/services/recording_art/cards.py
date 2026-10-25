@@ -1,5 +1,6 @@
 """The pictures Tentacle draws for recordings (Pillow, offline, like the
-playlist art in services/artwork.py), all 1280x720 JPEG:
+playlist art in services/artwork.py), each in two shapes: 1280x720 for the
+Thumb (wide cards) and 800x1200 for the Primary (poster cards), JPEG:
 
 - a matchup card: the league, both teams (code and name), the date and the
   channel;
@@ -8,8 +9,9 @@ playlist art in services/artwork.py), all 1280x720 JPEG:
 - a title card: the title, the channel and the date. Always works.
 
 No team crests and no outside service: the teams' codes stand in for them.
-`to_16x9` makes any other picture (a TMDB backdrop, a guide picture, a
-frame) the same shape.
+`to_16x9` and `to_2x3` make any other picture (a TMDB backdrop or poster, a
+guide picture, a frame) the same shapes; `poster_from_wide` puts a wide
+picture that has no poster (a frame, the guide's) on a poster with the title.
 """
 import colorsys
 import hashlib
@@ -23,6 +25,7 @@ from services.artwork import _get_font, _wrap_text
 logger = logging.getLogger(__name__)
 
 W, H = 1280, 720
+PW, PH = 800, 1200      # the poster (2:3)
 QUALITY = 88
 
 # Background per sport (top, bottom): dark, so white text always reads
@@ -47,13 +50,14 @@ def _hue_color(seed: str, s: float = 0.55, v: float = 0.62) -> tuple:
     return int(r * 255), int(g * 255), int(b * 255)
 
 
-def _canvas(top: tuple, bottom: tuple):
+def _canvas(top: tuple, bottom: tuple, size: tuple = (W, H)):
     from PIL import Image, ImageDraw
-    img = Image.new("RGB", (W, H), bottom)
+    w, h = size
+    img = Image.new("RGB", (w, h), bottom)
     draw = ImageDraw.Draw(img)
-    for y in range(H):
-        t = y / (H - 1)
-        draw.line([(0, y), (W, y)], fill=tuple(int(top[i] * (1 - t) + bottom[i] * t) for i in range(3)))
+    for y in range(h):
+        t = y / (h - 1)
+        draw.line([(0, y), (w, y)], fill=tuple(int(top[i] * (1 - t) + bottom[i] * t) for i in range(3)))
     return img, draw
 
 
@@ -247,3 +251,151 @@ def to_16x9(data: bytes, only_if_wide: bool = False) -> Optional[bytes]:
         img = img.crop((0, (h - nh) // 2, w, (h - nh) // 2 + nh))
     img = img.convert("RGB").resize((W, H), Image.LANCZOS)
     return _jpeg(img)
+
+
+# ── Posters (2:3) ───────────────────────────────────────────────────────────
+
+def short_when(start: Optional[datetime]) -> str:
+    """ "Fri, Oct 23 · 8:00 PM" in the server's time zone (start is UTC): a poster is narrow."""
+    if start is None:
+        return ""
+    local = start.replace(tzinfo=timezone.utc).astimezone()
+    hour = local.hour % 12 or 12
+    return f"{local:%a}, {local:%b} {local.day} · {hour}:{local:%M} {'AM' if local.hour < 12 else 'PM'}"
+
+
+def _poster_footer(draw, start: Optional[datetime], channel: Optional[str]) -> None:
+    """The date over the channel, centred along the bottom."""
+    y = PH - 150
+    draw.line([(56, y - 24), (PW - 56, y - 24)], fill=(255, 255, 255, 60), width=1)
+    when = short_when(start)
+    if when:
+        _f, lines = _fit(draw, when, PW - 112, 1, 34, 24, bold=False)
+        _center(draw, lines, _f, PW // 2, y, color=_TEXT2)
+    if channel:
+        _f, lines = _fit(draw, channel, PW - 112, 1, 38, 24)
+        _center(draw, lines, _f, PW // 2, y + 56)
+
+
+def _poster_league_head(draw, league: dict) -> int:
+    """The league's name at the top, the sport under it; returns the bottom."""
+    name = (league.get("name") or "").upper()
+    font, lines = _fit(draw, name, PW - 112, 2, 56, 30)
+    y = _center(draw, lines, font, PW // 2, 64)
+    sport = league.get("sport") or ""
+    if sport and sport.lower() not in name.lower():
+        _f = _get_font(30)
+        y = _center(draw, [sport], _f, PW // 2, y + 16, color=_TEXT2)
+    return y
+
+
+def matchup_poster(league: dict, teams: list, at: bool, start: Optional[datetime],
+                   channel: Optional[str]) -> bytes:
+    """The matchup card as a poster: the league on top, the away team over
+    the home team (or the one team named), the date and the channel."""
+    img, draw = _canvas(*_sport_bg(league), size=(PW, PH))
+    _poster_league_head(draw, league)
+    if len(teams) >= 2:
+        codes = [_code(t) for t in teams[:2]]
+        code_font = min((_fit(draw, c, 170, 1, 92, 40)[0] for c in codes), key=lambda f: f.size)
+        name_font = min((_fit(draw, t.get("name") or "", PW - 140, 2, 50, 30)[0] for t in teams[:2]),
+                        key=lambda f: f.size)
+        for team, cy in ((teams[0], 360), (teams[1], 790)):
+            _badge(img, draw, team, PW // 2, cy, size=200, code_font=code_font)
+            _f, lines = _fit(draw, team.get("name") or "", PW - 140, 2, name_font.size, name_font.size)
+            _center(draw, lines, name_font, PW // 2, cy + 120)
+        mid = "@" if at else "VS"
+        font = _get_font(60, bold=True)
+        box = draw.textbbox((0, 0), mid, font=font)
+        draw.text((PW // 2 - (box[2] - box[0]) // 2 - box[0], 600 - (box[3] - box[1]) // 2 - box[1]), mid,
+                  font=font, fill=_TEXT2)
+    elif teams:
+        _badge(img, draw, teams[0], PW // 2, 520, size=260)
+        font, lines = _fit(draw, teams[0].get("name") or "", PW - 140, 3, 64, 32)
+        _center(draw, lines, font, PW // 2, 690)
+    _poster_footer(draw, start, channel)
+    return _jpeg(img)
+
+
+def league_poster(league: dict, title: str, start: Optional[datetime], channel: Optional[str]) -> bytes:
+    """The league card as a poster."""
+    img, draw = _canvas(*_sport_bg(league), size=(PW, PH))
+    big, blines = _fit(draw, league.get("name") or "", PW - 120, 3, 130, 56)
+    sub_font, slines = _fit(draw, title or "", PW - 120, 3, 56, 30, bold=False) if title and \
+        title.strip().lower() != (league.get("name") or "").strip().lower() else (None, [])
+    height = _block_height(draw, blines, big) + (40 + _block_height(draw, slines, sub_font) if slines else 0)
+    top = (PH - 180 - height) // 2
+    y = _center(draw, blines, big, PW // 2, top)
+    if slines:
+        _center(draw, slines, sub_font, PW // 2, y + 32, color=_TEXT2)
+    _poster_footer(draw, start, channel)
+    return _jpeg(img)
+
+
+def title_poster(title: str, start: Optional[datetime], channel: Optional[str]) -> bytes:
+    """The title card as a poster."""
+    base = _hue_color(title or "", s=0.45, v=0.42)
+    img, draw = _canvas(base, tuple(int(c * 0.25) for c in base), size=(PW, PH))
+    font, lines = _fit(draw, title or "Recording", PW - 120, 5, 110, 44)
+    top = (PH - 180 - _block_height(draw, lines, font, gap=14)) // 2
+    _center(draw, lines, font, PW // 2, top, gap=14)
+    _poster_footer(draw, start, channel)
+    return _jpeg(img)
+
+
+def _open(data: bytes, min_size: tuple):
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(data))
+        img.load()
+    except Exception as e:
+        logger.debug(f"[Recording art] not a picture: {e}")
+        return None
+    if img.size[0] < min_size[0] or img.size[1] < min_size[1]:
+        return None
+    return img.convert("RGB")
+
+
+def _cover(img, w: int, h: int):
+    """`img` cut around its centre to w:h and scaled to w x h."""
+    from PIL import Image
+    iw, ih = img.size
+    if iw / ih > w / h:
+        nw = int(ih * w / h)
+        img = img.crop(((iw - nw) // 2, 0, (iw - nw) // 2 + nw, ih))
+    elif iw / ih < w / h:
+        nh = int(iw * h / w)
+        img = img.crop((0, (ih - nh) // 2, iw, (ih - nh) // 2 + nh))
+    return img.resize((w, h), Image.LANCZOS)
+
+
+def to_2x3(data: bytes) -> Optional[bytes]:
+    """A poster (TMDB's) as 800x1200 JPEG, cut to 2:3 around its centre.
+    None unless it is about portrait already: a wide picture goes through
+    `poster_from_wide` instead."""
+    img = _open(data, (200, 300))
+    if img is None or img.size[0] / img.size[1] > 0.8:
+        return None
+    return _jpeg(_cover(img, PW, PH))
+
+
+def poster_from_wide(data: bytes, title: str, start: Optional[datetime], channel: Optional[str]) -> Optional[bytes]:
+    """A wide picture (a frame, the guide's, a TMDB backdrop) on a poster:
+    the picture whole across the middle, over a dark blurred copy of
+    itself, the title above it and the date and channel below."""
+    from PIL import Image, ImageFilter
+    img = _open(data, (320, 180))
+    if img is None:
+        return None
+    bg = _cover(img, PW // 8, PH // 8).filter(ImageFilter.GaussianBlur(3)).resize((PW, PH), Image.BILINEAR)
+    bg = Image.blend(bg, Image.new("RGB", (PW, PH), (0, 0, 0)), 0.55)
+    from PIL import ImageDraw
+    draw = ImageDraw.Draw(bg)
+    pw, ph = PW, int(PW * 9 / 16)
+    top = 470
+    bg.paste(_cover(img, pw, ph), (0, top))
+    font, lines = _fit(draw, title or "Recording", PW - 112, 4, 76, 36)
+    height = _block_height(draw, lines, font, gap=10)
+    _center(draw, lines, font, PW // 2, max(48, (top - height) // 2), gap=10)
+    _poster_footer(draw, start, channel)
+    return _jpeg(bg)

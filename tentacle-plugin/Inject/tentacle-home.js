@@ -582,7 +582,8 @@
 
   function getBuiltinApiPath(sectionId) {
     var base = 'Users/' + MH.userId;
-    var commonFields = 'PrimaryImageAspectRatio,MediaSourceCount,Overview,Genres,CommunityRating,OfficialRating,RunTimeTicks,ProductionYear,UserData,ProviderIds';
+    // Path and DateCreated: a Live TV recording's card says "Recording · Fri 23 Oct" (recordingMeta)
+    var commonFields = 'PrimaryImageAspectRatio,MediaSourceCount,Overview,Genres,CommunityRating,OfficialRating,RunTimeTicks,ProductionYear,UserData,ProviderIds,Path,DateCreated';
     switch (sectionId) {
       case 'resumevideo':
         return base + '/Items/Resume?Limit=12&Recursive=true&Fields=' + commonFields + '&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop,Thumb&MediaTypes=Video';
@@ -970,6 +971,21 @@
     return card;
   }
 
+  // A Live TV recording is a Movie to Jellyfin, with the year it was recorded: its card
+  // says "Recording · Fri 23 Oct" instead (the air date from Jellyfin's file name,
+  // "Title 2026_10_23_20_00_00.ts", else when the file was made), as the TV app does.
+  function recordingMeta(item) {
+    var path = item.Path || '';
+    var file = path.split(/[\\/]/).pop();
+    var stamp = /(\d{4})_(\d{2})_(\d{2})_\d{2}_\d{2}_\d{2}\.ts$/i.exec(file);
+    if (!stamp && !/[\\/]livetv[\\/]recordings[\\/]/i.test(path)) return null;
+    var when = stamp ? new Date(+stamp[1], +stamp[2] - 1, +stamp[3])
+      : (item.DateCreated ? new Date(item.DateCreated) : null);
+    var day = when && !isNaN(when.getTime())
+      ? when.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }) : '';
+    return day ? 'Recording · ' + day : 'Recording';
+  }
+
   // `wide` draws 16:9 cards instead of 2:3. Some content has no portrait
   // artwork at all — a YouTube thumbnail in a poster slot is cropped to a strip
   // of its middle — so the row says which shape it wants.
@@ -1029,7 +1045,9 @@
     var year = item.ProductionYear || '';
     var rating = item.CommunityRating ? '<span class="mh-card-meta-rating">★ ' + item.CommunityRating.toFixed(1) + '</span>' : '';
     var officialRating = item.OfficialRating ? '<span class="mh-card-meta-cert">' + escapeHtml(item.OfficialRating) + '</span>' : '';
-    var metaParts = [year ? escapeHtml(String(year)) : '', rating, officialRating].filter(Boolean);
+    var recording = recordingMeta(item);
+    if (recording) year = '';
+    var metaParts = [recording ? escapeHtml(recording) : '', year ? escapeHtml(String(year)) : '', rating, officialRating].filter(Boolean);
     var metaHtml = metaParts.join(' <span class="mh-card-meta-dot">·</span> ');
 
     card.innerHTML =
