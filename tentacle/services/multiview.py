@@ -3,15 +3,38 @@
 The TV app asks for 2-4 channels; Tentacle opens each the way the tuner
 does (routers.livetv.stream_proxy: one shared upstream per channel, so a
 channel someone already watches or records costs no extra connection) and
-ffmpeg puts them side by side (2) or in a 2x2 grid (3-4) as one 1080p
-MPEG-TS stream with every channel's sound as its own audio track, in tile
-order. The player shows the one picture and picks the track of the tile
-that is highlighted: switching sound is a track switch, no new stream.
+puts them side by side (2) or in a 2x2 grid (3-4) as one 1080p MPEG-TS
+stream with every channel's sound as its own audio track, in tile order.
+The player shows the one picture and picks the track of the tile that is
+highlighted: switching sound is a track switch, no new stream.
 
 Full screen is the channel itself, tuned through Jellyfin as always. Its
 upstream is already open (the mosaic is one of its clients), so Jellyfin's
 tuner attaches to it without a new provider connection, and the mosaic
 keeps running behind it so Back to the grid is instant.
+
+Smooth although the provider cuts. Accounts that carry one connection well
+close the others every 10-15 s (measured: with 4 channels open, 3 of them
+cut in the same second, each tile 4-5 times a minute). The shared upstream
+re-dials and joins the provider's replay where it stopped, so nothing of
+the channel is lost, but its bytes pause for 2-9 s each time. One ffmpeg
+reading all four would wait for the paused one and stop the whole picture.
+So each tile is decoded on its own (a decoder ffmpeg per tile: raw frames
+and sound), the bytes in front of it are a buffer (the provider's burst on
+every connect fills it: seconds of the channel), and a clock takes one
+frame and 1/30 s of sound from every tile 29.97 times a second and hands
+them to the encoder. A tile with nothing ready shows its last frame and is
+silent for that tick; the others and the picture go on at the same pace.
+Behind live by what its buffer holds: a tile that paused is that much
+further behind, which is the buffer the next cut needs. A tile more than
+CATCH_UP_SECONDS behind jumps forward to CATCH_UP_TO_SECONDS.
+
+A channel whose picture stands still or loops (a broken feed: the same
+few frames over and over) moves to another feed of the same network when
+there is one; the
+feed is remembered as stuck for STUCK_MEMORY_SECONDS, so the next
+multi-view starts on the other one. A channel whose stream ended is opened
+again.
 
 Connections. A session needs a free provider connection for every channel
 not already open; it is refused with a plain message otherwise
@@ -23,16 +46,18 @@ session of the same person, or nobody reading the picture and no keepalive
 for IDLE_SECONDS (the app went away).
 
 Video: VAAPI (Intel Quick Sync, /dev/dri) when ffmpeg can open it, else
-libx264. The tiles are decoded and scaled in software either way (four
-small pictures; a live channel's odd streams are decoded wherever they
-are), only the 1080p encode goes to the GPU.
+libx264, for the encode; a tile's decoder decodes, deinterlaces and scales
+on the GPU too when its codec allows, else on the CPU.
 """
 import asyncio
+import fcntl
 import logging
 import os
 import re
 import secrets
+import select
 import shutil
+import threading
 import time
 from collections import deque
 from typing import Optional
@@ -44,17 +69,35 @@ MIN_TILES = 2
 WIDTH, HEIGHT = 1920, 1080
 TILE_W, TILE_H = WIDTH // 2, HEIGHT // 2
 FPS = "30000/1001"
+TICK = 1001 / 30000            # one frame of the picture
 GOP = 30                       # a keyframe every second: a reader starts within 1 s
 VIDEO_BITRATE = "8M"
 AUDIO_BITRATE = "128k"
 IDLE_SECONDS = 45.0            # no reader and no keepalive this long: closed
 RECORDING_SOON_MINUTES = 30    # a recording starting this soon keeps its connection
-PROBE_BYTES = 2 * 1024 * 1024  # of each channel before ffmpeg starts (it sees its audio and video)
+PROBE_BYTES = 2 * 1024 * 1024  # of each channel before its decoder starts (it sees its audio and video)
 PROBE_SECONDS = 12.0
 MAX_RESTARTS = 3
 BACKLOG_SECONDS = 3.0          # of the picture a reader joining starts in (a keyframe within it)
 READER_SLACK = 64              # pieces a slow reader may lag before its oldest go
 RENDER_DEVICE = "/dev/dri/renderD128"
+
+FRAME_BYTES = TILE_W * TILE_H * 3 // 2   # one NV12 tile
+RATE = 48000                             # sound: s16 stereo
+SAMPLE_BYTES = 4
+LEAD_SECONDS = 1.5             # the picture starts this far ahead: the player's buffer
+FIRST_FRAME_SECONDS = 8.0      # the clock waits this long at most for every tile's first frame
+QUEUE_MAX_BYTES = 96 * 1024 * 1024   # of a channel waiting for its decoder (minutes of it)
+CATCH_UP_SECONDS = 45.0        # a tile further behind than this jumps forward ...
+CATCH_UP_TO_SECONDS = 15.0     # ... to this
+STUCK_WINDOW = 450             # frames (15 s) a feed is judged over ...
+STUCK_SHARE = 0.85             # ... and how many of them shown already in it make it stuck
+STUCK_MEMORY_SECONDS = 3 * 3600
+REOPEN_SECONDS = 20.0          # a channel whose stream ended is opened again after this
+PENDING_FRAMES = 4             # ticks the clock may get ahead of the encoder on one input
+READ_AHEAD_FRAMES = 4          # decoded frames the clock holds of each tile (the decoder's slack)
+PIPE_BYTES = 1024 * 1024
+F_SETPIPE_SZ = 1031
 
 
 class MultiviewError(Exception):
@@ -121,58 +164,73 @@ def gpu_decodes(info: dict) -> bool:
     return info.get("codec") in HW_DECODE_CODECS and info.get("pix_fmt") in HW_DECODE_PIX
 
 
-def ffmpeg_args(inputs: list, enc: str, titles: list, has_audio: list, hw_decode: Optional[list] = None) -> list:
-    """The ffmpeg command for one mosaic. `inputs`: an ffmpeg input per tile
-    (pipe:<fd>); `has_audio`: whether each has sound (a silent track stands
-    in otherwise, so track N is always tile N); `hw_decode`: the tiles the
-    GPU decodes, deinterlaces and scales (only with enc "vaapi")."""
-    n = len(inputs)
+def decoder_args(gpu: bool, has_audio: bool, video_out: str, audio_out: Optional[str], source: str = "pipe:0") -> list:
+    """The ffmpeg that decodes one tile: the channel's MPEG-TS from `source`
+    (its stdin), its picture as raw NV12 960x540 frames at 29.97/s to
+    `video_out` (deinterlaced, fitted inside the tile: 4:3 gets bars) and its
+    sound as s16 stereo 48 kHz to `audio_out` (ffmpeg URLs: pipe:<fd>), both
+    from the channel's first moment (t=0), so frame k and sample k * 1601.6
+    are the same instant. `gpu`: decoded, deinterlaced and
+    scaled on the GPU (the codec allows it and the encoder is "vaapi")."""
+    args = [_ffmpeg() or "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"]
+    if gpu:
+        args += ["-init_hw_device", f"vaapi=va:{RENDER_DEVICE}", "-filter_hw_device", "va",
+                 "-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi", "-hwaccel_device", "va"]
+    args += ["-thread_queue_size", "1024", "-fflags", "+genpts+discardcorrupt",
+             "-analyzeduration", "3000000", "-probesize", "5000000", "-f", "mpegts", "-i", source]
+    fit = f"pad={TILE_W}:{TILE_H}:-1:-1,setsar=1,fps={FPS}:start_time=0"
+    if gpu:
+        video = (f"[0:v:0]deinterlace_vaapi=auto=1,"
+                 f"scale_vaapi=w={TILE_W}:h={TILE_H}:format=nv12:force_original_aspect_ratio=decrease,"
+                 f"hwdownload,format=nv12,{fit}[v]")
+    else:
+        video = (f"[0:v:0]yadif=mode=0:parity=-1:deint=1,"
+                 f"scale={TILE_W}:{TILE_H}:force_original_aspect_ratio=decrease,format=nv12,{fit}[v]")
+    graph = [video]
+    if has_audio and audio_out is not None:
+        graph.append(f"[0:a:0]aresample={RATE}:async=1:first_pts=0,"
+                     f"aformat=sample_fmts=s16:channel_layouts=stereo[a]")
+    args += ["-filter_complex", ";".join(graph),
+             "-map", "[v]", "-f", "rawvideo", "-flush_packets", "1", video_out]
+    if has_audio and audio_out is not None:
+        args += ["-map", "[a]", "-f", "s16le", "-flush_packets", "1", audio_out]
+    return args
+
+
+def ffmpeg_args(video_ins: list, audio_ins: list, enc: str, titles: list) -> list:
+    """The encoder: every tile's raw frames (`video_ins`, NV12 960x540 at
+    29.97/s, one per tick from the clock) and sound (`audio_ins`, s16 stereo
+    48 kHz), as ffmpeg URLs (pipe:<fd>), into one 1080p picture with one audio track per tile, in order.
+    Its inputs never wait for a provider: the clock feeds them evenly."""
+    n = len(video_ins)
     places = layout(n)
-    hw_decode = [bool(h) and enc == "vaapi" for h in (hw_decode or [False] * n)]
     args = [_ffmpeg() or "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"]
     if enc == "vaapi":
         args += ["-init_hw_device", f"vaapi=va:{RENDER_DEVICE}", "-filter_hw_device", "va"]
-    for i, src in enumerate(inputs):
-        if hw_decode[i]:
-            args += ["-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi", "-hwaccel_device", "va"]
-        args += ["-thread_queue_size", "1024", "-fflags", "+genpts+discardcorrupt",
-                 "-analyzeduration", "3000000", "-probesize", "5000000",
-                 "-f", "mpegts", "-i", src]
-    graph = []
-    fit = f"pad={TILE_W}:{TILE_H}:-1:-1,setsar=1,fps={FPS}"
-    for i in range(n):
-        # Interlaced channels (1080i) are deinterlaced first; the picture is
-        # fitted inside its tile (4:3 gets bars), at one frame rate for all.
-        if hw_decode[i]:
-            graph.append(f"[{i}:v:0]deinterlace_vaapi=auto=1,"
-                         f"scale_vaapi=w={TILE_W}:h={TILE_H}:format=nv12:force_original_aspect_ratio=decrease,"
-                         f"hwdownload,format=nv12,{fit}[v{i}]")
-        else:
-            graph.append(f"[{i}:v:0]yadif=mode=0:parity=-1:deint=1,"
-                         f"scale={TILE_W}:{TILE_H}:force_original_aspect_ratio=decrease,format=nv12,{fit}[v{i}]")
-        if has_audio[i]:
-            graph.append(f"[{i}:a:0]aresample=48000:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo[a{i}]")
-        else:
-            graph.append(f"anullsrc=r=48000:cl=stereo[a{i}]")
-    stack = "".join(f"[v{i}]" for i in range(n))
+    for src in video_ins:
+        args += ["-thread_queue_size", "64", "-nofind_stream_info", "-f", "rawvideo", "-pix_fmt", "nv12",
+                 "-video_size", f"{TILE_W}x{TILE_H}", "-framerate", FPS, "-i", src]
+    for src in audio_ins:
+        args += ["-thread_queue_size", "256", "-nofind_stream_info", "-f", "s16le", "-ar", str(RATE),
+                 "-ac", "2", "-i", src]
+    stack = "".join(f"[{i}:v]" for i in range(n))
     # Two tiles: xstack makes the 1920x540 strip (its own y is 0), and pad
     # centres it; xstack at y=270 and then pad would push it down twice.
     top = places[0][1] if n == 2 else 0
     spots = "|".join(f"{x}_{y - top}" for x, y, _, _ in places)
-    tail = f"{stack}xstack=inputs={n}:layout={spots}:fill=black"
+    tail = f"{stack}xstack=inputs={n}:layout={spots}:fill=black,setsar=1"
     if n == 2:
         tail += f",pad={WIDTH}:{HEIGHT}:0:{top}"
     if enc == "vaapi":
         tail += ",format=nv12,hwupload"
-    graph.append(tail + "[v]")
-    args += ["-filter_complex", ";".join(graph), "-map", "[v]"]
+    args += ["-filter_complex", tail + "[v]", "-map", "[v]"]
     if enc == "vaapi":
         args += ["-c:v", "h264_vaapi", "-rc_mode", "VBR"]
     else:
         args += ["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-pix_fmt", "yuv420p"]
     args += ["-b:v", VIDEO_BITRATE, "-maxrate", "10M", "-bufsize", "8M", "-g", str(GOP)]
     for i in range(n):
-        args += ["-map", f"[a{i}]"]
+        args += ["-map", f"{n + i}:a"]
     args += ["-c:a", "aac", "-b:a", AUDIO_BITRATE, "-ac", "2"]
     for i, title in enumerate(titles):
         args += [f"-metadata:s:a:{i}", f"title={_clean_title(title)}"]
@@ -183,6 +241,24 @@ def ffmpeg_args(inputs: list, enc: str, titles: list, has_audio: list, hw_decode
 
 def _clean_title(title: str) -> str:
     return re.sub(r"[^\w .&'·:-]", "", title or "")[:60] or "Channel"
+
+
+def _pipe() -> tuple:
+    """(read fd, write fd), as large as Linux lets it be (a frame and a half)."""
+    r, w = os.pipe()
+    try:
+        fcntl.fcntl(w, F_SETPIPE_SZ, PIPE_BYTES)
+    except OSError:
+        pass
+    return r, w
+
+
+def _close_fd(fd: Optional[int]) -> None:
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 async def probe(data: bytes) -> dict:
@@ -305,13 +381,178 @@ def refusal_message(needed: int, free: int, soon: int = 0) -> str:
     return msg + "."
 
 
-# ── A tile: one channel feeding ffmpeg ──────────────────────────────────────
+# ── Another feed for a stuck channel ────────────────────────────────────────
+
+_stuck: "dict[int, float]" = {}   # channel id -> when its picture was found standing still
+
+
+def mark_stuck(channel_id: int) -> None:
+    _stuck[channel_id] = time.monotonic()
+
+
+def is_stuck(channel_id: int) -> bool:
+    at = _stuck.get(channel_id)
+    if at is None:
+        return False
+    if time.monotonic() - at > STUCK_MEMORY_SECONDS:
+        _stuck.pop(channel_id, None)
+        return False
+    return True
+
+
+def other_feeds(db, key: str, current: int) -> list:
+    """The other switched-on feeds of the network a pool key ("n18", a
+    place's "n18@city") plays, best first as the network ranks its variants;
+    [] for a single channel ("c123") or a network with one feed."""
+    m = re.fullmatch(r"n(\d+)", str(key or "").split("@", 1)[0])
+    if not m:
+        return []
+    from services import livetv_catalog as C
+    info = C._network_members(db).get(int(m.group(1)))
+    if not info:
+        return []
+    members = list(info["members"])
+    others = [c for c in members if c != current]
+    if not others:
+        return []
+    try:
+        by_id = C._member_rows(db, members)
+        score = C._Scorer(db).network(members, by_id)
+        country, tiers = C._place(db)
+        others.sort(key=lambda c: score.score(c, country, tiers), reverse=True)
+    except Exception as e:
+        logger.info(f"[Multiview] {key}: feeds not ranked ({e}), in catalog order")
+    return others
+
+
+def first_feed(db, pick: tuple) -> tuple:
+    """`pick` (channel_id, name, key, item_id), on another feed of its network
+    when its own was found stuck lately and another isn't."""
+    cid, name, key, item_id = pick
+    if not is_stuck(cid):
+        return pick
+    for other in other_feeds(db, key, cid):
+        if not is_stuck(other):
+            logger.info(f"[Multiview] {name}: channel {cid} was stuck lately, starting on {other}")
+            return (other, name, key, item_id)
+    return pick
+
+
+# ── A tile: one channel, the bytes in front of its decoder, the decoder ─────
+
+def _video_key_offset(data: bytes) -> Optional[int]:
+    """Where in `data` (MPEG-TS) the first video frame start marked as a
+    random access point (a keyframe) is; else the first video frame start;
+    None without either."""
+    sync = next((i for i in range(min(188, len(data) - 188)) if data[i] == 0x47 and data[i + 188] == 0x47), 0)
+    first = None
+    for i in range(sync, len(data) - 187, 188):
+        if data[i] != 0x47 or not data[i + 1] & 0x40:
+            continue
+        has_af = data[i + 3] & 0x20
+        k = 4 + (1 + data[i + 4] if has_af else 0)
+        if k + 4 > 188 or data[i + k:i + k + 3] != b"\x00\x00\x01" or not 0xE0 <= data[i + k + 3] <= 0xEF:
+            continue
+        if has_af and data[i + 4] > 0 and data[i + 5] & 0x40:
+            return i
+        if first is None:
+            first = i
+    return first
+
+
+class _Decoder:
+    """One tile's decoder ffmpeg: the channel in on a pipe (fed by
+    _Tile.feed), raw frames and sound out on two more, read by the clock
+    thread under `lock` (the fds are closed under it, never while read)."""
+
+    def __init__(self, tile: "_Tile", gpu: bool):
+        self.tile = tile
+        self.gpu = gpu
+        self.proc = None
+        self.lock = threading.Lock()
+        self.in_fd = None
+        self.video_fd = None
+        self.audio_fd = None
+        self.started = time.monotonic()
+        self.feed_task = None
+        self.errors_task = None
+        self.stderr_tail = deque(maxlen=5)
+
+    async def start(self) -> None:
+        in_r, in_w = _pipe()
+        v_r, v_w = _pipe()
+        a_r, a_w = _pipe() if self.tile.has_audio else (None, None)
+        theirs = [fd for fd in (in_r, v_w, a_w) if fd is not None]
+        try:
+            self.proc = await asyncio.create_subprocess_exec(
+                *decoder_args(self.gpu, self.tile.has_audio, f"pipe:{v_w}",
+                              f"pipe:{a_w}" if a_w is not None else None),
+                stdin=in_r, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+                pass_fds=[fd for fd in (v_w, a_w) if fd is not None], preexec_fn=_lower_priority)
+        except BaseException:
+            for fd in (in_w, v_r, a_r):
+                _close_fd(fd)
+            raise
+        finally:
+            for fd in theirs:
+                _close_fd(fd)
+        for fd in (in_w, v_r, a_r):
+            if fd is not None:
+                os.set_blocking(fd, False)
+        self.in_fd, self.video_fd, self.audio_fd = in_w, v_r, a_r
+        self.started = time.monotonic()
+        self.feed_task = asyncio.create_task(self.tile.feed(self))
+        self.errors_task = asyncio.create_task(self._errors())
+
+    async def _errors(self):
+        try:
+            async for line in self.proc.stderr:
+                text = line.decode(errors="replace").rstrip()
+                if text:
+                    self.stderr_tail.append(text)
+        except Exception:
+            pass
+
+    @property
+    def exited(self) -> bool:
+        return self.proc is None or self.proc.returncode is not None
+
+    def close_input(self) -> None:
+        with self.lock:
+            _close_fd(self.in_fd)
+            self.in_fd = None
+
+    async def stop(self) -> None:
+        task, self.feed_task = self.feed_task, None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except BaseException:
+                pass
+        with self.lock:
+            for fd in (self.in_fd, self.video_fd, self.audio_fd):
+                _close_fd(fd)
+            self.in_fd = self.video_fd = self.audio_fd = None
+        if self.proc is not None and self.proc.returncode is None:
+            try:
+                self.proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(self.proc.wait(), timeout=5)
+            except Exception:
+                pass
+        if self.errors_task is not None:
+            self.errors_task.cancel()
+
 
 class _Tile:
-    """One channel: joined like the tuner joins it, read by one task for as
-    long as the session has it (into `pieces`), and copied into whichever
-    ffmpeg runs now. Only the copying is restarted with ffmpeg; the read
-    never is (cancelling it would close the channel's subscription)."""
+    """One channel: joined like the tuner joins it and read by one task for
+    as long as the session has it, into `buf` (the bytes waiting for the
+    decoder: the tile's buffer against the provider's pauses). Its decoder
+    is restarted when it stops; the read never is (cancelling it would close
+    the channel's subscription)."""
 
     def __init__(self, channel_id: int, name: str, key: str, item_id: str):
         self.channel_id = channel_id
@@ -319,19 +560,32 @@ class _Tile:
         self.key = key
         self.item_id = item_id
         self.response = None      # the stream_proxy response we read
-        self.pieces = asyncio.Queue()
         self.reader = None
-        self.head = b""           # the first bytes, for the first ffmpeg
+        self.buf = deque()
+        self.buf_bytes = 0
+        self.arrived = None       # asyncio.Event: bytes (or the end) arrived
+        self.head = b""           # the first bytes, for the first decoder
         self.has_audio = True
         self.gpu = False          # the GPU can decode its video
         self.ended = False        # its stream ended (stopped for a recording, the provider gave up)
-        self.read_fd = None
-        self.write_fd = None
-        self.task = None
+        self.ended_at = None
+        self.decoder: Optional[_Decoder] = None
+        # Kept by the clock thread (plain counters):
+        self.frames = 0           # frames shown from the decoder
+        self.held = 0             # ticks it showed its last frame again (nothing ready)
+        self.stalls = 0           # times it held for half a second or more
+        self.stuck = False        # its picture stood still for STUCK_WINDOW
+        # Kept by the session:
+        self.fed = 0              # bytes given to decoders
+        self.decoder_restarts = 0
+        self.catch_ups = 0
+        self.switching = False
+        self.gave_up = False      # stuck, and no other feed would open
 
     async def open(self, db_factory) -> None:
         """Join the channel and read its first bytes (what it has: video, sound)."""
         from routers.livetv import stream_proxy
+        self.arrived = asyncio.Event()
         db = db_factory()
         try:
             try:
@@ -355,11 +609,10 @@ class _Tile:
             if left <= 0:
                 break
             try:
-                piece = await asyncio.wait_for(self.pieces.get(), timeout=left)
+                piece = await asyncio.wait_for(self.next_piece(), timeout=left)
             except asyncio.TimeoutError:
                 break
             if piece is None:
-                self.pieces.put_nowait(None)
                 break
             head += piece
         if not head:
@@ -373,91 +626,120 @@ class _Tile:
     async def _read(self, body) -> None:
         try:
             async for piece in body:
-                self.pieces.put_nowait(piece)
-                while self.pieces.qsize() > READER_SLACK:   # no ffmpeg reading (a restart): keep it recent
-                    try:
-                        self.pieces.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-            self.ended = True
+                self.buf.append(piece)
+                self.buf_bytes += len(piece)
+                while self.buf_bytes > QUEUE_MAX_BYTES and len(self.buf) > 1:
+                    self.buf_bytes -= len(self.buf.popleft())
+                self.arrived.set()
             logger.info(f"[Multiview] {self.name}: its stream ended")
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            self.ended = True
             logger.info(f"[Multiview] {self.name}: its stream ended: {e}")
         finally:
-            self.pieces.put_nowait(None)
+            self.ended = True
+            self.ended_at = time.monotonic()
+            self.arrived.set()
 
-    def pipe(self) -> int:
-        """The fd ffmpeg reads this tile from (inherited)."""
-        self.read_fd, self.write_fd = os.pipe()
-        os.set_inheritable(self.read_fd, True)
-        os.set_blocking(self.write_fd, False)
-        return self.read_fd
+    async def next_piece(self) -> Optional[bytes]:
+        """The next bytes of the channel; None once it ended and all were taken."""
+        while not self.buf:
+            if self.ended:
+                return None
+            self.arrived.clear()
+            await self.arrived.wait()
+        piece = self.buf.popleft()
+        self.buf_bytes -= len(piece)
+        return piece
 
-    async def feed(self) -> None:
-        """Copy the channel into ffmpeg's pipe until either side ends."""
+    def seconds_behind(self) -> Optional[float]:
+        """How much of the channel waits in front of the decoder, in seconds
+        (its bitrate measured from what was shown); None until known."""
+        if self.frames < 300 or not self.fed:
+            return None
+        return self.buf_bytes / (self.fed / (self.frames * TICK))
+
+    def drop_to(self, seconds: float) -> int:
+        """Leave only the last `seconds` of the buffer, from a keyframe: the
+        tile jumps forward. Bytes dropped."""
+        behind = self.seconds_behind()
+        if not behind or behind <= seconds:
+            return 0
+        keep = int(self.buf_bytes * seconds / behind)
+        dropped = 0
+        while self.buf and self.buf_bytes - len(self.buf[0]) >= keep:
+            piece = self.buf.popleft()
+            self.buf_bytes -= len(piece)
+            dropped += len(piece)
+        self.head = b""
+        return dropped + self.from_keyframe()
+
+    def from_keyframe(self) -> int:
+        """Start what waits at its first keyframe (a decoder started mid-way
+        shows broken pictures until one): bytes skipped."""
+        rest = b"".join(self.buf)
+        at = _video_key_offset(rest)
+        if not at:
+            return 0
+        self.buf.clear()
+        self.buf.append(rest[at:])
+        self.buf_bytes = len(rest) - at
+        return at
+
+    async def feed(self, dec: _Decoder) -> None:
+        """Copy the channel into `dec`'s input until either side ends; at the
+        end of the channel its input closes (the decoder finishes)."""
         loop = asyncio.get_running_loop()
         ready = asyncio.Event()
 
         async def write_all(data: bytes):
             view = memoryview(data)
             while view:
+                fd = dec.in_fd
+                if fd is None:
+                    raise BrokenPipeError
                 try:
-                    n = os.write(self.write_fd, view)
+                    n = os.write(fd, view)
                     view = view[n:]
                 except BlockingIOError:
                     ready.clear()
-                    loop.add_writer(self.write_fd, ready.set)
+                    loop.add_writer(fd, ready.set)
                     try:
                         await ready.wait()
                     finally:
-                        loop.remove_writer(self.write_fd)
+                        loop.remove_writer(fd)
         try:
             if self.head:
                 head, self.head = self.head, b""
+                self.fed += len(head)
                 await write_all(head)
             while True:
-                piece = await self.pieces.get()
+                piece = await self.next_piece()
                 if piece is None:
-                    self.pieces.put_nowait(None)   # for the next ffmpeg too: this channel has ended
                     break
+                self.fed += len(piece)
                 await write_all(piece)
         except (BrokenPipeError, OSError, asyncio.CancelledError):
-            pass
+            return
         except Exception as e:
             logger.info(f"[Multiview] {self.name}: feed ended: {e}")
-        finally:
-            self._close_write()
+        dec.close_input()
 
-    async def stop_feed(self) -> None:
-        if self.task is not None and not self.task.done():
-            self.task.cancel()
-            try:
-                await self.task
-            except BaseException:
-                pass
-        self.task = None
-        self._close_write()
-
-    def _close_write(self):
-        if self.write_fd is not None:
-            try:
-                os.close(self.write_fd)
-            except OSError:
-                pass
-            self.write_fd = None
+    async def start_decoder(self, vaapi: bool) -> None:
+        old, self.decoder = self.decoder, None
+        if old is not None:
+            await old.stop()
+            if not self.head:
+                self.from_keyframe()
+        dec = _Decoder(self, gpu=vaapi and self.gpu)
+        await dec.start()
+        self.decoder = dec
 
     async def close(self) -> None:
         """Leave the channel (its upstream closes when it was the last client)."""
-        await self.stop_feed()
-        if self.read_fd is not None:
-            try:
-                os.close(self.read_fd)
-            except OSError:
-                pass
-            self.read_fd = None
+        dec, self.decoder = self.decoder, None
+        if dec is not None:
+            await dec.stop()
         reader, self.reader = self.reader, None
         if reader is not None and not reader.done():
             reader.cancel()
@@ -479,9 +761,209 @@ class _Tile:
 
     def describe(self, index: int, place: tuple) -> dict:
         x, y, w, h = place
+        behind = self.seconds_behind()
         return {"index": index, "audio_track": index, "item_id": self.item_id, "key": self.key,
                 "channel_id": self.channel_id, "name": self.name, "has_audio": self.has_audio,
-                "live": not self.ended, "x": x, "y": y, "width": w, "height": h}
+                "live": not self.ended, "x": x, "y": y, "width": w, "height": h,
+                "buffer_seconds": round(behind, 1) if behind is not None else None,
+                "stalls": self.stalls, "held_seconds": round(self.held * TICK, 1)}
+
+
+# ── The clock: one frame of every tile per tick ─────────────────────────────
+
+_BLACK = bytes([16]) * (TILE_W * TILE_H) + bytes([128]) * (TILE_W * TILE_H // 2)
+_AUDIO_CAP = RATE * SAMPLE_BYTES * 2      # sound read ahead of its frames, at most
+
+
+def _fill(fd: int, buf: bytearray, upto: int) -> None:
+    while len(buf) < upto:
+        try:
+            got = os.read(fd, upto - len(buf))
+        except (BlockingIOError, InterruptedError):
+            return
+        except OSError:
+            return
+        if not got:
+            return
+        buf += got
+
+
+class _Slot:
+    """What the clock keeps of one place on the picture."""
+
+    def __init__(self):
+        self.decoder = None
+        self.frame = _BLACK
+        self.partial = bytearray()   # the frame being read
+        self.ready = deque()         # frames read ahead
+        self.abuf = bytearray()
+        self.started = False      # a frame was shown
+        self.held_run = 0
+        self.window = deque()     # (frame signature, seen before in the window)
+        self.counts = {}          # signature -> times in the window
+        self.seen = 0
+
+
+class _Clock(threading.Thread):
+    """Hands the encoder one frame and one tick of sound of every tile,
+    29.97 times a second, whatever the channels do: a tile whose decoder has
+    nothing ready shows its last frame and is silent. A thread of its own,
+    so a busy event loop doesn't make the picture late. Reading one frame a
+    tick is also what paces each decoder (it waits on its full pipe), and so
+    the channel's bytes wait in the tile's buffer."""
+
+    def __init__(self, session: "Session", video_fds: list, audio_fds: list):
+        super().__init__(daemon=True, name=f"multiview-{session.id[:6]}")
+        self.session = session
+        self.video_fds = video_fds
+        self.audio_fds = audio_fds
+        self.slots = [_Slot() for _ in video_fds]
+        # The encoder's inputs, a tile's picture then its sound, and what
+        # waits to be written to each (non-blocking).
+        self.fds = [fd for pair in zip(video_fds, audio_fds) for fd in pair]
+        self.pending = [bytearray() for _ in self.fds]
+        self.limits = [PENDING_FRAMES * FRAME_BYTES, PENDING_FRAMES * RATE * SAMPLE_BYTES // 30] * len(video_fds)
+        self.halt = threading.Event()
+        self.ticks = 0
+        self.late = 0             # ticks handed over more than 0.25 s late
+        self.error = None
+
+    def run(self):
+        try:
+            self._first_frames()
+            start = time.monotonic() - LEAD_SECONDS
+            k = 0
+            samples = 0
+            while not self.halt.is_set():
+                now = time.monotonic()
+                due = start + k * TICK
+                if due > now:
+                    if self.halt.wait(due - now):
+                        break
+                elif now - due > 0.25 and k * TICK > LEAD_SECONDS + 1:
+                    self.late += 1
+                    if now - due > 2.0:   # the host stood still: go on from now, don't race
+                        start = now - k * TICK
+                upto = round((k + 1) * TICK * RATE)
+                need, samples = upto - samples, upto
+                tiles = self.session.tiles
+                for i, slot in enumerate(self.slots):
+                    frame, sound = self._take(slot, tiles[i] if i < len(tiles) else None, need)
+                    self.pending[2 * i] += frame
+                    self.pending[2 * i + 1] += sound
+                self._flush()
+                k += 1
+                self.ticks = k
+        except OSError as e:
+            if not self.halt.is_set():
+                self.error = e
+                logger.info(f"[Multiview] {self.session.id[:6]}: clock stopped: {e}")
+
+    def _flush(self) -> None:
+        """Hand the encoder what waits for it, never waiting on one input
+        while another starves (ffmpeg reads its inputs in its own order):
+        until no input has more than PENDING_FRAMES ticks waiting."""
+        while True:
+            waiting = []
+            for fd, buf in zip(self.fds, self.pending):
+                while buf:
+                    try:
+                        n = os.write(fd, buf)
+                    except BlockingIOError:
+                        break
+                    del buf[:n]
+                if buf:
+                    waiting.append(fd)
+            if not waiting or self.halt.is_set():
+                return
+            if all(len(b) <= lim for b, lim in zip(self.pending, self.limits)):
+                return
+            select.select([], waiting, [], 0.5)
+
+    def _first_frames(self):
+        """Wait (FIRST_FRAME_SECONDS at most) until every tile has a frame, so
+        the picture doesn't start with black tiles."""
+        end = time.monotonic() + FIRST_FRAME_SECONDS
+        while time.monotonic() < end and not self.halt.is_set():
+            tiles = self.session.tiles
+            ready = 0
+            for i, slot in enumerate(self.slots):
+                tile = tiles[i] if i < len(tiles) else None
+                dec = tile.decoder if tile is not None else None
+                self._read_ahead(slot, dec)
+                ready += bool(slot.ready)
+            if ready == len(self.slots):
+                return
+            self.halt.wait(0.02)
+
+    def _take(self, slot: _Slot, tile: Optional[_Tile], need: int) -> tuple:
+        """This tick's frame and `need` samples of sound for one place."""
+        dec = tile.decoder if tile is not None else None
+        self._read_ahead(slot, dec)
+        nbytes = need * SAMPLE_BYTES
+        if not slot.ready:
+            # Nothing ready: the last frame again, silent. Its sound waits
+            # with it (taken with its frames), so they stay together.
+            if slot.started and tile is not None:
+                tile.held += 1
+                slot.held_run += 1
+                if slot.held_run == 15:
+                    tile.stalls += 1
+            return slot.frame, bytes(nbytes)
+        slot.frame = slot.ready.popleft()
+        slot.started = True
+        slot.held_run = 0
+        tile.frames += 1
+        self._judge(slot, tile)
+        if dec is not None and dec.audio_fd is not None or len(slot.abuf):
+            sound = bytes(slot.abuf[:nbytes])
+            del slot.abuf[:nbytes]
+            if len(sound) < nbytes:
+                sound += bytes(nbytes - len(sound))
+        else:
+            sound = bytes(nbytes)
+        return slot.frame, sound
+
+    def _read_ahead(self, slot: _Slot, dec: Optional[_Decoder]) -> None:
+        """Up to READ_AHEAD_FRAMES of the tile's frames (and their sound) from
+        its decoder, without waiting. A new decoder starts afresh."""
+        if dec is not slot.decoder:
+            slot.decoder, slot.partial, slot.abuf = dec, bytearray(), bytearray()
+            slot.ready.clear()
+        if dec is None:
+            return
+        with dec.lock:
+            if dec.video_fd is not None:
+                while len(slot.ready) < READ_AHEAD_FRAMES:
+                    _fill(dec.video_fd, slot.partial, FRAME_BYTES)
+                    if len(slot.partial) < FRAME_BYTES:
+                        break
+                    slot.ready.append(bytes(slot.partial))
+                    slot.partial = bytearray()
+            if dec.audio_fd is not None:
+                _fill(dec.audio_fd, slot.abuf, _AUDIO_CAP)
+
+    def _judge(self, slot: _Slot, tile: _Tile) -> None:
+        """A feed that shows the same few frames over and over (a still
+        picture, or a clip looping: a broken 4K feed, 25 Oct, 34 different
+        frames in 30 s) is stuck. Judged by how many of the last STUCK_WINDOW
+        frames had been shown already within it: 92-100 % there, 0 % on a
+        live cartoon channel."""
+        sig = hash(slot.frame[::1021])
+        seen = slot.counts.get(sig, 0) > 0
+        slot.window.append((sig, seen))
+        slot.counts[sig] = slot.counts.get(sig, 0) + 1
+        slot.seen += seen
+        if len(slot.window) > STUCK_WINDOW:
+            old, was_seen = slot.window.popleft()
+            slot.seen -= was_seen
+            left = slot.counts[old] - 1
+            if left:
+                slot.counts[old] = left
+            else:
+                del slot.counts[old]
+        if len(slot.window) == STUCK_WINDOW and slot.seen >= STUCK_SHARE * STUCK_WINDOW:
+            tile.stuck = True
 
 
 # ── A session ───────────────────────────────────────────────────────────────
@@ -496,15 +978,21 @@ class Session:
         self.readers = []                 # asyncio.Queue per reader
         self.backlog = deque()            # (loop time, bytes)
         self.pump_task = None
-        self.feeds = []
+        self.errors_task = None
+        self.monitor_task = None
+        self.clock: Optional[_Clock] = None
+        self.video_fds = []
+        self.audio_fds = []
+        self.db_factory = None
         self.touched = time.monotonic()
         self.started_at = time.monotonic()
         self.first_bytes_seconds = None
         self.closed = False
         self.stderr_tail = deque(maxlen=20)
-        self.gpu_decode = True       # off after ffmpeg stopped on it once
         self.changing = False
         self.restarts = 0
+        self.tried = [{t.channel_id} for t in tiles]   # feeds each place has had
+        self.moves = []                   # (place, from channel, to channel, why)
 
     def touch(self):
         self.touched = time.monotonic()
@@ -513,23 +1001,65 @@ class Session:
         return not self.readers and now - self.touched > IDLE_SECONDS
 
     async def start(self) -> None:
+        """The picture: each tile's decoder, the encoder, the clock. Decoders
+        start afresh with every clock: a clock stopped part-way through a
+        frame would leave the next one reading the raw pipe out of step."""
         self.encoder = self.encoder or await encoder()
         for t in self.tiles:
-            await t.stop_feed()
-        fds = [t.pipe() for t in self.tiles]
-        args = ffmpeg_args([f"pipe:{fd}" for fd in fds], self.encoder,
-                           [t.name for t in self.tiles], [t.has_audio for t in self.tiles],
-                           [t.gpu and self.gpu_decode for t in self.tiles])
+            await t.start_decoder(self.encoder == "vaapi")
+        video = [_pipe() for _ in self.tiles]
+        audio = [_pipe() for _ in self.tiles]
+        theirs = [r for r, _ in video + audio]
+        args = ffmpeg_args([f"pipe:{r}" for r, _ in video], [f"pipe:{r}" for r, _ in audio], self.encoder,
+                           [t.name for t in self.tiles])
         self.stderr_tail.clear()
-        self.proc = await asyncio.create_subprocess_exec(
-            *args, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE, pass_fds=fds, preexec_fn=_lower_priority)
-        for t in self.tiles:       # ffmpeg has its copies
-            os.close(t.read_fd)
-            t.read_fd = None
-            t.task = asyncio.create_task(t.feed())
+        try:
+            self.proc = await asyncio.create_subprocess_exec(
+                *args, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE, pass_fds=theirs, preexec_fn=_lower_priority)
+        except BaseException:
+            for _, w in video + audio:
+                _close_fd(w)
+            raise
+        finally:
+            for fd in theirs:
+                _close_fd(fd)
+        self.video_fds = [w for _, w in video]
+        self.audio_fds = [w for _, w in audio]
+        for fd in self.video_fds + self.audio_fds:
+            os.set_blocking(fd, False)
+        self.clock = _Clock(self, self.video_fds, self.audio_fds)
+        self.clock.start()
         self.pump_task = asyncio.create_task(self._pump())
         self.errors_task = asyncio.create_task(self._errors())
+        if self.monitor_task is None:
+            self.monitor_task = asyncio.create_task(self._monitor())
+
+    async def _stop_picture(self) -> None:
+        """Stop the encoder and the clock (the tiles and their decoders go on)."""
+        clock, self.clock = self.clock, None
+        if clock is not None:
+            clock.halt.set()
+        if self.proc is not None and self.proc.returncode is None:
+            try:
+                self.proc.kill()
+            except ProcessLookupError:
+                pass
+        if clock is not None:
+            await asyncio.to_thread(clock.join, 5)
+        for fd in self.video_fds + self.audio_fds:
+            _close_fd(fd)
+        self.video_fds, self.audio_fds = [], []
+        if self.proc is not None:
+            try:
+                await asyncio.wait_for(self.proc.wait(), timeout=5)
+            except Exception:
+                pass
+        if self.pump_task is not None and self.pump_task is not asyncio.current_task():
+            try:
+                await asyncio.wait_for(self.pump_task, timeout=5)
+            except BaseException:
+                pass
 
     async def _errors(self):
         try:
@@ -541,11 +1071,12 @@ class Session:
             pass
 
     async def _pump(self):
-        """ffmpeg's picture to every reader, keeping the last seconds for the next one."""
+        """The encoder's picture to every reader, keeping the last seconds for the next one."""
         loop = asyncio.get_running_loop()
+        proc = self.proc
         try:
             while True:
-                piece = await self.proc.stdout.read(188 * 512)
+                piece = await proc.stdout.read(188 * 512)
                 if not piece:
                     break
                 now = loop.time()
@@ -563,27 +1094,116 @@ class Session:
                     q.put_nowait(piece)
         except Exception as e:
             logger.info(f"[Multiview] {self.id[:6]}: picture ended: {e}")
-        if self.closed or self.changing:
+        if self.closed or self.changing or proc is not self.proc:
             return
         try:
-            await asyncio.wait_for(self.proc.wait(), timeout=5)
+            await asyncio.wait_for(proc.wait(), timeout=5)
         except Exception:
             pass
         tail = " | ".join(list(self.stderr_tail)[-3:])
-        logger.warning(f"[Multiview] {self.id[:6]}: ffmpeg stopped ({self.proc.returncode}) {tail}")
-        # Once more on the CPU (a channel the GPU wouldn't decode after all,
-        # a stream that changed): the channels stay open, the readers wait.
-        if self.restarts < MAX_RESTARTS and any(t.opened and not t.ended for t in self.tiles):
+        logger.warning(f"[Multiview] {self.id[:6]}: encoder stopped ({proc.returncode}) {tail}")
+        # Once more (the channels stay open, the readers wait).
+        if self.restarts < MAX_RESTARTS and any(t.opened for t in self.tiles):
             self.restarts += 1
-            if self.gpu_decode and any(t.gpu for t in self.tiles):
-                self.gpu_decode = False
             try:
+                await self._stop_picture()
                 await self.start()
                 return
             except Exception as e:
                 logger.warning(f"[Multiview] {self.id[:6]}: restart failed: {e}")
         for q in list(self.readers):
             q.put_nowait(None)
+
+    async def _monitor(self):
+        """Every half second: a decoder that stopped is started again (on the
+        CPU if the GPU gave up on it at once), a tile too far behind jumps
+        forward, a stuck feed moves to another, an ended channel is opened again."""
+        while not self.closed:
+            await asyncio.sleep(0.5)
+            if self.changing or self.clock is None:
+                continue
+            now = time.monotonic()
+            for i, t in enumerate(list(self.tiles)):
+                if t.switching:
+                    continue
+                try:
+                    dec = t.decoder
+                    if dec is not None and dec.exited and now - dec.started > 2.0 \
+                            and not (t.ended and not t.buf):
+                        if dec.gpu and now - dec.started < 15:
+                            t.gpu = False
+                        t.decoder_restarts += 1
+                        if t.decoder_restarts <= 5 or t.decoder_restarts % 50 == 0:
+                            logger.info(f"[Multiview] {self.id[:6]} {t.name}: decoder stopped "
+                                        f"({dec.proc.returncode if dec.proc else '-'}) "
+                                        f"{' | '.join(dec.stderr_tail)[-200:]}; started again")
+                        await t.start_decoder(self.encoder == "vaapi")
+                        continue
+                    behind = t.seconds_behind()
+                    if behind is not None and behind > CATCH_UP_SECONDS:
+                        dropped = t.drop_to(CATCH_UP_TO_SECONDS)
+                        if dropped:
+                            t.catch_ups += 1
+                            logger.info(f"[Multiview] {self.id[:6]} {t.name}: {behind:.0f}s behind, "
+                                        f"jumped forward ({dropped / 1e6:.1f} MB)")
+                            await t.start_decoder(self.encoder == "vaapi")
+                            continue
+                    if t.stuck and not t.gave_up:
+                        t.switching = True
+                        asyncio.create_task(self._move(i, t, "its picture stands still"))
+                    elif t.ended and not t.buf and t.ended_at and now - t.ended_at > REOPEN_SECONDS:
+                        t.switching = True
+                        asyncio.create_task(self._move(i, t, "its stream ended", same_first=True))
+                except Exception as e:
+                    logger.warning(f"[Multiview] {self.id[:6]} {t.name}: {e}")
+
+    async def _move(self, i: int, old: _Tile, why: str, same_first: bool = False) -> None:
+        """Place `i` onto another feed of its network (or, `same_first`, its
+        own channel again first). The old one stays on screen until the new
+        one opened; nothing changes if none opens."""
+        try:
+            if why.startswith("its picture"):
+                mark_stuck(old.channel_id)
+
+            def feeds():
+                if self.db_factory is None:
+                    return []
+                db = self.db_factory()
+                try:
+                    return other_feeds(db, old.key, old.channel_id)
+                finally:
+                    db.close()
+            others = [c for c in await asyncio.to_thread(feeds)
+                      if c not in self.tried[i] and not is_stuck(c)]
+            candidates = ([old.channel_id] if same_first else []) + others
+            for cid in candidates:
+                self.tried[i].add(cid)
+                new = _Tile(cid, old.name, old.key, old.item_id)
+                try:
+                    await new.open(self.db_factory)
+                except MultiviewError as e:
+                    logger.info(f"[Multiview] {self.id[:6]} {old.name}: channel {cid} didn't open: {e}")
+                    continue
+                if self.closed or self.changing or i >= len(self.tiles) or self.tiles[i] is not old:
+                    await new.close()
+                    return
+                await new.start_decoder(self.encoder == "vaapi")
+                self.tiles[i] = new
+                self.moves.append((i, old.channel_id, cid, why))
+                logger.info(f"[Multiview] {self.id[:6]} {old.name}: {why} (channel {old.channel_id}), "
+                            f"now channel {cid}")
+                await old.close()
+                return
+            if why.startswith("its picture"):
+                old.gave_up = True
+                logger.info(f"[Multiview] {self.id[:6]} {old.name}: {why}, no other feed to move to")
+        except Exception as e:
+            logger.warning(f"[Multiview] {self.id[:6]} {old.name}: move failed: {e}")
+        finally:
+            old.switching = False
+            old.stuck = False
+            if same_first:
+                old.ended_at = time.monotonic()   # tried: again after REOPEN_SECONDS
 
     async def read(self):
         """A reader's stream: from a keyframe in the last seconds, then live."""
@@ -619,34 +1239,28 @@ class Session:
         """Other channels in the same session (one swapped or removed, or
         reordered): channels it no longer has are left first (their
         connections free up for the new ones), new ones are opened, and the
-        picture restarts with the new layout. Readers get the new picture on
-        their next connection."""
-        keep = {t.channel_id: t for t in self.tiles}
-        wanted = {p[0] for p in picks}
-        gone = [t for t in self.tiles if t.channel_id not in wanted]
+        picture restarts with the new layout. A place that moved to another
+        feed of its network keeps it. Readers get the new picture on their
+        next connection."""
+        keep = {t.key: t for t in self.tiles}
+        wanted = {p[2] for p in picks}
+        gone = [t for t in self.tiles if t.key not in wanted]
         self.changing = True
         try:
-            if self.proc is not None and self.proc.returncode is None:
-                try:
-                    self.proc.kill()
-                except ProcessLookupError:
-                    pass
-                try:
-                    await asyncio.wait_for(self.proc.wait(), timeout=5)
-                except Exception:
-                    pass
-            if self.pump_task is not None:
-                try:
-                    await asyncio.wait_for(self.pump_task, timeout=5)
-                except BaseException:
-                    pass
+            await self._stop_picture()
             await asyncio.gather(*(t.close() for t in gone), return_exceptions=True)
-            new = [_Tile(*p) for p in picks if p[0] not in keep]
+            db = db_factory()
+            try:
+                fresh = [first_feed(db, p) for p in picks if p[2] not in keep]
+            finally:
+                db.close()
+            new = [_Tile(*p) for p in fresh]
             results = await asyncio.gather(*(t.open(db_factory) for t in new), return_exceptions=True)
-            opened = {t.channel_id: t for t, r in zip(new, results) if not isinstance(r, BaseException)}
+            opened = {t.key: t for t, r in zip(new, results) if not isinstance(r, BaseException)}
             failed = [r for r in results if isinstance(r, BaseException)]
-            self.tiles = [keep.get(p[0]) or opened.get(p[0]) for p in picks]
-            self.tiles = [t for t in self.tiles if t is not None]
+            tiles = [keep.get(p[2]) or opened.get(p[2]) for p in picks]
+            self.tiles = [t for t in tiles if t is not None]
+            self.tried = [{t.channel_id} for t in self.tiles]
             self.backlog.clear()
             for q in list(self.readers):
                 q.put_nowait(None)
@@ -667,17 +1281,10 @@ class Session:
         if self.closed:
             return
         self.closed = True
-        if self.proc is not None and self.proc.returncode is None:
-            try:
-                self.proc.kill()
-            except ProcessLookupError:
-                pass
+        if self.monitor_task is not None:
+            self.monitor_task.cancel()
+        await self._stop_picture()
         await asyncio.gather(*(t.close() for t in self.tiles), return_exceptions=True)
-        if self.proc is not None:
-            try:
-                await asyncio.wait_for(self.proc.wait(), timeout=5)
-            except Exception:
-                pass
         if self.pump_task is not None:
             self.pump_task.cancel()
         for q in list(self.readers):
@@ -689,11 +1296,14 @@ class Session:
 
     def describe(self) -> dict:
         places = layout(len(self.tiles))
+        clock = self.clock
         return {"id": self.id, "stream_path": f"/api/live/multiview/{self.id}/stream.ts",
                 "encoder": self.encoder, "width": WIDTH, "height": HEIGHT,
-                "gpu_decode": self.encoder == "vaapi" and self.gpu_decode and any(t.gpu for t in self.tiles),
+                "gpu_decode": self.encoder == "vaapi" and any(t.decoder and t.decoder.gpu for t in self.tiles),
                 "tiles": [t.describe(i, places[i]) for i, t in enumerate(self.tiles)],
-                "first_bytes_seconds": self.first_bytes_seconds}
+                "first_bytes_seconds": self.first_bytes_seconds,
+                "late_ticks": clock.late if clock else 0,
+                "moved": [{"place": i, "from": a, "to": b, "why": w} for i, a, b, w in self.moves]}
 
 
 def _lower_priority():
@@ -746,8 +1356,14 @@ async def start(user_id: str, picks: list, db_factory) -> Session:
     started and producing. It replaces the person's running one (a swap, a
     removal, a new pick), which is closed only once the new one has its
     channels, so a channel in both never closes in between."""
+    db = db_factory()
+    try:
+        picks = [first_feed(db, p) for p in picks]
+    finally:
+        db.close()
     tiles = [_Tile(*p) for p in picks]
     session = Session(user_id, tiles)
+    session.db_factory = db_factory
     t0 = time.monotonic()
     try:
         results = await asyncio.gather(*(t.open(db_factory) for t in tiles), return_exceptions=True)

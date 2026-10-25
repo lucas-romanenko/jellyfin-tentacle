@@ -38,22 +38,30 @@ class Layout(unittest.TestCase):
 
 
 class FfmpegArgs(unittest.TestCase):
-    def _args(self, n=4, enc="x264", audio=None, hw=None):
+    """The encoder: raw tiles from the clock in, one picture with a sound
+    track per tile out."""
+
+    def _args(self, n=4, enc="x264"):
         from services.multiview import ffmpeg_args
-        return ffmpeg_args([f"pipe:{10 + i}" for i in range(n)], enc, [f"Ch {i}" for i in range(n)],
-                           audio or [True] * n, hw)
+        return ffmpeg_args([f"pipe:{10 + i}" for i in range(n)], [f"pipe:{20 + i}" for i in range(n)], enc,
+                           [f"Ch {i}" for i in range(n)])
 
     def test_one_audio_track_per_tile_in_order(self):
         a = self._args(3)
         maps = [a[i + 1] for i, x in enumerate(a) if x == "-map"]
-        self.assertEqual(maps, ["[v]", "[a0]", "[a1]", "[a2]"])
+        self.assertEqual(maps, ["[v]", "3:a", "4:a", "5:a"])
         self.assertIn("title=Ch 2", a)
 
-    def test_a_silent_channel_gets_a_silent_track(self):
-        g = self._args(2, audio=[True, False])[self._args(2, audio=[True, False]).index("-filter_complex") + 1]
-        self.assertIn("[0:a:0]", g)
-        self.assertNotIn("[1:a:0]", g)
-        self.assertIn("anullsrc=r=48000:cl=stereo[a1]", g)
+    def test_raw_tiles_are_read_without_probing(self):
+        # ffmpeg probes its inputs one after the other; probing a tile would
+        # wait for frames the clock hands out only with every other tile's.
+        a = self._args(2)
+        ins = [i for i, x in enumerate(a) if x == "-i"]
+        self.assertEqual([a[i + 1] for i in ins], ["pipe:10", "pipe:11", "pipe:20", "pipe:21"])
+        for i in ins:
+            self.assertIn("-nofind_stream_info", a[i - 12:i])
+        self.assertIn("960x540", a)
+        self.assertIn("s16le", a)
 
     def test_two_tiles_are_padded_to_1080(self):
         a = self._args(2)
@@ -64,28 +72,45 @@ class FfmpegArgs(unittest.TestCase):
     def test_cpu_encode_without_gpu(self):
         a = self._args(4)
         self.assertIn("libx264", a)
-        self.assertNotIn("-hwaccel", a)
         self.assertNotIn("-init_hw_device", a)
 
-    def test_gpu_decodes_only_the_tiles_it_can(self):
-        a = self._args(2, enc="vaapi", hw=[True, False])
+    def test_gpu_encode(self):
+        a = self._args(4, enc="vaapi")
         self.assertIn("h264_vaapi", a)
-        self.assertEqual(a.count("-hwaccel"), 1)
-        # The GPU input comes first, before its -i.
-        self.assertLess(a.index("-hwaccel"), a.index("pipe:10"))
-        g = a[a.index("-filter_complex") + 1]
-        self.assertIn("[0:v:0]deinterlace_vaapi", g)
-        self.assertIn("[1:v:0]yadif", g)
-        self.assertTrue(g.endswith("format=nv12,hwupload[v]"))
-
-    def test_no_gpu_decode_with_a_cpu_encoder(self):
-        a = self._args(2, enc="x264", hw=[True, True])
-        self.assertNotIn("-hwaccel", a)
+        self.assertTrue(a[a.index("-filter_complex") + 1].endswith("format=nv12,hwupload[v]"))
 
     def test_titles_are_cleaned(self):
         from services.multiview import _clean_title
         self.assertEqual(_clean_title('TSN 2 "HD"; rm -rf'), "TSN 2 HD rm -rf")
         self.assertEqual(_clean_title(""), "Channel")
+
+
+class DecoderArgs(unittest.TestCase):
+    """A tile's decoder: the channel in, raw frames and sound out, both from t=0."""
+
+    def test_on_the_gpu(self):
+        from services.multiview import decoder_args
+        a = decoder_args(True, True, "pipe:5", "pipe:6")
+        self.assertLess(a.index("-hwaccel"), a.index("-i"))
+        g = a[a.index("-filter_complex") + 1]
+        self.assertIn("[0:v:0]deinterlace_vaapi", g)
+        self.assertIn("fps=30000/1001:start_time=0", g)
+        self.assertIn("first_pts=0", g)
+        self.assertEqual(a[-1], "pipe:6")
+        self.assertEqual(a[a.index("rawvideo") + 3], "pipe:5")
+
+    def test_on_the_cpu(self):
+        from services.multiview import decoder_args
+        a = decoder_args(False, True, "pipe:5", "pipe:6")
+        self.assertNotIn("-hwaccel", a)
+        self.assertIn("[0:v:0]yadif", a[a.index("-filter_complex") + 1])
+
+    def test_a_silent_channel_has_no_sound_out(self):
+        from services.multiview import decoder_args
+        a = decoder_args(False, False, "pipe:5", None)
+        self.assertEqual(a.count("-map"), 1)
+        self.assertNotIn("s16le", a)
+        self.assertNotIn("[0:a:0]", a[a.index("-filter_complex") + 1])
 
 
 class Probe(unittest.TestCase):
@@ -212,7 +237,7 @@ class Picture(unittest.TestCase):
     the strip in the middle, black above and below)."""
 
     def _luma_rows(self, n: int) -> list:
-        from services.multiview import HEIGHT, WIDTH, ffmpeg_args
+        from services.multiview import HEIGHT, WIDTH, decoder_args, ffmpeg_args
         d = temp_dir(self)
         ins = []
         for i in range(n):
@@ -223,7 +248,12 @@ class Picture(unittest.TestCase):
                             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
                             "-c:a", "aac", "-f", "mpegts", p], check=True)
             ins.append(p)
-        args = ffmpeg_args(ins, "x264", [f"Ch {i}" for i in range(n)], [True] * n)
+        raws, pcms = [], []
+        for i, src in enumerate(ins):
+            raws.append(f"{d}/v{i}.raw")
+            pcms.append(f"{d}/a{i}.raw")
+            subprocess.run(["timeout", "60"] + decoder_args(False, True, raws[-1], pcms[-1], source=src), check=True)
+        args = ffmpeg_args(raws, pcms, "x264", [f"Ch {i}" for i in range(n)])
         args[-1] = f"{d}/out.ts"
         subprocess.run(["timeout", "60"] + args, check=True)
         raw = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", "1", "-i", f"{d}/out.ts",
@@ -481,3 +511,328 @@ class Picks(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _tiles_from(MV, chunks_of: list, has_audio=True) -> list:
+    """Tiles fed by async generators (as their channel's stream), opened
+    without a provider: what _Tile.open leaves behind."""
+    tiles = []
+    for i, gen in enumerate(chunks_of):
+        t = MV._Tile(i + 1, f"C{i}", f"c{i + 1}", "")
+        t.arrived = asyncio.Event()
+        t.reader = asyncio.ensure_future(t._read(gen))
+        t.response = object()
+        t.has_audio = has_audio
+        tiles.append(t)
+    return tiles
+
+
+def _paced(data: bytes, seconds: float, burst: float = 2.0, pause_at=None, pause=0.0):
+    """A live channel: `burst` seconds at once, then real time; optionally
+    nothing at all for `pause` seconds from `pause_at` (a provider cut)."""
+    async def gen():
+        rate = len(data) / seconds
+        step = 188 * 50
+        loop = asyncio.get_running_loop()
+        t0 = loop.time()
+        paused = False
+        for k in range(0, len(data), step):
+            if pause_at is not None and not paused and loop.time() - t0 > pause_at:
+                paused = True
+                await asyncio.sleep(pause)
+                t0 += pause
+            due = t0 + max(0.0, k / rate - burst)
+            if due > loop.time():
+                await asyncio.sleep(due - loop.time())
+            yield data[k:k + step]
+    return gen()
+
+
+def _freezes(path: str, box: tuple) -> list:
+    """Still stretches (>= 0.5 s) of one tile of a picture."""
+    x, y = box
+    err = subprocess.run(["ffmpeg", "-hide_banner", "-nostdin", "-i", path, "-map", "0:v",
+                          "-vf", f"crop=960:540:{x}:{y},freezedetect=n=-50dB:d=0.5", "-f", "null", "-"],
+                         capture_output=True, text=True).stderr
+    import re
+    return [float(v) for v in re.findall(r"freeze_duration: ([\d.]+)", err)]
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "needs ffmpeg")
+class Smooth(unittest.TestCase):
+    """The picture goes on at its pace whatever one channel does: the
+    provider cuts a channel for seconds at a time (each tile 4-5 times a
+    minute on a one-connection account), and the old single ffmpeg stopped
+    the whole picture each time."""
+
+    @classmethod
+    def setUpClass(cls):
+        d = temp_dir(cls)
+        cls.ts = []
+        for i, f in enumerate((300, 500, 700)):
+            p = f"{d}/in{i}.ts"
+            _make_ts(p, 14, f)
+            with open(p, "rb") as f:
+                cls.ts.append(f.read())
+
+    def setUp(self):
+        import services.multiview as MV
+        self.MV = MV
+        MV._encoder = "x264"
+        self.addCleanup(setattr, MV, "_encoder", None)
+        MV._stuck.clear()
+        self.addCleanup(MV._stuck.clear)
+
+    def _run(self, body):
+        async def drive():
+            return await asyncio.wait_for(body(), timeout=90)
+        return asyncio.run(drive())
+
+    async def _start(self, tiles):
+        for t in tiles:
+            t.head = b""
+            info = await self.MV.probe(b"".join(t.buf) or b"")
+            t.gpu = False
+        s = self.MV.Session("u1", tiles)
+        await s.start()
+        return s
+
+    async def _read_for(self, s, seconds: float) -> bytes:
+        out = bytearray()
+        loop = asyncio.get_running_loop()
+        end = loop.time() + seconds
+        agen = s.read()
+        try:
+            async for piece in agen:
+                out += piece
+                if loop.time() > end:
+                    break
+        finally:
+            await agen.aclose()
+        return bytes(out)
+
+    def _durations(self, path: str) -> list:
+        out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type:format=duration",
+                              "-show_entries", "stream=duration", "-of", "json", path],
+                             capture_output=True, text=True).stdout
+        return [float(st.get("duration") or 0) for st in json.loads(out or "{}").get("streams", [])]
+
+    def test_a_channel_cut_for_seconds_holds_its_last_frame_and_nothing_else_stops(self):
+        MV = self.MV
+
+        async def body():
+            tiles = _tiles_from(MV, [_paced(self.ts[0], 14), _paced(self.ts[1], 14, pause_at=3.0, pause=4.0),
+                                     _paced(self.ts[2], 14)])
+            await asyncio.sleep(0.5)
+            s = await self._start(tiles)
+            try:
+                loop = asyncio.get_running_loop()
+                t0 = loop.time()
+                data = await self._read_for(s, 9.0)
+                return data, loop.time() - t0, [(t.held * MV.TICK, t.stalls) for t in s.tiles], s.clock.late
+            finally:
+                await s.close()
+
+        data, wall, held, late = self._run(body)
+        d = temp_dir(self)
+        with open(f"{d}/out.ts", "wb") as f:
+            f.write(data)
+        durations = self._durations(f"{d}/out.ts")
+        video, sound = durations[0], durations[1:]
+        # The picture kept its pace (and started its lead ahead): never behind the clock.
+        self.assertGreaterEqual(video, wall - 0.5, f"picture {video:.1f}s in {wall:.1f}s: it stopped")
+        self.assertEqual(late, 0)
+        # Sound for every tile, as long as the picture: they stay together.
+        self.assertEqual(len(sound), 3)
+        for a in sound:
+            self.assertAlmostEqual(a, video, delta=0.3)
+        # Only the cut channel held, about as long as the cut outlasted its buffer.
+        self.assertEqual(held[0], (0, 0))
+        self.assertEqual(held[2], (0, 0))
+        self.assertGreater(held[1][0], 1.0)
+        self.assertLess(held[1][0], 4.5)
+        self.assertEqual(held[1][1], 1)
+        self.assertEqual(_freezes(f"{d}/out.ts", (0, 0)), [])
+        self.assertEqual(_freezes(f"{d}/out.ts", (0, 540)), [])
+        frozen = _freezes(f"{d}/out.ts", (960, 0))
+        self.assertEqual(len(frozen), 1)
+        self.assertGreater(frozen[0], 1.0)
+
+    def test_a_decoder_that_stops_is_started_again(self):
+        MV = self.MV
+
+        async def body():
+            tiles = _tiles_from(MV, [_paced(self.ts[0], 14, burst=6), _paced(self.ts[1], 14, burst=6)])
+            await asyncio.sleep(0.5)
+            s = await self._start(tiles)
+            try:
+                await self._read_for(s, 2.0)
+                first = s.tiles[0].decoder
+                first.proc.kill()
+                data = await self._read_for(s, 4.0)
+                now = s.tiles[0].decoder
+                return first, now, now.exited, s.tiles[0].decoder_restarts, len(data), s.alive
+            finally:
+                await s.close()
+
+        first, now, exited, restarts, size, alive = self._run(body)
+        self.assertIsNot(now, first)
+        self.assertFalse(exited)
+        self.assertEqual(restarts, 1)
+        self.assertTrue(alive)
+        self.assertGreater(size, 100_000)
+
+
+class StuckFeed(unittest.TestCase):
+    """A feed whose picture stands still (a broken 4K feed, 25 Oct: the same
+    frame for 4.5 s at a time, broken sound) moves to another of its network."""
+
+    def setUp(self):
+        import services.multiview as MV
+        self.MV = MV
+        MV._stuck.clear()
+        self.addCleanup(MV._stuck.clear)
+
+    def _judge(self, frames: list):
+        MV = self.MV
+        clock = MV._Clock.__new__(MV._Clock)
+        slot, tile = MV._Slot(), MV._Tile(1, "AMC", "n18", "")
+        for f in frames:
+            slot.frame = f
+            clock._judge(slot, tile)
+        return tile.stuck
+
+    def test_the_same_frame_again_and_again_is_stuck(self):
+        still = [bytes([1]) * 4000] * (self.MV.STUCK_WINDOW + 10)
+        self.assertTrue(self._judge(still))
+
+    def test_a_short_clip_looping_is_stuck(self):
+        # That feed: 4.5 s of one frame, 1.8 s moving, the same again (34
+        # different frames in 30 s); only 65-70 % equal their predecessor.
+        clip = [bytes([200]) * 4000] * 135 + [bytes([i]) * 4000 for i in range(54)]
+        self.assertTrue(self._judge(clip * 4))
+
+    def test_a_moving_picture_or_a_short_still_is_not(self):
+        moving = [bytes([i % 250]) + bytes([i // 250]) * 3999 for i in range(900)]
+        self.assertFalse(self._judge(moving))
+        still_5s = moving[:300] + [moving[0]] * 150 + moving[300:600]
+        self.assertFalse(self._judge(still_5s))
+
+    def test_another_feed_of_the_network_best_first(self):
+        MV = self.MV
+        from services import livetv_catalog as C
+        with mock.patch.object(C, "_network_members", return_value={18: {"members": [27, 223, 1148]}}), \
+                mock.patch.object(C, "_Scorer", side_effect=RuntimeError("no db")):
+            self.assertEqual(MV.other_feeds(None, "n18", 27), [223, 1148])
+            self.assertEqual(MV.other_feeds(None, "n18@toronto", 223), [27, 1148])
+            self.assertEqual(MV.other_feeds(None, "c27", 27), [])
+            self.assertEqual(MV.other_feeds(None, "n99", 27), [])
+
+    def test_the_place_moves_and_the_next_start_skips_the_stuck_feed(self):
+        MV = self.MV
+        opened, closed = [], []
+
+        async def fake_open(tile, db_factory):
+            if tile.channel_id == 223:
+                raise MV.MultiviewError("CA: AMC didn't open", 503)
+            opened.append(tile.channel_id)
+            tile.response = object()
+
+        async def fake_close(tile):
+            closed.append(tile.channel_id)
+
+        async def no_decoder(tile, vaapi):
+            return None
+
+        async def body():
+            old = MV._Tile(27, "AMC", "n18", "item18")
+            other = MV._Tile(1388, "Boomerang", "n126", "")
+            s = MV.Session("u1", [other, old])
+            s.db_factory = lambda: mock.MagicMock()
+            old.stuck = True
+            await s._move(1, old, "its picture stands still")
+            return s
+
+        with mock.patch.object(MV, "other_feeds", return_value=[223, 1148]), \
+                mock.patch.object(MV._Tile, "open", fake_open), \
+                mock.patch.object(MV._Tile, "close", fake_close), \
+                mock.patch.object(MV._Tile, "start_decoder", no_decoder):
+            s = asyncio.run(body())
+            self.assertEqual([t.channel_id for t in s.tiles], [1388, 1148])
+            self.assertEqual((s.tiles[1].name, s.tiles[1].key, s.tiles[1].item_id), ("AMC", "n18", "item18"))
+            self.assertEqual(opened, [1148])
+            self.assertEqual(closed, [27])
+            self.assertEqual(s.describe()["moved"], [{"place": 1, "from": 27, "to": 1148,
+                                                      "why": "its picture stands still"}])
+            self.assertTrue(MV.is_stuck(27))
+            # The next multi-view starts AMC on the other feed at once.
+            self.assertEqual(MV.first_feed(None, (27, "AMC", "n18", "item18")), (223, "AMC", "n18", "item18"))
+            self.assertEqual(MV.first_feed(None, (1388, "Boomerang", "n126", "")), (1388, "Boomerang", "n126", ""))
+
+
+    def test_no_other_feed_gives_up_once(self):
+        MV = self.MV
+
+        async def body():
+            old = MV._Tile(5, "One", "c5", "")
+            s = MV.Session("u1", [MV._Tile(6, "Two", "c6", ""), old])
+            s.db_factory = lambda: mock.MagicMock()
+            old.stuck = True
+            await s._move(1, old, "its picture stands still")
+            return s, old
+
+        with mock.patch.object(MV, "other_feeds", return_value=[]):
+            s, old = asyncio.run(body())
+        self.assertIs(s.tiles[1], old)
+        self.assertTrue(old.gave_up, "it would be judged again every half second")
+        self.assertEqual(s.moves, [])
+
+    def test_the_network_stream_plays_another_feed_while_its_own_is_stuck(self):
+        # Full screen from the grid (and anyone tuning AMC) gets the working feed.
+        MV = self.MV
+        from routers import livetv_catalog as R
+        with mock.patch.object(MV, "other_feeds", return_value=[223, 1148]):
+            self.assertEqual(R._not_stuck(None, 18, 27), 27)
+            MV.mark_stuck(27)
+            self.assertEqual(R._not_stuck(None, 18, 27), 223)
+            MV.mark_stuck(223)
+            self.assertEqual(R._not_stuck(None, 18, 27), 1148)
+        with mock.patch.object(MV.time, "monotonic", return_value=MV.time.monotonic() + MV.STUCK_MEMORY_SECONDS + 1):
+            self.assertFalse(MV.is_stuck(27), "a feed stays stuck only for a while")
+
+
+class CatchUp(unittest.TestCase):
+    """A tile far behind live jumps forward, onto a keyframe."""
+
+    def _pkt(self, pes_video=False, rai=False, fill=0):
+        if pes_video:
+            af = bytes([1, 0x40 if rai else 0x00])
+            body = af + b"\x00\x00\x01\xe0" + bytes(188 - 4 - len(af) - 4)
+            return bytes([0x47, 0x41, 0x00, 0x30]) + body
+        return bytes([0x47, 0x01, 0x00, 0x10]) + bytes([fill]) * 184
+
+    def test_keyframe_offset(self):
+        from services.multiview import _video_key_offset
+        data = self._pkt() + self._pkt(pes_video=True) + self._pkt() + self._pkt(pes_video=True, rai=True)
+        self.assertEqual(_video_key_offset(data), 3 * 188)
+        self.assertEqual(_video_key_offset(self._pkt() + self._pkt(pes_video=True)), 188)
+        self.assertIsNone(_video_key_offset(self._pkt() * 3))
+
+    def test_drop_to_keeps_the_last_seconds_from_a_keyframe(self):
+        import services.multiview as MV
+        t = MV._Tile(1, "C", "c1", "")
+        t.frames, t.fed = 600, int(600 * MV.TICK * 1880)     # 1880 bytes a second
+        for k in range(50):                                    # 50 s waiting
+            pkts = [self._pkt(fill=k)] * 10
+            if k == 40:
+                pkts[3] = self._pkt(pes_video=True, rai=True)
+            piece = b"".join(pkts)
+            t.buf.append(piece)
+            t.buf_bytes += len(piece)
+        self.assertAlmostEqual(t.seconds_behind(), 50, delta=0.1)
+        dropped = t.drop_to(15)
+        self.assertGreater(dropped, 0)
+        rest = b"".join(t.buf)
+        self.assertEqual(len(rest), t.buf_bytes)
+        self.assertEqual(rest[:188], self._pkt(pes_video=True, rai=True))
+        self.assertLessEqual(t.seconds_behind(), 15)

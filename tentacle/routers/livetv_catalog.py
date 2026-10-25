@@ -169,7 +169,17 @@ def _variant(db: Session, nid: int) -> int:
     cid = C.network_channel(db, nid)
     if cid is None:
         raise HTTPException(404, "Channel not found")
-    return cid
+    return _not_stuck(db, nid, cid)
+
+
+def _not_stuck(db: Session, nid: int, cid: int) -> int:
+    """Another feed of the network while multi-view found this one's picture
+    standing still lately (services/multiview.py): full screen from the grid
+    then plays the feed the tile has, and so does everyone else."""
+    from services import multiview as MV
+    if not MV.is_stuck(cid):
+        return cid
+    return next((c for c in MV.other_feeds(db, f"n{nid}", cid) if not MV.is_stuck(c)), cid)
 
 
 @stream_router.head("/api/live/net/{nid}")
@@ -188,7 +198,7 @@ def _place_variant(db: Session, nid: int, place: str) -> int:
     cid = C.place_channel(db, nid, place)
     if cid is None:
         raise HTTPException(404, "Channel not found")
-    return cid
+    return _not_stuck(db, nid, cid)
 
 
 @stream_router.head("/api/live/net/{nid}/at/{place}")
