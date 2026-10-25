@@ -56,7 +56,7 @@ from models.database import (
     set_setting,
     log_activity,
 )
-from routers.auth import require_admin, require_internal_or_admin
+from routers.auth import get_user_from_request, require_admin, require_internal_or_admin
 from services.ssrf import explain_url, is_safe_url, lan_origin_guard
 from urllib.parse import urljoin, urlsplit
 
@@ -2705,6 +2705,119 @@ def _protection_snapshot(db) -> dict:
         "protected_preemptions": _stream_slots.protected_preemptions,
         "last_protected_refusal": _stream_slots.last_protected_refusal,
     }
+
+
+# ── Live previews: may a TV guide play a muted preview of the focused channel? ──
+#
+# A preview is one more provider connection, so it may only run while the
+# household has spare ones: after the preview at least one stays free for
+# someone who really presses play, and a recording that starts soon counts as
+# taken already. Every TV with the guide open asks every ~15 s, so the answer
+# is made from what Tentacle already knows (its slots) plus Jellyfin's timers,
+# read at most every _PREVIEW_TIMERS_TTL by one caller at a time. No provider
+# is ever asked.
+_PREVIEW_SOON_SECONDS = 600          # a recording starting (minus pre-padding) within 10 min
+_PREVIEW_TIMERS_TTL = 30.0
+_PREVIEW_TIMERS_STALE = 300.0        # older than this, a failed read means "can't tell"
+_PREVIEW_SPARE = 1                   # connections that stay free besides the preview
+_preview_timers: dict = {"at": -1e9, "ok_at": -1e9, "windows": None}
+_preview_timers_lock: "asyncio.Lock | None" = None
+
+
+def _recording_windows(items: list, m3u_ids) -> list:
+    """(GuideNumber, recording start, recording end) of every timer Jellyfin
+    will (or does) record on Tentacle's channels: New or InProgress, start
+    and end widened by the padding. Blocking (m3u ids may read the DB)."""
+    out = []
+    for t in items or []:
+        if t.get("Status") not in ("InProgress", "New"):
+            continue
+        start = _parse_timer_date(t.get("StartDate"))
+        if start is None:
+            continue
+        number = _timer_guide_number(t.get("ExternalChannelId") or "", m3u_ids)
+        if number is None:
+            continue
+        end = _parse_timer_date(t.get("EndDate")) or start
+        out.append((number, start - timedelta(seconds=_timer_seconds(t.get("PrePaddingSeconds"))),
+                    end + timedelta(seconds=_timer_seconds(t.get("PostPaddingSeconds")))))
+    return out
+
+
+def _preview_timer_windows(url: str, key: str) -> list:
+    return _recording_windows((_jellyfin_timers(url, key) or {}).get("Items") or [], _tentacle_m3u_ids)
+
+
+def preview_answer(limit: int, active: int, held_keys, windows, now: "datetime",
+                   previewing: bool = False, soon_seconds: int = _PREVIEW_SOON_SECONDS) -> dict:
+    """The rule. `held_keys`: GuideNumbers already pulled (a recording on one
+    of them needs no new connection). `windows`: _recording_windows, or None
+    when Jellyfin's timers can't be told (then no previews: a recording might
+    be about to start). `previewing`: the caller's own preview is running and
+    counted in `active`, so it needs no further slot."""
+    held = {str(k) for k in held_keys or ()}
+    soon = set()
+    for number, rec_start, rec_end in windows or ():
+        if rec_end > now and (rec_start - now).total_seconds() <= soon_seconds and number not in held:
+            soon.add(number)
+    out = {"limit": limit, "active": active, "recordings_soon": len(soon), "known": windows is not None}
+    if limit <= 0:
+        out.update(previews=True, free=None)
+        return out
+    free = max(0, limit - active - len(soon))
+    needed = _PREVIEW_SPARE + (0 if previewing else 1)
+    out.update(previews=windows is not None and free >= needed, free=free)
+    return out
+
+
+async def _preview_windows(db) -> "list | None":
+    """Jellyfin's recording windows, read at most every _PREVIEW_TIMERS_TTL;
+    [] when Jellyfin isn't connected (nothing can record), None when it
+    can't be read and the last good answer is too old."""
+    global _preview_timers_lock
+    url = (get_setting(db, "jellyfin_url", "") or "").strip()
+    key = (get_setting(db, "jellyfin_api_key", "") or "").strip()
+    if not url or not key:
+        return []
+    import time
+    cache = _preview_timers
+    if time.monotonic() - cache["at"] >= _PREVIEW_TIMERS_TTL:
+        if _preview_timers_lock is None:
+            _preview_timers_lock = asyncio.Lock()
+        async with _preview_timers_lock:
+            if time.monotonic() - cache["at"] >= _PREVIEW_TIMERS_TTL:
+                try:
+                    cache["windows"] = await asyncio.to_thread(_preview_timer_windows, url, key)
+                    cache["ok_at"] = time.monotonic()
+                except Exception as e:
+                    logger.debug(f"[LiveTV] preview: Jellyfin's timers not read: {e}")
+                cache["at"] = time.monotonic()
+    if time.monotonic() - cache["ok_at"] > _PREVIEW_TIMERS_STALE:
+        return None
+    return cache["windows"]
+
+
+@router.get("/api/live/preview")
+async def live_preview(previewing: bool = False, user=Depends(get_user_from_request),
+                       db: Session = Depends(get_db)):
+    """May a guide play a muted preview of the focused channel now? For
+    anyone signed in (the TV app, through the plugin's
+    /TentacleDiscover/LivePreview). {"previews", "limit", "active", "free",
+    "recordings_soon", "known"}; `?previewing=true` when the caller's own
+    preview is already running (it is in `active`)."""
+    windows = await _preview_windows(db)
+    loop_now = asyncio.get_running_loop().time()     # the clock reservations end on
+    leases = list(_stream_slots.leases.values())
+    held = {l.stream_key for l in leases if l.stream_key}
+    # A channel reserved ahead of its recording (POST /api/live/reserve) is
+    # about to be pulled: it counts like a timer that starts now.
+    reserved = [(r["stream_key"], datetime.min, datetime.max)
+                for r in list(_reserved_channels.values())
+                if r.get("stream_key") and r.get("until", 0) > loop_now]
+    if windows is not None:
+        windows = list(windows) + reserved
+    return preview_answer(overall_stream_limit(db), len(leases), held, windows,
+                          datetime.utcnow(), previewing=previewing)
 
 
 @router.get("/api/live/epg-coverage", dependencies=_admin)

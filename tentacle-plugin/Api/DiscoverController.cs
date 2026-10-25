@@ -1350,6 +1350,44 @@ public class TentacleDiscoverController : ControllerBase
     }
 
     /// <summary>
+    /// May a guide play a muted live preview of the focused channel now (the household
+    /// has spare provider connections)? {"previews", "limit", "active", "free",
+    /// "recordings_soon", "known"}; polled while a guide is open. <c>previewing=true</c>:
+    /// the caller's own preview already runs. No Tentacle, an older one, or no answer:
+    /// previews false, so a client simply shows no preview.
+    /// </summary>
+    /// <param name="previewing">The caller's own preview is running (it is counted).</param>
+    [HttpGet("LivePreview")]
+    [Authorize]
+    public async Task<ActionResult> GetLivePreview([FromQuery] bool previewing = false)
+    {
+        var none = new { previews = false, limit = 0, active = 0, free = 0, recordings_soon = 0, known = false };
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            return Ok(none);
+        }
+
+        try
+        {
+            var url = $"{baseUrl}/api/live/preview" + (previewing ? "?previewing=true" : string.Empty);
+            var response = await HttpClient.GetAsync(AppendUserId(url));
+            var body = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode)
+            {
+                return Ok(none);
+            }
+
+            return new ContentResult { Content = body, ContentType = "application/json", StatusCode = 200 };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("[Tentacle Discover] Live preview answer not read: {Error}", ex.Message);
+            return Ok(none);
+        }
+    }
+
+    /// <summary>
     /// Recordings, read-only, for Jellyfin Web's Recordings and Schedule pages and the TV
     /// app: "upcoming", "history", "marks" (what the guides mark) or "rules". The caller's
     /// own token goes along; Tentacle checks it. Changing teams and rules is in Tentacle.

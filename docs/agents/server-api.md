@@ -148,6 +148,7 @@ provider names, URLs or logins).
 | POST | `/api/lists/{list_id}/fetch` | user | lists.py:fetch_list (same background follow-up) |
 | POST | `/api/lists/{list_id}/playlist-toggle` | user | lists.py:toggle_list_playlist |
 | GET | `/api/live/capacity` | admin | livetv.py:live_capacity |
+| GET | `/api/live/preview` | signed in | livetv.py:live_preview (may a guide play a muted preview now: `previews` when `free` >= 2 after recordings starting within 10 min; `?previewing=true` when the caller's own preview runs, then >= 1; `free` null = no limit; Jellyfin's timers read at most every 30 s) |
 | GET | `/api/live/checker/status` | admin | livetv_checker.py:checker_status (background stream checker: state, paused reason, progress) |
 | GET | `/api/live/catalog/types` | admin | livetv_catalog.py:catalog_types (the channel types) |
 | GET | `/api/live/catalog/pool` | admin | livetv_catalog.py:catalog_pool (the folded pool, with "no event" channels) |
