@@ -1231,8 +1231,11 @@ order, so the player switches sound by switching tracks.
   Reading one frame a tick paces each decoder (it blocks on its full
   pipe), so the channel's bytes wait in `buf`: the provider's burst on
   every (re)connect fills it, and a tile that paused is that much further
-  behind, which is the buffer for the next cut. More than 45 s behind:
-  `drop_to` 15 s, from a keyframe, decoder restarted. The picture starts
+  behind, which is the buffer for the next cut. Behind = how long the bytes
+  the decoder gets next have waited (by time: a re-dial the proxy couldn't
+  join resends seconds already sent, many bytes the decoder gets through at
+  once). More than 45 s: `drop_to` what arrived in the last 15 s, from a
+  keyframe, decoder restarted. The picture starts
   1.5 s ahead (the player's buffer) once every tile has a frame (8 s at
   most). It runs in a thread so a busy event loop doesn't make it late
   (`late_ticks` counts ticks > 0.25 s late).
@@ -1252,7 +1255,10 @@ order, so the player switches sound by switching tracks.
   (`routers/livetv_catalog._not_stuck`): full screen from the grid gets the
   feed the tile has, at no extra connection. No other feed: it stays
   (`gave_up`). `describe()` shows `buffer_seconds`, `stalls`,
-  `held_seconds` per tile, `late_ticks` and `moved`.
+  `held_seconds` per place (carried over when it moves or reopens),
+  `late_ticks` and `moved`. The clock reads frames into a ring of 12
+  buffers per place (`os.readv`) and writes them as memoryviews: no copies
+  of the ~90 MB/s of raw tiles in Python.
 - **Connections:** `free_connections` = overall limit minus active leases
   minus recordings starting within 30 min (Jellyfin timers), then each
   provider's own limit; channels already streaming need none. Refused
