@@ -22,8 +22,10 @@ For each recording in the library that holds Jellyfin's recordings folder:
 - a picture Tentacle set that is no longer there, or no longer the one it
   set: a person changed or removed it (state left), never set again.
 
-Pictures set before posters existed (16:9 as both, primary_shape empty)
-get their poster a few per pass, while they are still Tentacle's.
+Pictures drawn by an older layout (primary_shape not POSTER: empty = the
+16:9 as both, before posters; "poster" = before the safe area kept the
+bottom clear for progress bars) are drawn again a few per pass, while they
+are still Tentacle's: the poster, and the 16:9 card when Tentacle drew it.
 
 A title folder of several recordings gets the newest recording's picture,
 or for games the league card, and follows the newest while the picture is
@@ -56,7 +58,9 @@ PASS_MINUTES = 10
 SETTLE = timedelta(minutes=10)      # after a recording ends: Jellyfin has read it by then
 PER_PASS = 4                        # recordings given a picture per pass
 POSTERS_PER_PASS = 8                # older pictures given their poster per pass
-POSTER = "poster"
+POSTER = "poster-safe"               # primary_shape of the current layout; bump it to redraw
+                                    # (empty: #827's 16:9 as both; "poster": #839's, text under progress bars)
+CARD_SOURCES = ("matchup", "league", "title")   # Tentacle drew the 16:9 picture too
 MAX_ATTEMPTS = 4
 RETRY_AFTER = timedelta(hours=1)
 ICON_BYTES = 8 * 1024 * 1024
@@ -385,6 +389,17 @@ def make_picture(jf, item_id: str, ctx: dict, subject: W.Subject, tmdb=None, bus
     return wide, poster, "title", ("no frame: " + "; ".join(notes))[:250] if notes else subject.title
 
 
+def redraw(jf, item_id: str, ctx: dict, subject: W.Subject, source: Optional[str], tmdb=None) -> tuple:
+    """(poster, 16:9 or None) for a recording whose pictures an older layout
+    drew: both drawn again for a card (a game whose card can't be made
+    again gets the title card), else the poster only (`make_poster`)."""
+    if source in CARD_SOURCES:
+        cards = _cards(subject, ctx) if source != "title" else None
+        wide, poster = cards[:2] if cards else _title_cards(subject, ctx)
+        return poster, wide
+    return make_poster(jf, item_id, ctx, subject, source, tmdb=tmdb), None
+
+
 def make_poster(jf, item_id: str, ctx: dict, subject: W.Subject, source: Optional[str], tmdb=None) -> Optional[bytes]:
     """The poster for a recording whose 16:9 picture Tentacle set before
     posters existed: drawn again for a card, TMDB's for a TMDB match, else
@@ -518,9 +533,10 @@ def _pictures_of(jf, item: dict, title: Optional[str]) -> tuple:
 
 
 def upgrade_posters(db: Session, jf, items: dict, rows: dict, tmdb=None, limit: int = POSTERS_PER_PASS) -> int:
-    """Recordings whose 16:9 picture Tentacle set as both Primary and Thumb
-    before posters existed: the Primary becomes the poster, while both are
-    still the pictures Tentacle set. Returns how many."""
+    """Recordings whose pictures an older layout drew (primary_shape not
+    POSTER): the Primary becomes the current poster, and a 16:9 card
+    Tentacle drew is drawn again, while both are still the pictures
+    Tentacle set. Returns how many."""
     n = 0
     for iid, row in rows.items():
         if n >= limit:
@@ -531,13 +547,15 @@ def upgrade_posters(db: Session, jf, items: dict, rows: dict, tmdb=None, limit: 
             continue
         try:
             ctx = context(db, item)
-            poster = make_poster(jf, iid, ctx, subject_of(ctx), row.source, tmdb=tmdb)
+            poster, wide = redraw(jf, iid, ctx, subject_of(ctx), row.source, tmdb=tmdb)
             if not poster:
                 continue
             fresh = _item(jf, iid)
             if fresh is None or not _still_ours(row, fresh):
                 continue    # a person changed it meanwhile: reconcile() leaves it
             jf.upload(iid, "Primary", poster)
+            if wide:
+                jf.upload(iid, "Thumb", wide)
             primary, thumb = _tags(_item(jf, iid) or {})
             row.primary_tag, row.thumb_tag = primary, thumb
             row.primary_shape, row.updated_at = POSTER, datetime.utcnow()
@@ -555,7 +573,7 @@ def _folders(db: Session, jf, folders: list, videos: list, rows: dict, roots: se
     by_parent: dict = {}
     for v in videos:
         by_parent.setdefault(_id(v.get("ParentId")), []).append(v)
-    n = 0
+    n = redrawn = 0
     for f in folders:
         fid = _id(f.get("Id"))
         if (f.get("Path") or "").rstrip("/\\") in roots or f.get("Type") in ("CollectionFolder", "UserRootFolder"):
@@ -581,8 +599,10 @@ def _folders(db: Session, jf, folders: list, videos: list, rows: dict, roots: se
             want = f"child:{_id(newest.get('Id'))}:{picture}"
         else:
             continue    # the newest has no picture yet
-        if row is not None and row.state == "set" and row.made_from == want and row.primary_shape == POSTER:
-            continue
+        if row is not None and row.state == "set" and row.made_from == want:
+            if row.primary_shape == POSTER or redrawn >= POSTERS_PER_PASS:
+                continue
+            redrawn += 1    # an older layout's: drawn again, a few per pass
         try:
             if want.startswith("league:"):
                 from services.recording_rules import leagues as LG

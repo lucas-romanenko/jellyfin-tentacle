@@ -1204,9 +1204,16 @@ base64 body), as Jellyfin has them for films: a 2:3 poster (800x1200) as
 Primary for poster cards and grids, and a 16:9 picture (1280x720) as Thumb for
 wide cards (the TV app's Recordings screen, Continue Watching on wide rows,
 Jellyfin Web's thumb cards). Until #839 both were the 16:9 picture, which a
-poster row cut down to its middle third; `upgrade_posters` gives those rows
-(`primary_shape` empty) their poster, `POSTERS_PER_PASS` (8) a pass, only
-while both tags are still Tentacle's. Setting `recording_art_enabled` (default on);
+poster row cut down to its middle third. `primary_shape` names the layout
+that drew a row (`job.POSTER`, now `poster-safe`); `upgrade_posters` draws
+rows of an older layout again (empty: #827's 16:9; `poster`: #839's, whose
+channel sat under the TV's progress bar), `POSTERS_PER_PASS` (8) a pass
+(and as many title folders), only while both tags are still Tentacle's:
+the poster, plus the 16:9 when Tentacle drew it (matchup, league, title).
+Bump `POSTER` when the drawn layout changes. Safe area (`cards.py`):
+nothing drawn in the bottom `SAFE_BOTTOM` (12 %) of a poster or
+`WIDE_SAFE_BOTTOM` (8 %) of a 16:9 card, where clients draw progress bars;
+`poster_footer_box()` / `footer_box()` place the footer above it. Setting `recording_art_enabled` (default on);
 GET/PUT `/api/live/recordings/artwork`; Sources → Live TV → More.
 
 - `job.py`: `recording_art` job every 10 min (first 5 min after start),
