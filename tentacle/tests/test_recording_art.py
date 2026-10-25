@@ -175,6 +175,11 @@ class Games(unittest.TestCase):
 
 # ── The pictures ────────────────────────────────────────────────────────────
 
+def _size(data):
+    from PIL import Image
+    return Image.open(io.BytesIO(data)).size
+
+
 class Cards(unittest.TestCase):
     def size(self, data):
         from PIL import Image
@@ -187,6 +192,21 @@ class Cards(unittest.TestCase):
         self.assertEqual((1280, 720), self.size(C.league_card(s.league, "NHL Hockey", None, None)))
         self.assertEqual((1280, 720), self.size(C.title_card("A very long title " * 12, NOW, "CBS " * 30)))
         self.assertEqual((1280, 720), self.size(C.title_card("Ω Ζ Αθήνα – Ελλάδα", None, "ERT")))
+
+    def test_every_poster_is_800x1200(self):
+        s = W.identify("Canadiens at Blackhawks")
+        self.assertEqual((800, 1200), self.size(C.matchup_poster(s.league, s.teams, s.at, NOW, "TSN 2")))
+        self.assertEqual((800, 1200), self.size(C.matchup_poster(s.league, s.teams[:1], False, NOW, None)))
+        self.assertEqual((800, 1200), self.size(C.league_poster(s.league, "NHL Hockey", None, None)))
+        self.assertEqual((800, 1200), self.size(C.title_poster("A very long title " * 12, NOW, "CBS " * 30)))
+        self.assertEqual((800, 1200), self.size(C.poster_from_wide(_jpeg(), "Jeopardy! " * 20, NOW, "CBS")))
+        self.assertIsNone(C.poster_from_wide(b"not a picture", "Jeopardy!", NOW, None))
+
+    def test_to_2x3(self):
+        self.assertEqual((800, 1200), self.size(C.to_2x3(_jpeg(size=(780, 1170)))))
+        self.assertEqual((800, 1200), self.size(C.to_2x3(_jpeg(size=(600, 1000)))))
+        self.assertIsNone(C.to_2x3(_jpeg(size=(1280, 720))))      # a wide picture isn't a poster
+        self.assertIsNone(C.to_2x3(b"not a picture"))
 
     def test_to_16x9(self):
         self.assertEqual((1280, 720), self.size(C.to_16x9(_jpeg(size=(1920, 800)))))
@@ -289,8 +309,10 @@ class Sources(Base):
         self.assertEqual({("upload", "r1", "Primary"), ("upload", "r1", "Thumb")}, set(self.jf.writes))
         tags = self.jf.tags("r1")
         self.assertEqual((tags["Primary"], tags["Thumb"]), (row.primary_tag, row.thumb_tag))
-        # Primary and Thumb are the same 16:9 picture
-        self.assertEqual(self.jf.image("r1", "Primary"), self.jf.image("r1", "Thumb"))
+        # Primary is the 2:3 poster, Thumb the 16:9 picture
+        self.assertEqual((800, 1200), _size(self.jf.image("r1", "Primary")))
+        self.assertEqual((1280, 720), _size(self.jf.image("r1", "Thumb")))
+        self.assertEqual("poster", row.primary_shape)
 
     def test_a_booked_game_names_both_teams(self):
         from models.database import RecordingBooking, RecordingRule
@@ -321,14 +343,30 @@ class Sources(Base):
         t.search_movie.side_effect = search
         return t
 
+    def tmdb_get(self):
+        def get(url, timeout=None):
+            r = mock.Mock(content=_jpeg(size=(780, 1170) if "/w780/" in url else (1280, 720)), status_code=200)
+            r.raise_for_status = lambda: None
+            return r
+        return get
+
     def test_b_tmdb_backdrop_on_a_match(self):
         self.show()
-        resp = mock.Mock(content=_jpeg(size=(1280, 720)), status_code=200)
-        resp.raise_for_status = lambda: None
-        with mock.patch.object(J.requests, "get", return_value=resp) as get:
-            self.run_pass(tmdb=self.tmdb({"title": "Jeopardy!", "backdrop_path": "/b.jpg"}))
+        with mock.patch.object(J.requests, "get", side_effect=self.tmdb_get()) as get:
+            self.run_pass(tmdb=self.tmdb({"title": "Jeopardy!", "backdrop_path": "/b.jpg", "poster_path": "/p.jpg"}))
         self.assertEqual("tmdb", self.row("r1").source)
-        self.assertEqual("https://image.tmdb.org/t/p/w1280/b.jpg", get.call_args.args[0])
+        self.assertEqual(["https://image.tmdb.org/t/p/w1280/b.jpg", "https://image.tmdb.org/t/p/w780/p.jpg"],
+                         [c.args[0] for c in get.call_args_list])
+        self.assertEqual((800, 1200), _size(self.jf.image("r1", "Primary")))
+        self.assertEqual((1280, 720), _size(self.jf.image("r1", "Thumb")))
+
+    def test_b_tmdb_without_a_poster_puts_the_backdrop_on_one(self):
+        self.show()
+        with mock.patch.object(J.requests, "get", side_effect=self.tmdb_get()) as get:
+            self.run_pass(tmdb=self.tmdb({"title": "Jeopardy!", "backdrop_path": "/b.jpg"}))
+        self.assertEqual(1, get.call_count)
+        self.assertEqual(("tmdb", "poster"), (self.row("r1").source, self.row("r1").primary_shape))
+        self.assertEqual((800, 1200), _size(self.jf.image("r1", "Primary")))
 
     def test_b_tmdb_down_falls_through(self):
         self.show()
@@ -348,7 +386,7 @@ class Sources(Base):
                                 "popularity": 10}]}
         with mock.patch.object(svc, "_request", return_value=results), \
                 mock.patch.object(svc, "get_series_details", return_value={"backdrop_path": "/x.jpg"}):
-            self.assertIsNone(J._tmdb_backdrop(W.identify("Jeopardy!"), _Only(svc, "search_series")))
+            self.assertIsNone(J._tmdb_match(W.identify("Jeopardy!"), _Only(svc, "search_series")))
 
     def guide(self, icon, size=(1280, 720)):
         from models.database import EPGProgram
@@ -612,6 +650,57 @@ class Safety(Base):
         self.assertEqual("bytes=100-109", get.call_args_list[-1].kwargs["headers"]["Range"])
 
 
+class Posters(Base):
+    """Pictures set before posters existed (#827: the 16:9 one as both
+    Primary and Thumb) get their poster as Primary, only while both are
+    still Tentacle's."""
+
+    def old(self, iid, name, source):
+        from models.database import RecordingArtwork
+        wide = C.title_card(name, NOW, None)
+        self.jf.put(iid, "Primary", "tentacle", wide)
+        self.jf.put(iid, "Thumb", "tentacle", wide)
+        tags = self.jf.tags(iid)
+        self.db.add(RecordingArtwork(item_id=iid, kind="recording", name=name, state="set", source=source,
+                                     primary_tag=tags["Primary"], thumb_tag=tags["Thumb"]))
+        self.db.commit()
+        return wide
+
+    def test_an_old_picture_gets_its_poster(self):
+        self.jf.add("r1", "Canadiens at Blackhawks", NOW - timedelta(days=1))
+        self.jf.add("r2", "Jeopardy!", NOW - timedelta(days=2))
+        self.old("r1", "Canadiens at Blackhawks", "matchup")
+        wide = self.old("r2", "Jeopardy!", "frame")
+        out = self.run_pass()
+        self.assertEqual(2, out["posters"])
+        self.assertEqual({("upload", "r1", "Primary"), ("upload", "r2", "Primary")}, set(self.jf.writes))
+        for iid in ("r1", "r2"):
+            row = self.row(iid)
+            self.assertEqual(("set", "poster"), (row.state, row.primary_shape))
+            self.assertEqual((800, 1200), _size(self.jf.image(iid, "Primary")))
+            self.assertEqual((self.jf.tags(iid)["Primary"], self.jf.tags(iid)["Thumb"]),
+                             (row.primary_tag, row.thumb_tag))
+        self.assertEqual(wide, self.jf.image("r2", "Thumb"))       # the 16:9 stays
+        self.jf.writes.clear()
+        self.assertEqual(0, self.run_pass()["posters"])            # once
+        self.assertEqual([], self.jf.writes)
+
+    def test_a_picture_a_person_changed_gets_no_poster(self):
+        self.jf.add("r1", "Jeopardy!", NOW - timedelta(days=1))
+        self.old("r1", "Jeopardy!", "frame")
+        self.jf.put("r1", "Thumb", "person")
+        self.run_pass()
+        self.assertEqual([], self.jf.writes)
+        self.assertEqual("left", self.row("r1").state)
+
+    def test_a_few_per_pass(self):
+        for i in range(J.POSTERS_PER_PASS + 3):
+            self.jf.add(f"r{i}", "Jeopardy!", NOW - timedelta(days=1 + i))
+            self.old(f"r{i}", "Jeopardy!", "title")
+        self.assertEqual(J.POSTERS_PER_PASS, self.run_pass()["posters"])
+        self.assertEqual(3, self.run_pass()["posters"])
+
+
 class Folders(Base):
     def test_a_folder_of_games_gets_the_league_card(self):
         self.jf.add("f1", "Live  NHL Hockey", NOW - timedelta(days=3), folder=True)
@@ -635,11 +724,13 @@ class Folders(Base):
         self.jf.add("f1", "Jeopardy!", NOW - timedelta(days=3), folder=True)
         self.jf.add("r1", "Jeopardy!", NOW - timedelta(days=2), parent="f1")
         self.run_pass()
-        self.assertEqual(C.to_16x9(self.jf.image("r1")), self.jf.image("f1"))
+        self.assertEqual(C.to_16x9(self.jf.image("r1", "Thumb")), self.jf.image("f1", "Thumb"))
+        self.assertEqual(C.to_2x3(self.jf.image("r1", "Primary")), self.jf.image("f1", "Primary"))
         self.jf.add("r2", "Jeopardy!", NOW - timedelta(hours=3), parent="f1")
         self.jf.put("r2", "Primary", "person", _jpeg((200, 30, 30)))   # its own picture: still the newest's
         self.run_pass()
-        self.assertEqual(C.to_16x9(self.jf.image("r2")), self.jf.image("f1"))
+        self.assertEqual(C.to_16x9(self.jf.image("r2")), self.jf.image("f1", "Thumb"))
+        self.assertEqual((800, 1200), _size(self.jf.image("f1", "Primary")))   # the wide one on a poster
 
     def test_a_folder_picture_a_person_changed_stays(self):
         self.jf.add("f1", "Jeopardy!", NOW - timedelta(days=3), folder=True)

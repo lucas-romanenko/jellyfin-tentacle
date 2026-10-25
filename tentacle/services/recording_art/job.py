@@ -6,18 +6,24 @@ For each recording in the library that holds Jellyfin's recordings folder:
 - still recording, or ended less than SETTLE ago (Jellyfin is still
   reading it): later;
 - it has a picture Tentacle didn't set: never touched (state theirs);
-- it has none: Tentacle makes one and sets it as Primary and Thumb, and
-  keeps the tags Jellyfin gave them (state set). The first that works:
+- it has none: Tentacle makes one in two shapes, a 2:3 poster as Primary
+  (poster cards) and a 16:9 picture as Thumb (wide cards), and keeps the
+  tags Jellyfin gave them (state set). The first that works:
     a. a game: the matchup card (cards.py; the booking or the title says
        the league and teams);   a league's event: the league card
-    b. a show or film: TMDB's backdrop on a strict title match (the VOD
-       threshold, the year when the title has one)
+    b. a show or film: TMDB's backdrop and poster on a strict title match
+       (the VOD threshold, the year when the title has one)
     c. the guide's own picture for the programme, when it is 16:9
     d. the best of a few frames from the recording (frames.py), never while
        Jellyfin records or is about to
     e. a title card;
+  a picture with no poster of its own (a frame, the guide's) is put on a
+  poster with the title (cards.poster_from_wide);
 - a picture Tentacle set that is no longer there, or no longer the one it
   set: a person changed or removed it (state left), never set again.
+
+Pictures set before posters existed (16:9 as both, primary_shape empty)
+get their poster a few per pass, while they are still Tentacle's.
 
 A title folder of several recordings gets the newest recording's picture,
 or for games the league card, and follows the newest while the picture is
@@ -49,6 +55,8 @@ SETTING = "recording_art_enabled"
 PASS_MINUTES = 10
 SETTLE = timedelta(minutes=10)      # after a recording ends: Jellyfin has read it by then
 PER_PASS = 4                        # recordings given a picture per pass
+POSTERS_PER_PASS = 8                # older pictures given their poster per pass
+POSTER = "poster"
 MAX_ATTEMPTS = 4
 RETRY_AFTER = timedelta(hours=1)
 ICON_BYTES = 8 * 1024 * 1024
@@ -252,10 +260,9 @@ def subject_of(ctx: dict) -> W.Subject:
 
 # ── The pictures, first that works ──────────────────────────────────────────
 
-def _tmdb_backdrop(subject: W.Subject, tmdb) -> Optional[bytes]:
-    """TMDB's backdrop for a show or film, on a strict match only. Raises
-    nothing: TMDB down or no match is None."""
-    from services.tmdb import TMDB_IMAGE_BASE
+def _tmdb_match(subject: W.Subject, tmdb) -> Optional[dict]:
+    """TMDB's show or film, on a strict match only. Raises nothing: TMDB
+    down or no match is None."""
     if tmdb is None or not subject.title:
         return None
     year = str(subject.year) if subject.year else None
@@ -266,17 +273,36 @@ def _tmdb_backdrop(subject: W.Subject, tmdb) -> Optional[bytes]:
         except Exception as e:
             logger.info(f"[Recording art] TMDB not asked about “{subject.title}”: {e}")
             return None
-        if found and found.get("backdrop_path"):
-            try:
-                r = requests.get(f"{TMDB_IMAGE_BASE}/w1280{found['backdrop_path']}", timeout=20)
-                r.raise_for_status()
-                return C.to_16x9(r.content)
-            except Exception as e:
-                logger.info(f"[Recording art] TMDB's picture for “{subject.title}” not read: {e}")
-                return None
         if found:
-            return None    # matched, but TMDB has no backdrop
+            return found
     return None
+
+
+def _tmdb_image(subject: W.Subject, path: Optional[str], size: str) -> Optional[bytes]:
+    from services.tmdb import TMDB_IMAGE_BASE
+    if not path:
+        return None
+    try:
+        r = requests.get(f"{TMDB_IMAGE_BASE}/{size}{path}", timeout=20)
+        r.raise_for_status()
+        return r.content
+    except Exception as e:
+        logger.info(f"[Recording art] TMDB's picture for “{subject.title}” not read: {e}")
+        return None
+
+
+def _tmdb_pictures(subject: W.Subject, tmdb) -> tuple:
+    """(TMDB's backdrop as 16:9, its poster as 2:3 or None) for a show or
+    film, or (None, None): no match, no backdrop, TMDB down."""
+    found = _tmdb_match(subject, tmdb)
+    if not found:
+        return None, None
+    data = _tmdb_image(subject, found.get("backdrop_path"), "w1280")
+    wide = C.to_16x9(data) if data else None
+    if not wide:
+        return None, None    # matched, but TMDB has no backdrop
+    data = _tmdb_image(subject, found.get("poster_path"), "w780")
+    return wide, (C.to_2x3(data) if data else None)
 
 
 def _guide_picture(url: Optional[str]) -> Optional[bytes]:
@@ -317,26 +343,64 @@ def _frame(jf, item_id: str, ctx: dict, busy: bool, grabber=None) -> tuple:
     return (C.to_16x9(best.data) if best else None), notes
 
 
-def make_picture(jf, item_id: str, ctx: dict, subject: W.Subject, tmdb=None, busy: bool = False,
-                 grabber=None) -> tuple:
-    """(JPEG, source, what it shows): the first source that works."""
+def _cards(subject: W.Subject, ctx: dict) -> Optional[tuple]:
+    """(16:9, poster, source) for a game, a league's event or nothing else
+    known (the title card); None for anything else."""
     when, channel = ctx["start"] or ctx["created"], ctx["channel"]
     if subject.kind == "game" and subject.teams:
-        return (C.matchup_card(subject.league, subject.teams, subject.at, when, channel), "matchup",
-                subject.describe())
+        return (C.matchup_card(subject.league, subject.teams, subject.at, when, channel),
+                C.matchup_poster(subject.league, subject.teams, subject.at, when, channel), "matchup")
     if subject.kind in ("game", "event"):
-        return C.league_card(subject.league, subject.title, when, channel), "league", subject.describe()
-    data = _tmdb_backdrop(subject, tmdb)
-    if data:
-        return data, "tmdb", subject.describe()
-    data = _guide_picture(ctx["icon_url"])
-    if data:
-        return data, "guide", "the guide's picture"
-    data, notes = _frame(jf, item_id, ctx, busy, grabber)
-    if data:
-        return data, "frame", "; ".join(notes)[:250]
-    return C.title_card(subject.title or ctx["name"], when, channel), "title", \
-        ("no frame: " + "; ".join(notes))[:250] if notes else subject.title
+        return (C.league_card(subject.league, subject.title, when, channel),
+                C.league_poster(subject.league, subject.title, when, channel), "league")
+    return None
+
+
+def _title_cards(subject: W.Subject, ctx: dict) -> tuple:
+    when, channel = ctx["start"] or ctx["created"], ctx["channel"]
+    title = subject.title or ctx["name"]
+    return C.title_card(title, when, channel), C.title_poster(title, when, channel)
+
+
+def _poster_of_wide(wide: bytes, subject: W.Subject, ctx: dict) -> Optional[bytes]:
+    return C.poster_from_wide(wide, subject.title or ctx["name"], ctx["start"] or ctx["created"], ctx["channel"])
+
+
+def make_picture(jf, item_id: str, ctx: dict, subject: W.Subject, tmdb=None, busy: bool = False,
+                 grabber=None) -> tuple:
+    """(16:9 JPEG, 2:3 JPEG, source, what it shows): the first source that works."""
+    cards = _cards(subject, ctx)
+    if cards:
+        return cards[0], cards[1], cards[2], subject.describe()
+    wide, poster = _tmdb_pictures(subject, tmdb)
+    if wide:
+        return wide, poster or _poster_of_wide(wide, subject, ctx), "tmdb", subject.describe()
+    wide = _guide_picture(ctx["icon_url"])
+    if wide:
+        return wide, _poster_of_wide(wide, subject, ctx), "guide", "the guide's picture"
+    wide, notes = _frame(jf, item_id, ctx, busy, grabber)
+    if wide:
+        return wide, _poster_of_wide(wide, subject, ctx), "frame", "; ".join(notes)[:250]
+    wide, poster = _title_cards(subject, ctx)
+    return wide, poster, "title", ("no frame: " + "; ".join(notes))[:250] if notes else subject.title
+
+
+def make_poster(jf, item_id: str, ctx: dict, subject: W.Subject, source: Optional[str], tmdb=None) -> Optional[bytes]:
+    """The poster for a recording whose 16:9 picture Tentacle set before
+    posters existed: drawn again for a card, TMDB's for a TMDB match, else
+    the 16:9 picture (its Thumb) on a poster."""
+    cards = _cards(subject, ctx)
+    if source in ("matchup", "league") and cards:
+        return cards[1]
+    if source == "title":
+        return _title_cards(subject, ctx)[1]
+    if source == "tmdb":
+        found = _tmdb_match(subject, tmdb)
+        data = _tmdb_image(subject, (found or {}).get("poster_path"), "w780")
+        poster = C.to_2x3(data) if data else None
+        if poster:
+            return poster
+    return _poster_of_wide(jf.image(item_id, "Thumb"), subject, ctx)
 
 
 # ── The pass ────────────────────────────────────────────────────────────────
@@ -375,9 +439,10 @@ def _finished(item: dict, ctx: dict, now: datetime, now_on: list) -> bool:
     return ctx["created"] + timedelta(seconds=ctx["duration"]) + SETTLE <= now
 
 
-def _set(jf, item_id: str, data: bytes) -> tuple:
-    jf.upload(item_id, "Primary", data)
-    jf.upload(item_id, "Thumb", data)
+def _set(jf, item_id: str, wide: bytes, poster: Optional[bytes]) -> tuple:
+    """Primary the poster (the 16:9 picture when there is none), Thumb the 16:9."""
+    jf.upload(item_id, "Primary", poster or wide)
+    jf.upload(item_id, "Thumb", wide)
     after = _item(jf, item_id) or {}
     return _tags(after)
 
@@ -420,7 +485,7 @@ def give_picture(db: Session, jf, item: dict, row: RecordingArtwork, tmdb=None, 
     iid = _id(item.get("Id"))
     ctx = ctx or context(db, item)
     subject = subject_of(ctx)
-    data, source, detail = make_picture(jf, iid, ctx, subject, tmdb=tmdb, busy=busy, grabber=grabber)
+    wide, poster, source, detail = make_picture(jf, iid, ctx, subject, tmdb=tmdb, busy=busy, grabber=grabber)
     # someone (or Jellyfin's own frame grab) may have set one meanwhile
     fresh = _item(jf, iid)
     if fresh is None:
@@ -428,13 +493,59 @@ def give_picture(db: Session, jf, item: dict, row: RecordingArtwork, tmdb=None, 
     if any(_tags(fresh)):
         row.state, row.detail = "theirs", "had a picture Tentacle didn't set"
         return row.state
-    primary, thumb = _set(jf, iid, data)
+    primary, thumb = _set(jf, iid, wide, poster)
     row.state, row.source, row.detail = "set", source, (detail or "")[:250]
     row.primary_tag, row.thumb_tag = primary, thumb
+    row.primary_shape = POSTER if poster else None
     row.made_from = subject.league["id"] if subject.league and subject.kind in ("game", "event") else None
     row.updated_at = datetime.utcnow()
     logger.info(f"[Recording art] “{item.get('Name')}”: {source} ({subject.describe()})")
     return row.state
+
+
+def _pictures_of(jf, item: dict, title: Optional[str]) -> tuple:
+    """(16:9, poster) from a recording's own pictures, for its title folder:
+    its Thumb (else its Primary) as the 16:9, its Primary as the poster
+    when that is one, else the 16:9 on a poster."""
+    iid = _id(item.get("Id"))
+    primary, thumb = _tags(_item(jf, iid) or item)    # this pass may just have set them
+    primary_data = jf.image(iid, "Primary") if primary else None
+    wide = C.to_16x9(jf.image(iid, "Thumb") if thumb else primary_data)
+    if not wide:
+        return None, None
+    poster = C.to_2x3(primary_data) if primary_data else None
+    return wide, poster or C.poster_from_wide(wide, W.clean_title(title or item.get("Name"))[0], None, None)
+
+
+def upgrade_posters(db: Session, jf, items: dict, rows: dict, tmdb=None, limit: int = POSTERS_PER_PASS) -> int:
+    """Recordings whose 16:9 picture Tentacle set as both Primary and Thumb
+    before posters existed: the Primary becomes the poster, while both are
+    still the pictures Tentacle set. Returns how many."""
+    n = 0
+    for iid, row in rows.items():
+        if n >= limit:
+            break
+        item = items.get(iid)
+        if row.kind != "recording" or row.state != "set" or row.primary_shape == POSTER or item is None \
+                or not _still_ours(row, item) or not row.thumb_tag:
+            continue
+        try:
+            ctx = context(db, item)
+            poster = make_poster(jf, iid, ctx, subject_of(ctx), row.source, tmdb=tmdb)
+            if not poster:
+                continue
+            fresh = _item(jf, iid)
+            if fresh is None or not _still_ours(row, fresh):
+                continue    # a person changed it meanwhile: reconcile() leaves it
+            jf.upload(iid, "Primary", poster)
+            primary, thumb = _tags(_item(jf, iid) or {})
+            row.primary_tag, row.thumb_tag = primary, thumb
+            row.primary_shape, row.updated_at = POSTER, datetime.utcnow()
+            n += 1
+        except Exception as e:
+            logger.warning(f"[Recording art] poster for “{item.get('Name')}”: {e}")
+        db.commit()
+    return n
 
 
 def _folders(db: Session, jf, folders: list, videos: list, rows: dict, roots: set = frozenset()) -> int:
@@ -470,20 +581,23 @@ def _folders(db: Session, jf, folders: list, videos: list, rows: dict, roots: se
             want = f"child:{_id(newest.get('Id'))}:{picture}"
         else:
             continue    # the newest has no picture yet
-        if row is not None and row.state == "set" and row.made_from == want:
+        if row is not None and row.state == "set" and row.made_from == want and row.primary_shape == POSTER:
             continue
         try:
             if want.startswith("league:"):
                 from services.recording_rules import leagues as LG
                 lg = LG.league(nrow.made_from)
                 ctx = context(db, newest)
-                data = C.league_card(lg, W.clean_title(f.get("Name"))[0], None, ctx["channel"]) if lg else None
+                title = W.clean_title(f.get("Name"))[0]
+                wide = C.league_card(lg, title, None, ctx["channel"]) if lg else None
+                poster = C.league_poster(lg, title, None, ctx["channel"]) if lg else None
             else:
-                data = C.to_16x9(jf.image(_id(newest.get("Id")), "Primary"))
-            if not data:
+                wide, poster = _pictures_of(jf, newest, f.get("Name"))
+            if not wide:
                 continue
             row = _row(db, rows, f, "folder")
-            primary, thumb = _set(jf, fid, data)
+            primary, thumb = _set(jf, fid, wide, poster)
+            row.primary_shape = POSTER if poster else None
             row.state, row.source, row.made_from = "set", want.split(":")[0], want
             row.primary_tag, row.thumb_tag, row.updated_at = primary, thumb, datetime.utcnow()
             row.detail = "the league card" if want.startswith("league:") else f"the picture of “{newest.get('Name')}”"
@@ -523,7 +637,7 @@ def run_pass(db: Session, jf=None, now: Optional[datetime] = None, tmdb=None, gr
     """One pass. Returns what it did."""
     now = now or datetime.utcnow()
     jf = jf if jf is not None else jellyfin_for(db)
-    out = {"set": 0, "theirs": 0, "left": 0, "folders": 0, "removed": 0, "waiting": 0, "failed": 0}
+    out = {"set": 0, "theirs": 0, "left": 0, "posters": 0, "folders": 0, "removed": 0, "waiting": 0, "failed": 0}
     if jf is None:
         _last.update(blocked="Jellyfin isn't connected")
         return out
@@ -584,6 +698,7 @@ def run_pass(db: Session, jf=None, now: Optional[datetime] = None, tmdb=None, gr
                 out["failed"] += 1
                 logger.warning(f"[Recording art] “{item.get('Name')}”: no picture: {e}")
             db.commit()
+        out["posters"] = upgrade_posters(db, jf, items, rows, tmdb=tmdb)
         roots = set().union(*(lib.get("roots") or set() for lib in libs))
         out["folders"] = _folders(db, jf, folders, videos, rows, roots)
         db.commit()
