@@ -571,7 +571,8 @@ function _recArtText(d) {
   if (d.blocked) return d.blocked;
   const set = Object.values(d.sources || {}).reduce((a, b) => a + b, 0);
   const parts = Object.entries(d.sources || {}).filter(([, n]) => n)
-    .map(([k, n]) => `${n} ${REC_ART_SOURCES[k] || k}`);
+    .map(([k, n]) => `${n} ${REC_ART_SOURCES[k] || k}` +
+      (k === 'matchup' && d.with_logos ? ` (${d.with_logos === n ? (n === 1 ? 'with' : 'all with') : d.with_logos + ' with'} team logos)` : ''));
   let text = set ? `${set} recording${set === 1 ? '' : 's'} with a picture from Tentacle: ${parts.join(', ')}.`
     : 'On. Recordings get a picture about 10 minutes after they finish.';
   const own = (d.counts || {}).theirs || 0, left = (d.counts || {}).left || 0;

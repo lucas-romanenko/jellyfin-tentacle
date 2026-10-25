@@ -8,7 +8,9 @@ Thumb (wide cards) and 800x1200 for the Primary (poster cards), JPEG:
   named), or a title folder of several games;
 - a title card: the title, the channel and the date. Always works.
 
-No team crests and no outside service: the teams' codes stand in for them.
+A matchup card shows the teams' logos when logos.py has both in its cache
+(fetched by the pass, never while drawing); otherwise the teams' codes on
+coloured badges stand in for them.
 `to_16x9` and `to_2x3` make any other picture (a TMDB backdrop or poster, a
 guide picture, a frame) the same shapes; `poster_from_wide` puts a wide
 picture that has no poster (a frame, the guide's) on a poster with the title.
@@ -50,6 +52,7 @@ _SPORT = {
 _DEFAULT_BG = ((44, 44, 56), (14, 14, 18))
 _TEXT = (255, 255, 255)
 _TEXT2 = (205, 210, 220)
+_PLATE = (238, 241, 246)    # behind logos that would vanish on the dark background
 
 
 def _hue_color(seed: str, s: float = 0.55, v: float = 0.62) -> tuple:
@@ -178,6 +181,45 @@ def _badge(img, draw, team: dict, cx: int, cy: int, size: int = 210, code_font=N
               font=font, fill=_TEXT)
 
 
+def _with_logos(teams: list, logos: Optional[list]) -> Optional[list]:
+    """The logos to draw, one per team, or None: all of them or none, so the
+    two sides look alike."""
+    n = min(len(teams), 2)
+    if not logos or len(logos) < n or any(l is None for l in logos[:n]):
+        return None
+    return list(logos[:n])
+
+
+def _logo_size(logo, box: int) -> tuple:
+    """Fits a logo in a box x box square, scaled so logos of every shape look
+    about the same size: a wide one fills the width, but no logo covers more
+    than 70% of the square."""
+    w, h = logo.size
+    scale = min(box / w, box / h, (0.7 * box * box / (w * h)) ** 0.5)
+    return max(1, round(w * scale)), max(1, round(h * scale))
+
+
+def _paste_logo(img, draw, logo, cx: int, cy: int, box: int, plate: bool) -> None:
+    """The logo centred on (cx, cy) in a box x box square; on a light plate
+    filling the square (the same for both teams) when `plate`."""
+    from PIL import Image
+    if plate:
+        draw.rounded_rectangle([cx - box // 2, cy - box // 2, cx + box // 2, cy + box // 2],
+                               radius=box // 6, fill=_PLATE)
+        box = int(box * 0.8)
+    w, h = _logo_size(logo, box)
+    pic = logo.resize((w, h), Image.LANCZOS)
+    img.paste(pic, (cx - w // 2, cy - h // 2), pic)
+
+
+def _mid(draw, at: bool, cx: int, cy: int, size: int) -> None:
+    mid = "@" if at else "VS"
+    font = _get_font(size, bold=True)
+    box = draw.textbbox((0, 0), mid, font=font)
+    draw.text((cx - (box[2] - box[0]) // 2 - box[0], cy - (box[3] - box[1]) // 2 - box[1]), mid,
+              font=font, fill=_TEXT2)
+
+
 def _league_head(draw, league: dict) -> None:
     name = (league.get("name") or "").upper()
     font, lines = _fit(draw, name, W - 128, 1, 44, 26)
@@ -188,13 +230,31 @@ def _league_head(draw, league: dict) -> None:
 
 
 def matchup_card(league: dict, teams: list, at: bool, start: Optional[datetime],
-                 channel: Optional[str]) -> bytes:
-    """Both teams' codes and names (or the one team a listing named), the
-    league, the date and the channel."""
+                 channel: Optional[str], logos: Optional[list] = None) -> bytes:
+    """Both teams' logos (else codes) and names (or the one team a listing
+    named), the league, the date and the channel."""
     img, draw = _canvas(*_sport_bg(league))
     _league_head(draw, league)
     cy = 300
-    if len(teams) >= 2:
+    pics = _with_logos(teams, logos)
+    if pics:
+        plate = any(p.info.get("plate") for p in pics)
+        cy, box = 270, 230      # two-line names and the codes stay above the footer's line
+        if len(teams) >= 2:
+            name_font = min((_fit(draw, t.get("name") or "", 470, 2, 44, 28)[0] for t in teams[:2]),
+                            key=lambda f: f.size)
+            code_font = _get_font(26)
+            for team, pic, cx in ((teams[0], pics[0], 330), (teams[1], pics[1], W - 330)):
+                _paste_logo(img, draw, pic, cx, cy, box, plate)
+                _f, lines = _fit(draw, team.get("name") or "", 470, 2, name_font.size, name_font.size)
+                y = _center(draw, lines, name_font, cx, cy + box // 2 + 30)
+                _center(draw, [_code(team)], code_font, cx, y + 12, color=_TEXT2)
+            _mid(draw, at, W // 2, cy, 72)
+        else:
+            _paste_logo(img, draw, pics[0], W // 2, cy, 260, plate)
+            font, lines = _fit(draw, teams[0].get("name") or "", W - 300, 2, 56, 30)
+            _center(draw, lines, font, W // 2, cy + 160)
+    elif len(teams) >= 2:
         # one size for both codes and both names: the longer decides
         codes = [_code(t) for t in teams[:2]]
         code_font = min((_fit(draw, c, 174, 1, 96, 40)[0] for c in codes), key=lambda f: f.size)
@@ -204,11 +264,7 @@ def matchup_card(league: dict, teams: list, at: bool, start: Optional[datetime],
             _badge(img, draw, team, cx, cy, code_font=code_font)
             _f, lines = _fit(draw, team.get("name") or "", 470, 2, name_font.size, name_font.size)
             _center(draw, lines, name_font, cx, cy + 136)
-        mid = "@" if at else "VS"
-        font = _get_font(64, bold=True)
-        box = draw.textbbox((0, 0), mid, font=font)
-        draw.text((W // 2 - (box[2] - box[0]) // 2 - box[0], cy - (box[3] - box[1]) // 2 - box[1]), mid,
-                  font=font, fill=_TEXT2)
+        _mid(draw, at, W // 2, cy, 64)
     elif teams:
         _badge(img, draw, teams[0], W // 2, cy - 10, size=230)
         font, lines = _fit(draw, teams[0].get("name") or "", W - 300, 2, 56, 30)
@@ -346,13 +402,36 @@ def matchup_poster_layout(head: int, foot: int, name_heights: list, mid_height: 
 
 
 def matchup_poster(league: dict, teams: list, at: bool, start: Optional[datetime],
-                   channel: Optional[str]) -> bytes:
+                   channel: Optional[str], logos: Optional[list] = None) -> bytes:
     """The matchup card as a poster: the league on top, the away team over
     the home team (or the one team named), the date and the channel."""
     img, draw = _canvas(*_sport_bg(league), size=(PW, PH))
     head = _poster_league_head(draw, league)
     foot = poster_footer_box()["rule"]
-    if len(teams) >= 2:
+    pics = _with_logos(teams, logos)
+    if pics:
+        plate = any(p.info.get("plate") for p in pics)
+        if len(teams) >= 2:
+            name_font = min((_fit(draw, t.get("name") or "", PW - 140, 2, 46, 30)[0] for t in teams[:2]),
+                            key=lambda f: f.size)
+            names = [_fit(draw, t.get("name") or "", PW - 140, 2, name_font.size, name_font.size)[1]
+                     for t in teams[:2]]
+            mid_font = _get_font(60, bold=True)
+            mbox = draw.textbbox((0, 0), "@" if at else "VS", font=mid_font)
+            lay = matchup_poster_layout(head, foot, [_block_height(draw, n, name_font) for n in names],
+                                        mbox[3] - mbox[1], badge=220, min_badge=150)
+            for pic, lines, cy, top in zip(pics, names, lay["badges"], lay["names"]):
+                _paste_logo(img, draw, pic, PW // 2, cy, lay["badge"], plate)
+                _center(draw, lines, name_font, PW // 2, top)
+            _mid(draw, at, PW // 2, lay["mid"], 60)
+        else:
+            font, lines = _fit(draw, teams[0].get("name") or "", PW - 140, 3, 64, 32)
+            size = 300
+            block = size + 40 + _block_height(draw, lines, font)
+            top = head + max(24, (foot - head - block) // 2)
+            _paste_logo(img, draw, pics[0], PW // 2, top + size // 2, size, plate)
+            _center(draw, lines, font, PW // 2, top + size + 40)
+    elif len(teams) >= 2:
         codes = [_code(t) for t in teams[:2]]
         code_font = min((_fit(draw, c, 170, 1, 92, 40)[0] for c in codes), key=lambda f: f.size)
         name_font = min((_fit(draw, t.get("name") or "", PW - 140, 2, 50, 30)[0] for t in teams[:2]),
