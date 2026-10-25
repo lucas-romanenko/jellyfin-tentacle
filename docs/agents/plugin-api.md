@@ -137,6 +137,12 @@ Gotchas:
 | GET | `/TentacleDiscover/FamilyStatus` | user | GetFamilyStatus | yes |
 | GET | `/TentacleDiscover/LivePreview` | user | GetLivePreview (`/api/live/preview`, caller's token passed on; `?previewing=true`; no answer = `previews` false) | yes |
 | GET | `/TentacleDiscover/Recordings/{upcoming,history,marks,rules}` | user | GetRecordings (read-only, caller's token passed on) | yes |
+| GET | `/TentacleDiscover/MultiView` | user | GetMultiView (multi-view: can the caller start one, `max_tiles`, their running session) | yes |
+| POST | `/TentacleDiscover/MultiView` | user | StartMultiView (`{item_ids}`; 409 + message when connections are short) | yes |
+| PUT | `/TentacleDiscover/MultiView/{id}` | user | ChangeMultiView (swap / remove a channel) | yes |
+| POST | `/TentacleDiscover/MultiView/{id}/Keepalive` | user | KeepMultiView (every ~15 s while a channel plays full screen) | yes |
+| DELETE | `/TentacleDiscover/MultiView/{id}` | user | CloseMultiView | yes |
+| GET | `/TentacleDiscover/MultiView/{id}/Stream` | anonymous; the session id is the secret | MultiViewStream (the picture passed through, MPEG-TS) | yes |
 | GET | `/Tentacle/recordings.js`, `/Tentacle/recordings.css` | none | GetRecordingsJs/Css |  |
 | GET | `/TentacleDiscover/Genres` | user | GetGenres | yes |
 | GET | `/TentacleDiscover/ImageProxy/{cacheKey}` | none | ImageProxy |  |

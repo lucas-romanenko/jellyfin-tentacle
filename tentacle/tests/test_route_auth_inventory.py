@@ -17,7 +17,7 @@ from fastapi.routing import APIRoute
 ROUTER_MODULES = [
     "auth", "settings", "providers", "sync", "library", "duplicates", "lists",
     "widget", "radarr", "sonarr", "tags", "collections", "smartlists",
-    "discover", "activity", "livetv", "livetv_checker", "my_livetv", "family", "notifications", "health", "youtube", "vod", "music",
+    "discover", "activity", "livetv", "livetv_checker", "my_livetv", "multiview", "family", "notifications", "health", "youtube", "vod", "music",
 ]
 
 # (METHOD, path) -> reason. Keep this list short and justified.
@@ -48,6 +48,7 @@ ALLOW = {
     ("GET", "/api/youtube/live/{channel_id}/master.m3u8"): "tuner",
     ("GET", "/api/youtube/ping"): "liveness",
     ("HEAD", "/api/live/stream/{channel_id}"): "tuner probe",
+    ("GET", "/api/live/multiview/{session_id}/stream.ts"): "multi-view picture for a player; the session id is the secret",
     ("GET", "/api/vod/{kind}/{token_file}"): ".strm playback; signed token (services.vod_tokens)",
     ("HEAD", "/api/vod/{kind}/{token_file}"): ".strm probe; signed token",
     ("HEAD", "/api/youtube/v/{video_id}/master.m3u8"): ".strm probe",

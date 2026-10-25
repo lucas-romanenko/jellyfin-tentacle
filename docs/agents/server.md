@@ -1153,6 +1153,47 @@ User docs: `docs/features/live-tv.md`.
   everything and served 95% of the known titles (`may_prune`,
   `end_probation`, setting `provider_address_probation_<pid>`).
 
+### Multi-view (`services/multiview.py`, `routers/multiview.py`)
+
+The TV app's multi-view: 2-4 channels as one 1920x1080 MPEG-TS picture
+(2 side by side, centred; 3-4 a 2x2 grid), one AAC track per tile in tile
+order, so the player switches sound by switching tracks.
+
+- **Tiles are tuner clients.** Each tile calls `stream_proxy` in-process
+  (no HTTP, no port): a channel someone already watches or records attaches
+  to its `_SharedUpstream` and costs no connection; a new one takes a
+  "live" lease like a viewer, so a recording at capacity preempts it. One
+  task per tile reads the subscriber body into a queue for the session's
+  whole life (cancelling an `__anext__` would close the subscription); only
+  the copy into ffmpeg's pipe (an inherited fd, `-i pipe:<fd>`) restarts.
+- **Before ffmpeg starts** each tile's first ~2 MB are read and ffprobed:
+  no audio = a silent track stands in (track N stays tile N); 8-bit 4:2:0
+  H.264/HEVC/MPEG-2 = the GPU decodes it.
+- **ffmpeg:** with `/dev/dri/renderD128` and Intel's driver (the image has
+  `intel-media-va-driver-non-free` on amd64), VAAPI: decode,
+  `deinterlace_vaapi`, `scale_vaapi`, download, `xstack`, upload,
+  `h264_vaapi` 8 Mb/s, GOP 30 at 29.97. Otherwise `yadif` + `scale` and
+  libx264 veryfast. `encoder()` decides once with a 3-frame test. If ffmpeg
+  stops, it restarts (at most 3 times) with GPU decode off; the channels
+  stay open. Measured on the i5-14600K (CT 112, `--cpus=2`, 4 inputs):
+  full GPU 0.31 cores, CPU decode + GPU encode 0.77, libx264 1.21.
+- **Connections:** `free_connections` = overall limit minus active leases
+  minus recordings starting within 30 min (Jellyfin timers), then each
+  provider's own limit; channels already streaming need none. Refused
+  with a plain message (409). The TV's button asks `GET /api/live/multiview`
+  first (`can_start`, `max_tiles`).
+- **Lifetime:** one session per person (a new one replaces theirs after
+  it has its channels, so shared channels never close in between). `PUT`
+  changes it in place: removed tiles leave first (a swap at capacity
+  works), new ones open, ffmpeg restarts with the new layout. Closed by
+  DELETE, by Tentacle stopping, or by the reaper when nobody reads the
+  picture and no keepalive came for 45 s. Full screen is the channel tuned
+  through Jellyfin as usual: its upstream is open (a tile), so the tuner
+  attaches at no cost; the app sends keepalives meanwhile, and the mosaic
+  keeps running so Back is instant.
+- **Readers** start in the last 3 s of the picture on a keyframe with
+  sound (`ts_start.AvStart`); a slow reader loses its oldest pieces.
+
 ## Recording rules (`services/recording_rules/`, `routers/recordings.py`, dashboard `static/js/recordings.js`)
 
 Follow a team or record by words, as Jellyfin one-off timers (#770). No league
