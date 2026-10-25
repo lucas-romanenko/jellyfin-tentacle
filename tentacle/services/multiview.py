@@ -34,7 +34,8 @@ few frames over and over) moves to another feed of the same network when
 there is one; the
 feed is remembered as stuck for STUCK_MEMORY_SECONDS, so the next
 multi-view starts on the other one. A channel whose stream ended is opened
-again.
+again after REOPEN_SECONDS, then less and less often while it won't (each
+try is a new connection, and on such an account it cuts another channel).
 
 Connections. A session needs a free provider connection for every channel
 not already open; it is refused with a plain message otherwise
@@ -93,7 +94,9 @@ CATCH_UP_TO_SECONDS = 15.0     # ... to this
 STUCK_WINDOW = 450             # frames (15 s) a feed is judged over ...
 STUCK_SHARE = 0.85             # ... and how many of them shown already in it make it stuck
 STUCK_MEMORY_SECONDS = 3 * 3600
-REOPEN_SECONDS = 20.0          # a channel whose stream ended is opened again after this
+REOPEN_SECONDS = 20.0          # a channel whose stream ended is opened again after this, ...
+REOPEN_MAX_SECONDS = 300.0     # ... doubling up to this while it won't (each try is a new connection,
+                               # and on a one-connection account a new one cuts another channel)
 PENDING_FRAMES = 4             # ticks the clock may get ahead of the encoder on one input
 READ_AHEAD_FRAMES = 4          # decoded frames the clock holds of each tile (the decoder's slack)
 PIPE_BYTES = 1024 * 1024
@@ -581,6 +584,7 @@ class _Tile:
         self.catch_ups = 0
         self.switching = False
         self.gave_up = False      # stuck, and no other feed would open
+        self.reopen_after = REOPEN_SECONDS
 
     async def open(self, db_factory) -> None:
         """Join the channel and read its first bytes (what it has: video, sound)."""
@@ -1151,7 +1155,7 @@ class Session:
                     if t.stuck and not t.gave_up:
                         t.switching = True
                         asyncio.create_task(self._move(i, t, "its picture stands still"))
-                    elif t.ended and not t.buf and t.ended_at and now - t.ended_at > REOPEN_SECONDS:
+                    elif t.ended and not t.buf and t.ended_at and now - t.ended_at > t.reopen_after:
                         t.switching = True
                         asyncio.create_task(self._move(i, t, "its stream ended", same_first=True))
                 except Exception as e:
@@ -1203,7 +1207,8 @@ class Session:
             old.switching = False
             old.stuck = False
             if same_first:
-                old.ended_at = time.monotonic()   # tried: again after REOPEN_SECONDS
+                old.ended_at = time.monotonic()   # tried: again later, and later
+                old.reopen_after = min(old.reopen_after * 2, REOPEN_MAX_SECONDS)
 
     async def read(self):
         """A reader's stream: from a keyframe in the last seconds, then live."""

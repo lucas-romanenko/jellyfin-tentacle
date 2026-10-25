@@ -1199,7 +1199,10 @@ order, so the player switches sound by switching tracks.
   (`late_ticks` counts ticks > 0.25 s late).
 - **Monitor** (every 0.5 s): a decoder that stopped is started again (from
   a keyframe; on the CPU if the GPU gave up on it within 15 s); an ended
-  channel is opened again after 20 s; a **stuck feed** moves to another.
+  channel is opened again after 20 s, then 40, 80 ... up to 5 min while it
+  won't (each try is a new connection: it cuts another channel on a
+  one-connection account; measured 25 Oct, the provider refused every
+  re-dial of 3 of 4 channels for 2 min and the stream proxy gave up); a **stuck feed** moves to another.
   Stuck = 85 % of the last 450 frames (15 s) had been shown already within
   them (a still or a looping clip: one broken 4K feed had 34 different frames in
   30 s, 92-100 %; a live cartoon channel 0 %). `other_feeds` ranks the

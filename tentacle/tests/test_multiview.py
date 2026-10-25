@@ -787,6 +787,32 @@ class StuckFeed(unittest.TestCase):
         self.assertTrue(old.gave_up, "it would be judged again every half second")
         self.assertEqual(s.moves, [])
 
+    def test_an_ended_channel_is_tried_again_less_and_less_often(self):
+        MV = self.MV
+        tries = []
+
+        async def refused(tile, db_factory):
+            tries.append(tile.channel_id)
+            raise MV.MultiviewError("Boomerang didn't open: refused", 503)
+
+        async def body():
+            old = MV._Tile(1388, "Boomerang", "n126", "")
+            old.ended, old.ended_at = True, 0.0
+            s = MV.Session("u1", [old, MV._Tile(1392, "PBS Kids", "n183", "")])
+            s.db_factory = lambda: mock.MagicMock()
+            waits = []
+            for _ in range(6):
+                await s._move(0, old, "its stream ended", same_first=True)
+                waits.append(old.reopen_after)
+            return s, old, waits
+
+        with mock.patch.object(MV, "other_feeds", return_value=[]), \
+                mock.patch.object(MV._Tile, "open", refused):
+            s, old, waits = asyncio.run(body())
+        self.assertEqual(tries, [1388] * 6)
+        self.assertIs(s.tiles[0], old)
+        self.assertEqual(waits, [40.0, 80.0, 160.0, 300.0, 300.0, 300.0])
+
     def test_the_network_stream_plays_another_feed_while_its_own_is_stuck(self):
         # Full screen from the grid (and anyone tuning AMC) gets the working feed.
         MV = self.MV
