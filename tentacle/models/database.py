@@ -1250,7 +1250,7 @@ class RecordingArtwork(Base):
     primary_tag = Column(String, nullable=True)
     thumb_tag = Column(String, nullable=True)
     made_from = Column(String, nullable=True)    # folders: what the picture came from (a child's id, a league)
-    primary_shape = Column(String, nullable=True)   # poster: Primary is the 2:3 poster; empty: the 16:9 of #827
+    primary_shape = Column(String, nullable=True)   # the layout that drew it (recording_art.job.POSTER); empty: #827's 16:9
     attempts = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)

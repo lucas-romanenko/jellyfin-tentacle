@@ -202,6 +202,53 @@ class Cards(unittest.TestCase):
         self.assertEqual((800, 1200), self.size(C.poster_from_wide(_jpeg(), "Jeopardy! " * 20, NOW, "CBS")))
         self.assertIsNone(C.poster_from_wide(b"not a picture", "Jeopardy!", NOW, None))
 
+    def test_the_footer_stays_out_of_the_progress_bar(self):
+        # TV clients draw a progress bar along the bottom of a card: no text there
+        self.assertLessEqual(C.SAFE_Y, 0.88 * C.PH)
+        self.assertLessEqual(C.WIDE_SAFE_Y, 0.92 * C.H)
+        box = C.poster_footer_box()
+        self.assertLess(box["rule"], box["when"][0])
+        self.assertLessEqual(box["when"][1], box["channel"][0])
+        self.assertLessEqual(box["channel"][1], C.SAFE_Y)
+        rule, top, bottom = C.footer_box()
+        self.assertLess(rule, top)
+        self.assertLessEqual(bottom, C.WIDE_SAFE_Y)
+
+    def test_the_matchup_fits_above_the_footer(self):
+        foot = C.poster_footer_box()["rule"]
+        one = C.matchup_poster_layout(182, foot, [59, 59], 45)
+        self.assertEqual(200, one["badge"])          # one-line names: the badges keep their size
+        two = C.matchup_poster_layout(182, foot, [126, 126], 45)
+        self.assertLess(two["badge"], 200)            # two-line names: smaller badges, still in
+        for lay, names in ((one, 59), (two, 126)):
+            self.assertLessEqual(lay["bottom"], foot)
+            self.assertGreaterEqual(lay["badges"][0] - lay["badge"] // 2, 182)
+            self.assertLess(lay["names"][0] + names, lay["mid"])
+            self.assertLess(lay["mid"], lay["badges"][1] - lay["badge"] // 2)
+
+    def test_nothing_is_drawn_in_the_safe_area(self):
+        # the cards' backgrounds are vertical gradients: a row with nothing on it is one colour
+        from PIL import Image
+        s = W.identify("Columbus Blue Jackets at Vegas Golden Knights")
+        long = "Sportsnet One HD East " * 3
+        posters = [C.matchup_poster(s.league, s.teams, s.at, NOW, long),
+                   C.matchup_poster(s.league, s.teams[:1], False, NOW, long),
+                   C.league_poster(s.league, "NHL Hockey " * 6, NOW, long),
+                   C.title_poster("A very long title " * 12, NOW, long)]
+        cards = [C.matchup_card(s.league, s.teams, s.at, NOW, long),
+                 C.league_card(s.league, "NHL Hockey " * 6, NOW, long),
+                 C.title_card("A very long title " * 12, NOW, long)]
+        for data, safe in [(p, C.SAFE_Y) for p in posters] + [(c, C.WIDE_SAFE_Y) for c in cards]:
+            img = Image.open(io.BytesIO(data)).convert("L")
+            w, h = img.size
+            px = img.load()
+            for y in range(safe, h):
+                row = [px[x, y] for x in range(0, w, 4)]
+                self.assertLess(max(row) - min(row), 24, f"something drawn at y={y} of {w}x{h}")
+            # and the footer itself is drawn just above it
+            row = [px[x, y] for y in range(safe - 120, safe) for x in range(0, w, 4)]
+            self.assertGreater(max(row) - min(row), 100)
+
     def test_to_2x3(self):
         self.assertEqual((800, 1200), self.size(C.to_2x3(_jpeg(size=(780, 1170)))))
         self.assertEqual((800, 1200), self.size(C.to_2x3(_jpeg(size=(600, 1000)))))
@@ -312,7 +359,7 @@ class Sources(Base):
         # Primary is the 2:3 poster, Thumb the 16:9 picture
         self.assertEqual((800, 1200), _size(self.jf.image("r1", "Primary")))
         self.assertEqual((1280, 720), _size(self.jf.image("r1", "Thumb")))
-        self.assertEqual("poster", row.primary_shape)
+        self.assertEqual(J.POSTER, row.primary_shape)
 
     def test_a_booked_game_names_both_teams(self):
         from models.database import RecordingBooking, RecordingRule
@@ -365,7 +412,7 @@ class Sources(Base):
         with mock.patch.object(J.requests, "get", side_effect=self.tmdb_get()) as get:
             self.run_pass(tmdb=self.tmdb({"title": "Jeopardy!", "backdrop_path": "/b.jpg"}))
         self.assertEqual(1, get.call_count)
-        self.assertEqual(("tmdb", "poster"), (self.row("r1").source, self.row("r1").primary_shape))
+        self.assertEqual(("tmdb", J.POSTER), (self.row("r1").source, self.row("r1").primary_shape))
         self.assertEqual((800, 1200), _size(self.jf.image("r1", "Primary")))
 
     def test_b_tmdb_down_falls_through(self):
@@ -673,10 +720,12 @@ class Posters(Base):
         wide = self.old("r2", "Jeopardy!", "frame")
         out = self.run_pass()
         self.assertEqual(2, out["posters"])
-        self.assertEqual({("upload", "r1", "Primary"), ("upload", "r2", "Primary")}, set(self.jf.writes))
+        # the matchup card's 16:9 is drawn again too (its footer moved up), the frame's stays
+        self.assertEqual({("upload", "r1", "Primary"), ("upload", "r1", "Thumb"), ("upload", "r2", "Primary")},
+                         set(self.jf.writes))
         for iid in ("r1", "r2"):
             row = self.row(iid)
-            self.assertEqual(("set", "poster"), (row.state, row.primary_shape))
+            self.assertEqual(("set", J.POSTER), (row.state, row.primary_shape))
             self.assertEqual((800, 1200), _size(self.jf.image(iid, "Primary")))
             self.assertEqual((self.jf.tags(iid)["Primary"], self.jf.tags(iid)["Thumb"]),
                              (row.primary_tag, row.thumb_tag))
@@ -692,6 +741,35 @@ class Posters(Base):
         self.run_pass()
         self.assertEqual([], self.jf.writes)
         self.assertEqual("left", self.row("r1").state)
+
+    def test_an_older_layouts_pictures_are_drawn_again(self):
+        # #839's posters (primary_shape "poster") put the channel under the TV's progress bar
+        from models.database import RecordingArtwork
+        for iid, name, source in (("r1", "Canadiens at Blackhawks", "matchup"), ("r2", "Jeopardy!", "frame")):
+            self.jf.add(iid, name, NOW - timedelta(days=1))
+            self.jf.put(iid, "Primary", "tentacle", _jpeg(size=(800, 1200)))
+            self.jf.put(iid, "Thumb", "tentacle", _jpeg())
+            tags = self.jf.tags(iid)
+            self.db.add(RecordingArtwork(item_id=iid, kind="recording", name=name, state="set", source=source,
+                                         primary_tag=tags["Primary"], thumb_tag=tags["Thumb"],
+                                         primary_shape="poster"))
+        self.db.commit()
+        frame = self.jf.image("r2", "Thumb")
+        self.assertEqual(2, self.run_pass()["posters"])
+        # a card: both drawn again; a frame: only its poster (the frame has no text)
+        self.assertEqual({("upload", "r1", "Primary"), ("upload", "r1", "Thumb"), ("upload", "r2", "Primary")},
+                         set(self.jf.writes))
+        self.assertEqual((1280, 720), _size(self.jf.image("r1", "Thumb")))
+        self.assertEqual(frame, self.jf.image("r2", "Thumb"))
+        for iid in ("r1", "r2"):
+            row = self.row(iid)
+            self.assertEqual(("set", J.POSTER), (row.state, row.primary_shape))
+            self.assertEqual((800, 1200), _size(self.jf.image(iid, "Primary")))
+            self.assertEqual((self.jf.tags(iid)["Primary"], self.jf.tags(iid)["Thumb"]),
+                             (row.primary_tag, row.thumb_tag))
+        self.jf.writes.clear()
+        self.assertEqual(0, self.run_pass()["posters"])            # once
+        self.assertEqual([], self.jf.writes)
 
     def test_a_few_per_pass(self):
         for i in range(J.POSTERS_PER_PASS + 3):
@@ -709,6 +787,21 @@ class Folders(Base):
         self.run_pass()
         row = self.row("f1")
         self.assertEqual(("set", "league", "league:nhl"), (row.state, row.source, row.made_from))
+
+    def test_a_folder_an_older_layout_drew_is_drawn_again(self):
+        self.jf.add("f1", "Live  NHL Hockey", NOW - timedelta(days=3), folder=True)
+        self.jf.add("r1", "Canadiens at Blackhawks", NOW - timedelta(days=2), parent="f1")
+        self.jf.add("r2", "Penguins at Maple Leafs", NOW - timedelta(days=1), parent="f1")
+        self.run_pass()
+        self.row("f1").primary_shape = "poster"
+        self.db.commit()
+        self.jf.writes.clear()
+        self.run_pass()
+        self.assertEqual({("upload", "f1", "Primary"), ("upload", "f1", "Thumb")}, set(self.jf.writes))
+        self.assertEqual(J.POSTER, self.row("f1").primary_shape)
+        self.jf.writes.clear()
+        self.run_pass()
+        self.assertEqual([], self.jf.writes)
 
     def test_the_recordings_folder_itself_gets_nothing(self):
         # Jellyfin lists the recordings folder as a Folder too; a title folder

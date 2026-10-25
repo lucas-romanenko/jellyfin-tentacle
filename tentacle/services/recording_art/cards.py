@@ -12,6 +12,11 @@ No team crests and no outside service: the teams' codes stand in for them.
 `to_16x9` and `to_2x3` make any other picture (a TMDB backdrop or poster, a
 guide picture, a frame) the same shapes; `poster_from_wide` puts a wide
 picture that has no poster (a frame, the guide's) on a poster with the title.
+
+Safe area: clients draw a progress bar along the bottom of a card (the TV
+app's Continue Watching), so nothing Tentacle draws goes into the bottom
+SAFE_BOTTOM of a poster or WIDE_SAFE_BOTTOM of a 16:9 picture: the footer
+(date, channel) ends above it and the rest is laid out above the footer.
 """
 import colorsys
 import hashlib
@@ -27,6 +32,10 @@ logger = logging.getLogger(__name__)
 W, H = 1280, 720
 PW, PH = 800, 1200      # the poster (2:3)
 QUALITY = 88
+SAFE_BOTTOM = 0.12      # share of a poster's height kept clear at the bottom (progress bars)
+WIDE_SAFE_BOTTOM = 0.08  # the same for the 16:9 picture
+SAFE_Y = round(PH * (1 - SAFE_BOTTOM))          # 1056: nothing drawn below it
+WIDE_SAFE_Y = round(H * (1 - WIDE_SAFE_BOTTOM))  # 662
 
 # Background per sport (top, bottom): dark, so white text always reads
 _SPORT = {
@@ -116,10 +125,18 @@ def when_text(start: Optional[datetime]) -> str:
     return f"{local:%a}, {local:%b} {local.day}, {local.year} · {hour}:{local:%M} {'AM' if local.hour < 12 else 'PM'}"
 
 
+def footer_box() -> tuple:
+    """(rule, top, bottom) of the 16:9 footer: its line, and where its text
+    starts and ends, always above WIDE_SAFE_Y."""
+    bottom = WIDE_SAFE_Y - 12
+    top = bottom - max(_line_height(_get_font(32)), _line_height(_get_font(32, bold=True)))
+    return top - 22, top, bottom
+
+
 def _footer(draw, start: Optional[datetime], channel: Optional[str]) -> None:
     """The date on the left and the channel on the right, along the bottom."""
     font = _get_font(32)
-    y = H - 72
+    _rule, y, _bottom = footer_box()
     draw.line([(64, y - 22), (W - 64, y - 22)], fill=(255, 255, 255, 60), width=1)
     left = when_text(start)
     if left:
@@ -207,7 +224,7 @@ def league_card(league: dict, title: str, start: Optional[datetime], channel: Op
     sub_font, slines = _fit(draw, title or "", W - 200, 2, 54, 30, bold=False) if title and \
         title.strip().lower() != (league.get("name") or "").strip().lower() else (None, [])
     height = _block_height(draw, blines, big) + (36 + _block_height(draw, slines, sub_font) if slines else 0)
-    top = (H - 100 - height) // 2
+    top = (footer_box()[0] - height) // 2
     y = _center(draw, blines, big, W // 2, top)
     if slines:
         _center(draw, slines, sub_font, W // 2, y + 28, color=_TEXT2)
@@ -220,7 +237,7 @@ def title_card(title: str, start: Optional[datetime], channel: Optional[str]) ->
     base = _hue_color(title or "", s=0.45, v=0.42)
     img, draw = _canvas(base, tuple(int(c * 0.25) for c in base))
     font, lines = _fit(draw, title or "Recording", W - 200, 3, 104, 44)
-    top = (H - 100 - _block_height(draw, lines, font, gap=14)) // 2
+    top = (footer_box()[0] - _block_height(draw, lines, font, gap=14)) // 2
     _center(draw, lines, font, W // 2, top, gap=14)
     _footer(draw, start, channel)
     return _jpeg(img)
@@ -264,17 +281,32 @@ def short_when(start: Optional[datetime]) -> str:
     return f"{local:%a}, {local:%b} {local.day} · {hour}:{local:%M} {'AM' if local.hour < 12 else 'PM'}"
 
 
+_WHEN_SIZE, _CHANNEL_SIZE, _FOOT_GAP = 34, 38, 16
+
+
+def poster_footer_box() -> dict:
+    """Where the poster's footer goes: its line (`rule`), the date's and the
+    channel's lines (top, bottom), the channel ending 16 px above SAFE_Y.
+    The same for every poster, with or without a channel; everything else
+    is laid out above `rule`."""
+    bottom = SAFE_Y - 16
+    channel = (bottom - _line_height(_get_font(_CHANNEL_SIZE, bold=True)), bottom)
+    when_top = channel[0] - _FOOT_GAP - _line_height(_get_font(_WHEN_SIZE))
+    when = (when_top, channel[0] - _FOOT_GAP)
+    return {"rule": when_top - 24, "when": when, "channel": channel}
+
+
 def _poster_footer(draw, start: Optional[datetime], channel: Optional[str]) -> None:
-    """The date over the channel, centred along the bottom."""
-    y = PH - 150
-    draw.line([(56, y - 24), (PW - 56, y - 24)], fill=(255, 255, 255, 60), width=1)
+    """The date over the channel, centred along the bottom, above the safe area."""
+    box = poster_footer_box()
+    draw.line([(56, box["rule"]), (PW - 56, box["rule"])], fill=(255, 255, 255, 60), width=1)
     when = short_when(start)
     if when:
-        _f, lines = _fit(draw, when, PW - 112, 1, 34, 24, bold=False)
-        _center(draw, lines, _f, PW // 2, y, color=_TEXT2)
+        _f, lines = _fit(draw, when, PW - 112, 1, _WHEN_SIZE, 24, bold=False)
+        _center(draw, lines, _f, PW // 2, box["when"][0], color=_TEXT2)
     if channel:
-        _f, lines = _fit(draw, channel, PW - 112, 1, 38, 24)
-        _center(draw, lines, _f, PW // 2, y + 56)
+        _f, lines = _fit(draw, channel, PW - 112, 1, _CHANNEL_SIZE, 24)
+        _center(draw, lines, _f, PW // 2, box["channel"][0])
 
 
 def _poster_league_head(draw, league: dict) -> int:
@@ -289,30 +321,60 @@ def _poster_league_head(draw, league: dict) -> int:
     return y
 
 
+def matchup_poster_layout(head: int, foot: int, name_heights: list, mid_height: int,
+                          badge: int = 200, min_badge: int = 140, name_gap: int = 20, min_gap: int = 20) -> dict:
+    """Two teams one over the other between the league's head (its bottom)
+    and the footer's line, the "@" between them, with equal gaps: the
+    badges' centres, the names' tops, the "@"'s centre and the badge size.
+    The badges only get smaller (to `min_badge`) when two-line names leave
+    no room."""
+    content = 2 * name_gap + sum(name_heights) + mid_height
+    room = foot - head
+    badge = max(min_badge, min(badge, (room - content - 4 * min_gap) // 2))
+    gap = max(0, (room - content - 2 * badge) // 4)
+    y = head + gap
+    badges, names = [], []
+    for i, nh in enumerate(name_heights):
+        badges.append(y + badge // 2)
+        names.append(y + badge + name_gap)
+        y += badge + name_gap + nh + gap
+        if i == 0:
+            mid = y + mid_height // 2
+            y += mid_height + gap
+    return {"badge": badge, "badges": badges, "names": names, "mid": mid,
+            "bottom": names[-1] + name_heights[-1]}
+
+
 def matchup_poster(league: dict, teams: list, at: bool, start: Optional[datetime],
                    channel: Optional[str]) -> bytes:
     """The matchup card as a poster: the league on top, the away team over
     the home team (or the one team named), the date and the channel."""
     img, draw = _canvas(*_sport_bg(league), size=(PW, PH))
-    _poster_league_head(draw, league)
+    head = _poster_league_head(draw, league)
+    foot = poster_footer_box()["rule"]
     if len(teams) >= 2:
         codes = [_code(t) for t in teams[:2]]
         code_font = min((_fit(draw, c, 170, 1, 92, 40)[0] for c in codes), key=lambda f: f.size)
         name_font = min((_fit(draw, t.get("name") or "", PW - 140, 2, 50, 30)[0] for t in teams[:2]),
                         key=lambda f: f.size)
-        for team, cy in ((teams[0], 360), (teams[1], 790)):
-            _badge(img, draw, team, PW // 2, cy, size=200, code_font=code_font)
-            _f, lines = _fit(draw, team.get("name") or "", PW - 140, 2, name_font.size, name_font.size)
-            _center(draw, lines, name_font, PW // 2, cy + 120)
+        names = [_fit(draw, t.get("name") or "", PW - 140, 2, name_font.size, name_font.size)[1] for t in teams[:2]]
         mid = "@" if at else "VS"
         font = _get_font(60, bold=True)
         box = draw.textbbox((0, 0), mid, font=font)
-        draw.text((PW // 2 - (box[2] - box[0]) // 2 - box[0], 600 - (box[3] - box[1]) // 2 - box[1]), mid,
+        lay = matchup_poster_layout(head, foot, [_block_height(draw, n, name_font) for n in names],
+                                    box[3] - box[1])
+        for team, lines, cy, top in zip(teams, names, lay["badges"], lay["names"]):
+            _badge(img, draw, team, PW // 2, cy, size=lay["badge"], code_font=code_font)
+            _center(draw, lines, name_font, PW // 2, top)
+        draw.text((PW // 2 - (box[2] - box[0]) // 2 - box[0], lay["mid"] - (box[3] - box[1]) // 2 - box[1]), mid,
                   font=font, fill=_TEXT2)
     elif teams:
-        _badge(img, draw, teams[0], PW // 2, 520, size=260)
         font, lines = _fit(draw, teams[0].get("name") or "", PW - 140, 3, 64, 32)
-        _center(draw, lines, font, PW // 2, 690)
+        size = 260
+        block = size + 40 + _block_height(draw, lines, font)
+        top = head + max(24, (foot - head - block) // 2)
+        _badge(img, draw, teams[0], PW // 2, top + size // 2, size=size)
+        _center(draw, lines, font, PW // 2, top + size + 40)
     _poster_footer(draw, start, channel)
     return _jpeg(img)
 
@@ -324,7 +386,7 @@ def league_poster(league: dict, title: str, start: Optional[datetime], channel: 
     sub_font, slines = _fit(draw, title or "", PW - 120, 3, 56, 30, bold=False) if title and \
         title.strip().lower() != (league.get("name") or "").strip().lower() else (None, [])
     height = _block_height(draw, blines, big) + (40 + _block_height(draw, slines, sub_font) if slines else 0)
-    top = (PH - 180 - height) // 2
+    top = (poster_footer_box()["rule"] - height) // 2
     y = _center(draw, blines, big, PW // 2, top)
     if slines:
         _center(draw, slines, sub_font, PW // 2, y + 32, color=_TEXT2)
@@ -337,7 +399,7 @@ def title_poster(title: str, start: Optional[datetime], channel: Optional[str]) 
     base = _hue_color(title or "", s=0.45, v=0.42)
     img, draw = _canvas(base, tuple(int(c * 0.25) for c in base), size=(PW, PH))
     font, lines = _fit(draw, title or "Recording", PW - 120, 5, 110, 44)
-    top = (PH - 180 - _block_height(draw, lines, font, gap=14)) // 2
+    top = (poster_footer_box()["rule"] - _block_height(draw, lines, font, gap=14)) // 2
     _center(draw, lines, font, PW // 2, top, gap=14)
     _poster_footer(draw, start, channel)
     return _jpeg(img)
@@ -392,7 +454,7 @@ def poster_from_wide(data: bytes, title: str, start: Optional[datetime], channel
     from PIL import ImageDraw
     draw = ImageDraw.Draw(bg)
     pw, ph = PW, int(PW * 9 / 16)
-    top = 470
+    top = min(470, poster_footer_box()["rule"] - 24 - ph)    # the picture ends above the footer
     bg.paste(_cover(img, pw, ph), (0, top))
     font, lines = _fit(draw, title or "Recording", PW - 112, 4, 76, 36)
     height = _block_height(draw, lines, font, gap=10)
