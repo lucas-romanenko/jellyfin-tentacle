@@ -135,6 +135,7 @@ Gotchas:
 | POST | `/TentacleDiscover/Follow/{tmdbId}` | user | ToggleFollow | yes |
 | GET | `/TentacleDiscover/Genre` | user | GetByGenre | yes |
 | GET | `/TentacleDiscover/FamilyStatus` | user | GetFamilyStatus | yes |
+| GET | `/TentacleDiscover/LivePreview` | user | GetLivePreview (`/api/live/preview`, caller's token passed on; `?previewing=true`; no answer = `previews` false) | yes |
 | GET | `/TentacleDiscover/Recordings/{upcoming,history,marks,rules}` | user | GetRecordings (read-only, caller's token passed on) | yes |
 | GET | `/Tentacle/recordings.js`, `/Tentacle/recordings.css` | none | GetRecordingsJs/Css |  |
 | GET | `/TentacleDiscover/Genres` | user | GetGenres | yes |
