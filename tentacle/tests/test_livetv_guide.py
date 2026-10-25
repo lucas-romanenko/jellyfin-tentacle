@@ -5,7 +5,10 @@ Run from the tentacle/ directory:  python -m unittest discover -s tests
 Live TV opens straight to the guide with a Favorites / All toggle; the date
 strip runs from today to the last day that has programme data (not
 Jellyfin's fixed two weeks); channel and programme names show exactly.
-Runs the real script under node with a stub document.
+Runs the real script under node with a stub document, at a pinned "now"
+(an ordinary Wednesday afternoon unless a test picks another), so the tests
+don't depend on the day they run (they once failed every run in the week
+before the clocks went back).
 """
 import json
 import re
@@ -18,6 +21,14 @@ CSS = (INJECT / "tentacle-livetv.css").read_text(encoding="utf-8")
 
 HARNESS = ESC_DOM + r"""
 process.env.TZ = 'America/Toronto';
+// "now" is pinned: Date.now() and new Date() give it (local Toronto time)
+var NOW = new Date(%s).getTime();
+Date = (function (Real) {
+  function Pinned() { var a = [].slice.call(arguments); return new (Function.prototype.bind.apply(Real, [null].concat(a.length ? a : [NOW])))(); }
+  Pinned.prototype = Real.prototype; Pinned.parse = Real.parse; Pinned.UTC = Real.UTC;
+  Pinned.now = function () { return NOW; };
+  return Pinned;
+})(Date);
 var ApiClient = {
   getCurrentUserId: function () { return 'u1'; },
   serverId: function () { return 's1'; },
@@ -37,19 +48,33 @@ process.stdout.write(JSON.stringify(out), function () { process.exit(0); });
 """
 
 
-def run(body: str):
-    return node(HARNESS % (JS, body))
+# a Wednesday afternoon with no clock change in the next three weeks
+NOW = "2026-10-14T15:00:00"
+
+
+def run(body: str, now: str = NOW):
+    return node(HARNESS % (json.dumps(now), JS, body))
 
 
 @unittest.skipUnless(HAVE_NODE, "node is not installed")
 class DatesOnlyAsFarAsTheGuide(unittest.TestCase):
-    def days(self, max_end_expr: str):
+    def days(self, max_end_expr: str, now: str = NOW):
         return run("""
           var now = new Date(); var mid = new Date(now); mid.setHours(0, 0, 0, 0);
           var D = function (n, h) { var d = new Date(mid); d.setDate(d.getDate() + n); d.setHours(h || 0, 0, 0, 0); return d.getTime(); };
           var days = T.computeDays(%s);
           return days.map(function (d) { return [(d.start - mid.getTime()) / 3600000, (d.end - d.start) / 3600000]; });
-        """ % max_end_expr)
+        """ % max_end_expr, now)
+
+    def local_days(self, max_end_expr: str, now: str):
+        # each day as local "YYYY-MM-DD HH:MM" start and end (the day tabs and grid use these)
+        return run("""
+          var mid = new Date(); mid.setHours(0, 0, 0, 0);
+          var D = function (n, h) { var d = new Date(mid); d.setDate(d.getDate() + n); d.setHours(h || 0, 0, 0, 0); return d.getTime(); };
+          var f = function (t) { var d = new Date(t), p = function (n) { return (n < 10 ? '0' : '') + n; };
+            return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()); };
+          return T.computeDays(%s).map(function (d) { return [f(d.start), f(d.end), (d.end - d.start) / 3600000]; });
+        """ % max_end_expr, now)
 
     def test_guide_ending_tomorrow_morning_gives_today_and_tomorrow(self):
         # Data until 5:00 tomorrow: two days, the second ends with the data.
@@ -73,6 +98,26 @@ class DatesOnlyAsFarAsTheGuide(unittest.TestCase):
         days = self.days("D(7, 12)")
         self.assertEqual(8, len(days))
         self.assertEqual(12, days[-1][1])
+
+    def test_the_day_the_clocks_go_back_is_25_hours_and_tabs_start_at_midnight(self):
+        # Sunday 25 Oct 2026: a week of data reaches Sunday 1 Nov, when 02:00 becomes 01:00
+        days = self.local_days("D(7, 12)", "2026-10-25T09:00:00")
+        self.assertEqual(8, len(days))
+        self.assertEqual(["2026-10-25 00:00", "2026-10-26 00:00", 24], days[0])
+        self.assertTrue(all(d[0].endswith(" 00:00") for d in days), days)
+        self.assertEqual(["2026-11-01 00:00", "2026-11-01 12:00", 13], days[-1])
+        days = self.local_days("D(8, 12)", "2026-10-25T09:00:00")
+        self.assertEqual(["2026-11-01 00:00", "2026-11-02 00:00", 25], days[-2])
+
+    def test_the_day_the_clocks_go_forward_is_23_hours_and_tabs_start_at_midnight(self):
+        # Wednesday 4 Mar 2026: Sunday 8 Mar, 02:00 becomes 03:00
+        days = self.local_days("D(7, 12)", "2026-03-04T09:00:00")
+        self.assertEqual(8, len(days))
+        self.assertTrue(all(d[0].endswith(" 00:00") for d in days), days)
+        self.assertEqual(["2026-03-08 00:00", "2026-03-09 00:00", 23], days[4])
+        self.assertEqual(["2026-03-11 00:00", "2026-03-11 12:00", 12], days[-1])
+        days = self.local_days("D(4, 12)", "2026-03-04T09:00:00")
+        self.assertEqual(["2026-03-08 00:00", "2026-03-08 12:00", 11], days[-1])
 
     def test_last_day_ends_on_the_next_whole_hour(self):
         days = self.days("D(1, 4) + 20 * 60000")
