@@ -58,6 +58,32 @@ def run_scheduled_sync(claimed: bool = False):
         end_nightly_run()
 
 
+# The nightly guide download goes after a quiet spell: at least this long
+# since Tentacle last asked a provider's API anything, waiting at most
+# GUIDE_QUIET_MAX_WAIT. Right after the VOD sync and discovery a household's
+# panel refused the guide (#709): it holds an account back for a while after a
+# burst, and the same download worked minutes later.
+GUIDE_QUIET_SECONDS = 180
+GUIDE_QUIET_MAX_WAIT = 600
+
+
+def _quiet_before_guide(since_start: datetime, sleep=None) -> float:
+    """Wait out the rest of GUIDE_QUIET_SECONDS since the last provider API
+    request, when that request was made during this nightly run (started
+    `since_start`, UTC). Returns the seconds waited."""
+    from services.xtream_client import pause, seconds_since_api_request
+    quiet = seconds_since_api_request()
+    if quiet is None or quiet >= GUIDE_QUIET_SECONDS:
+        return 0.0
+    if quiet > (datetime.utcnow() - since_start).total_seconds():
+        return 0.0      # asked before this run began: not its burst
+    wait = min(GUIDE_QUIET_SECONDS - quiet, GUIDE_QUIET_MAX_WAIT)
+    logger.info(f"Guide download waits {wait:.0f}s: a provider was asked something {quiet:.0f}s ago "
+                f"(a quiet spell of {GUIDE_QUIET_SECONDS}s after the sync, #709)")
+    (sleep or pause)(wait)
+    return wait
+
+
 def _run_scheduled_sync():
     """Run sync for all active providers on schedule"""
     from services.sync import sync_provider
@@ -244,7 +270,7 @@ def _run_scheduled_sync():
         try:
             from services.discovery import discover_new_provider_content
             pause()
-            discovered = discover_new_provider_content(db)
+            discovered = discover_new_provider_content(db, gentle=True)
             if discovered["vod_new"] or discovered["live_new"]:
                 logger.info(f"Discovery: {len(discovered['vod_new'])} new VOD categories, {len(discovered['live_new'])} new Live TV groups")
         except Exception as e:
@@ -300,6 +326,8 @@ def _run_scheduled_sync():
             if not live_providers:
                 logger.info("No Live TV provider — nothing to sync")
             epg_synced = False
+            if live_providers:
+                _quiet_before_guide(nightly_started)
             for lp in live_providers:
                 all_channels = db.query(LiveChannel).filter(LiveChannel.provider_id == lp.id).all()
                 if not all_channels:

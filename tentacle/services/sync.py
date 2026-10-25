@@ -10,6 +10,7 @@ import zlib
 import shutil
 import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -32,7 +33,7 @@ from services.media_files import delete_movie_files, delete_series_files, MEDIA_
 from services.tagger import compute_tags, get_list_tags_for_tmdb_id, apply_tag_rules
 from services.exceptions import (ProviderConnectionError, ProviderDataError, ProviderRefusedError,
                                  SyncCancelledError, SyncError, TMDBConnectionError)
-from services.xtream_client import RequestGuard, quote_cred
+from services.xtream_client import RequestGuard, pacing_is_virtual, quote_cred, retry_after_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +203,9 @@ class XtreamClient:
         # this server (#149): a refused sync went on asking for every
         # category and series left, and the block lasted longer.
         self.guard = RequestGuard()
+        # Spaces the category listings out, and waits before asking again
+        # when the provider holds back (see _read_category).
+        self.pacer = ListingPacer()
 
     def _request(self, url: str):
         self.guard.before()
@@ -2047,6 +2051,146 @@ def sweep_orphaned_vod_records(db: Session) -> int:
     return removed
 
 
+# ── Gentle on the provider ──────────────────────────────────────────────────
+#
+# A category listing is the biggest answer an Xtream panel gives (one category
+# on a household's panel holds 6,557 films), and the sync asked for them back
+# to back. That panel answered the burst by holding the account back for a
+# while: on most nights of 1-14 Oct 2026, 14-16 of its 42 categories got HTTP
+# 403; on 23 Oct categories 2-14 came back empty, all of which had titles the
+# night before; and the guide download after the sync was refused too (#709).
+# So, for an Xtream provider:
+#   * category listings are at least CATEGORY_GAP_SECONDS apart (the time a
+#     category takes to process counts towards it);
+#   * a listing the panel refuses with a status that passes (403, 429, 5xx,
+#     509, 511) after this run has read a listing, or answers empty when the
+#     category held titles, is asked again after CATEGORY_RETRY_WAITS (the
+#     panel's Retry-After when it sends one, up to RETRY_AFTER_MAX_SECONDS)
+#     instead of being given up at once, and the gap doubles for the rest of
+#     the run, up to CATEGORY_GAP_MAX_SECONDS. Refused from the first listing
+#     on, the account was blocked before the run began: it is not asked again
+#     (#149);
+#   * the waiting is capped per run (RETRY_BUDGET_SECONDS): a provider that
+#     stays blocked ends the run as before instead of keeping it going for
+#     hours. RequestGuard still stops asking after PROVIDER_REFUSAL_LIMIT
+#     refusals in a row, a category counting once however often it is asked:
+#     a panel that refuses one category for good (it may restrict some) still
+#     has the rest read, and one that refuses everything stops the run after
+#     three categories, minutes apart now instead of within a second.
+CATEGORY_GAP_SECONDS = 5.0
+CATEGORY_GAP_MAX_SECONDS = 40.0
+CATEGORY_RETRY_WAITS = (60.0, 180.0)
+RETRY_AFTER_MAX_SECONDS = 600.0
+RETRY_BUDGET_SECONDS = 900.0
+_PASSING_STATUSES = {403, 429, 500, 502, 503, 504, 509, 511}
+
+
+class ListingPacer:
+    """One sync client's category listings: spaced out, and backed off when
+    the provider holds back. `clock` and `sleep` are replaceable for tests."""
+
+    def __init__(self):
+        self.clock = time.monotonic
+        self.sleep = time.sleep
+        if pacing_is_virtual():
+            self._offset = 0.0
+            self.clock = lambda: time.monotonic() + self._offset
+            self.sleep = self._skip
+        self.gap = CATEGORY_GAP_SECONDS
+        self.budget = RETRY_BUDGET_SECONDS
+        self.retries = 0        # listings asked again this run
+        self.waited = 0.0       # seconds spent waiting before asking again
+        self.read = 0           # listings answered this run
+        self._last = None
+
+    def _skip(self, seconds: float) -> None:
+        self._offset += seconds
+
+    def _sleep(self, seconds: float, cancel_check=None) -> None:
+        end = self.clock() + seconds
+        while True:
+            if cancel_check and cancel_check():
+                raise SyncCancelledError("Sync cancelled while waiting for the provider")
+            left = end - self.clock()
+            if left <= 0:
+                return
+            self.sleep(min(left, 1.0))
+
+    def wait_turn(self, cancel_check=None) -> None:
+        """Before a listing: wait out what is left of the gap since the last one."""
+        if self._last is not None:
+            left = self._last + self.gap - self.clock()
+            if left > 0:
+                self._sleep(left, cancel_check)
+
+    def done(self) -> None:
+        """After a listing (answered or not)."""
+        self._last = self.clock()
+
+    def back_off(self, seconds: float, cancel_check=None):
+        """Wait before asking again, within the run's budget. Returns the
+        seconds waited, or None when the budget is spent (give up)."""
+        if self.budget <= 0:
+            return None
+        seconds = min(seconds, self.budget)
+        self.budget -= seconds
+        self.gap = min(self.gap * 2, CATEGORY_GAP_MAX_SECONDS)
+        self.retries += 1
+        self.waited += seconds
+        self._sleep(seconds, cancel_check)
+        return seconds
+
+
+def _read_category(client, fetch, cat, cancel_check=None) -> list:
+    """`fetch(cat.category_id)`, gently: see "Gentle on the provider" above.
+    Raises what the last attempt raised; returns its listing otherwise (an
+    empty one then goes through _category_went_empty as before)."""
+    pacer = getattr(client, "pacer", None)
+    if not isinstance(pacer, ListingPacer):   # M3U: the playlist was read once, nothing to pace
+        return fetch(cat.category_id)
+    waits = list(CATEGORY_RETRY_WAITS)
+    guard = getattr(client, "guard", None)
+    counted = guard.refusals if isinstance(guard, RequestGuard) else None
+    while True:
+        pacer.wait_turn(cancel_check)
+        error = None
+        try:
+            items = fetch(cat.category_id)
+        except requests.HTTPError as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status not in _PASSING_STATUSES:
+                raise
+            error, items = e, None
+        finally:
+            pacer.done()
+        if error is None:
+            pacer.read += 1
+            if items or not cat.title_count:
+                return items
+        if not waits or _refused_reason(client) or (error is not None and not pacer.read):
+            if error is not None:
+                raise error
+            return items
+        wait = waits.pop(0)
+        what = "an empty list" if error is None else f"HTTP {status}"
+        if error is not None:
+            asked = retry_after_seconds(error)
+            if asked:
+                wait = min(float(asked), RETRY_AFTER_MAX_SECONDS)
+        logger.warning(f"[Sync] {cat.category_name}: the provider answered {what}"
+                       + (f" (it held {cat.title_count} last time)" if error is None else "")
+                       + f" — asking again in {wait:.0f}s; category listings now "
+                       f"{min(pacer.gap * 2, CATEGORY_GAP_MAX_SECONDS):.0f}s apart")
+        if pacer.back_off(wait, cancel_check) is None:
+            logger.warning(f"[Sync] {cat.category_name}: no waiting left this run "
+                           f"({RETRY_BUDGET_SECONDS:.0f}s spent) — not asked again")
+            if error is not None:
+                raise error
+            return items
+        if counted is not None:
+            guard.refusals = counted    # this category's refusal is counted once
+
+
 # ── Main Sync Functions ────────────────────────────────────────────────────
 
 def _provider_error_reason(e: Exception) -> str:
@@ -2322,7 +2466,11 @@ def sync_provider(
         run.duration_seconds = int((run.completed_at - run.started_at).total_seconds())
 
         db.commit()
-        logger.info(f"Sync complete in {run.duration_seconds}s")
+        pacer = getattr(client, "pacer", None)
+        paced = (f"; {total_cats} categories, {len(unread)} unread, {pacer.retries} asked again "
+                 f"({pacer.waited:.0f}s waiting), listings {pacer.gap:.0f}s apart at the end"
+                 if isinstance(pacer, ListingPacer) else "")
+        logger.info(f"Sync complete in {run.duration_seconds}s{paced}")
         _tell_provider_health(db, provider, client, run, unread, total_cats)
 
     except SyncCancelledError as e:
@@ -2990,7 +3138,9 @@ def _sync_movies(
                               item_title="Loading streams...", item_pos=0, item_total=0)
 
         try:
-            streams = client.get_vod_streams(cat.category_id)
+            streams = _read_category(client, client.get_vod_streams, cat, cancel_check)
+        except SyncCancelledError:
+            raise
         except Exception as e:
             logger.error(f"Failed to fetch streams for {cat.category_name}: {e}")
             fetch_ok = False  # a failed fetch means our "seen" set is incomplete
@@ -3659,7 +3809,9 @@ def _sync_series(
                               item_title="Loading streams...", item_pos=0, item_total=0)
 
         try:
-            series_list = client.get_series_list(cat.category_id)
+            series_list = _read_category(client, client.get_series_list, cat, cancel_check)
+        except SyncCancelledError:
+            raise
         except Exception as e:
             logger.error(f"Failed to fetch series for {cat.category_name}: {e}")
             fetch_ok = False  # a failed fetch means our "seen" set is incomplete

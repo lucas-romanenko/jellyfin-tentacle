@@ -24,16 +24,29 @@ from models.database import (
     Provider, ProviderCategory, LiveChannelGroup,
     log_activity,
 )
+from services import xtream_client
 
 logger = logging.getLogger(__name__)
 
+# The nightly job runs discovery between the VOD sync and the guide
+# download, and its answers are big: an Xtream panel's category counts are two
+# whole-catalogue listings (every film, every series), the Live TV channel
+# count is the whole channel list (54,000 channels on one household's panel).
+# Asked back to back, right after the sync's burst, they were the last thing
+# the panel saw before it refused the guide (#709). Gently (the nightly job):
+# the counts are fetched only when there is a new category to count, and the
+# requests go DISCOVERY_GAP_SECONDS apart.
+DISCOVERY_GAP_SECONDS = 10.0
 
-def discover_new_provider_content(db) -> dict:
+
+def discover_new_provider_content(db, gentle: bool = False) -> dict:
     """Refresh provider category/group lists and record newly discovered ones.
+    `gentle`: the nightly job's way (see DISCOVERY_GAP_SECONDS).
 
     Returns {"vod_new": [names], "live_new": [names]}.
     """
     result = {"vod_new": [], "live_new": []}
+    gap = DISCOVERY_GAP_SECONDS if gentle else 0.0
 
     # ── VOD categories ────────────────────────────────────────────────────
     # `active` is the VOD switch. Not `live_tv_enabled == False`: the provider
@@ -48,7 +61,7 @@ def discover_new_provider_content(db) -> dict:
     )
     for p in vod_providers:
         try:
-            new_names = _refresh_vod_categories(db, p)
+            new_names = _refresh_vod_categories(db, p, gentle)
             if new_names:
                 logger.info(f"[Discovery] {len(new_names)} new VOD categories from '{p.name}': {new_names[:5]}")
                 result["vod_new"].extend(new_names)
@@ -64,7 +77,8 @@ def discover_new_provider_content(db) -> dict:
 
     for p in live_tv_providers(db):
         try:
-            new_names = _refresh_live_groups(db, p)
+            xtream_client.pause(gap)
+            new_names = _refresh_live_groups(db, p, gap)
             if new_names:
                 logger.info(f"[Discovery] {len(new_names)} new Live TV groups from '{p.name}': {new_names[:5]}")
                 result["live_new"].extend(new_names)
@@ -101,18 +115,28 @@ def _rollback(db) -> None:
         logger.warning(f"[Discovery] Could not roll back the session: {e}")
 
 
-def _refresh_vod_categories(db, provider) -> list:
+def _refresh_vod_categories(db, provider, gentle: bool = False) -> list:
     """Fetch + upsert the provider's VOD/series category list.
     Returns names of newly discovered categories."""
-    from routers.providers import fetch_provider_categories, detect_source_tag
+    from routers.providers import fetch_provider_categories, fetch_category_counts, detect_source_tag
 
-    vod_cats, series_cats, vod_counts, series_counts = fetch_provider_categories(provider)
+    # Gently, an Xtream panel's counts are asked for only when a category is new
+    lazy = gentle and (provider.provider_type or "xtream") not in ("m3u_url", "m3u_file")
+    if lazy:
+        vod_cats, series_cats, vod_counts, series_counts = fetch_provider_categories(
+            provider, counts=False, gap=DISCOVERY_GAP_SECONDS)
+    else:
+        vod_cats, series_cats, vod_counts, series_counts = fetch_provider_categories(provider)
 
     existing = {
         (c.category_id, c.type)
         for c in db.query(ProviderCategory).filter(ProviderCategory.provider_id == provider.id).all()
     }
     first_setup = not existing
+    if lazy and any((str(c["category_id"]), t) not in existing
+                      for t, cats in (("movie", vod_cats), ("series", series_cats)) for c in cats):
+        xtream_client.pause(DISCOVERY_GAP_SECONDS)
+        vod_counts, series_counts = fetch_category_counts(provider, gap=DISCOVERY_GAP_SECONDS)
 
     new_names = []
     created = []
@@ -144,7 +168,7 @@ def _refresh_vod_categories(db, provider) -> list:
     return new_names
 
 
-def _refresh_live_groups(db, provider) -> list:
+def _refresh_live_groups(db, provider, gap: float = 0.0) -> list:
     """Fetch + upsert the provider's Live TV groups. An M3U provider's
     playlist is read again whole, as its own sync does: its new groups, and
     its channels' links, which a provider may change (new tokens or host).
@@ -172,7 +196,7 @@ def _refresh_live_groups(db, provider) -> list:
         "password": provider.password,
         "user_agent": provider.user_agent or "TiviMate/4.7.0 (Linux; Android 12)",
     }
-    _sync_groups_from_xtream(provider_data, db)
+    _sync_groups_from_xtream(provider_data, db, gap=gap)
     db.commit()
 
     after = {

@@ -26,8 +26,11 @@ and frequently times out. Always prefer per-category fetching.
 """
 
 import logging
+import os
+import threading
 import time
 import urllib.parse
+from datetime import datetime
 from typing import Optional
 
 import requests
@@ -55,6 +58,56 @@ def quote_cred(value) -> str:
 
 PROVIDER_REFUSAL_LIMIT = 3       # refused API requests in a row before a client stops asking
 XTREAM_MIN_REQUEST_GAP = 0.25    # seconds between two API requests of one client (at most 4/s)
+
+
+# When Tentacle last asked a provider's API anything (any provider, any
+# client): the nightly guide download waits for a quiet spell after the
+# sync's burst (main._run_scheduled_sync, GUIDE_QUIET_SECONDS).
+_last_api_request = {"at": None}
+_last_api_lock = threading.Lock()
+
+
+def note_api_request() -> None:
+    """Call when a provider API request goes out (RequestGuard does)."""
+    with _last_api_lock:
+        _last_api_request["at"] = time.monotonic()
+
+
+def seconds_since_api_request() -> Optional[float]:
+    """Seconds since the last provider API request, None when there was none."""
+    with _last_api_lock:
+        at = _last_api_request["at"]
+    return None if at is None else max(0.0, time.monotonic() - at)
+
+
+def pacing_is_virtual() -> bool:
+    """Under the test suite (tests/hermetic.py sets TENTACLE_PACING=virtual)
+    the fake providers answer at once: the pacing waits pass on a virtual
+    clock instead of sleeping."""
+    return os.environ.get("TENTACLE_PACING") == "virtual"
+
+
+def pause(seconds: float) -> None:
+    """time.sleep for spacing out provider requests (nothing under the test suite)."""
+    if seconds > 0 and not pacing_is_virtual():
+        time.sleep(seconds)
+
+
+def retry_after_seconds(e) -> Optional[int]:
+    """The provider's Retry-After (seconds or an HTTP date) on a refused
+    request (an exception with a `response`), or None."""
+    value = (getattr(getattr(e, "response", None), "headers", None) or {}).get("Retry-After")
+    if not value:
+        return None
+    value = str(value).strip()
+    if value.isdigit():
+        return int(value)
+    try:
+        from email.utils import parsedate_to_datetime
+        when = parsedate_to_datetime(value)
+        return max(0, int((when - datetime.now(when.tzinfo)).total_seconds()))
+    except (TypeError, ValueError, IndexError):
+        return None
 
 
 class RequestGuard:
@@ -87,6 +140,7 @@ class RequestGuard:
             if wait > 0:
                 self.sleep(wait)
         self._last = self.clock()
+        note_api_request()
 
     def after(self, status) -> None:
         """Call with each answer's status code."""
