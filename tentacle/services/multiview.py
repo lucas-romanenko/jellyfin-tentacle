@@ -155,10 +155,13 @@ def ffmpeg_args(inputs: list, enc: str, titles: list, has_audio: list, hw_decode
         else:
             graph.append(f"anullsrc=r=48000:cl=stereo[a{i}]")
     stack = "".join(f"[v{i}]" for i in range(n))
-    spots = "|".join(f"{x}_{y}" for x, y, _, _ in places)
+    # Two tiles: xstack makes the 1920x540 strip (its own y is 0), and pad
+    # centres it; xstack at y=270 and then pad would push it down twice.
+    top = places[0][1] if n == 2 else 0
+    spots = "|".join(f"{x}_{y - top}" for x, y, _, _ in places)
     tail = f"{stack}xstack=inputs={n}:layout={spots}:fill=black"
     if n == 2:
-        tail += f",pad={WIDTH}:{HEIGHT}:0:{places[0][1]}"
+        tail += f",pad={WIDTH}:{HEIGHT}:0:{top}"
     if enc == "vaapi":
         tail += ",format=nv12,hwupload"
     graph.append(tail + "[v]")
