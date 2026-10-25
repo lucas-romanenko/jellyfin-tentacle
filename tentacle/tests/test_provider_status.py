@@ -254,6 +254,21 @@ class YoureBlocked(Case):
                         CF_TWIN + "/": Page(401, "Not allowed", cloudflare=True)})
         self.assertEqual("blocked", self.state()["case"])
 
+    def test_nothing_answering_and_no_internet_is_this_homes_connection(self):
+        silent = requests.ConnectionError("Failed to resolve 'x' (Name or service not known)")
+        self.run_check({API: silent, ROOT: silent, CF_TWIN + "/": silent, ps.INTERNET_PROBE: silent})
+        self.assertEqual("offline", self.state()["case"])
+        [m] = self.family()
+        self.assertEqual("Live TV can't reach IPTV Bears since 6:30 PM: this home's internet connection seems to "
+                         "be down (nothing else answers either). It comes back with the connection.", m["text"])
+        self.assertNotIn("Not a problem with", m["text"])
+        self.assertEqual("This home's internet connection seems to be down", self.slate()[2])
+
+    def test_nothing_answering_while_the_internet_works_is_down(self):
+        silent = requests.ConnectTimeout("timed out")
+        self.run_check({API: silent, ROOT: silent, CF_TWIN + "/": silent, ps.INTERNET_PROBE: Page(401, "")})
+        self.assertEqual("down", self.state()["case"])
+
     def test_admins_are_told_what_to_do(self):
         block = Page(403, "error code: 1006", cloudflare=True)
         self.run_check({API: block, ROOT: block, CF_TWIN + "/": block})

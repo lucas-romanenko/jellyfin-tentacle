@@ -102,6 +102,10 @@ class Picture(unittest.IsolatedAsyncioTestCase):
 
 class _Db(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        # provider_status keeps channels in memory: none from another test
+        from services import provider_status
+        provider_status.reset()
+        self.addCleanup(provider_status.reset)
         import models.database as mdb
         engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db", connect_args={"check_same_thread": False})
         mdb.Base.metadata.create_all(engine)

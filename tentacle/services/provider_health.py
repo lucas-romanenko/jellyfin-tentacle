@@ -633,16 +633,14 @@ def _diagnose(db, p: Provider, outcome: dict) -> None:
     provider (no login) and the backups' last test. Into the outcome."""
     from services import provider_status
     try:
-        probes = [] if outcome.get("kind") in ("login", "expired", "status") or \
-            (p.provider_type or "xtream") != "xtream" else provider_status.reach_all(p, p.user_agent or DEFAULT_UA)
-        found = provider_status.diagnose(outcome, probes, provider_status._backup_works(p, datetime.utcnow()))
+        found = provider_status.look(p, outcome)
     except Exception as e:
         # The type only: an error's text names the address
         logger.warning(f"[Provider health] could not tell which kind of failure this is: {type(e).__name__}")
         return
     outcome.update(case=found["case"], case_detail=found["detail"], other_route=found.get("other_route"))
     logger.info(f"[Provider health] {p.name}: {found['case']} ({found['detail']}); "
-                f"addresses: {', '.join(x['how'] for x in probes) or 'not asked'}")
+                f"addresses: {', '.join(found['probes']) or 'not asked'}")
 
 
 def _confirm_by_reach(p: Provider, first: dict):

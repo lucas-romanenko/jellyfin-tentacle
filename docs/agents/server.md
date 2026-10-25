@@ -616,7 +616,10 @@ movies/series, then Sonarr/Radarr text-lookup titles TMDB lacks (TheTVDB).
   with the player User-Agent, no login, no account connection: answers /
   origin_down (CF 52x, 530) / blocked (CF 403 + 10xx, 511) / server_error /
   refused / no_answer / name_not_found) and whether a backup logged in
-  within 2 h. Python's own User-Agent gets CF 1010 everywhere: never test
+  within 2 h (`look()`). Every address silent on an "unreachable" failure
+  also asks `INTERNET_PROBE` (TMDB's API host): nothing there either is
+  case `offline` ("this home's internet connection seems to be down"),
+  never "down, not your setup". Python's own User-Agent gets CF 1010 everywhere: never test
   without the player's. A confirmation that would stand aside (someone
   watching) confirms an API failure with `reach()` of the address in use
   instead (`_confirm_by_reach`; no second login). A live stream delivering

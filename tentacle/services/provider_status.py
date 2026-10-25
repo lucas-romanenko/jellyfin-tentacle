@@ -15,6 +15,9 @@ do differs (Roadmap, 25 Oct 2026):
 - account   the login answers but says no: auth 0, Expired / Disabled /
             Banned, the expiry date passed. (Ends soon: admins only.)
 - channels  a few channels don't come through while the others play.
+- offline   no address answers at all and neither does the internet
+            (TMDB, which Tentacle talks to anyway): this home's connection,
+            not the provider. Never "down, not your setup" then.
 - other     anything else (a moved address, test titles gone).
 
 How it's decided, never on one look:
@@ -57,7 +60,11 @@ CF_ORIGIN_DOWN = {520, 521, 522, 523, 524, 525, 526, 530}
 # country (1009), browser signature (1010), hotlink (1011), access denied
 # (1012), firewall rule (1020).
 CF_BLOCKS = {1006, 1007, 1008, 1009, 1010, 1011, 1012, 1020}
-CASES = ("down", "blocked", "account", "other")
+CASES = ("down", "blocked", "account", "offline", "other")
+# Asked only when every address of the provider is silent: is it the
+# internet? A host Tentacle talks to anyway (services/tmdb.py).
+INTERNET_PROBE = "https://api.themoviedb.org/3/"
+SILENT = ("no_answer", "name_not_found", "secure_failed")
 # A backup's last test counts as "works now" this long.
 BACKUP_FRESH = timedelta(hours=2)
 
@@ -172,9 +179,47 @@ def _backup_works(p, now_utc: datetime) -> bool:
     return False
 
 
-def diagnose(outcome: dict, probes: list, backup_works: bool = False) -> dict:
+def internet_ok() -> bool:
+    """Anything answers from the internet (any HTTP status)."""
+    try:
+        with requests.get(INTERNET_PROBE, timeout=(5, 5), stream=True):
+            return True
+    except requests.RequestException:
+        return False
+
+
+def look(p, outcome: dict) -> dict:
+    """diagnose() with what it needs: "/" of every address (an Xtream
+    provider; an M3U URL's own host), the backups' last test, and the
+    internet when every address is silent. The account's failures need
+    none of it."""
+    from services.provider_health import DEFAULT_UA
+    if outcome.get("kind") in ("login", "expired", "status"):
+        return {**diagnose(outcome, []), "probes": []}
+    ua = p.user_agent or DEFAULT_UA
+    ptype = p.provider_type or "xtream"
+    if ptype == "xtream":
+        probes = reach_all(p, ua)
+    elif ptype == "m3u_url":
+        from urllib.parse import urlparse
+        u = urlparse(p.m3u_url or "")
+        probes = [{"in_use": True, **reach(f"{u.scheme}://{u.netloc}", ua)}] if u.scheme and u.netloc else []
+    else:
+        probes = []
+    backup = _backup_works(p, datetime.utcnow())
+    online = None
+    if not backup and (not probes or all(x["how"] in SILENT for x in probes)) \
+            and outcome.get("kind") == "unreachable":
+        online = internet_ok()
+    out = diagnose(outcome, probes, backup, online)
+    out["probes"] = [x["how"] for x in probes]
+    return out
+
+
+def diagnose(outcome: dict, probes: list, backup_works: bool = False, internet: Optional[bool] = None) -> dict:
     """{"case", "detail"} for a failed check. `probes`: reach_all's answer
-    (may be empty); `backup_works`: another address logged in lately."""
+    (may be empty); `backup_works`: another address logged in lately;
+    `internet`: False when nothing else on the internet answers either."""
     kind, code, step = outcome.get("kind"), outcome.get("code"), outcome.get("step")
     if kind in ("login", "expired", "status"):
         detail = {"expired": "expired", "login": "login rejected"}.get(kind) or (outcome.get("detail") or "").lower()
@@ -197,6 +242,8 @@ def diagnose(outcome: dict, probes: list, backup_works: bool = False) -> dict:
                 else {"case": "other", "detail": "refuses streams"}
         return {"case": "other", "detail": kind or ""}
     cur_how = (current or {}).get("how")
+    if internet is False and kind == "unreachable" and all(x.get("how") in SILENT for x in probes):
+        return {"case": "offline", "detail": "no internet"}
     if cur_how in ("origin_down", "server_error") or outcome.get("hint") == "database_error" \
             or (kind == "http" and (code or 0) >= 500):
         detail = "server error"
@@ -358,15 +405,12 @@ def quick_look(provider_id: int, db=None) -> Optional[str]:
         if ph.load_state(db).get(str(p.id), {}).get("state") == "failing":
             return None     # already said
         ua = p.user_agent or ph.DEFAULT_UA
-        base = (p.server_url or p.m3u_url or "")
         if (p.provider_type or "xtream") == "m3u_url":
             from urllib.parse import urlparse
             u = urlparse(p.m3u_url or "")
-            base = f"{u.scheme}://{u.netloc}" if u.scheme and u.netloc else ""
-            probes = [{"in_use": True, **reach(base, ua)}] if base else []
+            current = {"in_use": True, **reach(f"{u.scheme}://{u.netloc}", ua)} if u.scheme and u.netloc else None
         else:
-            probes = reach_all(p, ua)
-        current = next((x for x in probes if x["in_use"]), None)
+            current = {"in_use": True, **reach(p.server_url or "", ua)} if p.server_url else None
         outcome = _outcome_from_reach(current) if current else None
         if outcome is None and _whole_provider(provider_id, _mono()):
             with _lock:
@@ -378,8 +422,8 @@ def quick_look(provider_id: int, db=None) -> Optional[str]:
             logger.info(f"[Provider status] {p.name}: channels fail but the provider answers; "
                         f"some channels only")
             return None
-        found = diagnose(outcome, probes, _backup_works(p, datetime.utcnow()))
-        outcome.update(case=found["case"], case_detail=found["detail"])
+        found = look(p, outcome)
+        outcome.update(case=found["case"], case_detail=found["detail"], other_route=found.get("other_route"))
         with _lock:
             fails = [t for c in _channels.values() if c["provider_id"] == provider_id for t in c["fails"]]
         first = ph._now() - timedelta(seconds=int(max(0.0, _mono() - min(fails)))) if fails else ph._now()
@@ -490,6 +534,10 @@ def describe(name: str, entry: dict, now: datetime, admin: bool = False) -> Opti
                      "add the addresses they sent in Sources → the provider → Address.")
         else:
             text += " Live TV is off until it's sorted out."
+    elif case == "offline":
+        title = "Live TV can't reach the internet"
+        text = (f"Live TV can't reach {name}{at}: this home's internet connection seems to be down "
+                f"(nothing else answers either). It comes back with the connection.")
     elif case == "account":
         if detail == "expired":
             exp = entry.get("expired_on") or ""
@@ -527,7 +575,8 @@ def _back(name: str, entry: dict, now: datetime) -> Optional[dict]:
     if b is None or now - b > BACK_SHOWN or now < b - timedelta(minutes=1):
         return None
     span = _span(a, b, now)
-    was = {"blocked": "refused this home's connection", "account": "had an account problem"}.get(
+    was = {"blocked": "refused this home's connection", "account": "had an account problem",
+           "offline": "couldn't be reached"}.get(
         back.get("case") or "", "was down")
     return {"kind": "back", "provider": name, "since": back.get("since"), "until": back.get("until"),
             "title": f"{name} is back",
@@ -565,7 +614,7 @@ def _channels_message(name: str, provider_id: int) -> Optional[dict]:
             "text": f"{lead} coming through from {name} right now. Other channels work."}
 
 
-_ORDER = {"down": 0, "blocked": 0, "account": 0, "other": 1, "channels": 2, "back": 3, "account_soon": 4}
+_ORDER = {"down": 0, "blocked": 0, "account": 0, "offline": 0, "other": 1, "channels": 2, "back": 3, "account_soon": 4}
 
 
 def messages(db, admin: bool = False, live_tv_only: bool = False) -> list:
@@ -613,6 +662,9 @@ def slate_lines(db, provider_id: Optional[int], channel_id: Optional[int] = None
         if case == "blocked":
             return ("Not coming through", f"{name} is refusing this home's connection",
                     "Your account is fine. Try again later")
+        if case == "offline":
+            return ("Not coming through", f"Can't reach {name}{at}",
+                    "This home's internet connection seems to be down")
         if case == "account":
             word = "has expired" if entry.get("case_detail") == "expired" else "isn't active"
             return ("Live TV is off", f"The {name} account {word}", "Live TV is off until it's sorted out")

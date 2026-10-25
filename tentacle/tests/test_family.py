@@ -99,6 +99,10 @@ class FakeJellyfin:
 
 class Case(unittest.TestCase):
     def setUp(self):
+        # provider_status keeps channels in memory: none from another test
+        from services import provider_status
+        provider_status.reset()
+        self.addCleanup(provider_status.reset)
         logging.disable(logging.CRITICAL)
         self.addCleanup(logging.disable, logging.NOTSET)
         self.tmp = temp_dir(self)

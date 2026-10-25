@@ -107,7 +107,8 @@ def _seen_providers(db: Session) -> dict:
             continue
         said = provider_status.describe(p.name, entry, now, admin=True) or {}
         title = {"down": f"{p.name} is down", "blocked": f"{p.name} is refusing this home's connection",
-                 "account": said.get("title")}.get(said.get("kind")) or f"{p.name} is failing"
+                 "account": said.get("title"), "offline": said.get("title")}.get(said.get("kind")) \
+            or f"{p.name} is failing"
         message = said.get("text") or entry.get("reason") or "The provider doesn't answer."
         if entry.get("reason") and said.get("kind") != "other":
             message += f" ({entry['reason']})"

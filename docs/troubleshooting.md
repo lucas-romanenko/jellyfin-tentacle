@@ -231,7 +231,7 @@ provider starts failing and one when it works again.
 
 **For a monitor** (Uptime Kuma, rmnk, ...): `GET /api/provider-status`
 needs no sign-in and answers 200 `{"status": "ok"}`, or 503 with the
-reasons and the kind of each (`case`: down, blocked, account, other) while
+reasons and the kind of each (`case`: down, blocked, account, offline, other) while
 a provider is failing. It names no provider and carries no URL or login.
 
 ### An episode stops, shows the backdrop and jumps to the next one

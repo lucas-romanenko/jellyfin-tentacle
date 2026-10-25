@@ -29,18 +29,19 @@ It stays quick with thousands of channels and works on a phone. (Jellyfin's TV l
 
 ## When the provider has trouble
 
-Tentacle tells everyone plainly what's wrong, and since when, on Tentacle's dashboard, above the guide in Jellyfin's web app, at the top of the Live TV guide in the Tentacle TV app, and on the "Not coming through" picture a channel shows instead of a playback error. It tells four kinds of trouble apart:
+Tentacle tells everyone plainly what's wrong, and since when, on Tentacle's dashboard, above the guide in Jellyfin's web app, at the top of the Live TV guide in the Tentacle TV app, and on the "Not coming through" picture a channel shows instead of a playback error. It tells these kinds of trouble apart:
 
 | What you see | What it means |
 |---|---|
 | **IPTV Bears is down right now** (their server isn't answering) since 6:30 PM. Not a problem with your account or your setup. Live TV comes back by itself. | The provider's own server is down: every address answers with Cloudflare's 521/522/523, refuses the connection or doesn't answer, the provider's panel shows a database error, or every channel fails. Nothing to do but wait. |
 | **IPTV Bears is refusing this home's connection** since 6:30 PM. Your account is fine. | The provider (or Cloudflare in front of it) refuses your home's connection: 403 or a Cloudflare 1006/1007/1008/1010/1020 block, or the address in use doesn't answer while another of the provider's addresses does. Tentacle switches to an address that works when you have [several](#several-addresses); otherwise ask the provider for another address. |
 | **The IPTV Bears account has expired** (or is disabled, banned, or the login is refused) | The provider's login answers but says no. Renew the account or check the username and password in Sources. Admins also see "The account ends on Dec 30 (in 5 days)" a week before. |
+| **Live TV can't reach IPTV Bears**: this home's internet connection seems to be down. | None of the provider's addresses answers and nothing else on the internet does either: your connection, not the provider. |
 | **AMC 4K isn't coming through from IPTV Bears right now.** Other channels work. | Only some channels fail (twice or more in half an hour) while others play: that channel's feed, not the provider. |
 
 When it's over, everyone sees "IPTV Bears is back: Live TV works again (it was down, 6:30–7:45 PM)" for half an hour. Admins get a Jellyfin message (and Pushover, when set up) titled by the kind of trouble, and one when it's fixed.
 
-How Tentacle knows, without guessing: it asks each of the provider's addresses for its front page with the player's User-Agent and no login (that uses none of your account's connections, so it can look while people watch), and compares the answers. Channels that fail as people tune in start that look at once, so an outage shows within minutes, not at the next hourly check.
+How Tentacle knows, without guessing: it asks each of the provider's addresses for its front page with the player's User-Agent and no login (that uses none of your account's connections, so it can look while people watch), and compares the answers (when none answers, it also asks TMDB, which Tentacle uses anyway, whether the internet works). Channels that fail as people tune in start that look at once, so an outage shows within minutes, not at the next hourly check.
 
 ## Multi-view (Android TV app)
 
