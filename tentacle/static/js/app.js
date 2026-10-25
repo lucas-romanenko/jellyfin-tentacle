@@ -90,8 +90,12 @@ function hideArrProblems() {
 }
 
 // ── IPTV provider failing banner (admins) ─────────────────────────────────
-// The hourly provider check (log in, open a test stream). Gone by itself once
-// the check passes again; Hide keeps it away until the failure changes.
+// The hourly provider check (log in, open a test stream), and what live TV
+// learns as people watch. The headline says which kind of trouble it is
+// (down, refusing this home's connection, the account, some channels:
+// services/provider_status.py), then the plain words and the technical
+// reason. Gone by itself once it works again; Hide keeps it away until the
+// failure changes.
 let _providerProblemsHidden = '';
 async function loadProviderProblems(data) {
   const el = document.getElementById('provider-problems-banner');
@@ -101,18 +105,28 @@ async function loadProviderProblems(data) {
   const failing = providers.filter(p => p.state === 'failing');
   // A Live TV guide that keeps failing to download, or has run out (#709)
   const guides = providers.filter(p => p.guide_problem);
+  // Channels that don't come through while the others play
+  const channels = providers.filter(p => p.state !== 'failing' && (p.channels_down || []).length);
   if (typeof setHealthAlert === 'function') setHealthAlert('providers', failing.length + guides.length, true);
-  const sig = failing.map(p => [p.id, p.step, p.kind, p.code, p.since].join(':'))
-    .concat(guides.map(p => `${p.id}:guide`)).join('|');
-  if ((!failing.length && !guides.length) || sig === _providerProblemsHidden) { el.style.display = 'none'; return; }
+  const sig = failing.map(p => [p.id, p.step, p.kind, p.code, p.since, p.case].join(':'))
+    .concat(guides.map(p => `${p.id}:guide`))
+    .concat(channels.map(p => `${p.id}:ch:${p.channels_down.join(',')}`)).join('|');
+  if ((!failing.length && !guides.length && !channels.length) || sig === _providerProblemsHidden) { el.style.display = 'none'; return; }
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
-  const head = failing.length
-    ? `${failing.length === 1 ? 'An IPTV provider is failing' : `${failing.length} IPTV providers are failing`}: streams may not play`
-    : 'The Live TV guide is not updating';
-  el.innerHTML = `<div class="arr-problems-head">⚠ ${head}
+  const head = failing.length === 1 && failing[0].headline
+    ? failing[0].headline
+    : failing.length
+      ? `${failing.length === 1 ? 'An IPTV provider is failing' : `${failing.length} IPTV providers are failing`}: streams may not play`
+      : guides.length ? 'The Live TV guide is not updating'
+        : `${channels.reduce((n, p) => n + p.channels_down.length, 0) === 1 ? 'A channel isn\'t' : 'Some channels aren\'t'} coming through`;
+  const line = p => p.plain
+    ? `${esc(p.plain)}${p.case !== 'other' && p.reason ? ` <span class="provider-problems-why">${esc(p.reason)}</span>` : ''}`
+    : esc(p.reason);
+  const names = list => list.length <= 3 ? list.join(', ') : `${list.slice(0, 3).join(', ')} and ${list.length - 3} more`;
+  el.innerHTML = `<div class="arr-problems-head">⚠ ${esc(head)}
       <span class="arr-problems-actions"><button class="btn btn-secondary btn-sm" id="provider-check-btn" onclick="checkProvidersNow()">Check now</button>
       <button class="btn btn-secondary btn-sm" onclick="hideProviderProblems()">Hide</button></span></div>
-    <ul>${failing.map(p => `<li>⚠ <strong>${esc(p.name)}:</strong> ${esc(p.reason)}</li>`).join('')}${guides.map(p => `<li>⚠ <strong>${esc(p.name)}:</strong> ${esc(p.guide_problem)}</li>`).join('')}</ul>`;
+    <ul>${failing.map(p => `<li>⚠ <strong>${esc(p.name)}:</strong> ${line(p)}</li>`).join('')}${guides.map(p => `<li>⚠ <strong>${esc(p.name)}:</strong> ${esc(p.guide_problem)}</li>`).join('')}${channels.map(p => `<li>⚠ <strong>${esc(p.name)}:</strong> ${esc(names(p.channels_down))} ${p.channels_down.length === 1 ? 'isn\'t' : 'aren\'t'} coming through right now; other channels work.</li>`).join('')}</ul>`;
   el.dataset.sig = sig;
   el.style.display = '';
 }

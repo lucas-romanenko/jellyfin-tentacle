@@ -58,14 +58,17 @@ Gotchas:
   connected user an empty LibraryChanged with `tentacle-livetv:<v>` in
   `CollectionFolders`; open guides read their channel list again.
 - **Requests, activity, notifications changed**: `POST
-  /Tentacle/Notify?userIds=<ids>&topics=<requests,activity,notifications,recordings>`
+  /Tentacle/Notify?userIds=<ids>&topics=<requests,activity,notifications,recordings,status>`
   (Tentacle, services/live_updates.py) sends those users' sessions a
   `RefreshProgress` message with Data `{"ItemId": "tentacle", "Progress":
   "0", "Tentacle": "<topics>"}` (only to users with a session). Not a
   LibraryChanged: TV builds up to 1.25 reload Home on every one; no item
   has the id "tentacle", so Jellyfin's own pages ignore it. Jellyfin Web's
   tentacle-notifications.js and the TV app read again at once. An older
-  plugin answers 404 and the clients keep polling.
+  plugin answers 404 and the clients keep polling. `status` (what's wrong
+  with Live TV's provider changed, everyone): Jellyfin Web's guide
+  (tentacle-livetv.js) and the TV app's guide read FamilyStatus again; a
+  plugin older than this ignores the topic (400 when it is alone).
 - `POST /Tentacle/Playlists/PruneDead` with `"Async": true` answers 202
   `{runId}` at once and prunes in the background (one prune at a time); the
   server polls `GET .../PruneDead/{runId}` (running / done with the summary /

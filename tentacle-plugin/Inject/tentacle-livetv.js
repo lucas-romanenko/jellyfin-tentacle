@@ -198,9 +198,13 @@
     });
   }
 
-  // Family: "Live TV is unavailable right now. Lucas knows." from Tentacle
-  // (TentacleDiscover/FamilyStatus), shown above the guide while it lasts.
+  // What's wrong with Live TV's provider, in Tentacle's plain words
+  // ("IPTV Bears is down right now (their server isn't answering) since
+  // 6:30 PM. ...", TentacleDiscover/FamilyStatus), shown above the guide
+  // while it lasts: read again every minute and when Tentacle says
+  // "status", so it goes away by itself.
   function loadNotice() {
+    G.noticeAt = Date.now();
     return apiGet('TentacleDiscover/FamilyStatus', { userId: G.userId })
       .then(function (r) {
         var m = ((r && r.messages) || []).filter(function (x) { return x.area === 'livetv'; })[0];
@@ -795,6 +799,7 @@
     if (!G.active) return;
     placeNow();
     if (Date.now() - G.marksAt >= 60000) loadMarks();
+    if (Date.now() - (G.noticeAt || 0) >= 60000) loadNotice().then(showNotice);
     var today = startOfDay(Date.now());
     if (G.days.length && G.days[0].start !== today) { applyView(true); return; }
     Object.keys(G.mounted).forEach(function (id) { fillProgs(G.mounted[id], id); });
@@ -910,6 +915,11 @@
     if (e.target !== G.socket) return;
     var msg;
     try { msg = JSON.parse(e.data); } catch (x) { return; }
+    if (msg && msg.MessageType === 'RefreshProgress' && msg.Data && msg.Data.ItemId === 'tentacle'
+        && String(msg.Data.Tentacle || '').split(',').indexOf('status') >= 0) {
+      if (relay) { try { relay.postMessage({ MessageType: 'TentacleStatus' }); } catch (x) { } }
+      onMessage({ MessageType: 'TentacleStatus' });
+    }
     if (msg && (/^(Series)?Timer(Created|Cancelled)$/.test(msg.MessageType || '') || (msg.MessageType === 'RefreshProgress'
         && msg.Data && msg.Data.ItemId === 'tentacle' && String(msg.Data.Tentacle || '').split(',').indexOf('recordings') >= 0))) {
       // a recording set or cancelled, here or in Tentacle: this tab, and the
@@ -927,6 +937,7 @@
   function onMessage(msg) {
     if (!G.active || !msg) return;
     if (msg.MessageType === 'TentacleRecordings') { setTimeout(loadMarks, 500); return; }
+    if (msg.MessageType === 'TentacleStatus') { loadNotice().then(showNotice); return; }
     if (msg.MessageType === 'UserDataChanged') onUserData(msg.Data);
     else if (msg.MessageType === 'LibraryChanged') scheduleReload(1500);
   }

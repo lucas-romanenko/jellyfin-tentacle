@@ -191,10 +191,16 @@ Click the Categories tab — Tentacle auto-fetches categories on first visit. If
 
 Every hour Tentacle logs in to each provider and opens a few seconds of
 one stream. When either fails twice in a row (two minutes apart), every
-dashboard page shows a red banner with the reason. It goes away by itself
-once the check passes; **Check now** checks again at once, **Hide** hides it
-until the reason changes. Nothing is checked while live TV or a recording is
-running through Tentacle, so a check never cuts a stream.
+dashboard page shows a red banner. Its headline says which kind of trouble
+it is ("IPTV Bears is down", "... is refusing this home's connection", "The
+IPTV Bears account has expired", "Some channels aren't coming through"),
+then the plain words everyone else sees and the technical reason below
+([what each means](features/live-tv.md#when-the-provider-has-trouble)).
+It goes away by itself once the check passes; **Check now** checks again at
+once, **Hide** hides it until the reason changes. No test stream is opened
+while live TV or a recording is running through Tentacle, so a check never
+cuts a stream; a failure is then confirmed by asking the provider's address
+for its front page with no login, which uses no connection.
 
 What the syncs and live streams see counts too, with no extra connection:
 when the provider refuses a library or channel sync, or a live stream, with
@@ -208,6 +214,8 @@ likely not in your package.
 | The banner says | Usually means |
 |---|---|
 | Provider refusing: 403 | The provider blocks your IP, the account has expired, or the server URL has moved. Ask the provider. |
+| Provider refusing: 403 (Cloudflare error 1020) ... This home's connection is blocked | Cloudflare in front of the provider refuses your connection (1006-1008: your IP is banned; 1010: the player's User-Agent; 1020: a firewall rule). Another address of the provider, or ask them. |
+| Provider's panel shows a database error | The provider's own server is broken; it passes by itself. |
 | Provider refusing streams: 403 (the login still works) | IP block, or the account is over its connection limit (another device is using it). |
 | Provider rejects the login | Wrong username or password, or the account has expired. Check them in Sources → IPTV providers. |
 | Provider address not found (404) / answers with a web page | The server URL has moved, or a block page answers instead of the provider. |
@@ -223,8 +231,8 @@ provider starts failing and one when it works again.
 
 **For a monitor** (Uptime Kuma, rmnk, ...): `GET /api/provider-status`
 needs no sign-in and answers 200 `{"status": "ok"}`, or 503 with the
-reasons while a provider is failing. It names no provider and carries no
-URL or login.
+reasons and the kind of each (`case`: down, blocked, account, other) while
+a provider is failing. It names no provider and carries no URL or login.
 
 ### An episode stops, shows the backdrop and jumps to the next one
 

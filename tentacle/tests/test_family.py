@@ -648,8 +648,9 @@ class Alerts(Case):
                                  "Login refused by http://192.0.2.10 (HTTP 403)", push=False)
         admin_alerts.raise_alert(self.db, "arr:radarr", "requests", "Radarr can't be reached", "…")
         msgs = admin_alerts.family_messages(self.db)
-        self.assertEqual([{"area": "livetv", "text": "Live TV is unavailable right now. Lucas knows."},
-                          {"area": "requests", "text": "New requests will wait a little: downloads are paused "
+        # A provider's line comes from provider health in its own words
+        # (tests/test_provider_status.py); its alert adds no general line.
+        self.assertEqual([{"area": "requests", "text": "New requests will wait a little: downloads are paused "
                                                        "for now. Lucas knows."}], msgs)
         for m in msgs:
             self.assertNotRegex(m["text"], r"(?i)radarr|sonarr|http|403|provider")
