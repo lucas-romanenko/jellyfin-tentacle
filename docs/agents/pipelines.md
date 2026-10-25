@@ -208,6 +208,29 @@ group fails raises `ProviderDataError` (reason redacted) before the upsert:
 phase `error`, `last_live_sync` and Activity untouched (#630). Some groups
 failing, or a group answering `[]`, is still a success.
 
+**Gentle on the provider** (after #709): a household's panel held the
+account back after the nightly burst (1-14 Oct 2026: 14-16 of 42
+categories 403; 23 Oct: categories 2-14 empty; the guide download after the
+sync refused). The VOD sync reads every category through `_read_category()`
+(`services/sync.py`) with the Xtream client's `ListingPacer`: listings at
+least `CATEGORY_GAP_SECONDS` (5 s) apart; a listing answered 403, 429, 5xx,
+509 or 511, or empty for a category that held titles, is asked again after
+`CATEGORY_RETRY_WAITS` (60 s, 180 s; the panel's Retry-After up to 10 min
+instead) and the gap doubles (up to 40 s); at most `RETRY_BUDGET_SECONDS`
+(15 min) of such waits per run, then as before. Three 403s in a row still
+stop the run (`RequestGuard`), minutes apart now. The run's last line says
+how many were asked again and how long it waited. In the nightly job:
+discovery (`discover_new_provider_content(db, gentle=True)`) asks for an
+Xtream panel's category counts (every film and every series) only when a
+category is new, its requests and the Live TV group count `DISCOVERY_GAP_SECONDS`
+(10 s) apart; the guide download waits until no provider API request has
+gone out for `GUIDE_QUIET_SECONDS` (180 s, at most 10 min,
+`_quiet_before_guide()`; requests are noted by `RequestGuard` and
+discovery, `xtream_client.note_api_request`); the hourly provider check is
+skipped while the nightly run runs (`routers.sync.nightly_running`). Under
+the test suite these waits pass on a virtual clock (`TENTACLE_PACING=virtual`,
+set by tests/hermetic.py).
+
 **A stuck download is fixed** (Health → Downloads → **Fix**, or the 5-minute
 auto-fix sweep; `resolve_stuck_download()` in `services/download_health.py`):
 the queue item is removed with `blocklist=true`, and exactly one side grabs
@@ -239,7 +262,9 @@ when its turn comes, under `_sync_lock`: one deleted or switched off since
 the job started is skipped, #517); 3. Radarr
 scan; 4. Sonarr scan (and Following state for every series); 5. recently
 added tags; 6. Jellyfin pipeline (scan, push tags, refresh playlists);
-7. clean the TMDB cache; 8. `sweep_orphaned_downloads()`; 9. forget people
+7. clean the TMDB cache, then discovery of new categories and Live TV
+groups (gently, see "Gentle on the provider"); 8. `sweep_orphaned_downloads()`,
+then the guide download after a quiet spell; 9. forget people
 no longer in Jellyfin (`gone_people.forget_gone`), then per user:
 `migrate_global_smartlists_to_user()` (one-time), `sync_smartlists()`,
 `write_home_config()`; 10. playlist artwork; 11. `POST /Tentacle/Refresh` to

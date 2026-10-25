@@ -2871,8 +2871,10 @@ def _run_channel_sync_background(provider_data: dict):
             db.close()
 
 
-def _sync_groups_from_xtream(provider_data: dict, db: Session) -> dict:
-    """Phase 1: Fetch categories/groups from Xtream only. No channels."""
+def _sync_groups_from_xtream(provider_data: dict, db: Session, gap: float = 0.0) -> dict:
+    """Phase 1: Fetch categories/groups from Xtream only. No channels.
+    `gap`: at least this many seconds between its two requests (the nightly
+    discovery's, services/discovery.DISCOVERY_GAP_SECONDS)."""
     from services.xtream_client import XtreamClient
 
     provider_id = provider_data["id"]
@@ -2884,6 +2886,7 @@ def _sync_groups_from_xtream(provider_data: dict, db: Session) -> dict:
         password=provider_data["password"],
         user_agent=provider_data["user_agent"],
     )
+    client.guard.gap = max(client.guard.gap, gap)
 
     try:
         _set_sync_status(provider_id, {"phase": "running", "progress": 20, "message": "Fetching categories..."})
@@ -4112,18 +4115,8 @@ def _guide_error(e) -> str:
 def _retry_after_seconds(e):
     """The provider's Retry-After (seconds or an HTTP date) on a refused
     download, or None."""
-    value = (getattr(getattr(e, "response", None), "headers", None) or {}).get("Retry-After")
-    if not value:
-        return None
-    value = str(value).strip()
-    if value.isdigit():
-        return int(value)
-    try:
-        from email.utils import parsedate_to_datetime
-        when = parsedate_to_datetime(value)
-        return max(0, int((when - datetime.now(when.tzinfo)).total_seconds()))
-    except (TypeError, ValueError, IndexError):
-        return None
+    from services.xtream_client import retry_after_seconds
+    return retry_after_seconds(e)
 
 
 def _epg_record(db: Session, provider_id: int) -> dict | None:
@@ -5144,7 +5137,7 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
     viewer = None
     while True:
         if viewer is None and (channel_id in _shared_streams or channel_id in _pending_opens):
-            viewer = channel_id not in await _recording_channel_ids(db)
+            viewer = _joins_as_viewer(channel_id, await _recording_channel_ids(db))
         async with _get_shared_lock():
             shared = _shared_streams.get(channel_id)
             if shared is not None and not shared._closed:
@@ -5171,6 +5164,25 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
         async with _get_shared_lock():
             if _pending_opens.get(channel_id) is pending:
                 del _pending_opens[channel_id]
+
+
+def _joins_as_viewer(channel_id: int, recording_ids: set) -> bool:
+    """Whether a client attaching to a channel's running pull is a person
+    watching (keyframe start from the backlog) or the recording arriving
+    (its bytes as they come).
+
+    "The channel is being recorded" alone said recording, so someone who
+    tuned to a channel while it recorded got the recording's start: no
+    backlog and no keyframe, a second or two of nothing on a Jellyfin that
+    opens a tuner stream per client (stream sharing off, or the channel on
+    two tuners; measured 1.6 s on a 2 s GOP). Once the pull is the
+    recording's own (its lease says so), whoever attaches next is watching.
+    A second recording of the same channel then also gets a viewer's start,
+    which only puts a few earlier seconds and a clean keyframe at its head."""
+    if channel_id not in recording_ids:
+        return True
+    lease = _stream_slots.lease_for(f"channel:{channel_id}")
+    return lease is not None and lease.kind == "recording"
 
 
 async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.Future"):

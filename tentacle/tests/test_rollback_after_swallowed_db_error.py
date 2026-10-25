@@ -100,7 +100,7 @@ class DiscoveryPerProvider(unittest.TestCase):
         import services.discovery as disc
         real = disc._refresh_vod_categories
 
-        def refresh(db, provider):
+        def refresh(db, provider, *a, **k):
             if provider.name == "A":
                 _poison(db)
             return real(db, provider)
@@ -142,7 +142,7 @@ class DiscoveryLiveGroups(unittest.TestCase):
                             active=True, live_tv_enabled=True, provider_type="xtream"))
         db.commit()
 
-        def failing_group_sync(provider_data, db):
+        def failing_group_sync(provider_data, db, *a, **k):
             # A real failed flush inside the group sync: the session now refuses
             # every statement until it is rolled back.
             db.add_all([mdb.LiveChannelGroup(provider_id=provider_data["id"], name="SPORTS"),

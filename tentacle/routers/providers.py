@@ -176,10 +176,14 @@ def _category_list(data) -> list:
     raise ValueError("the provider did not answer with a category list")
 
 
-def fetch_provider_categories(provider: Provider, read: dict = None):
+def fetch_provider_categories(provider: Provider, read: dict = None, counts: bool = True, gap: float = 0.0):
     """Fetch VOD/series categories + counts. Xtream via the player API; M3U by
     parsing the playlist and using group-titles as categories (`read` is told
-    how many entries the playlist had)."""
+    how many entries the playlist had).
+
+    Xtream: `counts=False` leaves the counts out (two of the biggest answers
+    a panel gives: every film and every series); `gap` is how many seconds
+    apart its requests go (the nightly discovery's, services/discovery)."""
     if (provider.provider_type or "xtream") in ("m3u_url", "m3u_file"):
         from services.sync import M3UClient
         c = M3UClient(provider)
@@ -188,17 +192,36 @@ def fetch_provider_categories(provider: Provider, read: dict = None):
             read["entries"] = len(c.playlist.entries) if c.playlist else 0
         return vod_cats, series_cats, c.vod_counts(), c.series_counts()
 
+    from services.xtream_client import note_api_request, pause
     base = _api_base(provider)
     session = requests.Session()
     session.headers.update(HEADERS)
 
+    note_api_request()
     vod_cats = _category_list(session.get(f"{base}&action=get_vod_categories", timeout=15).json())
+    pause(gap)
+    note_api_request()
     series_cats = _category_list(session.get(f"{base}&action=get_series_categories", timeout=15).json())
+    if not counts:
+        return vod_cats, series_cats, {}, {}
+    pause(gap)
+    vod_counts, series_counts = fetch_category_counts(provider, session=session, gap=gap)
+    return vod_cats, series_cats, vod_counts, series_counts
 
-    # Fetch all streams to count per category
+
+def fetch_category_counts(provider: Provider, session=None, gap: float = 0.0):
+    """Titles per VOD and series category of an Xtream provider: the whole
+    catalogue, twice (every film, then every series), `gap` seconds apart.
+    Empty dicts for what could not be read."""
+    from services.xtream_client import note_api_request, pause
+    base = _api_base(provider)
+    if session is None:
+        session = requests.Session()
+        session.headers.update(HEADERS)
     vod_counts = {}
     series_counts = {}
     try:
+        note_api_request()
         vod_streams = session.get(f"{base}&action=get_vod_streams", timeout=60).json()
         if isinstance(vod_streams, list):
             for s in vod_streams:
@@ -206,7 +229,9 @@ def fetch_provider_categories(provider: Provider, read: dict = None):
                 vod_counts[cid] = vod_counts.get(cid, 0) + 1
     except Exception:
         pass
+    pause(gap)
     try:
+        note_api_request()
         all_series = session.get(f"{base}&action=get_series", timeout=60).json()
         if isinstance(all_series, list):
             for s in all_series:
@@ -214,8 +239,7 @@ def fetch_provider_categories(provider: Provider, read: dict = None):
                 series_counts[cid] = series_counts.get(cid, 0) + 1
     except Exception:
         pass
-
-    return vod_cats, series_cats, vod_counts, series_counts
+    return vod_counts, series_counts
 
 
 def test_provider_connection(provider: Provider, db: Session = None):

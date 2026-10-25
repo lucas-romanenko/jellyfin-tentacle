@@ -117,8 +117,10 @@ class ViewerStart(unittest.TestCase):
 
         self.assertEqual(self._drive(body), self.src)
 
-    def _join(self, joiner_is_recording):
+    def _join(self, joiner_is_recording, first_is_recording=False):
         async def body():
+            if first_is_recording:
+                self.recording = {self.cid}
             first = await self.livetv.stream_proxy(self.cid, self.db)
             reader = asyncio.ensure_future(self._read_all(first))
             await self.halfway.wait()
@@ -149,6 +151,18 @@ class ViewerStart(unittest.TestCase):
         waiting, out = self._join(joiner_is_recording=True)
         self.assertEqual(waiting, 0, "a joining recording was given earlier bytes")
         self.assertEqual(out, b"".join(self.pieces[self.half:]))
+
+    def test_a_viewer_joining_a_recording_gets_a_viewers_start(self):
+        # Someone tunes to a channel while it records: the pull is the
+        # recording's, so the newcomer is watching (it used to get the
+        # recording's start: no backlog, no keyframe).
+        waiting, out = self._join(joiner_is_recording=True, first_is_recording=True)
+        self.assertEqual(self.livetv._stream_slots.lease_for(f"channel:{self.cid}"), None)  # all ended
+        self.assertGreater(waiting, 0, "the viewer joining a recording waited for new bytes from the provider")
+        first_v = next(t for pid, t in pes_starts(out) if pid == V)
+        self.assertGreaterEqual(first_v, 1008.0)
+        joined_at = next(t for pid, t in pes_starts(b"".join(self.pieces[self.half:])) if pid == V)
+        self.assertLess(first_v, joined_at)
 
 
 if __name__ == "__main__":

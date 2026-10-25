@@ -47,7 +47,7 @@ class DiscoveryLiveGroupsOfLivePageProvider(unittest.TestCase):
         self.db.commit()
         return p
 
-    def fake_live(self, db, provider):
+    def fake_live(self, db, provider, *a, **k):
         self.visited.append(provider.name)
         return ["EN | New Sports"]
 

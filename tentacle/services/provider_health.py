@@ -648,7 +648,15 @@ def _note(db, provider_id, ok: bool, step: str, code) -> None:
 
 
 def run_provider_health() -> bool:
-    """The hourly job. False (nothing checked) while a check is running."""
+    """The hourly job. False (nothing checked) while a check is running, or
+    while the nightly sync is asking the providers for everything: its
+    requests already tell provider health how they went (`note`), and a login
+    plus a test stream on top of its burst is what a panel holds an account
+    back for (#709). The next hour checks."""
+    from routers.sync import nightly_running
+    if nightly_running():
+        logger.info("[Provider health] the nightly sync is running; this check is skipped, the next hour checks")
+        return False
     if not _run_lock.acquire(blocking=False):
         logger.info("[Provider health] a check is already running; this one checks nothing")
         return False

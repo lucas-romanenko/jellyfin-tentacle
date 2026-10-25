@@ -62,6 +62,12 @@ def begin_nightly_run(trigger: str = "schedule") -> bool:
         return True
 
 
+def nightly_running() -> bool:
+    """Whether the nightly sync (or a Sync now of everything) is running."""
+    with _nightly_run_lock:
+        return bool(_nightly_run["running"])
+
+
 def end_nightly_run() -> None:
     with _nightly_run_lock:
         _nightly_run.update(running=False, finished_at=datetime.utcnow())

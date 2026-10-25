@@ -97,6 +97,11 @@ def install():
     for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
         os.environ.pop(var, None)
     os.environ["NO_PROXY"] = os.environ["no_proxy"] = "*"
+    # The sync spaces out its provider requests and waits minutes before
+    # asking a holding-back panel again (services/sync.py "Gentle on the
+    # provider"); the tests' fake providers answer at once, so those waits
+    # pass on a virtual clock (services.xtream_client.pacing_is_virtual).
+    os.environ["TENTACLE_PACING"] = "virtual"
     socket.getaddrinfo = _getaddrinfo
     socket.socket.connect = _connect
     socket.socket.connect_ex = _connect_ex

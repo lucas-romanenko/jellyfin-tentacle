@@ -978,7 +978,28 @@ User docs: `docs/features/live-tv.md`.
   20 s / 48 MB: as it came. Panels open with ~20-30 s of buffer, so the hold
   costs ~0.05-0.7 s. A viewer joining a running TS upstream starts in its
   backlog (last 15 s / 32 MB). Recordings (the opener's `lease.kind`, a
-  joiner by `_recording_channel_ids`) get neither: the bytes as they come.
+  joiner by `_joins_as_viewer`) get neither: the bytes as they come. A
+  joiner on a channel being recorded is the recording arriving only while
+  the pull is not the recording's yet (its lease says `live`); once it is,
+  whoever attaches is watching and gets a viewer's start (it got the
+  recording's: first keyframe 1.6 s in on a 2 s GOP, 0.01 s now).
+- One provider connection per channel, two layers. Jellyfin shares a tuner
+  stream itself when the tuner has `AllowStreamSharing` (the default
+  Tentacle sets): every viewer and recording of a channel is one consumer
+  of one Jellyfin live stream ("consumer count is now N" in its log), and
+  Tentacle sees one request; its TunerCount then counts channels, not
+  viewers. A joiner reads Jellyfin's buffer from ~20 KB before the live
+  edge, mid-GOP: its picture comes with the next keyframe. When Jellyfin
+  opens a second tuner stream for the same channel (sharing off, the
+  channel on two tuners), Tentacle's `_SharedUpstream` fans one pull out:
+  a queue per client (a client over 32 pieces and 64 MB behind loses its
+  oldest piece, never stalling the others or a recording), the pull ends
+  with its last client, and it holds one slot (Streams at once counts
+  pulls). Measured on a test stack: 4 viewers, or a recording and 2
+  viewers, on one channel = 1 provider connection; with the provider
+  closing every connection each 15 s, a recording, 3 viewers and a client
+  reading at a quarter of the rate stayed on 1 connection (one rejoin per
+  cut), no viewer gap over 1.3 s, the recording one file.
 - The HLS worker (`hls_to_mpegts()`) classifies statuses with the same
   `_raw_retryable()`: a 5xx on a playlist, a re-resolve or a segment is
   waited out (a 5xx segment is fetched again, not skipped). An expired token
