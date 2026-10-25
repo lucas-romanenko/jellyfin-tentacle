@@ -47,7 +47,7 @@ Recordings are made in Jellyfin as ordinary recordings, exactly like its Record 
 
 Every finished recording gets a picture in Jellyfin about 10 minutes after it ends, in both shapes a film has: a wide (16:9) one for wide cards (the TV app's Recordings, Continue Watching on wide rows, Jellyfin Web) and a poster (2:3) for poster rows and library grids. Tentacle uses the first of these that works:
 
-1. **A game**: a card with the league, both teams (code and name), the date and the channel. Tentacle knows the teams from the team that booked it, or from the title and description ("NHL: Toronto Maple Leafs - Montreal Canadiens", "Canadiens at Blackhawks", "TOR @ MTL"). A race or a league with no teams named gets the league's card. No team logos, and no sports service is asked.
+1. **A game**: a card with the league, both teams' logos with "@" (or "VS") between them, their names and codes, the date and the channel. Tentacle knows the teams from the team that booked it, or from the title and description ("NHL: Toronto Maple Leafs - Montreal Canadiens", "Canadiens at Blackhawks", "TOR @ MTL"). A race or a league with no teams named gets the league's card.
 2. **A show or film**: its picture from TMDB, only when the title matches well (and the year, when the title has one).
 3. **The guide's own picture** for the programme, when it is wide.
 4. **A frame from the recording**: three are taken (at 30%, 50% and 70% of the programme), black and blank ones are left out, and the one with the most in it wins. Never while Jellyfin is recording.
@@ -56,6 +56,8 @@ Every finished recording gets a picture in Jellyfin about 10 minutes after it en
 Games and title cards are drawn in both shapes; a show or film gets TMDB's poster too. A picture that only comes wide (the guide's, a frame) is put on a poster with the title above it and the date and channel below.
 
 A folder of several recordings of one title gets the newest recording's picture, or the league's card for games.
+
+**Team logos** need no account or key. Tentacle takes them from ESPN's public team pages (NHL, NBA, WNBA, NFL, MLB, MLS, the Premier League, LaLiga, Serie A, Bundesliga, Ligue 1, and national teams' flags for FIFA and IIHF games), EuroLeague's own club list, and TheSportsDB's free tier (the CFL, and any club the others don't list). If a logo.dev key is set for playlist pictures, Tentacle asks logo.dev for a team none of these have. Each logo is fetched once and kept on the server. Logos that would be hard to see on the dark card get a light square behind them. A game whose logos can't be had yet gets the teams' codes, and is drawn again with logos once Tentacle has them (unless someone changed the picture).
 
 Tentacle only adds pictures: recordings, their files and what people have watched stay as they are. It never replaces a picture it didn't set (Jellyfin's own, or one someone chose), and a picture someone changed or removed is never set again. Switch it off under **Sources → Live TV → More → Pictures for recordings**: that removes only the pictures Tentacle added. If Jellyfin's Recordings library saves pictures into the media folders ("Save artwork into media folders"), Tentacle adds none and says so there.
 

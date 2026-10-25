@@ -10,7 +10,9 @@ For each recording in the library that holds Jellyfin's recordings folder:
   (poster cards) and a 16:9 picture as Thumb (wide cards), and keeps the
   tags Jellyfin gave them (state set). The first that works:
     a. a game: the matchup card (cards.py; the booking or the title says
-       the league and teams);   a league's event: the league card
+       the league and teams), with both teams' logos when logos.py has
+       them (fetched here, a few per pass, kept in its cache);
+       a league's event: the league card
     b. a show or film: TMDB's backdrop and poster on a strict title match
        (the VOD threshold, the year when the title has one)
     c. the guide's own picture for the programme, when it is 16:9
@@ -26,6 +28,8 @@ Pictures drawn by an older layout (primary_shape not POSTER: empty = the
 16:9 as both, before posters; "poster" = before the safe area kept the
 bottom clear for progress bars) are drawn again a few per pass, while they
 are still Tentacle's: the poster, and the 16:9 card when Tentacle drew it.
+Matchup cards drawn without logos (before logos existed, or before a team's
+logo could be had) are drawn again with them, both shapes, the same way.
 
 A title folder of several recordings gets the newest recording's picture,
 or for games the league card, and follows the newest while the picture is
@@ -48,6 +52,7 @@ from models.database import (EPGProgram, LiveChannel, RecordingArtwork, Recordin
                              SessionLocal, get_setting, set_setting)
 from services.recording_art import cards as C
 from services.recording_art import frames as F
+from services.recording_art import logos as L
 from services.recording_art import what as W
 from services.recording_rules import match as M
 
@@ -347,13 +352,34 @@ def _frame(jf, item_id: str, ctx: dict, busy: bool, grabber=None) -> tuple:
     return (C.to_16x9(best.data) if best else None), notes
 
 
+def team_logos(subject: W.Subject) -> Optional[list]:
+    """A game's teams' logos from the cache, or None unless all are there."""
+    if subject.kind != "game" or not subject.teams:
+        return None
+    pics = [L.logo(subject.league, t) for t in subject.teams[:2]]
+    return pics if all(p is not None for p in pics) else None
+
+
+def fetch_logos(db: Session, subject: W.Subject, budget: Optional[list]) -> None:
+    """Fetches the logos a game's card still needs into the cache, while
+    `budget` ([fetches left this pass]) lasts; None: no fetching."""
+    if budget is None or subject.kind != "game" or not subject.teams:
+        return
+    try:
+        L.fetch_missing(subject.league, subject.teams[:2], budget,
+                        logodev_token=(get_setting(db, "logodev_api_key", "") or "").strip() or None)
+    except Exception as e:
+        logger.info(f"[Recording art] team logos: {type(e).__name__}: {e}")
+
+
 def _cards(subject: W.Subject, ctx: dict) -> Optional[tuple]:
     """(16:9, poster, source) for a game, a league's event or nothing else
     known (the title card); None for anything else."""
     when, channel = ctx["start"] or ctx["created"], ctx["channel"]
     if subject.kind == "game" and subject.teams:
-        return (C.matchup_card(subject.league, subject.teams, subject.at, when, channel),
-                C.matchup_poster(subject.league, subject.teams, subject.at, when, channel), "matchup")
+        logos = team_logos(subject)
+        return (C.matchup_card(subject.league, subject.teams, subject.at, when, channel, logos=logos),
+                C.matchup_poster(subject.league, subject.teams, subject.at, when, channel, logos=logos), "matchup")
     if subject.kind in ("game", "event"):
         return (C.league_card(subject.league, subject.title, when, channel),
                 C.league_poster(subject.league, subject.title, when, channel), "league")
@@ -495,11 +521,12 @@ def reconcile(db: Session, rows: dict, items: dict) -> int:
 
 
 def give_picture(db: Session, jf, item: dict, row: RecordingArtwork, tmdb=None, busy: bool = False,
-                 grabber=None, ctx: Optional[dict] = None) -> str:
+                 grabber=None, ctx: Optional[dict] = None, logo_budget: Optional[list] = None) -> str:
     """One recording: make its picture and set it. Returns the row's state."""
     iid = _id(item.get("Id"))
     ctx = ctx or context(db, item)
     subject = subject_of(ctx)
+    fetch_logos(db, subject, logo_budget)
     wide, poster, source, detail = make_picture(jf, iid, ctx, subject, tmdb=tmdb, busy=busy, grabber=grabber)
     # someone (or Jellyfin's own frame grab) may have set one meanwhile
     fresh = _item(jf, iid)
@@ -512,6 +539,7 @@ def give_picture(db: Session, jf, item: dict, row: RecordingArtwork, tmdb=None, 
     row.state, row.source, row.detail = "set", source, (detail or "")[:250]
     row.primary_tag, row.thumb_tag = primary, thumb
     row.primary_shape = POSTER if poster else None
+    row.team_logos = 1 if source == "matchup" and team_logos(subject) else None
     row.made_from = subject.league["id"] if subject.league and subject.kind in ("game", "event") else None
     row.updated_at = datetime.utcnow()
     logger.info(f"[Recording art] “{item.get('Name')}”: {source} ({subject.describe()})")
@@ -547,7 +575,8 @@ def upgrade_posters(db: Session, jf, items: dict, rows: dict, tmdb=None, limit: 
             continue
         try:
             ctx = context(db, item)
-            poster, wide = redraw(jf, iid, ctx, subject_of(ctx), row.source, tmdb=tmdb)
+            subject = subject_of(ctx)
+            poster, wide = redraw(jf, iid, ctx, subject, row.source, tmdb=tmdb)
             if not poster:
                 continue
             fresh = _item(jf, iid)
@@ -559,9 +588,45 @@ def upgrade_posters(db: Session, jf, items: dict, rows: dict, tmdb=None, limit: 
             primary, thumb = _tags(_item(jf, iid) or {})
             row.primary_tag, row.thumb_tag = primary, thumb
             row.primary_shape, row.updated_at = POSTER, datetime.utcnow()
+            if row.source == "matchup" and wide:
+                row.team_logos = 1 if team_logos(subject) else None
             n += 1
         except Exception as e:
             logger.warning(f"[Recording art] poster for “{item.get('Name')}”: {e}")
+        db.commit()
+    return n
+
+
+def upgrade_logos(db: Session, jf, items: dict, rows: dict, budget: Optional[list] = None,
+                  limit: int = POSTERS_PER_PASS) -> int:
+    """Matchup cards Tentacle drew without logos: drawn again with both
+    teams' logos (both shapes) once logos.py has them, while both pictures
+    are still the ones Tentacle set. Returns how many."""
+    n = 0
+    for iid, row in rows.items():
+        if n >= limit:
+            break
+        item = items.get(iid)
+        if row.kind != "recording" or row.state != "set" or row.source != "matchup" or row.team_logos \
+                or item is None or not _still_ours(row, item):
+            continue
+        try:
+            ctx = context(db, item)
+            subject = subject_of(ctx)
+            fetch_logos(db, subject, budget)
+            if team_logos(subject) is None:
+                continue
+            wide, poster, _source = _cards(subject, ctx)
+            fresh = _item(jf, iid)
+            if fresh is None or not _still_ours(row, fresh):
+                continue    # a person changed it meanwhile: reconcile() leaves it
+            primary, thumb = _set(jf, iid, wide, poster)
+            row.primary_tag, row.thumb_tag = primary, thumb
+            row.primary_shape, row.team_logos, row.updated_at = POSTER, 1, datetime.utcnow()
+            n += 1
+            logger.info(f"[Recording art] “{item.get('Name')}”: matchup drawn again with logos")
+        except Exception as e:
+            logger.warning(f"[Recording art] logos for “{item.get('Name')}”: {e}")
         db.commit()
     return n
 
@@ -653,11 +718,14 @@ def remove_all(db: Session, jf) -> int:
 
 
 def run_pass(db: Session, jf=None, now: Optional[datetime] = None, tmdb=None, grabber=None,
-             limit: int = PER_PASS) -> dict:
-    """One pass. Returns what it did."""
+             limit: int = PER_PASS, fetch_team_logos: bool = False) -> dict:
+    """One pass. Returns what it did. `fetch_team_logos`: teams' logos missing
+    from the cache are fetched (the scheduler's pass; tests don't)."""
     now = now or datetime.utcnow()
     jf = jf if jf is not None else jellyfin_for(db)
-    out = {"set": 0, "theirs": 0, "left": 0, "posters": 0, "folders": 0, "removed": 0, "waiting": 0, "failed": 0}
+    budget = [L.FETCHES_PER_PASS] if fetch_team_logos else None
+    out = {"set": 0, "theirs": 0, "left": 0, "posters": 0, "logos": 0, "folders": 0, "removed": 0, "waiting": 0,
+           "failed": 0}
     if jf is None:
         _last.update(blocked="Jellyfin isn't connected")
         return out
@@ -704,7 +772,8 @@ def run_pass(db: Session, jf=None, now: Optional[datetime] = None, tmdb=None, gr
             done += 1
             row = _row(db, rows, item, "recording")
             try:
-                state = give_picture(db, jf, item, row, tmdb=tmdb, busy=busy, grabber=grabber, ctx=ctx)
+                state = give_picture(db, jf, item, row, tmdb=tmdb, busy=busy, grabber=grabber, ctx=ctx,
+                                     logo_budget=budget)
                 out["set" if state == "set" else "theirs" if state == "theirs" else "waiting"] += 1
             except Defer as e:
                 if row.id is None:
@@ -719,6 +788,7 @@ def run_pass(db: Session, jf=None, now: Optional[datetime] = None, tmdb=None, gr
                 logger.warning(f"[Recording art] “{item.get('Name')}”: no picture: {e}")
             db.commit()
         out["posters"] = upgrade_posters(db, jf, items, rows, tmdb=tmdb)
+        out["logos"] = upgrade_logos(db, jf, items, rows, budget)
         roots = set().union(*(lib.get("roots") or set() for lib in libs))
         out["folders"] = _folders(db, jf, folders, videos, rows, roots)
         db.commit()
@@ -737,7 +807,7 @@ def run_scheduled() -> None:
                                    float(get_setting(db, "tmdb_match_threshold", "0.7") or 0.7))
             except Exception as e:
                 logger.info(f"[Recording art] TMDB not set up: {e}")
-        summary = run_pass(db, tmdb=tmdb)
+        summary = run_pass(db, tmdb=tmdb, fetch_team_logos=True)
         _last.update(at=datetime.utcnow(), summary=summary, error=None)
         if any(summary.values()):
             logger.info(f"[Recording art] pass: {summary}")
@@ -772,11 +842,13 @@ def status(db: Session) -> dict:
     why nothing can be set when that's so."""
     counts: dict = {}
     sources: dict = {}
+    with_logos = 0
     for row in db.query(RecordingArtwork).all():
         counts[row.state] = counts.get(row.state, 0) + 1
         if row.state == "set" and row.kind == "recording":
             sources[row.source or "?"] = sources.get(row.source or "?", 0) + 1
-    return {"enabled": enabled(db), "counts": counts, "sources": sources,
+            with_logos += 1 if row.source == "matchup" and row.team_logos else 0
+    return {"enabled": enabled(db), "counts": counts, "sources": sources, "with_logos": with_logos,
             "blocked": _last.get("blocked"), "note": _last.get("note"),
             "last_at": _last["at"].isoformat() + "Z" if _last.get("at") else None,
             "last": _last.get("summary"), "error": _last.get("error")}

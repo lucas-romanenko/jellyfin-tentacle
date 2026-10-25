@@ -1251,6 +1251,7 @@ class RecordingArtwork(Base):
     thumb_tag = Column(String, nullable=True)
     made_from = Column(String, nullable=True)    # folders: what the picture came from (a child's id, a league)
     primary_shape = Column(String, nullable=True)   # the layout that drew it (recording_art.job.POSTER); empty: #827's 16:9
+    team_logos = Column(Integer, nullable=True)     # matchup: 1 when drawn with both teams' logos
     attempts = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)

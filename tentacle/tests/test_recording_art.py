@@ -327,6 +327,9 @@ class FakeJellyfin:
 
 class Base(unittest.TestCase):
     def setUp(self):
+        env = mock.patch.dict("os.environ", {"DATA_DIR": temp_dir(self)})   # an empty team logos' cache
+        env.start()
+        self.addCleanup(env.stop)
         self.db = _db()
         self.addCleanup(self.db.close)
         self.jf = FakeJellyfin()

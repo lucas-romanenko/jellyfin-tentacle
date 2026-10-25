@@ -1254,6 +1254,24 @@ GET/PUT `/api/live/recordings/artwork`; Sources → Live TV → More.
   `title_poster`), TMDB's `poster_path` (w780, `to_2x3`); a picture with no
   poster (guide, frame, TMDB without one) goes on a poster with the title
   over a blurred copy of itself (`poster_from_wide`).
+- Team logos (`logos.py`): `matchup_card`/`matchup_poster` draw both
+  logos when `team_logos(subject)` has both in the cache (all or none: else
+  the code badges). Sources per team: ESPN's keyless
+  `site.api.espn.com/apis/site/v2/sports/<path>/teams` list (`ESPN` map; the
+  `dark` variant; soccer also the league below for relegated clubs), ESPN's
+  country flags by code for `fifa`/`iihf`; `api-live.euroleague.net` clubs
+  (crest); TheSportsDB free key `123` `searchteams.php` filtered by sport
+  (429 → `TooMany`, rest of the pass skipped, no miss written); logo.dev
+  `/name/<team>` only with `logodev_api_key` (never logged: the address holds
+  it). Matching `match()`: full name, unique code, other names, unique
+  prefix. Cache `DATA_DIR/team_logos/<league>-<team>.png` (trimmed RGBA, ≤400
+  px) + `index.json` (source, `plate`, misses retried after a day) + the
+  sources' team lists (30 days). Drawing never fetches: the scheduled pass
+  (`run_pass(fetch_team_logos=True)`; tests don't) fetches up to
+  `FETCHES_PER_PASS` (8). `plate`: EuroLeague crests and mostly-dark logos
+  get a light square. `recording_artwork.team_logos` = 1 when drawn with
+  logos; `upgrade_logos` redraws `source=matchup` rows without it (both
+  shapes, only while both tags are still Tentacle's), 8 a pass.
 - What it is (`what.py`, pure): the booking (rule kind/league/team, its
   `why` quotes the listing that named the opponent) or the title,
   sub-title and description with `leagues.json` and `recording_rules.match`
