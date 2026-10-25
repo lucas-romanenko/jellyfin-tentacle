@@ -1163,20 +1163,57 @@ order, so the player switches sound by switching tracks.
   (no HTTP, no port): a channel someone already watches or records attaches
   to its `_SharedUpstream` and costs no connection; a new one takes a
   "live" lease like a viewer, so a recording at capacity preempts it. One
-  task per tile reads the subscriber body into a queue for the session's
-  whole life (cancelling an `__anext__` would close the subscription); only
-  the copy into ffmpeg's pipe (an inherited fd, `-i pipe:<fd>`) restarts.
-- **Before ffmpeg starts** each tile's first ~2 MB are read and ffprobed:
-  no audio = a silent track stands in (track N stays tile N); 8-bit 4:2:0
-  H.264/HEVC/MPEG-2 = the GPU decodes it.
-- **ffmpeg:** with `/dev/dri/renderD128` and Intel's driver (the image has
-  `intel-media-va-driver-non-free` on amd64), VAAPI: decode,
-  `deinterlace_vaapi`, `scale_vaapi`, download, `xstack`, upload,
-  `h264_vaapi` 8 Mb/s, GOP 30 at 29.97. Otherwise `yadif` + `scale` and
-  libx264 veryfast. `encoder()` decides once with a 3-frame test. If ffmpeg
-  stops, it restarts (at most 3 times) with GPU decode off; the channels
-  stay open. Measured on the i5-14600K (CT 112, `--cpus=2`, 4 inputs):
-  full GPU 0.31 cores, CPU decode + GPU encode 0.77, libx264 1.21.
+  task per tile reads the subscriber body into the tile's buffer (`buf`)
+  for the session's whole life (cancelling an `__anext__` would close the
+  subscription).
+- **Before the first decoder starts** each tile's first ~2 MB are read and
+  ffprobed: no audio = silence for its track (track N stays tile N);
+  8-bit 4:2:0 H.264/HEVC/MPEG-2 = the GPU decodes it.
+- **Why not one ffmpeg (v1.35.0 did that).** A one-connection account
+  (one household's Xtream account) cuts all but one of the open
+  channels in the same second every 10-15 s; each tile 4-5 times a minute.
+  The shared upstream rejoins the provider's replay where it stopped
+  (nothing lost) but its bytes pause 2-9 s, and one ffmpeg's `xstack` waits
+  for every input: measured 600 s with 4 tiles, only 406 s of picture came
+  out, a player rebuffered 34 times.
+- **Pipeline now:** per tile a decoder ffmpeg (`decoder_args`: TS on stdin,
+  raw NV12 960x540 at 29.97 and s16 stereo 48 kHz on two pipes, both from
+  t=0: `fps=...:start_time=0`, `aresample=...:first_pts=0`; VAAPI decode,
+  `deinterlace_vaapi`, `scale_vaapi` and download when the codec allows,
+  else `yadif` + `scale`). A clock thread (`_Clock`) takes one frame and
+  one tick of sound of every tile 29.97 times a second (reading up to 4
+  frames ahead) and writes them non-blocking to the encoder (`ffmpeg_args`:
+  raw inputs with `-nofind_stream_info`, or ffmpeg's one-by-one probing
+  deadlocks against the clock; `xstack`, upload, `h264_vaapi` 8 Mb/s,
+  GOP 30, one AAC track per tile; libx264 veryfast without the GPU;
+  `encoder()` decides once with a 3-frame test). A tile with no frame
+  ready shows its last frame and is silent for that tick (`held`,
+  `stalls`); its sound is taken with its frames, so they stay together.
+  Reading one frame a tick paces each decoder (it blocks on its full
+  pipe), so the channel's bytes wait in `buf`: the provider's burst on
+  every (re)connect fills it, and a tile that paused is that much further
+  behind, which is the buffer for the next cut. More than 45 s behind:
+  `drop_to` 15 s, from a keyframe, decoder restarted. The picture starts
+  1.5 s ahead (the player's buffer) once every tile has a frame (8 s at
+  most). It runs in a thread so a busy event loop doesn't make it late
+  (`late_ticks` counts ticks > 0.25 s late).
+- **Monitor** (every 0.5 s): a decoder that stopped is started again (from
+  a keyframe; on the CPU if the GPU gave up on it within 15 s); an ended
+  channel is opened again after 20 s, then 40, 80 ... up to 5 min while it
+  won't (each try is a new connection: it cuts another channel on a
+  one-connection account; measured 25 Oct, the provider refused every
+  re-dial of 3 of 4 channels for 2 min and the stream proxy gave up); a **stuck feed** moves to another.
+  Stuck = 85 % of the last 450 frames (15 s) had been shown already within
+  them (a still or a looping clip: one broken 4K feed had 34 different frames in
+  30 s, 92-100 %; a live cartoon channel 0 %). `other_feeds` ranks the
+  network's other switched-on variants as the network does (`_Scorer`);
+  the place keeps its name, key and item id; `mark_stuck` remembers the
+  feed for 3 h, so the next multi-view starts on another (`first_feed`),
+  and `/api/live/net/<nid>` plays another variant meanwhile
+  (`routers/livetv_catalog._not_stuck`): full screen from the grid gets the
+  feed the tile has, at no extra connection. No other feed: it stays
+  (`gave_up`). `describe()` shows `buffer_seconds`, `stalls`,
+  `held_seconds` per tile, `late_ticks` and `moved`.
 - **Connections:** `free_connections` = overall limit minus active leases
   minus recordings starting within 30 min (Jellyfin timers), then each
   provider's own limit; channels already streaming need none. Refused
@@ -1185,7 +1222,8 @@ order, so the player switches sound by switching tracks.
 - **Lifetime:** one session per person (a new one replaces theirs after
   it has its channels, so shared channels never close in between). `PUT`
   changes it in place: removed tiles leave first (a swap at capacity
-  works), new ones open, ffmpeg restarts with the new layout. Closed by
+  works), new ones open (a place that moved to another feed keeps it:
+  tiles match by key), the picture restarts with the new layout. Closed by
   DELETE, by Tentacle stopping, or by the reaper when nobody reads the
   picture and no keepalive came for 45 s. Full screen is the channel tuned
   through Jellyfin as usual: its upstream is open (a tile), so the tuner
