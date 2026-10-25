@@ -27,6 +27,13 @@ In Jellyfin's web app, **Live TV** opens straight to Tentacle's guide:
 
 It stays quick with thousands of channels and works on a phone. (Jellyfin's TV layout keeps Jellyfin's own guide.)
 
+## Multi-view (Android TV app)
+
+In the Tentacle Android TV app's guide, **Multi-view** (next to Recordings) puts two to four channels on screen at once: tick them in the guide, then **Start**. Two sit side by side, three or four in a 2×2 grid. You hear one at a time: the highlighted one (move with the D-pad). OK shows that channel full screen, Back returns to the grid, Back again leaves multi-view. Hold OK on a tile to swap or remove its channel.
+
+- Each channel uses one of your provider's connections (**Streams at once**), unless someone is already watching or recording it. Multi-view starts only when enough are free and never takes one a recording needs: a recording starting within 30 minutes keeps its connection, and one that starts later takes a multi-view channel's connection, like it would a viewer's. Every connection is given back when you leave.
+- Tentacle makes the grid as one picture (1080p, every channel's sound as its own track), so the TV plays one stream. With an Intel CPU it is made on the GPU (Quick Sync) when the container has `/dev/dri` (see [Docker Compose](../getting-started/docker-compose.md#gpu-for-multi-view)); otherwise on the CPU (about one core).
+
 ## Recordings: my teams and rules
 
 **Recordings** (in the sidebar, for everyone) records from the TV guide by itself.

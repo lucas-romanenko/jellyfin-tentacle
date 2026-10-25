@@ -25,6 +25,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
+# Intel's VAAPI driver (Quick Sync), so multi-view's picture is made on the
+# GPU when the container is given /dev/dri (docs: Docker Compose). Without
+# the device, or on another CPU, ffmpeg encodes on the CPU instead.
+RUN set -eux; \
+    if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+      sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources; \
+      apt-get update; \
+      apt-get install -y --no-install-recommends intel-media-va-driver-non-free; \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # Deno runs yt-dlp's JavaScript challenge solver (yt-dlp-ejs, requirements.txt)
 # for YouTube. Optional: without it the YouTube source still resolves most
 # videos (the visionos player client needs no JS runtime), but "made for kids"

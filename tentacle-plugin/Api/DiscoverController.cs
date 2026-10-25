@@ -1429,6 +1429,125 @@ public class TentacleDiscoverController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Client for the multi-view picture: a live stream, read for as long as it plays.
+    /// </summary>
+    private static readonly HttpClient StreamClient = new() { Timeout = System.Threading.Timeout.InfiniteTimeSpan };
+
+    private static readonly System.Text.RegularExpressions.Regex MultiViewId = new("^[A-Za-z0-9_-]{16,64}$");
+
+    /// <summary>
+    /// Multi-view (Tentacle /api/live/multiview): whether the caller can start one
+    /// now (free connections), start it on 2-4 channels, change it, keep it alive
+    /// while a channel plays full screen, close it. Tentacle checks the caller's
+    /// token and answers for that person only.
+    /// </summary>
+    [HttpGet("MultiView")]
+    [Authorize]
+    public Task<ActionResult> GetMultiView() => ForwardMultiView(HttpMethod.Get, "/api/live/multiview");
+
+    [HttpPost("MultiView")]
+    [Authorize]
+    public Task<ActionResult> StartMultiView() => ForwardMultiView(HttpMethod.Post, "/api/live/multiview");
+
+    [HttpPut("MultiView/{sessionId}")]
+    [Authorize]
+    public Task<ActionResult> ChangeMultiView([FromRoute] string sessionId) =>
+        MultiViewId.IsMatch(sessionId)
+            ? ForwardMultiView(HttpMethod.Put, $"/api/live/multiview/{sessionId}")
+            : Task.FromResult<ActionResult>(NotFound());
+
+    [HttpPost("MultiView/{sessionId}/Keepalive")]
+    [Authorize]
+    public Task<ActionResult> KeepMultiView([FromRoute] string sessionId) =>
+        MultiViewId.IsMatch(sessionId)
+            ? ForwardMultiView(HttpMethod.Post, $"/api/live/multiview/{sessionId}/keepalive")
+            : Task.FromResult<ActionResult>(NotFound());
+
+    [HttpDelete("MultiView/{sessionId}")]
+    [Authorize]
+    public Task<ActionResult> CloseMultiView([FromRoute] string sessionId) =>
+        MultiViewId.IsMatch(sessionId)
+            ? ForwardMultiView(HttpMethod.Delete, $"/api/live/multiview/{sessionId}")
+            : Task.FromResult<ActionResult>(NotFound());
+
+    private async Task<ActionResult> ForwardMultiView(HttpMethod method, string path)
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            return StatusCode(503, new { detail = "Tentacle is not set up" });
+        }
+
+        try
+        {
+            using var request = new HttpRequestMessage(method, AppendUserId($"{baseUrl}{path}"));
+            if (method == HttpMethod.Post || method == HttpMethod.Put)
+            {
+                using var reader = new StreamReader(Request.Body);
+                var json = await reader.ReadToEndAsync();
+                request.Content = new StringContent(string.IsNullOrWhiteSpace(json) ? "{}" : json,
+                    System.Text.Encoding.UTF8, "application/json");
+            }
+
+            // Starting opens up to four channels and waits for their first seconds.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            using var response = await AddClient.SendAsync(request, cts.Token);
+            var body = await response.Content.ReadAsStringAsync();
+            return new ContentResult { Content = body, ContentType = "application/json", StatusCode = (int)response.StatusCode };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("[Tentacle Discover] Multi-view: {Error}", ex.Message);
+            return StatusCode(502, new { detail = "Tentacle didn't answer" });
+        }
+    }
+
+    /// <summary>
+    /// The multi-view picture, passed through as it comes. Anonymous like Tentacle's
+    /// own address for it (a player can't always send credentials): the session id
+    /// is the secret, and only Tentacle's multi-view path can be reached.
+    /// </summary>
+    [HttpGet("MultiView/{sessionId}/Stream")]
+    public async Task MultiViewStream([FromRoute] string sessionId)
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl) || !MultiViewId.IsMatch(sessionId))
+        {
+            Response.StatusCode = 404;
+            return;
+        }
+
+        var aborted = HttpContext.RequestAborted;
+        try
+        {
+            using var response = await StreamClient.GetAsync(
+                $"{baseUrl}/api/live/multiview/{sessionId}/stream.ts", HttpCompletionOption.ResponseHeadersRead, aborted);
+            Response.StatusCode = (int)response.StatusCode;
+            if (!response.IsSuccessStatusCode)
+            {
+                return;
+            }
+
+            Response.ContentType = "video/mp2t";
+            Response.Headers["Cache-Control"] = "no-cache, no-store";
+            await using var upstream = await response.Content.ReadAsStreamAsync(aborted);
+            await upstream.CopyToAsync(Response.Body, 188 * 512, aborted);
+        }
+        catch (OperationCanceledException)
+        {
+            // The player went away.
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("[Tentacle Discover] Multi-view picture ended: {Error}", ex.Message);
+            if (!Response.HasStarted)
+            {
+                Response.StatusCode = 502;
+            }
+        }
+    }
+
     [HttpGet("Notifications")]
     [Authorize]
     public async Task<ActionResult> GetNotifications()

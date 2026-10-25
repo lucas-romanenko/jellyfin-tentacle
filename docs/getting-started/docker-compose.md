@@ -99,6 +99,19 @@ services:
 
     The VOD paths must point to folders that Jellyfin also has access to. Tentacle creates `.strm` and `.nfo` files here, and Jellyfin needs to read them.
 
+## GPU for multi-view
+
+Multi-view in the Android TV app (several Live TV channels on screen at once) is one picture Tentacle makes with ffmpeg. On an Intel CPU with integrated graphics, give the container the GPU and it is made there (Quick Sync, about a third of a CPU core for four channels); without it, on the CPU (about one core):
+
+```yaml
+tentacle:
+  # ...
+  devices:
+    - /dev/dri:/dev/dri
+```
+
+Nothing else needs it; leave it out if you don't use multi-view.
+
 ## Hybrid Series (VOD + Downloaded Episodes)
 
 If you want to use "Download More Episodes" to fill in missing episodes from a VOD series via Sonarr, both Tentacle and Sonarr need access to the VOD shows folder:
