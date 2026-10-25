@@ -2886,7 +2886,9 @@ def _sync_groups_from_xtream(provider_data: dict, db: Session, gap: float = 0.0)
         password=provider_data["password"],
         user_agent=provider_data["user_agent"],
     )
-    client.guard.gap = max(client.guard.gap, gap)
+    guard = getattr(client, "guard", None)
+    if gap and guard is not None:
+        guard.gap = max(guard.gap, gap)
 
     try:
         _set_sync_status(provider_id, {"phase": "running", "progress": 20, "message": "Fetching categories..."})
