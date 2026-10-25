@@ -31,8 +31,8 @@ Declared on the app in `main.py` (no router, all **none**; listed in
 "v1.23.0+3" for a build of main 3 commits after it, null when unknown;
 `commit`, `built`, `code`, `endpoints`), `GET /api/provider-status`
 (the provider health check for a monitor: 200 `{"status": "ok"}`, or 503
-`{"status": "failing", "since", "checked_at", "problems": [reason]}`; no
-provider names, URLs or logins).
+`{"status": "failing", "since", "checked_at", "problems": [reason], "case":
+[down|blocked|account|offline|other]}`; no provider names, URLs or logins).
 
 | Method | Path | Auth | Handler |
 |---|---|---|---|
@@ -88,7 +88,7 @@ provider names, URLs or logins).
 | POST | `/api/family/quick-connect` | admin | family.py:turn_on_codes |
 | GET | `/api/family/server` | admin | family.py:server_settings |
 | PUT | `/api/family/server` | admin | family.py:save_server_settings |
-| GET | `/api/family/status` | user | family.py:status |
+| GET | `/api/family/status` | user | family.py:status (`{"messages": [{"area", "text", and for a provider "kind" down/blocked/account/offline/other/channels/back, "provider", "since", "until", "title"}]}`: services/provider_status.py) |
 | POST | `/api/me/pw` | user | family.py:change_my_password (`{current, new}`: the welcome's "pick my own"; current checked with Jellyfin) |
 | GET | `/api/welcome` | user | family.py:welcome_state (the first-sign-in welcome: `show`, names, addresses, home rows) |
 | POST | `/api/welcome/done` | user | family.py:welcome_done |

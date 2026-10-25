@@ -787,6 +787,19 @@ def setup_scheduler(db):
         logger.info(f"Provider health check scheduled: hourly; start-up check skipped "
                     f"(last check {last.strftime('%H:%M')}), next at {due.strftime('%H:%M')}")
 
+    # A provider said down or refusing: "/" of its address (no login) every 5
+    # minutes, and a full check as soon as it answers again, so "back" shows
+    # without waiting for the hourly check (services/provider_status.py).
+    from services.provider_status import watch as watch_provider_status
+    scheduler.add_job(
+        watch_provider_status,
+        IntervalTrigger(minutes=5),
+        id="provider_status_watch",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
     # Live TV guide: a nightly download that failed, or a feed that reaches
     # only a day or so ahead, left an empty guide until the next night. A
     # failed guide sync is tried again after 5, 15, 30 minutes, then hourly,
@@ -952,6 +965,8 @@ async def lifespan(app: FastAPI):
     # Live updates: Radarr/Sonarr queue changes reach open screens (services/live_updates.py)
     from services import live_updates
     live_updates.start()
+    from services import provider_status
+    provider_status.start()
     # An image without a release stamp asks GitHub which release it follows
     from services import versions
     versions.derive_in_background(BUILD_COMMIT)

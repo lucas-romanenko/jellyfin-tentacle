@@ -102,6 +102,10 @@ class Picture(unittest.IsolatedAsyncioTestCase):
 
 class _Db(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        # provider_status keeps channels in memory: none from another test
+        from services import provider_status
+        provider_status.reset()
+        self.addCleanup(provider_status.reset)
         import models.database as mdb
         engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db", connect_args={"check_same_thread": False})
         mdb.Base.metadata.create_all(engine)
@@ -218,6 +222,36 @@ class ProviderDoesNotDeliver(_Db):
         self.assertEqual([S.not_coming_through()], self.pictures)
         self.assertEqual("Not coming through", self.pictures[0][0])
         self.assertEqual(0, self.slots.active, "the slot is free again")
+
+    async def test_the_picture_says_which_kind_of_trouble(self):
+        # Lucas, 25 Oct 2026: the provider down, this home refused, the
+        # account, or only this channel (services/provider_status.py)
+        import json
+        import models.database as mdb
+        from services import provider_health as ph, provider_status as ps
+        ps.reset()
+        self.addCleanup(ps.reset)
+        since = datetime.now().astimezone().replace(hour=18, minute=30, second=0, microsecond=0)
+        row = mdb.Setting(key=ph.SETTING_KEY, value=json.dumps({"1": {
+            "state": "failing", "since": since.isoformat(), "step": "api", "kind": "http", "code": 521,
+            "case": "down", "case_detail": "not answering"}}))
+        self.db.add(row)
+        self.db.commit()
+        with patch.object(livetv, "_stream_proxy_inner", self.refused):
+            await self.body(await livetv.stream_proxy(9, db=self.db))
+        self.assertEqual(("p is down", "Their server isn't answering (since 6:30 PM)",
+                          "Not your setup. Live TV comes back by itself"), self.pictures[-1])
+        # Only this channel: the provider works, another channel delivered
+        self.db.delete(row)
+        self.db.commit()
+        ps.reset()
+        ps.channel_ok(1, 8)
+        with patch.object(livetv, "_stream_proxy_inner", self.refused):
+            await self.body(await livetv.stream_proxy(9, db=self.db))
+            self.assertEqual(S.not_coming_through(), self.pictures[-1], "once is a blip")
+            await self.body(await livetv.stream_proxy(9, db=self.db))
+        self.assertEqual(("Not coming through", "p isn't sending this channel right now",
+                          "Other channels work. Try another one"), self.pictures[-1])
 
     async def test_while_another_stream_of_the_account_runs_it_says_in_use(self):
         held = await self.slots.acquire_lease(0, 0, "live", "channel:8", provider_id=1)

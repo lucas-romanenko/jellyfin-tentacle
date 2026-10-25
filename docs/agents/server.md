@@ -606,8 +606,47 @@ movies/series, then Sonarr/Radarr text-lookup titles TMDB lacks (TheTVDB).
   starts failing, one when it works again (only if the first went out);
   a failed send is tried on the next run.
 - Shown on the dashboard by `loadProviderProblems()` (`static/js/app.js`,
-  admins, every 2 min), and to monitors by `GET /api/provider-status`
-  (503 while failing, no names).
+  admins, every 2 min and on the "health"/"status" live updates), and to
+  monitors by `GET /api/provider-status` (503 while failing, no names).
+- Which kind of trouble (`services/provider_status.py`, Roadmap 25 Oct
+  2026): a failure the check confirmed gets `case` down / blocked /
+  account / other and `case_detail` from `diagnose()`: the outcome (API
+  refusals keep Cloudflare's 1xxx `cf_error` and the panel's "Database
+  Error" `hint`, `_page_hints`) plus `reach()` of every address (GET "/"
+  with the player User-Agent, no login, no account connection: answers /
+  origin_down (CF 52x, 530) / blocked (CF 403 + 10xx, 511) / server_error /
+  refused / no_answer / name_not_found) and whether a backup logged in
+  within 2 h (`look()`). Every address silent on an "unreachable" failure
+  also asks `INTERNET_PROBE` (TMDB's API host): nothing there either is
+  case `offline` ("this home's internet connection seems to be down"),
+  never "down, not your setup". Python's own User-Agent gets CF 1010 everywhere: never test
+  without the player's. A confirmation that would stand aside (someone
+  watching) confirms an API failure with `reach()` of the address in use
+  instead (`_confirm_by_reach`; no second login). A live stream delivering
+  clears a server-side failure (`_server_side`) as well as a stream one.
+  `expires` (the login's `exp_date`) is kept for "ends soon" (7 days,
+  admins only, alert `provider_expiry:<id>`); `back` {since, until, case}
+  for "is back" (30 min).
+- Live TV feeds it per channel, in memory: `channel_failed` (an open that
+  ended in `_PROVIDER_FAILED`, a viewer's stream that ended while failing)
+  and `channel_ok` (heard delivering, `_tell_provider_health`). 2 failures
+  in 30 min while another channel of the provider delivered = "some
+  channels" (`broken_channels`, `provider_view().channels_down`). Two
+  channels failing within 10 min with nothing delivering starts
+  `quick_look` in a thread (only in the running app, `start()`; at most
+  every 5 min): `reach()` only, and a failure there (or 3+ channels failing
+  with none delivering) is recorded at once (`provider_health.record`).
+  `watch()` (job `provider_status_watch`, 5 min): a provider down or
+  blocked whose address answers "/" again gets `check_now` when nobody
+  watches.
+- Words: `messages(db, admin)` (`/api/family/status` and the plugin's
+  FamilyStatus through `admin_alerts.family_messages`: `kind`, `provider`,
+  `since`, `until`, `title`, `text`; provider alerts add no general line),
+  `describe()` for the admin banner (`headline`, `plain`) and the Jellyfin
+  messages' titles, `slate_lines()` for the "Not coming through" picture.
+  A change in the words publishes "status" to every tab and, through the
+  plugin's Notify, to every Jellyfin client (Jellyfin Web's guide, the TV
+  app); nothing while nobody listens.
 
 ## Brand (`static/brand/`, drawn by `scripts/brand.py`)
 

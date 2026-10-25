@@ -23,6 +23,8 @@ Topics:
   library        a title came into or left the library ({"event": ...})
   recordings     a recording rule changed, or what it will record (everyone:
                  recordings are the household's)
+  status         what's wrong with Live TV's provider changed (everyone: the
+                 plain words of services/provider_status, GET /api/family/status)
 
 Jellyfin Web and the Tentacle TV app hear about requests, activity and
 notifications through the plugin (POST /Tentacle/Notify, one Jellyfin
@@ -151,15 +153,16 @@ async def stream(user_id: int, is_admin: bool, is_disconnected=None):
 
 # ── Jellyfin Web and the TV app, through the plugin ───────────────────────────
 
-CLIENT_TOPICS = ("requests", "activity", "notifications", "recordings")
+CLIENT_TOPICS = ("requests", "activity", "notifications", "recordings", "status")
 CLIENT_DELAY = 0.3   # gathers a burst (approve = requests + notifications + activity)
 _client_lock = threading.Lock()
-_client_pending: "list[tuple]" = []        # (topic, Tentacle user ids, admins too)
+_client_pending: "list[tuple]" = []        # (topic, Tentacle user ids, admins too, everyone)
 _client_timer: Optional[threading.Timer] = None
 _clients_on = False                        # start(): only the running app talks to the plugin
 
 
-def tell_clients(topic: str, *, user_ids: Iterable[int] = (), admins: bool = False) -> None:
+def tell_clients(topic: str, *, user_ids: Iterable[int] = (), admins: bool = False,
+                 everyone: bool = False) -> None:
     """Have the plugin tell these people's Jellyfin clients (Jellyfin Web's
     Tentacle scripts, the TV app) that `topic` changed. Gathered for a moment
     and sent in the background; never raises, never blocks."""
@@ -170,10 +173,10 @@ def tell_clients(topic: str, *, user_ids: Iterable[int] = (), admins: bool = Fal
         ids = frozenset(int(u) for u in user_ids if u is not None)
     except (TypeError, ValueError):
         return
-    if not ids and not admins:
+    if not ids and not admins and not everyone:
         return
     with _client_lock:
-        _client_pending.append((topic, ids, admins))
+        _client_pending.append((topic, ids, admins, everyone))
         if _client_timer is None:
             _client_timer = threading.Timer(CLIENT_DELAY, _send_to_clients)
             _client_timer.daemon = True
@@ -201,8 +204,8 @@ def _send_to_clients() -> None:
             return
         topics_of: "dict[str, set]" = {}   # Jellyfin user id (no dashes) -> topics
         for pk, jf_id, is_admin in people:
-            for topic, ids, admins in pending:
-                if jf_id and (pk in ids or (admins and is_admin)):
+            for topic, ids, admins, everyone in pending:
+                if jf_id and (everyone or pk in ids or (admins and is_admin)):
                     topics_of.setdefault(jf_id.replace("-", "").lower(), set()).add(topic)
         post_notify(url, key, topics_of)
     except Exception as e:

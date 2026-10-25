@@ -166,6 +166,8 @@ def reason(outcome: dict, since: datetime, now: datetime) -> str:
     if kind == "login":
         return (f"Provider rejects the login since {t}. Check the username and password; "
                 f"the account may have expired")
+    if kind == "not_json" and outcome.get("hint") == "database_error":
+        return f"Provider's panel shows a database error since {t}. On their side"
     if kind == "not_json":
         return (f"Provider answers with a web page instead of its API since {t}. "
                 f"Likely a moved URL or a block page")
@@ -184,6 +186,9 @@ def reason(outcome: dict, since: datetime, now: datetime) -> str:
         return f"Provider{' stream' if streams else ''} server error (HTTP {code}) since {t}. Usually on their side"
     if not streams and code == 404:
         return f"Provider address not found (404) since {t}. The server URL may have moved"
+    if not streams and outcome.get("cf_error"):
+        return (f"Provider refusing: {code} (Cloudflare error {outcome['cf_error']}) since {t}. "
+                f"This home's connection is blocked")
     if not streams:
         return f"Provider refusing: {code} since {t}. Likely IP block, expired account or moved URL"
     login_ok = " (the login still works)" if outcome.get("api_ok") else ""
@@ -216,11 +221,11 @@ def _check_xtream_api(p: Provider, ua: str) -> dict:
         if code == 401:
             return _fail("api", "login", code)
         if code != 200:
-            return _fail("api", "http", code)
+            return {**_fail("api", "http", code), **_page_hints(r)}
         try:
             data = r.json()
         except ValueError:
-            return _fail("api", "not_json", code)
+            return {**_fail("api", "not_json", code), **_page_hints(r)}
     finally:
         r.close()
     user_info = data.get("user_info") if isinstance(data, dict) else None
@@ -237,7 +242,29 @@ def _check_xtream_api(p: Provider, ua: str) -> dict:
         return _fail("api", "status", detail=_clean(status))
     if exp and exp < time.time():
         return _fail("api", "expired", detail=expired_on)
-    return _ok()
+    return _ok(expires=exp)
+
+
+def _page_hints(r) -> dict:
+    """What a refusal or a web page instead of the API says, for
+    services/provider_status: Cloudflare's 1xxx code, the panel's
+    "Database Error". Only words, nothing of the page is kept."""
+    from services.provider_status import _cf_error
+    try:
+        text = (getattr(r, "text", "") or "")[:4096]
+    except Exception:
+        return {}
+    if not isinstance(text, str):
+        return {}
+    out = {}
+    headers = getattr(r, "headers", None) or {}
+    if "cf-ray" in {k.lower() for k in headers} or (headers.get("Server") or "").lower() == "cloudflare":
+        out["cf"] = True
+        if _cf_error(text):
+            out["cf_error"] = _cf_error(text)
+    if "database error" in text.lower():
+        out["hint"] = "database_error"
+    return out
 
 
 def _check_m3u_url(p: Provider, ua: str) -> dict:
@@ -363,7 +390,10 @@ def check_provider(db, p: Provider, sleep=time.sleep) -> dict:
     api = _check_api(p, ua)
     if api is not None and api["verdict"] != "ok":
         return api
-    return _check_streams(db, p, ua, api_ok=api is not None, sleep=sleep)
+    out = _check_streams(db, p, ua, api_ok=api is not None, sleep=sleep)
+    if api is not None and api.get("expires") and out.get("verdict") == "ok":
+        out["expires"] = api["expires"]     # "the account ends soon" (services/provider_status)
+    return out
 
 
 # ─── State ────────────────────────────────────────────────────────────────────
@@ -393,8 +423,9 @@ def _save_state(db, state: dict) -> None:
     before = get_setting(db, SETTING_KEY, "")
     set_setting(db, SETTING_KEY, json.dumps(state))
     if json.dumps(state) != before:
-        from services import live_updates
+        from services import live_updates, provider_status
         live_updates.publish("health", admins=True)
+        provider_status.changed()
 
 
 def forget(db, provider_id: int) -> None:
@@ -414,7 +445,8 @@ def forget(db, provider_id: int) -> None:
 def _unknown() -> dict:
     return {"state": "unknown", "since": None, "checked_at": None, "skipped_at": None,
             "step": None, "code": None, "kind": None, "reason": None,
-            "alerted": False, "recovery_due": None, "suspect": None}
+            "alerted": False, "recovery_due": None, "suspect": None,
+            "case": None, "case_detail": None, "back": None}
 
 
 def _watched(db) -> list:
@@ -453,7 +485,13 @@ def _apply(db, state: dict, p: Provider, outcome: dict, first_at: datetime, now:
             log_activity(db, "provider_health", msg)
             if prev.get("alerted"):
                 entry["recovery_due"] = {"since": prev.get("since"), "until": now.isoformat()}
-        entry.update(state="ok", since=None, step=None, code=None, kind=None, reason=None, alerted=False)
+        if prev.get("state") == "failing":
+            # "IPTV Bears is back" for a while (services/provider_status)
+            entry["back"] = {"since": prev.get("since"), "until": now.isoformat(), "case": prev.get("case")}
+        if outcome.get("expires"):
+            entry["expires"] = outcome["expires"]
+        entry.update(state="ok", since=None, step=None, code=None, kind=None, reason=None, alerted=False,
+                     case=None, case_detail=None, other_route=None, expired_on=None)
     else:
         if prev.get("state") == "failing":
             since = _parse(prev.get("since")) or first_at
@@ -472,7 +510,13 @@ def _apply(db, state: dict, p: Provider, outcome: dict, first_at: datetime, now:
             logger.warning(f"[Provider health] {p.name}: {text}")
             log_activity(db, "provider_health", f"Provider {p.name}: {text}")
         entry.update(state="failing", since=since.isoformat(), step=outcome.get("step"),
-                     code=outcome.get("code"), kind=outcome.get("kind"), reason=text)
+                     code=outcome.get("code"), kind=outcome.get("kind"), reason=text, back=None,
+                     expired_on=outcome.get("detail") if outcome.get("kind") == "expired" else None)
+        if outcome.get("case") or prev.get("state") != "failing":
+            # Which kind of trouble (services/provider_status.diagnose); a
+            # note (a sync, a stream) has none and keeps what a check found.
+            entry.update(case=outcome.get("case"), case_detail=outcome.get("case_detail"),
+                         other_route=outcome.get("other_route"))
 
     if entry["state"] == "failing" and not entry.get("alerted"):
         entry["alerted"] = pushover.send(db, f"Tentacle: {p.name} is failing", entry["reason"], _link(db))
@@ -517,9 +561,19 @@ def check_providers(db, confirm_delay=RETRY_DELAY_SECONDS, sleep=time.sleep) -> 
 
     outcomes, first_at, logged = {}, {}, []
 
-    def check(p):
-        """One provider, unless live TV or a recording started since the last look."""
-        out = _aside("api") if _stand_aside(db) else check_provider(db, p, sleep)
+    def check(p, confirming=False):
+        """One provider, unless live TV or a recording started since the last look.
+        Confirming a failure while someone watches: the address in use is
+        asked for "/" with no login (no connection on the account), and a
+        failure there confirms; an answer leaves it unconfirmed."""
+        if _stand_aside(db):
+            if confirming:
+                out = _confirm_by_reach(p, outcomes[p.id])
+                if out is not None:
+                    return out
+            out = _aside("api")
+        else:
+            out = check_provider(db, p, sleep)
         if out.get("aside") and not logged:
             logged.append(True)
             logger.info("[Provider health] live TV or a recording started during the check: providers not checked yet wait for the next run")
@@ -542,10 +596,13 @@ def check_providers(db, confirm_delay=RETRY_DELAY_SECONDS, sleep=time.sleep) -> 
             if p is None:
                 outcomes.pop(pid, None)
                 continue
-            outcomes[pid] = check(p)
+            outcomes[pid] = check(p, confirming=True)
             if outcomes[pid]["verdict"] == "ok":
                 logger.info(f"[Provider health] {p.name}: the failure did not repeat")
 
+    for p in providers:
+        if (outcomes.get(p.id) or {}).get("verdict") == "fail":
+            _diagnose(db, p, outcomes[p.id])
     now = _now()
     with _state_lock:
         state = fresh()
@@ -568,6 +625,48 @@ def check_providers(db, confirm_delay=RETRY_DELAY_SECONDS, sleep=time.sleep) -> 
     checked = sum(1 for o in outcomes.values() if o["verdict"] in ("ok", "fail"))
     return {"skipped": bool(logged), "checked": checked, "failing": len(failing),
             "switched": len(switched)}
+
+
+def _diagnose(db, p: Provider, outcome: dict) -> None:
+    """Which kind of trouble a confirmed failure is (down, blocked, account,
+    other): services/provider_status, from "/" of every address of the
+    provider (no login) and the backups' last test. Into the outcome."""
+    from services import provider_status
+    try:
+        found = provider_status.look(p, outcome)
+    except Exception as e:
+        # The type only: an error's text names the address
+        logger.warning(f"[Provider health] could not tell which kind of failure this is: {type(e).__name__}")
+        return
+    outcome.update(case=found["case"], case_detail=found["detail"], other_route=found.get("other_route"))
+    logger.info(f"[Provider health] {p.name}: {found['case']} ({found['detail']}); "
+                f"addresses: {', '.join(found['probes']) or 'not asked'}")
+
+
+def _confirm_by_reach(p: Provider, first: dict):
+    """A failure confirmed without the account: "/" of the address in use
+    (the player User-Agent, no login) fails too. None: it answers, or
+    there is nothing to ask (an M3U file)."""
+    from services import provider_status
+    if first.get("verdict") != "fail" or first.get("step") != "api" or (p.provider_type or "xtream") != "xtream":
+        return None
+    r = provider_status.reach(p.server_url or "", p.user_agent or DEFAULT_UA)
+    out = provider_status._outcome_from_reach(r)
+    if out is None:
+        return None
+    logger.info(f"[Provider health] {p.name}: someone is watching, so the failure is confirmed without "
+                f"logging in: the address answers {r['how']}")
+    # The first check's own words (its code, its kind) stay the reason
+    return {**out, **{k: v for k, v in first.items() if k in ("kind", "code", "detail", "hint", "cf_error")}}
+
+
+def record(db, p: Provider, outcome: dict, first_at: datetime) -> None:
+    """A failure seen outside the hourly check (services/provider_status's
+    quick look, from live channels failing), applied like a check's."""
+    with _state_lock:
+        state = _load_fresh(db)
+        _apply(db, state, p, outcome, first_at, _now())
+        _save_state(db, state)
 
 
 def address_switched(db, provider_id: int):
@@ -609,6 +708,16 @@ def note(db, provider_id, ok: bool, step: str, code=None) -> None:
             pass
 
 
+def _server_side(entry: dict) -> bool:
+    """A failure of the provider's server (down, not a refusal or the
+    account): any live stream delivering again proves it's over."""
+    if entry.get("case") == "down":
+        return True
+    kind, code = entry.get("kind"), entry.get("code")
+    return kind == "unreachable" and entry.get("case") != "blocked" or \
+        (kind == "http" and (code or 0) >= 500) or (kind == "not_json" and entry.get("case") != "blocked")
+
+
 def _note(db, provider_id, ok: bool, step: str, code) -> None:
     p = next((p for p in _watched(db) if p.id == provider_id), None)
     if p is None:
@@ -622,7 +731,8 @@ def _note(db, provider_id, ok: bool, step: str, code) -> None:
         changed = suspect is not None
         entry["suspect"] = None
         state[key] = entry
-        if entry.get("state") == "failing" and entry.get("step") == step:
+        if entry.get("state") == "failing" and (entry.get("step") == step or (
+                step == "stream" and _server_side(entry))):
             _apply(db, state, p, _ok(), now, now)
             changed = True
         if changed:
@@ -707,7 +817,7 @@ def check_running() -> bool:
 
 # ─── Views ────────────────────────────────────────────────────────────────────
 
-_SHOWN = ("state", "since", "checked_at", "skipped_at", "step", "code", "kind", "reason")
+_SHOWN = ("state", "since", "checked_at", "skipped_at", "step", "code", "kind", "reason", "case")
 
 
 def provider_view(db) -> list:
@@ -722,8 +832,12 @@ def provider_view(db) -> list:
         except Exception as e:
             logger.warning(f"[Provider health] Could not read the guide state of {p.name}: {e}")
             guide = None
+        from services import provider_status
+        said = provider_status.describe(p.name, entry, _now(), admin=True) or {}
         out.append({"id": p.id, "name": p.name, "provider_type": p.provider_type or "xtream",
-                    **{k: entry.get(k) for k in _SHOWN}, "guide_problem": guide})
+                    **{k: entry.get(k) for k in _SHOWN}, "guide_problem": guide,
+                    "case": said.get("kind"), "headline": said.get("title"), "plain": said.get("text"),
+                    "channels_down": provider_status.broken_channels(p.id) if p.live_tv_enabled else []})
     return out
 
 
@@ -741,4 +855,6 @@ def public_status(db) -> tuple:
         return 200, body
     body["since"] = min(e["since"] for e in failing if e.get("since")) if any(e.get("since") for e in failing) else None
     body["problems"] = [e.get("reason") or "Provider failing" for e in failing]
+    from services.provider_status import _fallback_case
+    body["case"] = [e.get("case") or _fallback_case(e) for e in failing]
     return 503, body

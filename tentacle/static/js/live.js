@@ -159,6 +159,14 @@ live.handlers.health = () => {
   _run('loadHealthAlerts');
 };
 
+// What's wrong with Live TV's provider changed (down, back, some channels):
+// the banner says so without a reload.
+live.handlers.status = () => {
+  if (!_isAdmin()) { _run('famRefreshBanner'); return; }
+  if (state.currentPage === 'health') { _run('loadHealthPage'); return; }
+  _run('loadProviderProblems');
+};
+
 live.handlers.home = () => {
   if (state.currentPage !== 'jellyfin' || liveOwnChange() || liveBusy('page-jellyfin')) return;
   _run('loadJellyfinPage');

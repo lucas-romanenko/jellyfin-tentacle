@@ -187,7 +187,7 @@ public class TentacleController : ControllerBase
             .Where(g => g != Guid.Empty)
             .Distinct()
             .ToList();
-        var known = new HashSet<string>(StringComparer.Ordinal) { "requests", "activity", "notifications", "recordings" };
+        var known = new HashSet<string>(StringComparer.Ordinal) { "requests", "activity", "notifications", "recordings", "status" };
         var what = string.Join(",", (topics ?? string.Empty)
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(known.Contains)

@@ -394,7 +394,9 @@ class StandsAsideMidRun(Base_):
         # unconfirmed failure is no verdict.
         self.run_with_live_start({API: FakeResponse(403), "http://two.example.test/": FakeResponse(403)},
                                  starts_after=API, nth=2)
-        self.assertEqual(len([u for u in self.net.calls if u.startswith("http://two.example.test/")]), 1)
+        # Its login once; on the re-check only "/" (no login: someone watches)
+        self.assertEqual([u for u in self.net.calls if u.startswith("http://two.example.test/")][1:],
+                         ["http://two.example.test/"])
         s = ph.load_state(self.db)[str(two.id)]
         self.assertEqual(s["state"], "unknown")
         self.assertIsNotNone(s["skipped_at"])

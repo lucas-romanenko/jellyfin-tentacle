@@ -87,17 +87,32 @@ def active(db: Session, area: Optional[str] = None) -> list:
 # ── What is wrong now ───────────────────────────────────────────────────────
 
 def _seen_providers(db: Session) -> dict:
-    """key -> (area, title, message, push) for failing providers."""
-    from services import provider_health
+    """key -> (area, title, message, push) for failing providers, titled by
+    which kind of trouble it is (services/provider_status: down, refusing
+    this home's connection, the account), and an account that ends within
+    a week."""
+    from services import provider_health, provider_status
     out = {}
     state = provider_health.load_state(db)
+    now = provider_health._now()
     for p in db.query(Provider).all():
         entry = state.get(str(p.id)) or {}
-        if entry.get("state") != "failing" or not (p.active or p.live_tv_enabled):
+        if not (p.active or p.live_tv_enabled):
             continue
         area = "livetv" if p.live_tv_enabled else "library"
-        out[f"provider:{p.id}"] = (area, f"{p.name} is failing",
-                                   entry.get("reason") or "The provider doesn't answer.", False)
+        if entry.get("state") != "failing":
+            soon = provider_status._expiry(p.name, entry, now)
+            if soon:
+                out[f"provider_expiry:{p.id}"] = (area, soon["title"], soon["text"], True)
+            continue
+        said = provider_status.describe(p.name, entry, now, admin=True) or {}
+        title = {"down": f"{p.name} is down", "blocked": f"{p.name} is refusing this home's connection",
+                 "account": said.get("title"), "offline": said.get("title")}.get(said.get("kind")) \
+            or f"{p.name} is failing"
+        message = said.get("text") or entry.get("reason") or "The provider doesn't answer."
+        if entry.get("reason") and said.get("kind") != "other":
+            message += f" ({entry['reason']})"
+        out[f"provider:{p.id}"] = (area, title, message, False)
     return out
 
 
@@ -194,7 +209,8 @@ def check(db: Session) -> dict:
             continue
         if row.key.startswith(checked) or (row.key.startswith("disk:") and "_seen_arr" in owned_prefixes):
             push = not row.key.startswith("provider:")
-            cleared += clear_alert(db, row.key, push=push)
+            fixed = "It works again." if row.key.startswith("provider:") else ""
+            cleared += clear_alert(db, row.key, fixed, push=push)
     return {"raised": raised, "cleared": cleared, "active": len(active(db))}
 
 
@@ -224,13 +240,33 @@ _FAMILY_TEXT = {
 
 def family_messages(db: Session) -> list:
     """One plain line per area with an active problem: no addresses, codes or
-    app names. Same for everyone (admins see the details on Health)."""
+    app names. Same for everyone (admins see the details on Health).
+
+    The provider's own lines come first and say which kind of trouble it is
+    (services/provider_status: "IPTV Bears is down right now (their server
+    isn't answering), since 6:30 PM. ..."), straight from provider health,
+    so they show and go without waiting for the 10-minute alert check; a
+    provider's alert never adds a general line on top."""
     from services.approvals import approver_name
+    from services import provider_status
     who = approver_name(db)
     if who == "your admin":
         who = "Your admin"
+    try:
+        said = provider_status.messages(db)
+    except Exception as e:
+        logger.warning(f"[Alerts] Provider status not read: {e}")
+        said = []
+    out = []
+    for m in said:
+        text = m["text"]
+        if m["kind"] in ("blocked", "account", "other"):
+            text += f" {who} knows."
+        out.append({**m, "text": text})
     areas = []
     for row in active(db):
+        if row.key.startswith(("provider:", "provider_expiry:")):
+            continue        # said above, in its own words, or over already
         if row.area not in areas:
             areas.append(row.area)
-    return [{"area": a, "text": _FAMILY_TEXT[a].format(who=who)} for a in AREAS if a in areas]
+    return out + [{"area": a, "text": _FAMILY_TEXT[a].format(who=who)} for a in AREAS if a in areas]

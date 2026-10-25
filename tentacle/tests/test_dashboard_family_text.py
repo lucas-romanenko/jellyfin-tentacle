@@ -69,5 +69,26 @@ class FamilyTextIsEscaped(unittest.TestCase):
         self.assertIn("n.textContent = G.notice", LIVETV)
 
 
+class ProviderStatusReachesEveryScreen(unittest.TestCase):
+    """What's wrong with Live TV's provider (services/provider_status.py)
+    goes away by itself on every screen: Tentacle's "status" live update,
+    passed on by the plugin to Jellyfin Web's guide and the TV app."""
+
+    def test_the_guide_reads_it_again_on_status_and_every_minute(self):
+        self.assertIn("indexOf('status') >= 0", LIVETV)
+        self.assertIn("msg.MessageType === 'TentacleStatus') { loadNotice().then(showNotice)", LIVETV)
+        self.assertIn("Date.now() - (G.noticeAt || 0) >= 60000", LIVETV)
+
+    def test_the_plugin_passes_status_on(self):
+        ctl = (ROOT / "tentacle-plugin" / "Api" / "TentacleController.cs").read_text(encoding="utf-8")
+        self.assertIn('"recordings", "status" }', ctl)
+
+    def test_the_dashboard_redraws_on_status(self):
+        live = (ROOT / "tentacle" / "static" / "js" / "live.js").read_text(encoding="utf-8")
+        self.assertIn("live.handlers.status = ", live)
+        from services.live_updates import CLIENT_TOPICS
+        self.assertIn("status", CLIENT_TOPICS)
+
+
 if __name__ == "__main__":
     unittest.main()

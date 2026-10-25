@@ -616,6 +616,28 @@ async def _refuse_placeholder(channel_id: int, segment: str):
     raise _PlaceholderRefusal(f"Channel unavailable: the provider served a placeholder ({segment})")
 
 
+def _detail_code(detail) -> "int | None":
+    """The HTTP status in a _PROVIDER_FAILED detail ("... answered 504")."""
+    m = re.search(r"answered (\d{3})", str(detail or ""))
+    return int(m.group(1)) if m else None
+
+
+def _provider_slate(bind, provider_id, channel_id) -> "tuple | None":
+    """What the "Not coming through" picture says about this provider now
+    (down, refusing, the account, this channel only), or None. A thread
+    with a session of its own on the request's database."""
+    from sqlalchemy.orm import Session as _Session
+    from services import provider_status
+    db = _Session(bind=bind)
+    try:
+        return provider_status.slate_lines(db, provider_id, channel_id)
+    except Exception as e:
+        logger.debug(f"[LiveTV] provider status for the slate not read: {e}")
+        return None
+    finally:
+        db.close()
+
+
 def _placeholder_lines(ch) -> tuple:
     from services import livetv_slate
     return livetv_slate.unavailable(_channel_event(ch), ch.guide_name if ch is not None else "")
@@ -2038,6 +2060,8 @@ def _stream_ended(channel_id: int, entry: dict, recording: bool, hls: bool = Fal
     del _recent_streams[:-_RECENT_STREAMS_MAX]
     if h.get("ended_on_error") and h.get("_refused") in (401, 403):
         _tell_provider_health(channel_id, False, h["_refused"])
+    elif h.get("ended_on_error") and not recording:
+        _tell_channel_failed(channel_id)
     # A raw TS reconnect is a gap unless it was joined where the stream
     # stopped (#368): then the provider's buffer covered the wait. An HLS
     # "interruption" can be one segment retried in place within the playlist
@@ -2160,6 +2184,9 @@ def _tell_provider_health(channel_id: int, ok: bool, code=None):
                            .filter(LiveChannel.id == channel_id).scalar())
             if not isinstance(provider_id, int):
                 return
+            if ok:
+                from services import provider_status
+                provider_status.channel_ok(provider_id, channel_id)
             if delivering and db.query(LiveChannel.id).filter(
                     LiveChannel.id.in_(delivering),
                     LiveChannel.provider_id == provider_id).first() is not None:
@@ -2169,6 +2196,29 @@ def _tell_provider_health(channel_id: int, ok: bool, code=None):
             provider_health.note(db, provider_id, ok, "stream", code)
         except Exception as e:
             logger.debug(f"[LiveTV] Could not tell provider health about channel {channel_id}: {e}")
+        finally:
+            if db is not None:
+                db.close()
+    try:
+        return asyncio.get_running_loop().run_in_executor(None, _write)
+    except RuntimeError:
+        return None
+
+
+def _tell_channel_failed(channel_id: int):
+    """A viewer's stream ended while the provider still failed (any reason,
+    not only a refusal): per channel, services/provider_status. In the
+    default executor (it reads the channel's provider). Never raises."""
+    def _write():
+        db = None
+        try:
+            db = SessionLocal()
+            ch = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
+            if ch is not None:
+                from services import provider_status
+                provider_status.channel_failed(ch.provider_id, channel_id, ch.guide_name or "")
+        except Exception as e:
+            logger.debug(f"[LiveTV] Could not note channel {channel_id}'s failure: {e}")
         finally:
             if db is not None:
                 db.close()
@@ -5461,6 +5511,12 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
         return slate
     except HTTPException as e:
         _release_sem()
+        if e.status_code == 502 and str(e.detail).startswith(_PROVIDER_FAILED) and ch is not None:
+            # Per channel, for "some channels only" and a quick look at the
+            # provider when several fail (services/provider_status)
+            from services import provider_status
+            provider_status.channel_failed(ch.provider_id, channel_id, ch.guide_name or ch.name,
+                                           _detail_code(e.detail), bind=db.get_bind())
         if lease.kind != "live" or e.status_code != 502 or not str(e.detail).startswith(_PROVIDER_FAILED):
             raise
         # The provider didn't deliver: the viewer is told so on the player
@@ -5473,7 +5529,10 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
             raise
         from services import livetv_slate
         others = _stream_slots.provider_active(ch.provider_id if ch else None)
+        said = None if others or ch is None else await asyncio.to_thread(
+            _provider_slate, db.get_bind(), ch.provider_id, channel_id)
         lines, reason = ((livetv_slate.connection_in_use(provider_limit or limit), "connection in use") if others
+                         else (said, "provider not delivering") if said
                          else (livetv_slate.not_coming_through(), "provider not delivering"))
         slate = await _nothing_on_response(channel_id, lines, reason)
         if slate is None:
