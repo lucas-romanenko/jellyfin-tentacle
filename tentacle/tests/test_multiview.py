@@ -58,7 +58,7 @@ class FfmpegArgs(unittest.TestCase):
     def test_two_tiles_are_padded_to_1080(self):
         a = self._args(2)
         g = a[a.index("-filter_complex") + 1]
-        self.assertIn("xstack=inputs=2:layout=0_270|960_270", g)
+        self.assertIn("xstack=inputs=2:layout=0_0|960_0", g)
         self.assertIn("pad=1920:1080:0:270", g)
 
     def test_cpu_encode_without_gpu(self):
@@ -204,6 +204,49 @@ def _make_ts(path: str, seconds: int, freq: int, size: str = "640x360"):
                     "-f", "lavfi", "-i", f"sine=f={freq}:r=48000",
                     "-t", str(seconds), "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
                     "-g", "25", "-c:a", "aac", "-f", "mpegts", path], check=True)
+
+
+@unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg")
+class Picture(unittest.TestCase):
+    """The real ffmpeg graph puts each tile where layout() says (two tiles:
+    the strip in the middle, black above and below)."""
+
+    def _luma_rows(self, n: int) -> list:
+        from services.multiview import HEIGHT, WIDTH, ffmpeg_args
+        d = temp_dir(self)
+        ins = []
+        for i in range(n):
+            p = f"{d}/c{i}.ts"
+            subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                            "-f", "lavfi", "-i", "color=c=white:s=640x360:r=25",
+                            "-f", "lavfi", "-i", "sine=f=440:r=48000", "-t", "2",
+                            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                            "-c:a", "aac", "-f", "mpegts", p], check=True)
+            ins.append(p)
+        args = ffmpeg_args(ins, "x264", [f"Ch {i}" for i in range(n)], [True] * n)
+        args[-1] = f"{d}/out.ts"
+        subprocess.run(["timeout", "60"] + args, check=True)
+        raw = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", "1", "-i", f"{d}/out.ts",
+                              "-frames:v", "1", "-vf", "format=gray", "-f", "rawvideo", "pipe:1"],
+                             capture_output=True, check=True).stdout
+        self.assertEqual(len(raw), WIDTH * HEIGHT)
+        # mean brightness of each row's left and right half
+        return [(sum(raw[y * WIDTH:y * WIDTH + WIDTH // 2]) // (WIDTH // 2),
+                 sum(raw[y * WIDTH + WIDTH // 2:(y + 1) * WIDTH]) // (WIDTH // 2)) for y in range(HEIGHT)]
+
+    def test_two_tiles_sit_in_the_middle(self):
+        rows = self._luma_rows(2)
+        for y in (100, 260, 820, 1000):
+            self.assertLess(max(rows[y]), 40, f"row {y} should be black")
+        for y in (300, 540, 780):
+            self.assertGreater(min(rows[y]), 120, f"row {y} should be the tiles")
+
+    def test_three_tiles_fill_the_grid_with_the_fourth_place_black(self):
+        rows = self._luma_rows(3)
+        for y in (100, 400):
+            self.assertGreater(min(rows[y]), 120)
+        self.assertGreater(rows[800][0], 120)
+        self.assertLess(rows[800][1], 40)
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "needs ffmpeg")
