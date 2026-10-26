@@ -857,6 +857,8 @@ class _Clock(threading.Thread):
                     self.late += 1
                     if now - due > 2.0:   # the host stood still: go on from now, don't race
                         start = now - k * TICK
+                if k * TICK < LEAD_SECONDS:
+                    self._lead_frames()
                 upto = round((k + 1) * TICK * RATE)
                 need, samples = upto - samples, upto
                 tiles = self.session.tiles
@@ -917,6 +919,24 @@ class _Clock(threading.Thread):
             if ready == len(self.slots):
                 return
             self.halt.wait(0.02)
+
+    def _lead_frames(self) -> None:
+        """While the picture runs ahead at the start (LEAD_SECONDS, no tick
+        due yet) a decoder busy starting has a moment for its next frame
+        (0.2 s at most) instead of a repeated one."""
+        end = time.monotonic() + 0.2
+        tiles = self.session.tiles
+        while not self.halt.is_set():
+            missing = 0
+            for i, slot in enumerate(self.slots):
+                tile = tiles[i] if i < len(tiles) else None
+                dec = tile.decoder if tile is not None else None
+                if dec is not None and not dec.exited:
+                    self._read_ahead(slot, dec)
+                    missing += not slot.ready
+            if not missing or time.monotonic() > end:
+                return
+            self.halt.wait(0.005)
 
     def _take(self, slot: _Slot, tile: Optional[_Tile], need: int) -> tuple:
         """This tick's frame and `need` samples of sound for one place."""
