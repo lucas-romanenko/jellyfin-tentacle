@@ -267,26 +267,32 @@ def _euroleague_list(session=None) -> list:
 
 
 def match(team: dict, listed: list) -> Optional[str]:
-    """The logo of `team` (a leagues.json team) in a source's list: by full
-    name, then by code when only one has it, then by any of its names, then
-    by a name one starts with the other ("1. FC Heidenheim 1846")."""
+    """The logo of `team` (a leagues.json team) in a source's list (find)."""
+    t = find(team, listed)
+    return t["logo"] if t else None
+
+
+def find(team: dict, listed: list) -> Optional[dict]:
+    """`team` (a leagues.json team) in a source's list [{abbr, names, ...}]: by
+    full name, then by code when only one has it, then by any of its names,
+    then by a name one starts with the other ("1. FC Heidenheim 1846")."""
     want = {_fold(n) for n in [team.get("name"), team.get("short")] + list(team.get("nicknames") or []) if n}
     want.discard("")
     # the full name first: "Rangers" or "Kings" alone is two teams
     for t in listed:
         if _fold(t["names"][0]) in want:
-            return t["logo"]
+            return t
     abbr = (team.get("abbr") or "").upper()
     hits = [t for t in listed if abbr and t["abbr"].upper() == abbr]
     if len(hits) == 1:
-        return hits[0]["logo"]
+        return hits[0]
     for t in listed:
         if any(_fold(n) in want for n in t["names"][1:3]):
-            return t["logo"]
+            return t
     full = _fold(team.get("name"))
     hits = [t for t in listed if len(full) >= 6 and any(
         len(_fold(n)) >= 6 and (_fold(n).startswith(full) or full.startswith(_fold(n))) for n in t["names"][:1])]
-    return hits[0]["logo"] if len(hits) == 1 else None
+    return hits[0] if len(hits) == 1 else None
 
 
 def _espn_url(league: dict, team: dict, session=None) -> Optional[str]:

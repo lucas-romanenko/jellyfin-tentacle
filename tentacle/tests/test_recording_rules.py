@@ -25,6 +25,13 @@ from services.recording_rules import plan as P
 NOW = datetime(2026, 10, 24, 20, 0)
 
 
+def setUpModule():
+    # no league schedules here (ESPN is never asked): test_recording_rules_schedule.py has them
+    pt = mock.patch("services.recording_rules.schedule.schedule", lambda league, team, session=None: None)
+    pt.start()
+    unittest.addModuleCleanup(pt.stop)
+
+
 def at(h, m=0, day=24):
     return datetime(2026, 10, day, h, m)
 

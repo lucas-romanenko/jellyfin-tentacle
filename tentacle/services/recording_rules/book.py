@@ -158,7 +158,9 @@ def scan(db: Session, jf=None, now: Optional[datetime] = None, airings: Optional
                 limits[pid] = provider_stream_limit(db, db.get(Provider, pid) if pid else None)
             return limits[pid]
 
-        plans = [P.plan_rule(r, items, now) for r in rules]
+        from services.recording_rules import schedule as S
+        games = S.for_rules(rules)
+        plans = [P.plan_rule(r, items, now, games.get((r.league, r.team))) for r in rules]
         fit_plans(plans, held, limit_of)
         summary = {"rules": len(rules), "listings": len(items), "booked": 0, "preview": 0, "waiting": 0,
                    "covered": 0, "cancelled": 0, "changed": False}
@@ -263,6 +265,16 @@ def _apply(db: Session, p: P.RulePlan, jf, timers, fwd: dict, back: dict, now: d
         row.updated_at = now
         if before != (row.state, row.reason, row.stop, row.title, row.channel_name):
             summary["changed"] = True
+    # A booked listing the team's schedule now says is a rerun (booked before
+    # the schedule was known): its timer is cancelled and the row goes.
+    for n in p.reruns:
+        key = (n.airing.pool_key, n.airing.start)
+        row = existing.get(key)
+        if row is not None and key not in keep and row.state == "booked" and jf is not None:
+            if cancel(db, jf, row, "scan", n.reason, now):
+                existing.pop(key, None)
+                summary["cancelled"] += 1
+                summary["changed"] = True
     # What the plan no longer wants: a preview or waiting row goes; a booked
     # one stays (a guide that lost the listing must never cancel a recording:
     # Jellyfin itself drops a one-off whose programme left its guide).

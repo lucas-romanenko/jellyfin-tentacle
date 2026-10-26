@@ -401,7 +401,7 @@ def preview_rule(body: RuleBody, request: Request, db: Session = Depends(get_db)
     """What a rule (saved or not) would record in the guide as it is now:
     each game or programme with the channel it would use and the others it
     is also on, replays it would skip, and near misses with the reason."""
-    from services.recording_rules import book, guide as G, plan as P
+    from services.recording_rules import book, guide as G, plan as P, schedule as S
     _caller(request, db)
     name = _validate(body)
     d = _defaults(body)
@@ -413,8 +413,10 @@ def preview_rule(body: RuleBody, request: Request, db: Session = Depends(get_db)
                   priority=body.priority, mode="preview")
     now = datetime.utcnow()
     items = G.airings(db, now)
-    pl = P.plan_rule(rule, items, now)
-    others = [P.plan_rule(r, items, now) for r in book.load_rules(db) if r.mode == "record" and r.id != body.id]
+    others_rules = [r for r in book.load_rules(db) if r.mode == "record" and r.id != body.id]
+    games = S.for_rules([rule] + others_rules)
+    pl = P.plan_rule(rule, items, now, games.get((rule.league, rule.team)))
+    others = [P.plan_rule(r, items, now, games.get((r.league, r.team))) for r in others_rules]
     limits: dict = {}
 
     def limit_of(pid):

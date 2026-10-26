@@ -1,7 +1,8 @@
 """The built-in list of leagues and their teams (leagues.json, edited by
 hand: full names, short names, nicknames, codes, cities, French names and
-home arenas, the words guides use). Static on purpose: no league schedule
-or score service is asked, so it works the same for everyone, anywhere."""
+home arenas, the words guides use). Static on purpose, so matching works
+the same for everyone, anywhere; only the rerun check asks a schedule
+(schedule.py), and does without it."""
 import json
 import os
 from functools import lru_cache

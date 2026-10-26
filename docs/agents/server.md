@@ -1325,6 +1325,19 @@ schedule or score service: games are found in the guide Tentacle serves.
   gives connections by priority then start, against each provider's
   `provider_stream_limit` and the windows of timers Tentacle didn't make;
   a first showing that can't fit takes its replay; else `waiting` with why.
+  Reruns (`plan.rerun`, unless the rule records replays): a team listing is
+  checked against the team's real games (`schedule.py`: ESPN's public team
+  schedule, no key, per team every 6 h, kept in `DATA_DIR/team_logos/schedule-*.json`;
+  NHL/NBA/WNBA/NFL/MLB are every game, MLS and the big five soccer leagues
+  only that league's): an opponent it played earlier and no game against
+  them within 4 h, another opponent than the one played then, or (every-game
+  leagues, inside the schedule's dates) no game then at all is a rerun. A
+  team or series listing the feed marks `<previously-shown>` (stored as
+  `epg_programs.previously_shown`; `<new>`/`<premiere>` = False) is one too
+  unless its title says `Live:`. Reruns go first in the near misses with
+  the reason; a `booked` one is cancelled by the scan. ESPN unreachable: the
+  last copy, else no schedule (plans as before); CFL, EuroLeague, FIFA and
+  IIHF have none.
 - `book.py`: the only writer of Jellyfin timers, one scan at a time (`_lock`):
   every 30 min (`recording_rules` job), 3 s after a rule change
   (`request_scan`), 10 min after a guide refresh (`jellyfin_guide`). Booking =

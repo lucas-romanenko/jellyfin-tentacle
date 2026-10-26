@@ -10,6 +10,11 @@ later listing of the same programme is a replay: skipped, unless the first
 showing can't be recorded (no connection free), then it's the later showing.
 A keyword rule groups listings by the programme itself (title and
 description) the same way.
+
+A rerun of a game is never recorded: a team rule's listing is checked
+against the team's real schedule (schedule.py: an old game, or none of
+theirs then) and a sports listing the guide marks as shown before is one
+too; both go to the near misses with the reason.
 """
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -17,6 +22,7 @@ from typing import Optional
 
 from services.recording_rules import leagues as LG
 from services.recording_rules import match as M
+from services.recording_rules import schedule as S
 
 GAME_WINDOW = timedelta(minutes=45)       # the same programme on another channel starts this close
 TEAM_WINDOW = timedelta(minutes=90)       # a team plays one game at a time (event slots' times are rough)
@@ -54,6 +60,7 @@ class Option:
     why: str
     home: Optional[bool] = None
     note: str = ""                       # why it isn't the first choice ("same game as ...")
+    opponents: list = field(default_factory=list)   # team rules: the other teams it names (ids)
 
 
 @dataclass
@@ -82,6 +89,7 @@ class RulePlan:
     rule: Rule
     events: list
     near: list
+    reruns: list = field(default_factory=list)    # NearMiss: listings left out as reruns
 
 
 def min_minutes(rule: Rule) -> int:
@@ -164,7 +172,24 @@ def _rank(o: Option):
     return (a.from_event, not M.is_live_title(a.title), a.start, a.number)
 
 
-def plan_rule(rule: Rule, airings: list, now: datetime) -> RulePlan:
+def rerun(rule: Rule, o: Option, schedule: Optional[S.Schedule]) -> Optional[str]:
+    """Why this listing is a rerun, or None: the team's schedule says it's no
+    game of theirs then, or (team and series rules) the guide marks it as
+    shown before."""
+    if not rule.skip_replays or rule.kind == "keywords":
+        return None
+    a = o.airing
+    if rule.kind == "team":
+        why = S.verdict(schedule, a.start, o.opponents)
+        if why:
+            return why
+    if a.previously_shown and not M.is_live_title(a.title):
+        return "rerun: the guide marks it as shown before"
+    return None
+
+
+def plan_rule(rule: Rule, airings: list, now: datetime, schedule: Optional[S.Schedule] = None) -> RulePlan:
+    """`schedule`: the team's real games (team rules), None when unknown."""
     shortest = min_minutes(rule)
     found: dict = {}
     games = []      # (airing, opponents named, home) of team listings that name a game
@@ -187,7 +212,7 @@ def plan_rule(rule: Rule, airings: list, now: datetime) -> RulePlan:
                 near.append(NearMiss(a, f"{why}, but only {int(round(a.minutes))} min: too short to be "
                                         + ("the game" if rule.kind != "keywords" else "it")))
             continue
-        found[(a.pool_key, a.start)] = Option(a, why, home)
+        found[(a.pool_key, a.start)] = Option(a, why, home, opponents=list(opponents))
         if opponents:
             games.append((a, opponents, home))
 
@@ -213,11 +238,15 @@ def plan_rule(rule: Rule, airings: list, now: datetime) -> RulePlan:
                     name = host.get("short") or host["name"]
                     found[(a.pool_key, a.start)] = Option(
                         a, f"same time as “{M.strip_prefix(g.title)}”, from the {name}' arena",
-                        host["id"] == rule.team)
+                        host["id"] == rule.team, opponents=list(opponents))
                     break
 
-    options = []
+    options, reruns = [], []
     for o in sorted(found.values(), key=lambda o: (o.airing.start, o.airing.number)):
+        why_not = rerun(rule, o, schedule)
+        if why_not:
+            reruns.append(NearMiss(o.airing, why_not))
+            continue
         if rule.kind == "team" and rule.home_away in ("home", "away") and o.home is not None:
             if o.home != (rule.home_away == "home"):
                 near.append(NearMiss(o.airing, "an away game" if rule.home_away == "home" else "a home game"))
@@ -266,7 +295,7 @@ def plan_rule(rule: Rule, airings: list, now: datetime) -> RulePlan:
             ev.state = "replay" if rule.skip_replays else "record"
             ev.reason = f"a replay of {a.start:%H:%M} UTC on {a.channel}" if rule.skip_replays else ""
         events.append(ev)
-    return RulePlan(rule, events, near[:40])
+    return RulePlan(rule, events, (reruns + near)[:40], reruns)
 
 
 # ── Connections ─────────────────────────────────────────────────────────────
