@@ -189,18 +189,26 @@ Click the Categories tab — Tentacle auto-fetches categories on first visit. If
 
 ### A red banner says the provider is failing
 
-Every hour Tentacle logs in to each provider and opens a few seconds of
-one stream. When either fails twice in a row (two minutes apart), every
-dashboard page shows a red banner. Its headline says which kind of trouble
+Every hour Tentacle logs in to each provider once, on the address in use
+(no test stream, and nothing at all while anything plays or records). When
+the login fails twice in a row (two minutes apart), every dashboard page
+shows a red banner. Its headline says which kind of trouble
 it is ("IPTV Bears is down", "... is refusing this home's connection", "The
 IPTV Bears account has expired", "Some channels aren't coming through"),
 then the plain words everyone else sees and the technical reason below
 ([what each means](features/live-tv.md#when-the-provider-has-trouble)).
 It goes away by itself once the check passes; **Check now** checks again at
-once, **Hide** hides it until the reason changes. No test stream is opened
-while live TV or a recording is running through Tentacle, so a check never
-cuts a stream; a failure is then confirmed by asking the provider's address
-for its front page with no login, which uses no connection.
+once, **Hide** hides it until the reason changes. When live TV or a
+recording starts during a check, a failure is confirmed by asking the
+provider's address for its front page with no login, which uses no
+connection.
+
+When the provider has [other addresses](features/live-tv.md#several-addresses)
+and the one in use fails, Tentacle logs in to the others (one at a time, no
+stream) and the banner names the failing address and one that works, with
+**Switch to ...** and **Keep ...**. Nothing changes until you choose:
+**Switch** moves the provider to that address (nothing is imported again),
+**Keep** leaves it and stops offering that address until the next failure.
 
 What the syncs and live streams see counts too, with no extra connection:
 when the provider refuses a library or channel sync, or a live stream, with
@@ -222,7 +230,6 @@ likely not in your package.
 | Provider server error (HTTP 5xx) | A problem on the provider's side; usually passes. |
 | Provider unreachable | No answer, connection refused, or the name does not resolve: the provider is down or the URL is wrong. |
 | Provider account expired on ... / Provider account is ... | What the provider itself reports about the account. |
-| Provider test streams not found (404) | The titles tried have left the provider; the next sync replaces them. |
 
 **Alerts on your phone:** in Settings → Schedule & notifications → Pushover, enter an
 application token (create an application at pushover.net) and your user

@@ -1,4 +1,4 @@
-"""The provider test streams wait while Jellyfin is playing anything.
+"""The provider health check waits while Jellyfin is playing or recording anything.
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 
@@ -8,7 +8,9 @@ minutes after every restart) opened its test stream next to the episode
 being watched. On a one-connection account that second connection cuts the
 first; Jellyfin takes the cut for the end of the file, shows the backdrop and
 starts the next episode. Seen on the maintainer's server: Silicon Valley
-stopping at random in Jellyfin web.
+stopping at random in Jellyfin web. The check opens no test stream at all
+now (25 Oct 2026), and its one login still waits while Jellyfin plays, or
+records (GET /api/live/recordings/busy's answer).
 """
 import unittest
 from unittest import mock
@@ -40,6 +42,10 @@ PLAYING = Answer(200, [{"Client": "Jellyfin Web"},
 IDLE = Answer(200, [{"Client": "Jellyfin Web"}])
 
 
+TIMERS = f"{JELLYFIN}/LiveTv/Timers"
+NO_TIMERS = Answer(200, {"Items": []})
+
+
 class HealthCheck(Base_):
     def setUp(self):
         super().setUp()
@@ -47,44 +53,63 @@ class HealthCheck(Base_):
                          Setting(key="jellyfin_api_key", value=KEY)])
         self.db.commit()
 
-    def streams_opened(self):
-        return [u for u in self.net.calls if "/movie/" in u]
+    def logins(self):
+        return [u for u in self.net.calls if u.startswith(API)]
 
-    def test_nothing_playing_tests_a_stream(self):
-        self.run_check({SESSIONS: IDLE, API: api_ok(), SERVER + "/movie/": FakeResponse(206)})
-        self.assertEqual(len(self.streams_opened()), 1)
+    def test_nothing_playing_logs_in_once_and_opens_no_stream(self):
+        self.run_check({SESSIONS: IDLE, TIMERS: NO_TIMERS, API: api_ok()})
+        self.assertEqual(len(self.logins()), 1)
+        self.assertFalse([u for u in self.net.calls if "/movie/" in u or "/live/" in u])
         self.assertEqual(self.state()["state"], "ok")
 
-    def test_an_episode_playing_opens_no_stream(self):
-        self.run_check({SESSIONS: IDLE, API: FakeResponse(403)})
+    def test_an_episode_playing_asks_the_provider_nothing(self):
+        self.run_check({SESSIONS: IDLE, TIMERS: NO_TIMERS, API: FakeResponse(403)})
         before = self.state()
-        result = self.run_check({SESSIONS: PLAYING, API: api_ok(), SERVER + "/movie/": FakeResponse(206)})
+        result = self.run_check({SESSIONS: PLAYING, TIMERS: NO_TIMERS, API: api_ok()})
         self.assertTrue(result["skipped"])
-        self.assertEqual(self.streams_opened(), [])
+        self.assertEqual(self.logins(), [])
         s = self.state()
         self.assertEqual((s["state"], s["since"]), (before["state"], before["since"]))
         self.assertIsNotNone(s["skipped_at"])
 
-    def test_playback_starting_during_the_run_stops_the_stream_test(self):
-        # Idle when the run starts; playing once the API has been asked,
-        # before the test stream is opened.
+    def test_jellyfin_recording_asks_the_provider_nothing(self):
+        from datetime import datetime, timedelta
+        at = lambda h: (datetime.utcnow() + timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
+        recording = Answer(200, {"Items": [{"Status": "InProgress", "Name": "Leafs at Habs",
+                                            "StartDate": at(-1), "EndDate": at(2)}]})
+        result = self.run_check({SESSIONS: IDLE, TIMERS: recording, API: api_ok()})
+        self.assertTrue(result["skipped"])
+        self.assertEqual(self.logins(), [])
+
+    def test_playback_starting_during_the_run_stops_it(self):
+        # Idle when the run starts; playing once the first provider was
+        # asked: the second is not.
+        from models.database import Provider
+        self.db.add(Provider(name="Second", provider_type="xtream", server_url="http://two.example.test",
+                             username="u2", password="p2", active=True))
+        self.db.commit()
         calls = []
 
         def get(url, **kw):
             calls.append(url)
             if url == SESSIONS:
                 return PLAYING if any(u.startswith(API) for u in calls) else IDLE
-            return FakeResponse(206) if "/movie/" in url else api_ok()
+            if url == TIMERS:
+                return NO_TIMERS
+            return api_ok()
         with mock.patch("services.provider_health.requests.get", side_effect=get):
             ph.check_providers(self.db, confirm_delay=None)
         self.assertTrue(any(u.startswith(API) for u in calls))
-        self.assertEqual([u for u in calls if "/movie/" in u], [])
+        self.assertEqual([u for u in calls if u.startswith("http://two.example.test")], [])
 
-    def test_jellyfin_not_answering_opens_no_stream(self):
+    def test_jellyfin_not_answering_asks_the_provider_nothing(self):
         for answer in (requests.ConnectionError("refused"), Answer(500), Answer(200, None)):
             with self.subTest(answer=answer):
-                self.run_check({SESSIONS: answer, API: api_ok(), SERVER + "/movie/": FakeResponse(206)})
-                self.assertEqual(self.streams_opened(), [])
+                self.run_check({SESSIONS: answer, TIMERS: NO_TIMERS, API: api_ok()})
+                self.assertEqual(self.logins(), [])
+        # Sessions fine, its timers unreadable: can't tell, so busy
+        self.run_check({SESSIONS: IDLE, TIMERS: Answer(500), API: api_ok()})
+        self.assertEqual(self.logins(), [])
 
     def test_sessions_asked_with_the_key_not_in_the_url(self):
         seen = []
@@ -93,8 +118,7 @@ class HealthCheck(Base_):
             if url == SESSIONS:
                 seen.append(kw)
                 return IDLE
-            return self.net_get(url, **kw)
-        self.net_get = lambda url, **kw: (FakeResponse(206) if "/movie/" in url else api_ok())
+            return NO_TIMERS if url == TIMERS else api_ok()
         with mock.patch("services.provider_health.requests.get", side_effect=get):
             ph.check_providers(self.db, confirm_delay=None)
         self.assertTrue(seen)
@@ -102,10 +126,10 @@ class HealthCheck(Base_):
 
 
 class WithoutJellyfin(Base_):
-    def test_no_jellyfin_connection_asks_nothing_and_tests_the_stream(self):
-        self.run_check({API: api_ok(), SERVER + "/movie/": FakeResponse(206)})
-        self.assertFalse([u for u in self.net.calls if "/Sessions" in u])
-        self.assertEqual(len([u for u in self.net.calls if "/movie/" in u]), 1)
+    def test_no_jellyfin_connection_asks_nothing_and_logs_in(self):
+        self.run_check({API: api_ok()})
+        self.assertFalse([u for u in self.net.calls if "/Sessions" in u or "/LiveTv/" in u])
+        self.assertEqual(len([u for u in self.net.calls if u.startswith(API)]), 1)
 
 
 class Sweep(unittest.TestCase):

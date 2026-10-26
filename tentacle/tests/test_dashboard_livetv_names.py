@@ -43,7 +43,7 @@ class LiveTvNames(unittest.TestCase):
                  "tested_at": "2026-10-20T10:00:00Z", "ok": False, "word": n, "live_word": n,
                  "vod_word": None, "streams_skipped": None, "day_good": 1, "day_bad": 2}
                 for i, n in enumerate(NAMES)]
-        data = {"addresses": rows, "auto_switch": "switch", "test": {"running": False}}
+        data = {"addresses": rows, "test": {"running": False}}
         html = render(src, "", "srcState.addr[1] = %s; renderProvAddrPanel(1)" % json.dumps(data))
         self.assertShown([n[:1].upper() + n[1:] for n in NAMES], html)
 

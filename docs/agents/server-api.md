@@ -270,7 +270,7 @@ Declared on the app in `main.py` (no router, all **none**; listed in
 | DELETE | `/api/providers/{provider_id}/addresses/{address_id}` | admin | providers.py:remove_address |
 | POST | `/api/providers/{provider_id}/addresses/test` | admin | providers.py:test_addresses |
 | POST | `/api/providers/{provider_id}/addresses/{address_id}/use` | admin | providers.py:use_address |
-| PUT | `/api/providers/{provider_id}/addresses/settings` | admin | providers.py:address_settings |
+| POST | `/api/providers/{provider_id}/addresses/{address_id}/keep` | admin | providers.py:keep_address (the Health banner's Keep: the address in use stays; that one isn't offered again this incident; 409 when not failing) |
 | GET | `/api/providers/{provider_id}/categories` | admin | providers.py:get_categories |
 | POST | `/api/providers/{provider_id}/categories/update` | admin | providers.py:update_categories |
 | POST | `/api/providers/{provider_id}/categories/{category_id}/tag` | admin | providers.py:update_category_tag |

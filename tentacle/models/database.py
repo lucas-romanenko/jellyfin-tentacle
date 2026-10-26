@@ -90,12 +90,9 @@ class Provider(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    # Several addresses (services/provider_addresses.py): what to do when the
-    # address in use fails and a backup works. "switch" (the default),
-    # "switch_back" (and back to preferred_address once it works again) or
-    # "off" (only say so).
-    address_auto_switch = Column(String, default="switch")
-    # The address the admin chose by hand ("Use this one"), for switch_back.
+    # Several addresses (services/provider_addresses.py). The address the
+    # admin last chose ("Use this one", or Switch on the Health banner); the
+    # card marks it "your choice". Nothing switches by itself.
     preferred_address = Column(String, nullable=True)
     # Live TV: streams this provider's account carries at once (None: the
     # account's own max_connections, else the Live TV default).
@@ -1564,6 +1561,7 @@ def _migrate_columns():
     _migrate_list_items_key(conn)
     _migrate_live_catalog_data(conn)
     _drop_retired_tables(cursor, conn)
+    _drop_retired_columns(cursor, conn)
     _reset_guessed_made_for_kids(cursor, conn)
     conn.close()
 
@@ -1592,6 +1590,31 @@ def _reset_guessed_made_for_kids(cursor, conn):
         conn.commit()
     except sqlite3.OperationalError as e:
         logger.error(f"[migrate] Could not reset youtube_videos.is_made_for_kids: {e}")
+
+
+# Columns whose setting no longer exists: (table, column, why).
+_RETIRED_COLUMNS = (
+    # Tentacle switched a failing provider address by itself ("switch", the
+    # default; "switch_back"; "off"). It no longer does: the Health banner
+    # offers Switch / Keep and nothing changes until the admin chooses
+    # (Lucas, 25 Oct 2026). Every old value means the same now.
+    ("providers", "address_auto_switch", "providers no longer switch address by themselves"),
+)
+
+
+def _drop_retired_columns(cursor, conn):
+    """Drop columns no code reads any more (_RETIRED_COLUMNS), so nothing is
+    tempted to read them again. An older build adds its column back."""
+    import sqlite3
+    for table, column, why in _RETIRED_COLUMNS:
+        if column not in _existing_columns(cursor, table):
+            continue
+        try:
+            cursor.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+            conn.commit()
+            logger.info(f"[migrate] Dropped {table}.{column}: {why}")
+        except sqlite3.OperationalError as e:
+            logger.error(f"[migrate] Could not drop {table}.{column}: {e}")
 
 
 def _drop_retired_tables(cursor, conn):

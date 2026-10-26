@@ -1,6 +1,7 @@
-"""The hourly provider health check: log in to the provider's API, open one
-short test stream, and say so (dashboard banner, one Pushover message, one
-recovery message) when either fails.
+"""The hourly provider health check: one login on the provider's address in
+use (never a test stream, never while anything plays or records), and say
+so (dashboard banner, one Pushover message, one recovery message) when it
+fails.
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 
@@ -111,7 +112,6 @@ class Base_(unittest.TestCase):
             mock.patch("services.pushover.requests.post", side_effect=self._pushover),
             mock.patch("services.provider_activity.live_streams_active", return_value=False),
             mock.patch("services.provider_activity.recording_protected", return_value=False),
-            mock.patch("services.provider_health.PROBE_PAUSE_SECONDS", 0),
         ]
         for p in patches:
             p.start()
@@ -180,43 +180,31 @@ class TheChecks(Base_):
                 self.assertEqual(s["state"], "failing")
                 self.assertTrue(s["reason"].startswith(expected), s["reason"])
 
-    def test_streams_refused_while_the_login_works(self):
-        self.run_check({API: api_ok(), SERVER + "/movie/": FakeResponse(403, data=b"")})
-        s = self.state()
-        self.assertEqual((s["state"], s["step"], s["code"]), ("failing", "stream", 403))
-        self.assertEqual(s["reason"], "Provider refusing streams: 403 since 07:50 (the login still works). "
-                                      "Likely IP block or the account over its connection limit")
-
-    def test_a_gone_title_tries_the_next_one(self):
-        self.run_check({API: api_ok(), MOVIE_URLS[0]: FakeResponse(404, data=b""),
-                        MOVIE_URLS[1]: FakeResponse(206)})
-        self.assertEqual(self.state()["state"], "ok")
-        self.assertEqual(self.sent, [])
-
-    def test_every_candidate_gone_is_failing(self):
-        self.run_check({API: api_ok(), SERVER + "/movie/": FakeResponse(404, data=b""),
-                        SERVER + "/live/": FakeResponse(410, data=b"")})
-        s = self.state()
-        self.assertEqual(s["state"], "failing")
-        self.assertIn("test streams not found", s["reason"])
-
-    def test_live_channel_is_tried_after_the_films(self):
+    def test_one_login_and_no_test_stream(self):
+        """Lucas, 25 Oct 2026: "we can not be using 7 connections every hour
+        to test". Films and a channel to try are there; none is opened."""
         self.db.add(LiveChannel(provider_id=self.provider.id, name="News", stream_id="555",
                                 stream_url=LIVE_URL, enabled=True))
         self.db.commit()
-        self.run_check({API: api_ok(), SERVER + "/movie/": FakeResponse(404, data=b""), LIVE_URL: FakeResponse(200)})
-        self.assertEqual(self.state()["state"], "ok")
-        self.assertEqual(self.net.calls[-1], LIVE_URL)
+        result = self.run_check({API: api_ok()})
+        self.assertEqual((result["checked"], self.state()["state"]), (1, "ok"))
+        self.assertEqual([API], [u.split("?")[0] for u in self.net.calls])
+
+    def test_a_failure_is_confirmed_by_one_more_login_only(self):
+        self.run_check({API: FakeResponse(403), SERVER + "/": FakeResponse(200, data=b"")})
+        self.assertEqual([API, API], [u.split("?")[0] for u in self.net.calls if "player_api" in u])
+        # Then only "/" with no login (services/provider_status.look): no stream
+        self.assertFalse([u for u in self.net.calls if "/movie/" in u or "/live/" in u])
 
     def test_provider_busy_gives_no_verdict(self):
-        self.run_check({API: api_ok(), SERVER + "/movie/": FakeResponse(509, data=b"")})
+        self.run_check({API: FakeResponse(509, data=b"")})
         s = self.state()
         self.assertEqual(s["state"], "unknown")
         self.assertIsNotNone(s["skipped_at"])
         self.assertEqual(self.sent, [])
 
     def test_a_blip_that_does_not_repeat_raises_nothing(self):
-        self.run_check({API: [FakeResponse(403), api_ok()], SERVER + "/movie/": FakeResponse(206)})
+        self.run_check({API: [FakeResponse(403), api_ok()]})
         self.assertEqual(self.state()["state"], "ok")
         self.assertEqual(self.sent, [])
         self.assertEqual(self.waits, [120])
@@ -226,15 +214,21 @@ class TheChecks(Base_):
         self.assertEqual(self.state()["state"], "failing")
         self.assertEqual(self.waits, [])
 
-    def test_m3u_file_provider_only_opens_a_stream(self):
+    def test_an_m3u_file_provider_is_not_checked(self):
+        """Nothing to ask without opening a stream: no verdict; its streams
+        tell provider health how they go (note)."""
         self.provider.provider_type = "m3u_file"
         self.provider.m3u_url = str(self.dir / "list.m3u")
         self.db.commit()
-        self.run_check({SERVER + "/movie/": FakeResponse(403, data=b"")})
+        result = self.run_check({})
+        self.assertEqual((result["checked"], self.net.calls), (0, []))
         s = self.state()
-        self.assertEqual(s["state"], "failing")
-        self.assertNotIn("login still works", s["reason"])
-        self.assertFalse([u for u in self.net.calls if "player_api" in u])
+        self.assertEqual(s["state"], "unknown")
+        self.assertIsNotNone(s["skipped_at"])
+        ph.note(self.db, self.provider.id, False, "stream", 403)
+        self.clock[0] += timedelta(minutes=3)
+        ph.note(self.db, self.provider.id, False, "stream", 403)
+        self.assertEqual(self.state()["state"], "failing")
 
     def test_m3u_url_must_be_a_playlist(self):
         self.provider.provider_type = "m3u_url"
@@ -244,8 +238,7 @@ class TheChecks(Base_):
         self.assertIn("other than its M3U playlist", self.state()["reason"])
         self.db.query(Setting).filter(Setting.key == ph.SETTING_KEY).delete()
         self.db.commit()
-        self.run_check({"http://lists.example.test/": FakeResponse(200, data=b"\xef\xbb\xbf#EXTM3U\n#EXTINF:-1,x\n"),
-                        SERVER + "/movie/": FakeResponse(206)})
+        self.run_check({"http://lists.example.test/": FakeResponse(200, data=b"\xef\xbb\xbf#EXTM3U\n#EXTINF:-1,x\n")})
         self.assertEqual(self.state()["state"], "ok")
 
 
@@ -265,14 +258,14 @@ class Messages(Base_):
         self.assertTrue(self.state()["since"].startswith("2026-10-08T07:50"))
 
         self.clock[0] = datetime(2026, 10, 8, 11, 0).astimezone()
-        self.run_check({API: api_ok(), SERVER + "/movie/": FakeResponse(206)})
+        self.run_check({API: api_ok()})
         self.assertEqual(len(self.sent), 2)
         self.assertEqual(self.sent[1]["title"], "Tentacle: Acme IPTV works again")
         self.assertEqual(self.sent[1]["message"], "Down since 07:50 (3 h 10 min).")
         self.assertEqual(self.state()["state"], "ok")
 
         self.clock[0] += timedelta(hours=1)
-        self.run_check({API: api_ok(), SERVER + "/movie/": FakeResponse(206)})
+        self.run_check({API: api_ok()})
         self.assertEqual(len(self.sent), 2)
 
     def test_pushover_not_set_up_sends_nothing_and_raises_nothing(self):
@@ -282,7 +275,7 @@ class Messages(Base_):
         self.assertEqual(self.sent, [])
         self.assertEqual(self.state()["state"], "failing")
         # Recovered before any message went out: nothing to take back.
-        self.run_check({API: api_ok(), SERVER + "/movie/": FakeResponse(206)})
+        self.run_check({API: api_ok()})
         self.assertEqual(self.sent, [])
 
     def test_a_failed_send_is_tried_again_next_run(self):
@@ -300,10 +293,10 @@ class Messages(Base_):
     def test_a_failed_recovery_send_is_tried_again(self):
         self.run_check({API: FakeResponse(403)})
         self.pushover_ok = False
-        self.run_check({API: api_ok(), SERVER + "/movie/": FakeResponse(206)})
+        self.run_check({API: api_ok()})
         self.assertEqual(len(self.sent), 2)
         self.pushover_ok = True
-        self.run_check({API: api_ok(), SERVER + "/movie/": FakeResponse(206)})
+        self.run_check({API: api_ok()})
         self.assertEqual(len(self.sent), 3)
         self.assertEqual(self.sent[2]["title"], "Tentacle: Acme IPTV works again")
         self.assertIsNone(self.state()["recovery_due"])
@@ -323,6 +316,28 @@ class StandsAside(Base_):
                 self.assertEqual((s["state"], s["since"], s["reason"]),
                                  (before["state"], before["since"], before["reason"]))
                 self.assertIsNotNone(s["skipped_at"])
+
+    def test_anything_playing_or_recording_checks_nothing(self):
+        """The same "busy" as GET /api/live/recordings/busy, plus Jellyfin
+        playing: no login at all (provider_activity.something_busy)."""
+        self.db.add_all([Setting(key="jellyfin_url", value="http://jellyfin.example.test"),
+                         Setting(key="jellyfin_api_key", value="jfkey")])
+        self.db.commit()
+        cases = {
+            "Jellyfin plays a film": ({"busy": False, "known": True}, True),
+            "Jellyfin records": ({"busy": True, "known": True}, False),
+            "a recording starts within 20 min": ({"busy": True, "known": True, "starting_soon": [{}]}, False),
+            "Jellyfin's timers can't be read": ({"busy": False, "known": False}, False),
+        }
+        for what, (busy, playing) in cases.items():
+            with self.subTest(what), mock.patch("routers.recordings.busy_now", return_value=busy), \
+                    mock.patch("services.provider_activity.jellyfin_playing", return_value=playing):
+                result = self.run_check({})
+                self.assertTrue(result["skipped"])
+                self.assertEqual(self.net.calls, [])
+        with mock.patch("routers.recordings.busy_now", return_value={"busy": False, "known": True}), \
+                mock.patch("services.provider_activity.jellyfin_playing", return_value=False):
+            self.assertEqual(1, self.run_check({API: api_ok()})["checked"])
 
     def test_turned_off_provider_is_dropped(self):
         self.run_check({API: FakeResponse(403)})
@@ -360,32 +375,19 @@ class StandsAsideMidRun(Base_):
         self.db.commit()
         return p
 
-    def test_a_recording_that_starts_after_the_login_gets_no_test_stream(self):
-        self.run_with_live_start({API: api_ok(), SERVER + "/movie/": FakeResponse(206)}, starts_after=API)
-        self.assertEqual([u for u in self.net.calls if "/movie/" in u], [])
-        s = self.state()
-        self.assertEqual(s["state"], "unknown")
-        self.assertIsNotNone(s["skipped_at"])
-
-    def test_a_recording_that_starts_between_test_streams_is_not_cut(self):
-        self.run_with_live_start({API: api_ok(), MOVIE_URLS[0]: FakeResponse(404, data=b""),
-                                  SERVER + "/movie/": FakeResponse(206)}, starts_after=MOVIE_URLS[0])
-        self.assertEqual(self.net.calls[self.net.calls.index(MOVIE_URLS[0]) + 1:], [])
-        self.assertEqual(self.state()["state"], "unknown")
-
-    def test_a_protected_recording_that_starts_mid_run_is_not_cut(self):
-        self.run_with_live_start({API: api_ok(), SERVER + "/movie/": FakeResponse(206)}, starts_after=API,
-                                 target="services.provider_activity.recording_protected")
-        self.assertEqual([u for u in self.net.calls if "/movie/" in u], [])
-
     def test_the_next_provider_is_not_checked_once_live_tv_started(self):
         self.add_second_provider()
-        self.run_with_live_start({API: api_ok(), SERVER + "/movie/": FakeResponse(206),
-                                  "http://two.example.test/": api_ok()}, starts_after=MOVIE_URLS[0])
+        self.run_with_live_start({API: api_ok(), "http://two.example.test/": api_ok()}, starts_after=API)
         self.assertFalse([u for u in self.net.calls if u.startswith("http://two.example.test/")],
                          "the second provider is left alone while live TV runs")
         self.assertEqual(self.state()["state"], "ok", "the first provider's verdict stands")
         self.assertEqual([e["state"] for e in ph.load_state(self.db).values()], ["ok", "unknown"])
+
+    def test_a_protected_recording_that_starts_mid_run_stops_it(self):
+        self.add_second_provider()
+        self.run_with_live_start({API: api_ok(), "http://two.example.test/": api_ok()}, starts_after=API,
+                                 target="services.provider_activity.recording_protected")
+        self.assertFalse([u for u in self.net.calls if u.startswith("http://two.example.test/")])
 
     def test_the_confirming_recheck_looks_again_before_each_provider(self):
         two = self.add_second_provider()
@@ -405,20 +407,17 @@ class StandsAsideMidRun(Base_):
     def test_the_result_says_skipped_and_counts_only_the_providers_checked(self):
         self.add_second_provider()
         with self.assertLogs("services.provider_health", level="INFO") as logs:
-            result = self.run_with_live_start({API: api_ok(), SERVER + "/movie/": FakeResponse(206),
-                                               "http://two.example.test/": api_ok()},
-                                              starts_after=MOVIE_URLS[0], confirm=False)
+            result = self.run_with_live_start({API: api_ok(), "http://two.example.test/": api_ok()},
+                                              starts_after=API, confirm=False)
         self.assertEqual((result["skipped"], result["checked"]), (True, 1))
         self.assertEqual(len([line for line in logs.output if "started during the check" in line]), 1)
 
     def test_no_live_tv_checks_everything(self):
         self.add_second_provider()
-        result = self.run_with_live_start({API: api_ok(), MOVIE_URLS[0]: FakeResponse(404, data=b""),
-                                           SERVER + "/movie/": FakeResponse(206),
-                                           "http://two.example.test/": api_ok()},
+        result = self.run_with_live_start({API: api_ok(), "http://two.example.test/": api_ok()},
                                           starts_after="http://never.example.test/")
         self.assertEqual((result["skipped"], result["checked"]), (False, 2))
-        self.assertEqual(self.net.calls[1:3], MOVIE_URLS[:2])
+        self.assertEqual([API, "http://two.example.test/player_api.php"], [u.split("?")[0] for u in self.net.calls])
         self.assertEqual([e["state"] for e in ph.load_state(self.db).values()], ["ok", "ok"])
 
 
@@ -435,7 +434,7 @@ class NoSecrets(Base_):
                 self.run_check({API: answer})
             self.db.query(Setting).filter(Setting.key == ph.SETTING_KEY).delete()
             self.db.commit()
-            self.run_check({API: api_ok(), SERVER + "/movie/": FakeResponse(403)})
+            self.run_check({API: api_ok()})
         stored = get_setting(self.db, ph.SETTING_KEY)
         text = json.dumps(self.sent) + stored + "\n".join(logs.output)
         for secret in (USER, PASSWORD, "iptv.example.test"):

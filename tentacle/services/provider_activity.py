@@ -80,6 +80,28 @@ def jellyfin_playing(db) -> bool:
         return True
 
 
+def something_busy(db) -> bool:
+    """Anything plays or records, or a recording begins soon: Tentacle
+    proxies a live stream, a protected recording runs, Jellyfin plays
+    something, or GET /api/live/recordings/busy says busy (Jellyfin records
+    now or within its 20 minutes, or Tentacle's broker pulls a recording).
+    Jellyfin set up but its timers unreadable counts as busy, as that route
+    tells its callers. The provider health check opens nothing then."""
+    if live_streams_active() or recording_protected(db) or jellyfin_playing(db):
+        return True
+    from routers.recordings import busy_now
+    try:
+        state = busy_now(db)
+    except Exception as e:
+        logger.info(f"[Provider] recordings unknown ({type(e).__name__}): standing aside")
+        return True
+    if state.get("busy"):
+        return True
+    jellyfin_set = bool((get_setting(db, "jellyfin_url", "") or "").strip()
+                        and (get_setting(db, "jellyfin_api_key", "") or "").strip())
+    return jellyfin_set and not state.get("known")
+
+
 def refuse_while_recording(db, what: str) -> None:
     """For a button that would contact the provider now: with recording
     protection on and a recording running, answer 503 instead."""

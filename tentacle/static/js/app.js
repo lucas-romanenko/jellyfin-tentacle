@@ -95,7 +95,9 @@ function hideArrProblems() {
 // (down, refusing this home's connection, the account, some channels:
 // services/provider_status.py), then the plain words and the technical
 // reason. Gone by itself once it works again; Hide keeps it away until the
-// failure changes.
+// failure changes. When the address in use fails and another of the
+// provider's addresses works, it names both with Switch / Keep: nothing
+// switches until the admin chooses (services/provider_addresses.offer_for).
 let _providerProblemsHidden = '';
 async function loadProviderProblems(data) {
   const el = document.getElementById('provider-problems-banner');
@@ -108,7 +110,7 @@ async function loadProviderProblems(data) {
   // Channels that don't come through while the others play
   const channels = providers.filter(p => p.state !== 'failing' && (p.channels_down || []).length);
   if (typeof setHealthAlert === 'function') setHealthAlert('providers', failing.length + guides.length, true);
-  const sig = failing.map(p => [p.id, p.step, p.kind, p.code, p.since, p.case].join(':'))
+  const sig = failing.map(p => [p.id, p.step, p.kind, p.code, p.since, p.case, (p.address_offer || {}).to || ''].join(':'))
     .concat(guides.map(p => `${p.id}:guide`))
     .concat(channels.map(p => `${p.id}:ch:${p.channels_down.join(',')}`)).join('|');
   if ((!failing.length && !guides.length && !channels.length) || sig === _providerProblemsHidden) { el.style.display = 'none'; return; }
@@ -126,9 +128,60 @@ async function loadProviderProblems(data) {
   el.innerHTML = `<div class="arr-problems-head">⚠ ${esc(head)}
       <span class="arr-problems-actions"><button class="btn btn-secondary btn-sm" id="provider-check-btn" onclick="checkProvidersNow()">Check now</button>
       <button class="btn btn-secondary btn-sm" onclick="hideProviderProblems()">Hide</button></span></div>
-    <ul>${failing.map(p => `<li>⚠ <strong>${esc(p.name)}:</strong> ${line(p)}</li>`).join('')}${guides.map(p => `<li>⚠ <strong>${esc(p.name)}:</strong> ${esc(p.guide_problem)}</li>`).join('')}${channels.map(p => `<li>⚠ <strong>${esc(p.name)}:</strong> ${esc(names(p.channels_down))} ${p.channels_down.length === 1 ? 'isn\'t' : 'aren\'t'} coming through right now; other channels work.</li>`).join('')}</ul>`;
+    <ul>${failing.map(p => `<li>⚠ <strong>${esc(p.name)}:</strong> ${line(p)}${_providerOffer(p, esc)}</li>`).join('')}${guides.map(p => `<li>⚠ <strong>${esc(p.name)}:</strong> ${esc(p.guide_problem)}</li>`).join('')}${channels.map(p => `<li>⚠ <strong>${esc(p.name)}:</strong> ${esc(names(p.channels_down))} ${p.channels_down.length === 1 ? 'isn\'t' : 'aren\'t'} coming through right now; other channels work.</li>`).join('')}</ul>`;
   el.dataset.sig = sig;
   el.style.display = '';
+}
+// Switch / Keep under a failing provider: the address in use and one that works.
+function _providerOffer(p, esc) {
+  const host = u => String(u || '').replace(/^https?:\/\//, '');
+  const o = p.address_offer;
+  if (!o) {
+    if (!p.other_addresses) return '';
+    return `<div class="provider-offer">It has ${p.other_addresses === 1 ? 'another address' : `${p.other_addresses} other addresses`}; none is known to work right now.
+      <span class="provider-offer-actions"><button class="btn btn-secondary btn-sm" onclick="testProviderOthers(${p.id}, this)">Check its other addresses</button></span></div>`;
+  }
+  const how = o.word === 'works' ? 'works' : 'answers and accepts the login';
+  const when = o.tested_at && typeof _ago === 'function' ? ` (checked ${_ago(o.tested_at)})` : '';
+  return `<div class="provider-offer">The address in use, <span class="mono">${esc(host(o.from))}</span>, fails its checks.
+      <span class="mono">${esc(host(o.to))}</span> ${how}${esc(when)}. Nothing changes until you choose.
+      <span class="provider-offer-actions">
+        <button class="btn btn-primary btn-sm" onclick="switchProviderAddress(${p.id}, ${o.address_id}, this)">Switch to ${esc(host(o.to))}</button>
+        <button class="btn btn-secondary btn-sm" onclick="keepProviderAddress(${p.id}, ${o.address_id}, this)">Keep ${esc(host(o.from))}</button>
+      </span></div>`;
+}
+async function switchProviderAddress(providerId, addressId, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api(`/api/providers/${providerId}/addresses/${addressId}/use`, { method: 'POST' });
+    toast(r.switched ? `Switched: it now uses ${String(r.to || '').replace(/^https?:\/\//, '')}. Nothing was imported again or deleted.`
+      : 'That address is already in use', 'success', 6000);
+    await loadProviderProblems();
+  } catch (e) {
+    toast(e.message, 'error', 8000);
+    if (btn) btn.disabled = false;
+  }
+}
+async function keepProviderAddress(providerId, addressId, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    await api(`/api/providers/${providerId}/addresses/${addressId}/keep`, { method: 'POST' });
+    toast('Kept the address in use. That one is not offered again until the next failure.', 'success', 6000);
+    await loadProviderProblems();
+  } catch (e) {
+    toast(e.message, 'error', 8000);
+    if (btn) btn.disabled = false;
+  }
+}
+async function testProviderOthers(providerId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
+  try {
+    await api(`/api/providers/${providerId}/addresses/test`, { method: 'POST' });
+    toast('Checking its addresses one at a time; this banner updates when it is done.', 'info', 6000);
+  } catch (e) {
+    toast(e.message, 'error', 8000);
+    if (btn) { btn.disabled = false; btn.textContent = 'Check its other addresses'; }
+  }
 }
 function hideProviderProblems() {
   const el = document.getElementById('provider-problems-banner');

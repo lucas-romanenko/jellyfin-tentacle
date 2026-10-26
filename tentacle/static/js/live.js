@@ -154,6 +154,9 @@ live.handlers.me = async () => {
 live.handlers.health = () => {
   if (!_isAdmin()) { _run('famRefreshBanner'); return; }
   if (state.currentPage === 'health') { _run('loadHealthPage'); return; }
+  // A provider switched address (the Health banner's Switch): its card
+  if (state.currentPage === 'sources' && state.sourcesTab === 'providers' && !liveOwnChange()
+      && !liveBusy('page-sources')) _run('loadProviders');
   _run('loadArrProblems');
   _run('loadProviderProblems');
   _run('loadHealthAlerts');

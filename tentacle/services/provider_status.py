@@ -441,8 +441,8 @@ def quick_look(provider_id: int, db=None) -> Optional[str]:
 
 def watch() -> None:
     """Every few minutes: a provider said down or blocked whose address in
-    use answers "/" normally again gets a full check at once, when nobody
-    watches (someone watching hears it from their stream: provider health's
+    use answers "/" normally again gets a check (a login) at once, when
+    nothing plays or records (someone watching hears it from their stream: provider health's
     note). So "back" doesn't wait for the hourly check."""
     from models.database import SessionLocal, Provider
     from services import provider_health as ph
@@ -456,7 +456,7 @@ def watch() -> None:
                 continue
             last = _local(entry.get("checked_at"))
             if last is not None and now - last < WATCH_CHECK_GAP:
-                continue        # a full check (a login, a test stream) at most this often
+                continue        # a check (a login) at most this often
             p = db.get(Provider, int(key)) if str(key).isdigit() else None
             if p is None or not p.server_url:
                 continue
@@ -508,6 +508,11 @@ def _span(a: Optional[datetime], b: Optional[datetime], now: datetime) -> str:
     return f"{ca} – {cb}"
 
 
+# Admins, when another address works (provider_addresses.offer_for): nothing
+# switches until they choose.
+_OFFERED = " Another of its addresses works: switch to it, or keep this one, on Tentacle's Health page."
+
+
 def describe(name: str, entry: dict, now: datetime, admin: bool = False) -> Optional[dict]:
     """The message for one failing provider's state entry, or None.
     {"kind", "provider", "since", "title", "text"}."""
@@ -524,14 +529,18 @@ def describe(name: str, entry: dict, now: datetime, admin: bool = False) -> Opti
         title = f"{name} is down right now"
         text = (f"{name} is down right now ({why}){at}. Not a problem with your account or your setup. "
                 f"Live TV comes back by itself.")
-        if admin and entry.get("other_route"):
-            text += " Another of its addresses answers: Tentacle switches to it if it works."
+        if admin and entry.get("offer"):
+            text += _OFFERED
+        elif admin and entry.get("other_route"):
+            text += " Another of its addresses answers."
     elif case == "blocked":
         title = f"{name} is refusing this home's connection"
         text = f"{name} is refusing this home's connection{at}. Your account is fine."
-        if admin:
-            text += (" Tentacle switches to another of its addresses when one works; "
-                     "add the addresses they sent in Sources → the provider → Address.")
+        if admin and entry.get("offer"):
+            text += _OFFERED
+        elif admin:
+            text += (" If they sent other addresses, add them in Sources → the provider → Address: "
+                     "Tentacle tries them and offers one that works.")
         else:
             text += " Live TV is off until it's sorted out."
     elif case == "offline":

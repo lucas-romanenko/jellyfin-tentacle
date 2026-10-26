@@ -101,10 +101,6 @@ class AddressesAdd(BaseModel):
     text: str
 
 
-class AddressSettings(BaseModel):
-    auto_switch: str
-
-
 class CategoryUpdate(BaseModel):
     category_ids: List[str]
     whitelisted: bool
@@ -306,7 +302,6 @@ def list_providers(db: Session = Depends(get_db)):
             "live_tv_enabled": p.live_tv_enabled,
             "require_tmdb_match": p.require_tmdb_match if p.require_tmdb_match is not None else True,
             "address_count": len(p.addresses) or (1 if p.server_url else 0),
-            "address_auto_switch": p.address_auto_switch or "switch",
             "live_max_streams": p.live_max_streams,
             "channel_number_offset": p.channel_number_offset,
         }
@@ -904,7 +899,6 @@ def _addresses_view(db: Session, p: Provider) -> dict:
     db.commit()
     return {
         "xtream": (p.provider_type or "xtream") == "xtream",
-        "auto_switch": p.address_auto_switch if p.address_auto_switch in pa.AUTO_SWITCH_MODES else "switch",
         "addresses": rows,
         "test": pa.progress(p.id),
     }
@@ -962,28 +956,31 @@ def test_addresses(provider_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{provider_id}/addresses/{address_id}/use")
 def use_address(provider_id: int, address_id: int, db: Session = Depends(get_db)):
-    """"Use this one": the provider moves to this address. Nothing is
-    imported again or deleted (provider_addresses.switch_to)."""
+    """"Use this one" on the card, or Switch on the Health banner: the
+    provider moves to this address. Nothing is imported again or deleted
+    (provider_addresses.switch_to). Tentacle never switches by itself."""
     from services import provider_addresses as pa
     from services import provider_health
     p = _provider_or_404(db, provider_id)
     a = next((a for a in p.addresses if a.id == address_id), None)
     if a is None:
         raise HTTPException(404, "No such address")
-    result = pa.switch_to(db, p, a.url, "chosen by hand", by_hand=True)
+    result = pa.switch_to(db, p, a.url, "chosen by hand")
     if result.get("switched"):
         provider_health.address_switched(db, p.id)
     return {**result, **_addresses_view(db, p)}
 
 
-@router.put("/{provider_id}/addresses/settings")
-def address_settings(provider_id: int, body: AddressSettings, db: Session = Depends(get_db)):
-    from services import provider_addresses as pa
+@router.post("/{provider_id}/addresses/{address_id}/keep")
+def keep_address(provider_id: int, address_id: int, db: Session = Depends(get_db)):
+    """Keep on the Health banner: the address in use stays, and this one is
+    not offered again until the address in use fails another time. 409 when
+    the provider isn't failing (nothing to keep)."""
+    from services import provider_health
     p = _provider_or_404(db, provider_id)
-    if body.auto_switch not in pa.AUTO_SWITCH_MODES:
-        raise HTTPException(400, f"auto_switch is one of {', '.join(pa.AUTO_SWITCH_MODES)}")
-    p.address_auto_switch = body.auto_switch
-    if body.auto_switch == "switch_back" and not p.preferred_address:
-        p.preferred_address = pa.normalize(p.server_url)
-    db.commit()
+    a = next((a for a in p.addresses if a.id == address_id), None)
+    if a is None:
+        raise HTTPException(404, "No such address")
+    if not provider_health.keep_address(db, p.id, a.url):
+        raise HTTPException(409, "The address in use isn't failing: there is nothing to keep")
     return _addresses_view(db, p)
