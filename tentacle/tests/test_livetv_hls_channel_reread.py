@@ -332,6 +332,16 @@ class WindowPlan(unittest.TestCase):
             [0, 1, 2, 3], ["x_255.ts", "x_256.ts", "x_257.ts", "x_258.ts"], 257, "x_256.ts"))
 
 
+class StartSetting(unittest.TestCase):
+    def test_the_setting_or_the_default(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch as p
+        for raw, want in (("", livetv._HLS_LIVE_START_SECONDS), ("0", 0.0), ("25", 25.0),
+                          ("-3", 0.0), ("soon", livetv._HLS_LIVE_START_SECONDS)):
+            with p.object(livetv, "get_setting", lambda db, k, d="": raw):
+                self.assertEqual(want, livetv._hls_start_seconds(SimpleNamespace()), raw)
+
+
 class StartIndex(unittest.TestCase):
     def test_the_last_segments_that_hold_the_start(self):
         self.assertEqual(4, livetv._hls_start_index([10.0] * 6, 12.0))

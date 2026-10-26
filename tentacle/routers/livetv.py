@@ -697,6 +697,16 @@ _HLS_STALL_SECONDS = 30.0
 _HLS_STALL_TARGETS = 3
 
 
+def _hls_start_seconds(db) -> float:
+    """livetv_hls_start_seconds, else _HLS_LIVE_START_SECONDS: how much of
+    the window a viewer's HLS stream starts with (0 = one segment)."""
+    raw = (get_setting(db, "livetv_hls_start_seconds", "") or "").strip()
+    try:
+        return max(0.0, float(raw)) if raw else _HLS_LIVE_START_SECONDS
+    except ValueError:
+        return _HLS_LIVE_START_SECONDS
+
+
 def _hls_start_index(durations, seconds: float = None) -> int:
     """Index of the first segment a viewer gets: the last ones that hold at
     least `seconds` (at least one segment)."""
@@ -5604,7 +5614,8 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
                                              rival_delivering=lambda: _rival_delivering(lease),
                                              refresh_recordings=_refresh_recordings_bounded,
                                              fallback_url=fallback_url,
-                                             nothing_on=lambda: _placeholder_picture(ch))
+                                             nothing_on=lambda: _placeholder_picture(ch),
+                                             hls_start_seconds=_hls_start_seconds(db))
         if lease.preempted:
             # A recording took this slot while the open was still in flight
             # (there was no pump yet to stop). Going on would run one more
@@ -5677,7 +5688,7 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
 async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str, _release_sem,
                               guard=None, failure_budget: float = _DEFAULT_RECONNECT_BUDGET,
                               is_recording=None, rival_delivering=None, refresh_recordings=None,
-                              fallback_url=None, nothing_on=None):
+                              fallback_url=None, nothing_on=None, hls_start_seconds=None):
     """Inner stream proxy logic. `_release_sem()` is called when the concurrency
     slot can be freed: immediately on early-exit paths, or by the streaming
     generator's `finally` once the long-lived stream ends.
@@ -5707,6 +5718,9 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
     When the stream opens as HLS with a continuous .ts fallback that was not
     needed at the open, an HLS that fails while running switches to it in
     the same response (hls_to_mpegts).
+
+    `hls_start_seconds`: how much of an HLS window a viewer starts with
+    (_hls_start_seconds; None = _HLS_LIVE_START_SECONDS).
 
     `nothing_on`, when given, makes the "Nothing on right now" picture
     (bytes, or None): a viewer's raw stream that meets the provider's
@@ -6185,7 +6199,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     ts = await _stream_proxy_inner(channel_id, user_agent, ts_switch_url, lambda: None, guard,
                                                    failure_budget=failure_budget, is_recording=is_recording,
                                                    rival_delivering=rival_delivering,
-                                                   refresh_recordings=refresh_recordings)
+                                                   refresh_recordings=refresh_recordings,
+                                                   hls_start_seconds=hls_start_seconds)
                 except BaseException as e:
                     if not isinstance(e, Exception):
                         raise
@@ -6753,7 +6768,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             window_new = {w[0] for w in window[idx:]}
                     if verdict in ("first", "restart"):
                         started = True
-                        start = _hls_start_index([w[3] for w in window]) if viewer else 0
+                        start = _hls_start_index([w[3] for w in window], hls_start_seconds) if viewer else 0
                         if start:
                             logger.info(f"[LiveTV] Channel {channel_id}: starting {len(window) - start} of "
                                         f"{len(window)} segments from the live edge "
