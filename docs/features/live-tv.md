@@ -21,11 +21,16 @@ Two people watching the same channel use one connection to the provider. Recordi
 In Jellyfin's web app, **Live TV** opens straight to Tentacle's guide:
 
 - **Favorites / All** at the top: Favorites is the guide with only your favourite channels, All is every channel you can see. It remembers your choice (on every browser you sign in to). With no favourites yet it says how to star one and offers All.
-- **☆** next to a channel stars it (or unstars it); **Find a channel** searches by name or number.
-- **Dates** run from today to the last day the TV guide has programmes for, so there are no empty days to tap through (a guide with one day of data shows no dates at all).
-- A line marks **now**; what's on now is highlighted with how far in it is. Tap a channel or what's on now to watch; tap a later programme to see it and record it. A red dot marks what will record (amber: waiting for a free connection; hollow: a team or rule in preview would). **Schedule** (next to the search) lists what will record, from your teams and rules and from Jellyfin's Record button; **Recordings** shows what is recorded, to play.
+- **☆** next to a channel stars it; taking the star off asks first. **Find a channel** searches by name or number.
+- **Dates** run from today as far as the TV guide has real listings: a day shows when it has at least a quarter of the programmes of the busiest day before it, so one stray listing next week adds no empty days (a guide with one day of data shows no dates at all).
+- A line marks **now**; what's on now is highlighted with how far in it is. Click (tap) a channel or what's on now and it plays at once. A later programme opens a small menu: **Tune to channel**, **Record this**, **Record every episode** (or **Cancel this recording…** / **Cancel series…** when it is booked), **Details**. Right-click (a long press on a phone, or the Menu key) opens the same menu on any programme, and on a channel's name. A red dot marks what will record (amber: waiting for a free connection; hollow: a team or rule in preview would). **Schedule** lists what will record, from your teams and rules and from Jellyfin's Record button; **Recordings** shows what is recorded: a click plays it (where you left off; one still recording plays live), right-click for Play from start, Mark watched, Delete recording…
+- On a computer, the top of the guide shows what the pointer (or the keyboard: arrow keys, Enter, the Menu key) is on: its name, when, the channel and what it is about. **Live preview:** rest on a programme that's on now for a moment and its channel plays, muted, in the box next to it; click the box to watch. Previews run only while a provider connection is spare (one more always stays free, and recordings about to start come first); otherwise there is no box.
 
 It stays quick with thousands of channels and works on a phone. (Jellyfin's TV layout keeps Jellyfin's own guide.)
+
+**In the player**, while a channel plays, two buttons sit next to the others: **Recent channels** (your last ten channels, newest first, on every device you watch on; the first one is the channel you were on before, to flip back; your favourites until you have recent ones) and **Guide** (the guide over the player with the channel playing on in the corner; click what's on now to switch, Esc to go back).
+
+**Home**: right-click (long press) a card: **Remove from Continue Watching**, **Play from start**, **Mark watched**, **Details**.
 
 ## When the provider has trouble
 
@@ -43,9 +48,12 @@ When it's over, everyone sees "IPTV Bears is back: Live TV works again (it was d
 
 How Tentacle knows, without guessing: it asks each of the provider's addresses for its front page with the player's User-Agent and no login (that uses none of your account's connections, so it can look while people watch), and compares the answers (when none answers, it also asks TMDB, which Tentacle uses anyway, whether the internet works). Channels that fail as people tune in start that look at once, so an outage shows within minutes, not at the next hourly check.
 
-## Multi-view (Android TV app)
+## Multi-view
 
-In the Tentacle Android TV app's guide, **Multi-view** (next to Recordings) puts two to four channels on screen at once: tick them in the guide, then **Start**. Two sit side by side, three or four in a 2×2 grid. You hear one at a time: the highlighted one (move with the D-pad). OK shows that channel full screen, Back returns to the grid, Back again leaves multi-view. Hold OK on a tile to swap or remove its channel.
+In the guide (the Tentacle Android TV app and Jellyfin's web app), **Multi-view** (next to Favorites / All) puts two to four channels on screen at once: tick them in the guide, then **Start**. Two sit side by side, three or four in a 2×2 grid. You hear one at a time: the highlighted one.
+
+- **TV app:** move with the D-pad. OK shows that channel full screen, Back returns to the grid, Back again leaves multi-view. Hold OK on a tile to swap or remove its channel.
+- **Web (computer or phone):** click (tap) a channel to hear it; double-click (or ⤢) for full screen, and Back in the player returns to the grid; ⋮ (right-click, long press) swaps or removes a channel; **Guide** (or Esc) leaves. Arrow keys and Enter work too. The screen stays on while it plays.
 
 - Each channel uses one of your provider's connections (**Streams at once**), unless someone is already watching or recording it. Multi-view starts only when enough are free and never takes one a recording needs: a recording starting within 30 minutes keeps its connection, and one that starts later takes a multi-view channel's connection, like it would a viewer's. Every connection is given back when you leave.
 - Tentacle makes the grid as one picture (1080p, every channel's sound as its own track), so the TV plays one stream. Each channel has its own buffer: when the provider interrupts one (accounts that allow one connection cut the others every few seconds), that tile keeps its last picture and goes quiet until the channel is back, and the rest of the grid plays on. A channel whose picture is stuck (the same few frames over and over) switches to another feed of the same channel when your provider has one. With an Intel CPU it is made on the GPU (Quick Sync) when the container has `/dev/dri` (see [Docker Compose](../getting-started/docker-compose.md#gpu-for-multi-view)); otherwise on the CPU (about one core).

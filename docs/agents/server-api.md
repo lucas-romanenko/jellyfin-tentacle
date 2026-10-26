@@ -193,6 +193,8 @@ Declared on the app in `main.py` (no router, all **none**; listed in
 | POST | `/api/live/multiview/{session_id}/keepalive` | owner | multiview.py:multiview_keepalive (while a channel plays full screen; answers the session, a tile whose stream ended has `live` false) |
 | DELETE | `/api/live/multiview/{session_id}` | owner | multiview.py:multiview_close (every connection given back) |
 | GET | `/api/live/multiview/{session_id}/stream.ts` | none; the session id is the secret | multiview.py:multiview_stream (the 1080p picture, one AAC track per tile in tile order) |
+| GET | `/api/live/multiview/{session_id}/web.mp4?audio=N` | none; the session id is the secret | multiview.py:multiview_web (for browsers: the same picture copied into fragmented MP4 with tile N's sound only; services/web_stream.py) |
+| GET | `/api/live/preview/{item_id}/stream.mp4` | signed in | multiview.py:preview_stream (the web guide's muted preview: a channel of their own lineup as 360p silent fragmented MP4; 409 unless `/api/live/preview` allows one or the channel is already open) |
 | GET | `/api/live/recordings/busy` | admin or internal | recordings.py:recordings_busy (Jellyfin recording now, or a timer whose padded start is within `soon_minutes`, default 20; `known` false when Jellyfin could not be asked) |
 | GET | `/api/live/recording-rules/leagues` | signed in | recordings.py:recording_leagues (the built-in leagues and teams) |
 | GET | `/api/live/recording-rules` | signed in | recordings.py:list_rules (every rule, `can_record`, `last_scan`) |

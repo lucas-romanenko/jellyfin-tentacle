@@ -68,6 +68,9 @@
     lastId: '',             // the channel last watched from the guide (highlighted)
     marks: {},              // markKey(channel, start) -> 'rec' | 'wait' | 'pv' (what will record)
     marksAt: 0,
+    overlay: false,         // the guide over the player (its Guide button)
+    manage: null,           // may this person set recordings (Jellyfin's EnableLiveTvManagement)
+    cursor: null,           // the keyboard's place: {id: channel, t: a time in the programme}
   };
 
   // ── Helpers ────────────────────────────────────────────────────────
@@ -140,6 +143,298 @@
     return d.toLocaleDateString([], { weekday: 'short' }) + ' ' + d.getDate();
   }
 
+  // ── A small menu (right-click, a long press on touch, the Menu key) ──
+  // Tentacle's one menu on the web, like the TV app's: small, dark, rounded,
+  // purple focus. Next to what was pressed on a computer, a sheet at the
+  // bottom on a phone. Arrow keys move, Enter picks, Escape or a click
+  // outside closes. Also used by the Recordings page and Home
+  // (window.TentacleMenu).
+
+  var MENU = { el: null, back: null };
+
+  function phoneLayout() { return window.innerWidth < 700; }
+
+  // opts: { title, body (html), items: [{ label, hint, danger, run }], x, y, anchor }
+  function openMenu(opts) {
+    closeMenu();
+    var items = (opts.items || []).filter(Boolean);
+    var scrim = document.createElement('div');
+    scrim.className = 'tmenu-scrim' + (phoneLayout() ? ' sheet' : '');
+    scrim.innerHTML = '<div class="tmenu" role="menu" aria-label="' + escAttr(opts.title || 'Menu') + '">' +
+      (opts.title ? '<div class="tmenu-title">' + esc(opts.title) + '</div>' : '') +
+      (opts.body || '') +
+      items.map(function (it, i) {
+        return '<button type="button" role="menuitem" class="tmenu-item' + (it.danger ? ' danger' : '') + '" data-i="' + i + '">' +
+          '<span>' + esc(it.label) + '</span>' + (it.hint ? '<small>' + esc(it.hint) + '</small>' : '') + '</button>';
+      }).join('') +
+      '</div>';
+    document.body.appendChild(scrim);
+    var box = scrim.querySelector('.tmenu');
+    MENU.el = scrim;
+    MENU.back = document.activeElement;
+    if (!phoneLayout()) {
+      var r = opts.anchor && opts.anchor.getBoundingClientRect ? opts.anchor.getBoundingClientRect() : null;
+      var x = opts.x != null ? opts.x : (r ? r.left : window.innerWidth / 2);
+      var y = opts.y != null ? opts.y : (r ? r.bottom + 4 : window.innerHeight / 3);
+      var w = box.offsetWidth, h = box.offsetHeight;
+      box.style.left = Math.max(8, Math.min(x, window.innerWidth - w - 8)) + 'px';
+      box.style.top = Math.max(8, Math.min(y, window.innerHeight - h - 8)) + 'px';
+    }
+    scrim.addEventListener('click', function (e) {
+      var b = e.target.closest('.tmenu-item');
+      if (b) {
+        var it = items[+b.dataset.i];
+        closeMenu();
+        if (it && it.run) it.run();
+        return;
+      }
+      if (!e.target.closest('.tmenu')) closeMenu();
+    });
+    scrim.addEventListener('contextmenu', function (e) { e.preventDefault(); if (!e.target.closest('.tmenu')) closeMenu(); });
+    // one highlight: the pointer moves the keyboard's focus along
+    scrim.addEventListener('mousemove', function (e) {
+      var b = e.target.closest('.tmenu-item');
+      if (b && document.activeElement !== b && e.movementX + e.movementY !== 0) b.focus({ preventScroll: true });
+    });
+    var first = scrim.querySelector('.tmenu-item');
+    if (first) first.focus({ preventScroll: true });
+    return scrim;
+  }
+
+  function closeMenu() {
+    if (!MENU.el) return false;
+    MENU.el.remove();
+    MENU.el = null;
+    var back = MENU.back;
+    MENU.back = null;
+    if (back && back.focus && document.contains(back)) { try { back.focus({ preventScroll: true }); } catch (e) { } }
+    return true;
+  }
+
+  // "Remove PBS Kids from your Favorites?" Remove / Cancel
+  function confirmMenu(opts) {
+    return openMenu({
+      title: opts.message, anchor: opts.anchor, x: opts.x, y: opts.y,
+      items: [
+        { label: opts.confirm, danger: !!opts.danger, run: opts.run },
+        { label: opts.cancel || 'Cancel' },
+      ],
+    });
+  }
+
+  // Keys inside the menu (capture: before Jellyfin's own keys, e.g. the player's)
+  document.addEventListener('keydown', function (e) {
+    if (!MENU.el) return;
+    var list = Array.prototype.slice.call(MENU.el.querySelectorAll('.tmenu-item'));
+    var i = list.indexOf(document.activeElement);
+    if (e.key === 'Escape' || e.key === 'Backspace' || e.key === 'GoBack' || e.key === 'BrowserBack') {
+      closeMenu();
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || (e.key === 'Tab' && list.length)) {
+      var d = e.key === 'ArrowUp' || (e.key === 'Tab' && e.shiftKey) ? -1 : 1;
+      var n = list[(i + d + list.length) % list.length];
+      if (n) n.focus();
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      if (i >= 0) list[i].click();
+    } else {
+      return;
+    }
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }, true);
+  window.addEventListener('hashchange', closeMenu);
+  window.addEventListener('popstate', closeMenu);
+
+  // A short line at the bottom ("Program set to record").
+  var toastTimer = null;
+  function toast(text) {
+    var t = document.querySelector('.tmenu-toast');
+    if (!t) {
+      t = document.createElement('div');
+      t.className = 'tmenu-toast';
+      t.setAttribute('role', 'status');
+      document.body.appendChild(t);
+    }
+    t.textContent = text;
+    t.classList.add('on');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.classList.remove('on'); }, 3200);
+  }
+
+  // Right-click, and a long press on touch (iOS sends no contextmenu), on
+  // what matches `selector` inside `root`: handler(el, x, y). The click that
+  // ends a long press is swallowed.
+  function onMenuGesture(root, selector, handler) {
+    var timer = null, start = null, fired = 0;
+    root.addEventListener('contextmenu', function (e) {
+      var el = e.target.closest(selector);
+      if (!el || !root.contains(el)) return;
+      e.preventDefault();
+      if (Date.now() - fired < 800) return;   // the long press already opened it
+      fired = Date.now();
+      handler(el, e.clientX, e.clientY);
+    });
+    root.addEventListener('touchstart', function (e) {
+      var el = e.target.closest(selector);
+      if (!el || e.touches.length !== 1) return;
+      var t = e.touches[0];
+      start = { x: t.clientX, y: t.clientY };
+      clearTimeout(timer);
+      timer = setTimeout(function () {
+        timer = null;
+        if (Date.now() - fired < 800) return;
+        fired = Date.now();
+        if (navigator.vibrate) { try { navigator.vibrate(10); } catch (x) { } }
+        handler(el, start.x, start.y);
+      }, 500);
+    }, { passive: true });
+    var cancel = function (e) {
+      // the finger lifted after a long press: no click (it would land on the menu's backdrop)
+      if (e.type === 'touchend' && Date.now() - fired < 1500 && e.cancelable) e.preventDefault();
+      if (!timer) return;
+      if (e.type === 'touchmove') {
+        var t = e.touches[0];
+        if (t && Math.abs(t.clientX - start.x) < 10 && Math.abs(t.clientY - start.y) < 10) return;
+      }
+      clearTimeout(timer);
+      timer = null;
+    };
+    root.addEventListener('touchmove', cancel, { passive: true });
+    root.addEventListener('touchend', cancel);
+    root.addEventListener('touchcancel', cancel);
+    document.addEventListener('click', function (e) {
+      if (Date.now() - fired < 800 && !(e.target.closest && e.target.closest('.tmenu'))) { e.preventDefault(); e.stopImmediatePropagation(); }
+    }, true);
+  }
+
+  window.TentacleMenu = { open: openMenu, close: closeMenu, confirm: confirmMenu, toast: toast, onGesture: onMenuGesture };
+
+  // ── A live picture in a <video>: fragmented MP4 read as it comes ────
+  // Tentacle sends the multi-view picture and the guide's preview as
+  // fragmented MP4 (a browser plays neither MPEG-TS nor switchable sound
+  // tracks). Read with fetch and fed to Media Source Extensions (Managed
+  // Media Source on iPhone), kept close to live: what is more than a few
+  // seconds behind is skipped, what was played is let go.
+
+  function mediaSourceClass() {
+    return window.ManagedMediaSource || window.MediaSource || null;
+  }
+
+  function LivePicture(video, opts) {
+    this.video = video;
+    this.opts = opts || {};
+    this.abort = null;
+    this.ms = null;
+    this.sb = null;
+    this.queue = [];
+    this.stopped = false;
+    this.timer = null;
+    this.url = '';
+  }
+
+  LivePicture.supported = function () { return !!mediaSourceClass(); };
+
+  // Resolves once the picture plays, rejects when it doesn't come.
+  LivePicture.prototype.start = function (url, headers) {
+    var self = this, MS = mediaSourceClass();
+    this.url = url;
+    if (!MS) return Promise.reject(new Error('This browser can\'t play live pictures'));
+    var ms = this.ms = new MS();
+    var v = this.video;
+    if (window.ManagedMediaSource && MS === window.ManagedMediaSource) v.disableRemotePlayback = true;
+    v.src = URL.createObjectURL(ms);
+    var ctl = this.abort = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    return new Promise(function (resolve, reject) {
+      var done = false;
+      var fail = function (err) {
+        if (done) { if (!self.stopped && self.opts.onEnd) self.opts.onEnd(err); return; }
+        done = true;
+        reject(err);
+      };
+      v.addEventListener('playing', function onPlaying() {
+        v.removeEventListener('playing', onPlaying);
+        if (!done) { done = true; resolve(); }
+      });
+      ms.addEventListener('sourceopen', function () {
+        try { self.sb = ms.addSourceBuffer(self.opts.mime || 'video/mp4; codecs="avc1.640028"'); }
+        catch (e) { fail(e); return; }
+        self.sb.addEventListener('updateend', function () { self.pump(); });
+        fetch(url, { headers: headers || {}, signal: ctl ? ctl.signal : undefined, cache: 'no-store' }).then(function (r) {
+          if (!r.ok) {
+            return r.json().catch(function () { return {}; }).then(function (j) {
+              throw new Error((j && (j.detail || j.error)) || ('HTTP ' + r.status));
+            });
+          }
+          var reader = r.body.getReader();
+          var read = function () {
+            return reader.read().then(function (x) {
+              if (self.stopped) return;
+              if (x.done) { fail(new Error('ended')); return; }
+              self.queue.push(x.value);
+              self.pump();
+              return read();
+            });
+          };
+          return read();
+        }).catch(function (e) { if (!self.stopped) fail(e); });
+      }, { once: true });
+      var p = v.play();
+      if (p && p.catch) p.catch(function () { });
+      self.timer = setInterval(function () { self.keepLive(); }, 1000);
+    });
+  };
+
+  LivePicture.prototype.pump = function () {
+    var sb = this.sb;
+    if (!sb || sb.updating || !this.queue.length || this.stopped) return;
+    var n = 0, i;
+    for (i = 0; i < this.queue.length; i++) n += this.queue[i].length;
+    var buf = new Uint8Array(n), at = 0;
+    for (i = 0; i < this.queue.length; i++) { buf.set(this.queue[i], at); at += this.queue[i].length; }
+    this.queue = [];
+    try { sb.appendBuffer(buf); } catch (e) {
+      // full: let go of what was played and try again
+      if (e && e.name === 'QuotaExceededError') { this.queue.unshift(buf); this.trim(true); }
+    }
+  };
+
+  // Near the live edge: start there, and jump forward when 4 s behind
+  // (a pause, a slow tab). Played seconds are let go.
+  LivePicture.prototype.keepLive = function () {
+    var v = this.video, b = v.buffered;
+    if (this.stopped || !b || !b.length) return;
+    var end = b.end(b.length - 1);
+    if (v.currentTime < b.start(b.length - 1) || end - v.currentTime > 4) {
+      try { v.currentTime = Math.max(b.start(b.length - 1), end - 1); } catch (e) { }
+    }
+    if (v.paused && !this.opts.paused) { var p = v.play(); if (p && p.catch) p.catch(function () { }); }
+    this.trim(false);
+  };
+
+  LivePicture.prototype.trim = function (hard) {
+    var sb = this.sb, v = this.video;
+    if (!sb || sb.updating || !v.buffered.length) return;
+    var start = v.buffered.start(0), keep = v.currentTime - (hard ? 2 : 20);
+    if (keep - start > (hard ? 0.5 : 10)) { try { sb.remove(start, keep); } catch (e) { } }
+  };
+
+  LivePicture.prototype.stop = function () {
+    this.stopped = true;
+    clearInterval(this.timer);
+    if (this.abort) { try { this.abort.abort(); } catch (e) { } }
+    var v = this.video;
+    try { v.pause(); } catch (e) { }
+    try { v.removeAttribute('src'); v.load(); } catch (e) { }
+    if (this.ms && this.ms.readyState === 'open') { try { this.ms.endOfStream(); } catch (e) { } }
+    this.ms = this.sb = null;
+    this.queue = [];
+  };
+
+  function authHeaders() {
+    var a = api();
+    var t = a && typeof a.accessToken === 'function' ? a.accessToken() : '';
+    return t ? { 'X-Emby-Token': t } : {};
+  }
+
   // ── Route detection ────────────────────────────────────────────────
 
   function isGuidePage() {
@@ -153,14 +448,18 @@
 
   // ── Activate / Deactivate ──────────────────────────────────────────
 
-  function activate() {
-    if (window.TentacleStandAside && window.TentacleStandAside()) return; // TV layout — native page renders
+  // `force`: the guide over the player (not a route of its own).
+  function activate(force) {
+    if (!force && window.TentacleStandAside && window.TentacleStandAside()) return; // TV layout — native page renders
     if (G.active) return;
     G.active = true;
     document.body.classList.add('tentacle-livetv-active');
     ensureContainer();
+    G.container.classList.toggle('tg-overlay', !!G.overlay);
     G.container.style.display = 'flex';
     start();
+    // back from a multi-view channel played full screen: the grid again
+    if (MV.session && MV.fullScreen && !G.overlay) openGrid();
   }
 
   function deactivate() {
@@ -172,6 +471,12 @@
     if (G.tick) { clearInterval(G.tick); G.tick = null; }
     if (G.live) { clearInterval(G.live); G.live = null; }
     if (G.reload.timer) { clearTimeout(G.reload.timer); G.reload.timer = null; }
+    if (PV.poll) { clearInterval(PV.poll); PV.poll = null; }
+    stopPreview();
+    closeMenu();
+    if (MV.picking) endPicking();
+    // left the guide (not for a multi-view channel full screen): multi-view ends
+    if (MV.session && !MV.fullScreen) leaveMultiView();
   }
 
   // ── Container ──────────────────────────────────────────────────────
@@ -190,8 +495,16 @@
       }
     });
     G.container = el;
+    el.addEventListener('mouseover', onHover);
+    onMenuGesture(el, '.tg-prog[data-id], .tg-chan', function (t, x, y) {
+      var row = t.closest('.tg-row');
+      if (!row) return;
+      if (t.classList.contains('tg-chan')) channelMenu(row.dataset.channelId, { x: x, y: y, el: t });
+      else programmeMenu(row.dataset.channelId, t.dataset.id, { x: x, y: y, el: t });
+    });
     window.addEventListener('resize', function () {
       if (!G.active) return;
+      placeBox();
       var m = metrics();
       if (G.m && m.phone === G.m.phone) return;
       renderGrid(true);
@@ -258,6 +571,14 @@
     watchSocket();
     if (G.live) clearInterval(G.live);
     G.live = setInterval(onLiveTick, 2000);
+    if (PV.poll) clearInterval(PV.poll);
+    PV.poll = null;
+    showBox();
+    if (!G.overlay && !G.m.phone) {
+      pollPreview();
+      PV.poll = setInterval(pollPreview, PREVIEW_POLL_MS);
+    }
+    if (G.overlay) setTimeout(placeBox, 0);
   }
 
   // The choice follows the person between browsers: Jellyfin's display
@@ -353,8 +674,10 @@
     }
     return apiPost('LiveTv/Programs', body).then(function (r) {
       var p = r && r.Items && r.Items[0];
-      G.maxEnd[view] = p ? Date.parse(p.EndDate) : 0;
-      return G.maxEnd[view];
+      return trimMaxEnd(view, p ? Date.parse(p.EndDate) : 0);
+    }).then(function (end) {
+      G.maxEnd[view] = end;
+      return end;
     }).catch(function () { G.maxEnd[view] = 0; return 0; });
   }
 
@@ -405,6 +728,7 @@
       if (place && !found) place = null;
       renderGrid(place ? false : !!scrollToNow);
       if (place) restorePlace(place);
+      if (G.overlay && G.lastId) { scrollToChannel(G.lastId); placeBox(); }
     });
   }
 
@@ -414,26 +738,38 @@
   var ICON_SCHED = '<svg viewBox="0 0 24 24"><path d="M19 4h-1V2h-2v2H8V2H6v2H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2V6a2 2 0 00-2-2zm0 16H5V9h14v11zM7 11h5v5H7z"/></svg>';
   var ICON_SEARCH = '<svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0016 9.5 6.5 6.5 0 109.5 16a6.47 6.47 0 004.23-1.57l.27.28v.79l5 5L20.5 19l-5-5zm-6 0A4.5 4.5 0 1114 9.5 4.49 4.49 0 019.5 14z"/></svg>';
   var STAR_ON = '<svg viewBox="0 0 24 24"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>';
+  var ICON_MV = '<svg viewBox="0 0 24 24"><path d="M3 3h8v8H3V3zm2 2v4h4V5H5zm8-2h8v8h-8V3zm2 2v4h4V5h-4zM3 13h8v8H3v-8zm2 2v4h4v-4H5zm8-2h8v8h-8v-8zm2 2v4h4v-4h-4z"/></svg>';
+  var ICON_BACK = '<svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>';
   var STAR_OFF = '<svg viewBox="0 0 24 24"><path d="M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z"/></svg>';
 
   function renderShell() {
     G.mounted = {};
     G.container.innerHTML =
       '<div class="tg-top' + (G.query ? ' searching' : '') + '">' +
-        '<div class="tg-title">Live TV</div>' +
+        (G.overlay
+          ? '<button type="button" class="tg-link tg-back" data-action="close-overlay" title="Back to the channel (Esc)">' + ICON_BACK + '<span>Back to the channel</span></button>'
+          : '<div class="tg-title">Live TV</div>') +
         '<div class="tg-toggle" role="tablist"></div>' +
+        (G.overlay ? '' : '<button type="button" class="tg-link tg-mv" data-action="mv" title="Multi-view: 2 to 4 channels at once">' + ICON_MV + '<span>Multi-view</span></button>') +
         '<label class="tg-search">' + ICON_SEARCH +
           '<input type="search" placeholder="Find a channel" aria-label="Find a channel" value="' + escAttr(G.query) + '">' +
         '</label>' +
-        '<div class="tg-links">' +
+        (G.overlay ? '' : '<div class="tg-links">' +
           '<a class="tg-link" href="#/livetv?tab=3" title="Recordings">' + ICON_REC + '<span>Recordings</span></a>' +
           '<a class="tg-link" href="#/livetv?tab=4" title="Schedule">' + ICON_SCHED + '<span>Schedule</span></a>' +
-        '</div>' +
+        '</div>') +
       '</div>' +
       '<div class="tltv-notice" role="status"' + (G.notice ? '' : ' style="display:none"') + '>' + esc(G.notice) + '</div>' +
+      '<div class="tg-pickbar" style="display:none"></div>' +
+      '<div class="tg-info' + (PV.allowed || G.overlay ? '' : ' nobox') + '">' +
+        '<div class="tg-box" data-action="box" title="' + (G.overlay ? 'Back to the channel' : 'Watch') + '">' +
+          '<img class="tg-box-img" alt=""><video muted playsinline></video></div>' +
+        '<div class="tg-info-text"><div class="tg-info-title"></div><div class="tg-info-when"></div><div class="tg-info-ov"></div></div>' +
+      '</div>' +
       '<div class="tg-days"></div>' +
       '<div class="tg-body"><div class="tg-loading">Loading the guide…</div></div>';
     renderToggle();
+    renderPickBar();
   }
 
   function renderToggle() {
@@ -604,24 +940,6 @@
     drawRows();
   }
 
-  // In the player: which channel plays now (channel up/down changes it).
-  // Jellyfin Web keeps its player to itself; the server's session for this
-  // browser knows. Asked every few seconds, only after the guide started it.
-  var playingAsked = 0;
-  function trackPlaying() {
-    var a = api();
-    if (!G.place || !G.place.channelId || !a || typeof a.deviceId !== 'function' || Date.now() - playingAsked < 3000) return;
-    playingAsked = Date.now();
-    apiGet('Sessions', { DeviceId: a.deviceId() }).then(function (list) {
-      var item = null;
-      (list || []).forEach(function (s) { if (s.NowPlayingItem) item = s.NowPlayingItem; });
-      if (!item || !G.place) return;
-      var id = normId(item.Id);
-      var c = (G.channels || []).filter(function (x) { return normId(x.id) === id; })[0];
-      if (c) { G.place.channelId = c.id; G.lastId = c.id; }
-    }).catch(function () { });
-  }
-
   function onScroll() {
     if (G.scrollRaf) return;
     G.scrollRaf = requestAnimationFrame(function () { G.scrollRaf = 0; drawRows(); });
@@ -667,8 +985,9 @@
     var logo = c.logo
       ? '<img class="tg-logo" loading="lazy" alt="" src="' + escAttr(api().getUrl('Items/' + c.id + '/Images/Primary', { maxHeight: 96, tag: c.logo, quality: 90 })) + '">'
       : '<div class="tg-logo tg-logo-text">' + esc(c.name.slice(0, 3)) + '</div>';
-    return '<div class="tg-chan" data-action="play" title="' + escAttr(c.name) + '">' +
-      logo +
+    var pick = MV.picking ? MV.picks.indexOf(c.id) : -1;
+    return '<div class="tg-chan' + (pick >= 0 ? ' tg-picked' : '') + '" data-action="play" title="' + escAttr(c.name) + '">' +
+      '<span class="tg-logo-wrap">' + logo + (pick >= 0 ? '<b class="tg-pickno">' + (pick + 1) + '</b>' : '') + '</span>' +
       '<div class="tg-chan-text">' +
         '<div class="tg-chan-name">' + esc(c.name) + '</div>' +
         (c.number ? '<div class="tg-chan-num">' + esc(c.number) + '</div>' : '') +
@@ -772,7 +1091,9 @@
       MinEndDate: new Date(day.start).toISOString(),
       MaxStartDate: new Date(day.end).toISOString(),
       SortBy: ['StartDate'],
-      EnableImages: false,
+      EnableImages: true,
+      ImageTypeLimit: 1,
+      EnableImageTypes: ['Thumb', 'Primary'],
       EnableUserData: false,
       EnableTotalRecordCount: false,
       Fields: ['Overview'],
@@ -787,10 +1108,14 @@
           s: Date.parse(p.StartDate),
           e: Date.parse(p.EndDate),
           ov: p.Overview || '',
+          img: p.ImageTags && (p.ImageTags.Thumb ? { type: 'Thumb', tag: p.ImageTags.Thumb } :
+            p.ImageTags.Primary ? { type: 'Primary', tag: p.ImageTags.Primary } : null),
         });
       });
       if (!G.active || G.days[G.dayIndex] !== day) return;
       ids.forEach(function (id) { if (G.mounted[id]) fillProgs(G.mounted[id], id); });
+      firstInfo();
+      if (G.cursor) showCursor(false);
     }).catch(done);
   }
 
@@ -846,6 +1171,22 @@
       return;
     }
 
+    var act = t.closest('[data-action]');
+    var a = act && act.dataset.action;
+    if (a === 'mv') { e.preventDefault(); if (MV.picking) endPicking(); else startPicking(); return; }
+    if (a === 'mv-start') { e.preventDefault(); startMultiView(); return; }
+    if (a === 'mv-cancel') { e.preventDefault(); endPicking(); return; }
+    if (a === 'close-overlay') { e.preventDefault(); closeOverlay(); return; }
+    var unpick = t.closest('[data-unpick]');
+    if (unpick) { e.preventDefault(); togglePick(unpick.dataset.unpick); return; }
+    if (a === 'box') {
+      e.preventDefault();
+      if (G.overlay) { closeOverlay(); return; }
+      var key = (G.container.querySelector('.tg-info').dataset.key || '').split('|')[0];
+      if (key) pickOrPlay(key);
+      return;
+    }
+
     if (t.closest('[data-action="retry"]')) {
       e.preventDefault();
       loadChannels().then(function () { if (G.active) applyView(true); });
@@ -856,17 +1197,45 @@
     if (!row) return;
     var id = row.dataset.channelId;
 
-    if (t.closest('[data-action="star"]')) { e.preventDefault(); e.stopPropagation(); toggleFav(id); return; }
+    if (t.closest('[data-action="star"]')) {
+      e.preventDefault(); e.stopPropagation();
+      if (MV.picking) { togglePick(id); return; }
+      starClicked(id, t.closest('[data-action="star"]'));
+      return;
+    }
 
     var cell = t.closest('[data-action="prog"]');
     if (cell) {
       e.preventDefault();
-      var now = Date.now();
-      if (+cell.dataset.s <= now && now < +cell.dataset.e) playChannel(id);
-      else location.hash = '#/details?id=' + cell.dataset.id + '&serverId=' + api().serverId();
+      G.cursor = { id: id, t: +cell.dataset.s + 1 };
+      progClicked(id, cell, { x: e.clientX, y: e.clientY });
       return;
     }
-    if (t.closest('[data-action="play"]')) { e.preventDefault(); playChannel(id); }
+    if (t.closest('[data-action="play"]')) { e.preventDefault(); pickOrPlay(id); }
+  }
+
+  // The pointer over a programme or a channel: the header shows it.
+  function onHover(e) {
+    if (!infoShown() || MENU.el) return;
+    var row = e.target.closest && e.target.closest('.tg-row');
+    if (!row) return;
+    var id = row.dataset.channelId;
+    var cell = e.target.closest('.tg-prog[data-id]');
+    if (cell) showInfo(id, progById(id, cell.dataset.id));
+    else if (e.target.closest('.tg-chan')) showInfo(id, progAt(id, Date.now()));
+  }
+
+  // When the guide opens: the header shows what's on now on the channel
+  // last watched (or the first row), without starting a preview.
+  function firstInfo() {
+    var el = G.container && G.container.querySelector('.tg-info');
+    if (!el || el.dataset.key || !G.rows.length || !infoShown()) return;
+    var id = G.lastId && channelById(G.lastId) && G.rows.some(function (c) { return c.id === G.lastId; }) ? G.lastId : G.rows[0].id;
+    var p = progAt(id, Date.now());
+    if (!p) return;
+    var wanted = PV.wanted;
+    showInfo(id, p);
+    if (!G.overlay) { clearTimeout(PV.timer); PV.wanted = wanted; }
   }
 
   function toggleFav(id) {
@@ -880,6 +1249,1173 @@
       ? api().ajax({ type: 'POST', url: api().getUrl('UserFavoriteItems/' + id, { userId: G.userId }) })
       : api().ajax({ type: 'DELETE', url: api().getUrl('UserFavoriteItems/' + id, { userId: G.userId }) });
     Promise.resolve(p).catch(function () { c.fav = !c.fav; redraw(); });
+  }
+
+  // ── The header: what the pointer (or the keyboard) is on ───────────
+  // Like the TV's guide header: a box, the programme's name, when and
+  // where, and a few lines about it. The box shows the programme's picture
+  // (else the channel's logo) and, after resting 1.5 s on a programme that
+  // is on now, its channel playing muted (live preview). The box is there
+  // only while Tentacle says a connection is spare for previews
+  // (TentacleDiscover/LivePreview, read every 15 s); without it the name
+  // moves to the left edge. In the player's guide the box holds the
+  // channel playing. Not on phones (no pointer to rest; a tap plays).
+
+  var PREVIEW_REST_MS = 1500;
+  var PREVIEW_POLL_MS = 15000;
+  var PREVIEW_HOLD_MS = 10000;   // a previewed channel clicked: the player joins its stream meanwhile
+  var PV = { allowed: false, asked: 0, poll: null, timer: null, channelId: '', player: null, wanted: '', held: [] };
+
+  function infoShown() { return !!(G.container && G.container.querySelector('.tg-info')) && (G.overlay || !G.m || !G.m.phone); }
+
+  function channelById(id) {
+    var c = null;
+    (G.channels || []).some(function (x) { if (x.id === id) { c = x; return true; } return false; });
+    return c;
+  }
+
+  function progAt(channelId, t) {
+    var day = G.days[G.dayIndex];
+    var list = day && G.progs[day.start] && G.progs[day.start][channelId];
+    var hit = null;
+    (list || []).some(function (p) { if (p.s <= t && t < p.e) { hit = p; return true; } return false; });
+    return hit;
+  }
+
+  function progById(channelId, id) {
+    var hit = null;
+    Object.keys(G.progs).some(function (d) {
+      var list = G.progs[d][channelId];
+      return (list || []).some(function (p) { if (p.id === id) { hit = p; return true; } return false; });
+    });
+    return hit;
+  }
+
+  function logoUrl(c, h) {
+    return c && c.logo ? api().getUrl('Items/' + c.id + '/Images/Primary', { maxHeight: h || 96, tag: c.logo, quality: 90 }) : '';
+  }
+
+  function whenText(p, c) {
+    var day = startOfDay(p.s), today = startOfDay(Date.now());
+    var d = day === today ? '' : (day === addDays(today, 1) ? 'Tomorrow ' :
+      new Date(p.s).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }) + ' · ');
+    return d + fmtRange(p.s, p.e) + (c ? ' · ' + c.name : '');
+  }
+
+  // The header shows channel `channelId` and programme `p` (null: the channel alone).
+  function showInfo(channelId, p) {
+    if (!infoShown()) return;
+    var c = channelById(channelId);
+    if (!c) return;
+    var el = G.container.querySelector('.tg-info');
+    var key = channelId + '|' + (p ? p.id : '');
+    if (el.dataset.key === key) return;
+    el.dataset.key = key;
+    var now = Date.now();
+    var onNow = !p || (p.s <= now && now < p.e);
+    el.querySelector('.tg-info-title').textContent = p ? p.name : c.name;
+    var when = el.querySelector('.tg-info-when');
+    when.textContent = p ? whenText(p, c) : (c.number ? c.number + ' · ' : '') + c.name;
+    when.classList.toggle('live', !!p && onNow);
+    var ov = el.querySelector('.tg-info-ov');
+    ov.textContent = p ? (p.ov || '') : '';
+    var img = el.querySelector('.tg-box-img');
+    var pic = p && p.img ? api().getUrl('Items/' + p.id + '/Images/' + p.img.type, { maxWidth: 480, tag: p.img.tag, quality: 85 }) : '';
+    var src = pic || logoUrl(c, 160);
+    img.classList.toggle('logo', !pic);
+    if (src) { if (img.getAttribute('src') !== src) img.setAttribute('src', src); img.style.visibility = ''; }
+    else { img.removeAttribute('src'); img.style.visibility = 'hidden'; }
+    if (!G.overlay) schedulePreview(onNow ? channelId : '');
+  }
+
+  function showBox() {
+    var el = G.container && G.container.querySelector('.tg-info');
+    if (el) el.classList.toggle('nobox', !(PV.allowed || G.overlay));
+  }
+
+  function pollPreview() {
+    if (!G.active || G.overlay || (G.m && G.m.phone) || !G.userId) return;
+    PV.asked = Date.now();
+    var q = { userId: G.userId };
+    if (PV.player) q.previewing = true;
+    apiGet('TentacleDiscover/LivePreview', q).then(function (r) {
+      var was = PV.allowed;
+      PV.allowed = !!(r && r.previews);
+      if (!PV.allowed) stopPreview();
+      if (was !== PV.allowed) showBox();
+    }).catch(function () { });
+  }
+
+  function schedulePreview(channelId) {
+    if (channelId && channelId === PV.channelId && PV.player) return;
+    clearTimeout(PV.timer);
+    PV.wanted = channelId;
+    if (PV.channelId && PV.channelId !== channelId) stopPreview();
+    if (!channelId || !PV.allowed || G.overlay || MV.picking || (G.m && G.m.phone) || !LivePicture.supported()) return;
+    PV.timer = setTimeout(function () { startPreview(channelId); }, PREVIEW_REST_MS);
+  }
+
+  function startPreview(channelId) {
+    if (!G.active || PV.wanted !== channelId || !G.container) return;
+    var box = G.container.querySelector('.tg-box');
+    var video = box && box.querySelector('video');
+    if (!video) return;
+    stopPreview();
+    PV.channelId = channelId;
+    var player = PV.player = new LivePicture(video, {
+      mime: 'video/mp4; codecs="avc1.42C01E"',
+      onEnd: function () { if (PV.player === player) stopPreview(); },
+    });
+    video.muted = true;
+    player.start(api().getUrl('TentacleDiscover/LivePreview/' + channelId + '/Stream'), authHeaders()).then(function () {
+      if (PV.player === player) box.classList.add('playing');
+    }).catch(function () {
+      if (PV.player === player) stopPreview();
+      // refused (no connection spare): ask again now rather than in 15 s
+      pollPreview();
+    });
+  }
+
+  // `hold`: the channel is about to play full screen; its stream stays open
+  // a few seconds longer so the player joins it (no second connection).
+  function stopPreview(hold) {
+    clearTimeout(PV.timer);
+    var player = PV.player;
+    PV.player = null;
+    PV.channelId = '';
+    var box = G.container && G.container.querySelector('.tg-box');
+    if (box) box.classList.remove('playing');
+    if (!player) return;
+    if (hold) {
+      player.video.muted = true;
+      player.opts.paused = true;
+      try { player.video.pause(); } catch (e) { }
+      PV.held.push(player);
+      setTimeout(function () {
+        player.stop();
+        PV.held = PV.held.filter(function (x) { return x !== player; });
+        if (box && !PV.player) {
+          var v = box.querySelector('video');
+          if (v === player.video) { /* the box's video is free again */ }
+        }
+      }, PREVIEW_HOLD_MS);
+      // the box gets a fresh <video> so a new preview doesn't stop the held one
+      if (box) {
+        var fresh = document.createElement('video');
+        fresh.muted = true;
+        fresh.playsInline = true;
+        fresh.setAttribute('playsinline', '');
+        player.video.replaceWith(fresh);
+      }
+      return;
+    }
+    player.stop();
+  }
+
+  // ── The programme menu ─────────────────────────────────────────────
+  // Like the TV's long press: Watch now (on now) or Tune to channel, Record
+  // this / Record every episode (or Cancel this recording… / Cancel series…,
+  // confirmed) for people who may manage recordings while it hasn't ended,
+  // then Details. A click on a programme that isn't on now opens it too.
+
+  function canManage() {
+    var a = api();
+    if (G.manage != null || !a || typeof a.getCurrentUser !== 'function') return Promise.resolve(!!G.manage);
+    return Promise.resolve(a.getCurrentUser()).then(function (u) {
+      G.manage = !!(u && u.Policy && (u.Policy.EnableLiveTvManagement || u.Policy.IsAdministrator));
+      return G.manage;
+    }).catch(function () { return false; });
+  }
+
+  // What the menu offers, in order (also what the details sheet shows).
+  function programmeChoices(p, info, manage, now) {
+    var onNow = p.s <= now && now < p.e, ended = p.e <= now;
+    var out = [onNow ? 'watch' : 'tune'];
+    if (manage && !ended) {
+      out.push(info.TimerId ? 'cancel' : 'record');
+      var episodes = info.IsSeries === true || info.IsMovie !== true;
+      if (episodes || info.SeriesTimerId) out.push(info.SeriesTimerId ? 'cancelSeries' : 'recordSeries');
+    }
+    out.push('details');
+    return out;
+  }
+
+  function programmeMenu(channelId, progId, at) {
+    var c = channelById(channelId);
+    var p = progById(channelId, progId);
+    if (!c || !p) return;
+    Promise.all([
+      apiGet('LiveTv/Programs/' + progId, { UserId: G.userId }).catch(function () { return {}; }),
+      canManage(),
+    ]).then(function (r) {
+      var info = r[0] || {};
+      var items = programmeItems(c, p, info, r[1]);
+      openMenu({ title: p.name + ' · ' + fmtTime(p.s), items: items, x: at.x, y: at.y, anchor: at.el });
+    });
+  }
+
+  function programmeItems(c, p, info, manage) {
+    var label = {
+      watch: 'Watch now', tune: 'Tune to channel', record: 'Record this', recordSeries: 'Record every episode',
+      cancel: 'Cancel this recording…', cancelSeries: 'Cancel series…', details: 'Details',
+    };
+    return programmeChoices(p, info, manage, Date.now()).map(function (k) {
+      var it = { label: label[k] };
+      if (k === 'watch' || k === 'tune') it.run = function () { closeOverlayFor(c.id); playChannel(c.id); };
+      if (k === 'record') it.run = function () { record(p, false); };
+      if (k === 'recordSeries') it.run = function () { record(p, true); };
+      if (k === 'cancel') it.run = function () {
+        var now = Date.now();
+        confirmMenu({
+          message: p.s <= now ? 'This programme is recording now. Cancelling stops the recording.' : 'Cancel this recording?',
+          confirm: 'Cancel recording', cancel: 'Keep it', danger: true,
+          run: function () { cancelTimer('LiveTv/Timers/' + info.TimerId); },
+        });
+      };
+      if (k === 'cancelSeries') {
+        it.hint = 'Stops every recording of this series';
+        it.run = function () {
+          confirmMenu({
+            message: 'Cancel every recording of ' + p.name + '?', confirm: 'Cancel series', cancel: 'Keep it', danger: true,
+            run: function () { cancelTimer('LiveTv/SeriesTimers/' + info.SeriesTimerId); },
+          });
+        };
+      }
+      if (k === 'details') it.run = function () { programmeDetails(c, p, info, manage); };
+      return it;
+    });
+  }
+
+  // Details: the programme's own sheet (no Jellyfin page with a blank
+  // picture): picture if it has one, name, when, channel, what it is about,
+  // and the same actions.
+  function programmeDetails(c, p, info, manage) {
+    var tag = info.ImageTags && (info.ImageTags.Thumb ? ['Thumb', info.ImageTags.Thumb] : info.ImageTags.Primary ? ['Primary', info.ImageTags.Primary] : null);
+    var pic = tag ? api().getUrl('Items/' + p.id + '/Images/' + tag[0], { maxWidth: 640, tag: tag[1], quality: 85 }) : '';
+    var meta = [info.OfficialRating, (info.Genres || []).slice(0, 3).join(', ')].filter(Boolean).join(' · ');
+    var body = '<div class="tmenu-details">' +
+      (pic ? '<img class="tmenu-pic" alt="" src="' + escAttr(pic) + '">' : '') +
+      '<div class="tmenu-when">' + esc(whenText(p, c)) + '</div>' +
+      (meta ? '<div class="tmenu-meta">' + esc(meta) + '</div>' : '') +
+      ((info.Overview || p.ov) ? '<div class="tmenu-ov">' + esc(info.Overview || p.ov) + '</div>' : '') +
+      '</div>';
+    var items = programmeItems(c, p, info, manage).filter(function (it) { return it.label !== 'Details'; });
+    var m = openMenu({ title: p.name, body: body, items: items });
+    if (m) m.classList.add('details');
+  }
+
+  function record(p, series) {
+    apiGet('LiveTv/Timers/Defaults', { programId: p.id }).then(function (d) {
+      return apiPost(series ? 'LiveTv/SeriesTimers' : 'LiveTv/Timers', d);
+    }).then(function () {
+      toast(series ? 'Every episode will record' : 'Program set to record');
+      setTimeout(loadMarks, 400);
+    }, function () {
+      toast('The recording couldn’t be set. Try again in a moment.');
+    });
+  }
+
+  function cancelTimer(path) {
+    Promise.resolve(api().ajax({ type: 'DELETE', url: api().getUrl(path) })).then(function () {
+      toast('Recording cancelled');
+      setTimeout(loadMarks, 400);
+    }, function () {
+      toast('That couldn’t be cancelled. Try again in a moment.');
+    });
+  }
+
+  // A channel's name: Watch, and its star (taking it off asks first, as on the TV).
+  function channelMenu(channelId, at) {
+    var c = channelById(channelId);
+    if (!c) return;
+    openMenu({
+      title: c.name, x: at.x, y: at.y, anchor: at.el,
+      items: [
+        { label: 'Watch now', run: function () { closeOverlayFor(c.id); playChannel(c.id); } },
+        { label: c.fav ? 'Remove from Favorites…' : 'Add to Favorites', run: function () { starClicked(c.id, at.el); } },
+      ],
+    });
+  }
+
+  function starClicked(id, anchor) {
+    var c = channelById(id);
+    if (!c) return;
+    if (!c.fav) { toggleFav(id); toast('Added to Favorites'); return; }
+    confirmMenu({
+      message: 'Remove ' + c.name + ' from your Favorites?', confirm: 'Remove', anchor: anchor,
+      run: function () { toggleFav(id); },
+    });
+  }
+
+  // ── The keyboard in the guide ──────────────────────────────────────
+  // Arrows move a cursor over the programmes (Up/Down keep the time),
+  // Enter is a click, the Menu key (or Shift+F10) opens the menu, the
+  // header shows what the cursor is on. Home / End: now / the row's last.
+
+  function moveCursor(dRow, dProg) {
+    if (!G.rows.length || !G.days.length) return;
+    var day = G.days[G.dayIndex], now = Date.now();
+    var cur = G.cursor;
+    if (!cur || G.rows.map(function (c) { return c.id; }).indexOf(cur.id) < 0) {
+      var sc0 = G.container.querySelector('.tg-scroller');
+      var first = sc0 ? Math.min(G.rows.length - 1, Math.floor(sc0.scrollTop / G.m.rowH)) : 0;
+      cur = { id: G.rows[first].id, t: (now >= day.start && now < day.end) ? now : day.start };
+      dRow = 0; dProg = 0;
+    }
+    var i = G.rows.map(function (c) { return c.id; }).indexOf(cur.id);
+    i = Math.max(0, Math.min(G.rows.length - 1, i + dRow));
+    var id = G.rows[i].id, t = cur.t;
+    var list = (G.progs[day.start] && G.progs[day.start][id]) || [];
+    if (dProg && list.length) {
+      var k = -1;
+      list.forEach(function (p, j) { if (p.s <= t && t < p.e) k = j; });
+      if (k < 0) k = dProg > 0 ? -1 : list.length;
+      k = Math.max(0, Math.min(list.length - 1, k + dProg));
+      t = Math.max(list[k].s, day.start) + 1;
+    }
+    G.cursor = { id: id, t: t };
+    showCursor(true);
+  }
+
+  function showCursor(scroll) {
+    var cur = G.cursor;
+    if (!cur || !G.container) return;
+    var sc = G.container.querySelector('.tg-scroller');
+    var i = G.rows.map(function (c) { return c.id; }).indexOf(cur.id);
+    if (sc && scroll && i >= 0) {
+      var m = G.m, view = sc.clientHeight - m.headH;
+      if (i * m.rowH < sc.scrollTop) sc.scrollTop = i * m.rowH;
+      else if ((i + 1) * m.rowH > sc.scrollTop + view) sc.scrollTop = (i + 1) * m.rowH - view;
+      var p = progAt(cur.id, cur.t);
+      var day = G.days[G.dayIndex];
+      if (p) {
+        var left = x(Math.max(p.s, day.start)), right = x(Math.min(p.e, day.end));
+        var w = sc.clientWidth - m.chanW;
+        if (left < sc.scrollLeft) sc.scrollLeft = left;
+        else if (right > sc.scrollLeft + w) sc.scrollLeft = Math.min(left, right - w);
+      }
+      drawRows();
+    }
+    var old = G.container.querySelectorAll('.tg-prog.kfocus');
+    for (var j = 0; j < old.length; j++) old[j].classList.remove('kfocus');
+    var row = G.mounted[cur.id], prog = progAt(cur.id, cur.t);
+    if (row && prog) {
+      var cell = row.querySelector('.tg-prog[data-id="' + cssId(prog.id) + '"]');
+      if (cell) cell.classList.add('kfocus');
+    }
+    showInfo(cur.id, prog);
+  }
+
+  function cssId(id) { return String(id).replace(/["\\]/g, ''); }
+
+  function onGuideKey(e) {
+    if (!G.active || MENU.el || e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey) return;
+    var t = e.target;
+    if (t && t.closest && (t.closest('input, textarea, select') || t.closest('.tg-top, .tg-days, .tg-pickbar'))) return;
+    if (MV.view) return;   // the multi-view grid has its own keys
+    var k = e.key, menuKey = k === 'ContextMenu' || (k === 'F10' && e.shiftKey);
+    if (k === 'ArrowDown') moveCursor(1, 0);
+    else if (k === 'ArrowUp') moveCursor(-1, 0);
+    else if (k === 'ArrowRight') moveCursor(0, 1);
+    else if (k === 'ArrowLeft') moveCursor(0, -1);
+    else if (k === 'PageDown' || k === 'PageUp') {
+      var n = Math.max(1, Math.floor((G.container.querySelector('.tg-scroller').clientHeight - G.m.headH) / G.m.rowH) - 1);
+      moveCursor(k === 'PageDown' ? n : -n, 0);
+    } else if ((k === 'Enter' || menuKey) && G.cursor) {
+      var p = progAt(G.cursor.id, G.cursor.t);
+      var row = G.mounted[G.cursor.id];
+      var cell = row && p && row.querySelector('.tg-prog[data-id="' + cssId(p.id) + '"]');
+      var r = cell ? cell.getBoundingClientRect() : { left: 200, bottom: 200 };
+      if (menuKey) { if (p) programmeMenu(G.cursor.id, p.id, { x: r.left + 8, y: r.bottom + 4, el: cell }); }
+      else if (cell) progClicked(G.cursor.id, cell, { x: r.left + 8, y: r.bottom + 4 });
+      else pickOrPlay(G.cursor.id);
+    } else if (k === 'Escape' && G.overlay) {
+      closeOverlay();
+    } else if (k === 'Escape' && MV.picking) {
+      endPicking();
+    } else {
+      return;
+    }
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }
+  document.addEventListener('keydown', onGuideKey, true);
+
+  // A programme clicked (or Enter on it): on now → its channel plays at
+  // once; otherwise its menu. In multi-view's pick mode it picks the channel.
+  function progClicked(channelId, cell, at) {
+    if (MV.picking) { togglePick(channelId); return; }
+    var now = Date.now();
+    if (+cell.dataset.s <= now && now < +cell.dataset.e) {
+      closeOverlayFor(channelId);
+      watch(channelId);
+    } else {
+      programmeMenu(channelId, cell.dataset.id, { x: at.x, y: at.y, el: cell });
+    }
+  }
+
+  function pickOrPlay(channelId) {
+    if (MV.picking) { togglePick(channelId); return; }
+    closeOverlayFor(channelId);
+    watch(channelId);
+  }
+
+  // Play a channel from the guide; a channel being previewed keeps its
+  // stream for a few seconds so the player joins it.
+  function watch(channelId) {
+    if (PV.player && PV.channelId === channelId) stopPreview(true);
+    else stopPreview();
+    playChannel(channelId);
+  }
+
+  // ── Dates only as far as real guide data (as on the TV) ────────────
+  // One stray listing days ahead (an event channel) used to add a tab for
+  // every day up to it. A day is offered only when it has at least a
+  // quarter of the programmes of the busiest day before it; the first day
+  // that hasn't ends the strip. Counted with count-only requests.
+
+  var DAY_SHARE = 0.25;
+
+  // counts: programmes per day from today, in order. How many days to offer.
+  function daysWithData(counts) {
+    var n = 0, best = 0;
+    for (var i = 0; i < counts.length; i++) {
+      var c = counts[i] || 0;
+      if (i > 0 && c < best * DAY_SHARE) break;
+      if (i > 0 && c === 0) break;
+      best = Math.max(best, c);
+      n = i + 1;
+    }
+    return Math.max(1, n);
+  }
+
+  function countDay(view, start) {
+    var body = {
+      UserId: G.userId,
+      MinStartDate: new Date(start).toISOString(),
+      MaxStartDate: new Date(addDays(start, 1) - 1).toISOString(),
+      Limit: 0,
+      EnableImages: false,
+      EnableUserData: false,
+      EnableTotalRecordCount: true,
+    };
+    if (view === 'favorites') body.ChannelIds = favChannels().map(function (c) { return c.id; });
+    return apiPost('LiveTv/Programs', body).then(function (r) { return (r && r.TotalRecordCount) || 0; });
+  }
+
+  // The furthest end worth showing for `view`: maxEnd cut at the last day with real data.
+  function trimMaxEnd(view, maxEnd) {
+    var today = startOfDay(Date.now());
+    if (!(maxEnd > addDays(today, 1))) return Promise.resolve(maxEnd);
+    var starts = [];
+    for (var s = today; s < maxEnd && starts.length < 21; s = addDays(s, 1)) starts.push(s);
+    var counts = [];
+    var next = function (i) {
+      if (i >= starts.length) return Promise.resolve();
+      return countDay(view, starts[i]).then(function (n) {
+        counts.push(n);
+        if (i > 0 && daysWithData(counts) < counts.length) return;   // this day failed: stop counting
+        return next(i + 1);
+      });
+    };
+    return next(0).then(function () {
+      var n = daysWithData(counts);
+      return n >= starts.length ? maxEnd : addDays(starts[n - 1], 1);
+    }, function () { return maxEnd; });
+  }
+
+  // ── Multi-view: 2-4 channels in one picture (as on the TV) ─────────
+  // Multi-view in the header asks Tentacle first (free connections; its
+  // own words when there aren't enough), then the guide picks: a click on
+  // a channel or one of its programmes ticks it (a numbered mark, again
+  // unticks), the bar shows the picks and "2 of 4 · Start". Tentacle makes
+  // one picture of them (TentacleDiscover/MultiView, the TV's session),
+  // here as fMP4 with the sound of the channel being heard. A click on a
+  // channel hears it (a second read, swapped in when it plays), a double
+  // click (or its ⤢) plays it full screen in Jellyfin's player, whose Back
+  // comes back to the grid; its menu swaps or removes it. Leaving gives
+  // every connection back at once. The screen stays awake while it plays.
+
+  var MV_KEEPALIVE_MS = 15000;
+  var MV = { picking: false, picks: [], max: 4, session: null, items: [], view: null, heard: 0, focus: 0,
+    player: null, spare: null, keep: null, wake: null, fullScreen: false, busy: false, hideTimer: null };
+
+  function mvUrl(path) { return api().getUrl('TentacleDiscover/MultiView' + (path || '')); }
+
+  function mvRequest(type, path, body) {
+    return new Promise(function (resolve, reject) {
+      var a = api();
+      fetch(a.getUrl('TentacleDiscover/MultiView' + (path || '')), {
+        method: type,
+        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+        body: body ? JSON.stringify(body) : undefined,
+      }).then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (j) {
+          if (r.ok) resolve(j);
+          else reject(new Error((j && (j.detail || j.message)) || 'Multi-view didn’t start. Try again in a moment.'));
+        });
+      }, function () { reject(new Error('Multi-view didn’t start. Try again in a moment.')); });
+    });
+  }
+
+  function startPicking() {
+    if (MV.busy) return;
+    if (!LivePicture.supported()) { toast('This browser can’t play multi-view.'); return; }
+    MV.busy = true;
+    apiGet('TentacleDiscover/MultiView', { userId: G.userId }).then(function (r) {
+      MV.busy = false;
+      if (!r || r.available === false) { toast((r && r.message) || 'Multi-view isn’t available on this server'); return; }
+      if (!r.can_start) { toast(r.message || 'Not enough free connections for multi-view right now.'); return; }
+      MV.picking = true;
+      MV.picks = [];
+      MV.max = Math.max(2, Math.min(4, r.max_tiles || 4));
+      stopPreview();
+      G.container.classList.add('tg-picking');
+      renderPickBar();
+      redrawMounted();
+    }, function () {
+      MV.busy = false;
+      toast('Multi-view isn’t available on this server');
+    });
+  }
+
+  function endPicking() {
+    MV.picking = false;
+    MV.picks = [];
+    if (G.container) G.container.classList.remove('tg-picking');
+    renderPickBar();
+    redrawMounted();
+  }
+
+  function togglePick(id) {
+    var i = MV.picks.indexOf(id);
+    if (i >= 0) MV.picks.splice(i, 1);
+    else if (MV.picks.length >= MV.max) {
+      toast(MV.max < 4 ? 'Only ' + MV.max + ' channels: that is how many connections are free' : 'Up to 4 channels');
+      return;
+    } else MV.picks.push(id);
+    renderPickBar();
+    redrawMounted();
+  }
+
+  function redrawMounted() {
+    Object.keys(G.mounted).forEach(function (id) {
+      var c = channelById(id), el = G.mounted[id];
+      if (c && el) el.querySelector('.tg-chan').outerHTML = chanCell(c);
+    });
+  }
+
+  function renderPickBar() {
+    var bar = G.container && G.container.querySelector('.tg-pickbar');
+    if (!bar) return;
+    if (!MV.picking) { bar.innerHTML = ''; bar.style.display = 'none'; return; }
+    bar.style.display = '';
+    var n = MV.picks.length;
+    bar.innerHTML =
+      '<div class="tg-pick-title">Multi-view <span>Pick 2 to ' + MV.max + ' channels</span></div>' +
+      '<div class="tg-pick-list">' + (n ? MV.picks.map(function (id, i) {
+        var c = channelById(id) || { name: '', id: id };
+        return '<button type="button" class="tg-pick-chip" data-unpick="' + escAttr(id) + '" title="Take ' + escAttr(c.name) + ' out">' +
+          '<b>' + (i + 1) + '</b>' + esc(c.name) + '<i>×</i></button>';
+      }).join('') : '<span class="tg-pick-none">Nothing picked yet</span>') + '</div>' +
+      '<button type="button" class="tg-btn tg-pick-start" data-action="mv-start"' + (n < 2 ? ' disabled' : '') + '>' +
+        (n ? n + ' of ' + MV.max + ' · Start' : 'Start') + '</button>' +
+      '<button type="button" class="tg-link tg-pick-cancel" data-action="mv-cancel">Cancel</button>';
+  }
+
+  function startMultiView() {
+    if (MV.busy || MV.picks.length < 2) return;
+    MV.busy = true;
+    var items = MV.picks.slice();
+    var btn = G.container.querySelector('.tg-pick-start');
+    if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
+    mvRequest('POST', '', { item_ids: items }).then(function (s) {
+      MV.busy = false;
+      MV.session = s;
+      MV.items = items;
+      MV.heard = 0;
+      MV.focus = 0;
+      endPicking();
+      openGrid();
+    }, function (err) {
+      MV.busy = false;
+      toast(err.message);
+      renderPickBar();
+    });
+  }
+
+  function itemOf(i) {
+    var t = MV.session && MV.session.tiles[i];
+    return (t && t.item_id) || MV.items[i] || '';
+  }
+
+  function tileName(i) {
+    var t = MV.session && MV.session.tiles[i];
+    var c = channelById(itemOf(i)) || channelById(normFind(itemOf(i)));
+    return (c && c.name) || (t && t.name) || '';
+  }
+
+  function normFind(id) {
+    var n = normId(id), hit = '';
+    (G.channels || []).some(function (c) { if (normId(c.id) === n) { hit = c.id; return true; } return false; });
+    return hit;
+  }
+
+  function openGrid() {
+    if (!MV.session) return;
+    MV.fullScreen = false;
+    var el = MV.view;
+    if (!el) {
+      el = MV.view = document.createElement('div');
+      el.id = 'tentacleMultiView';
+      el.innerHTML =
+        '<div class="mv-stage"><video class="mv-video" playsinline></video><video class="mv-video" playsinline></video><div class="mv-tiles"></div></div>' +
+        '<div class="mv-top"><button type="button" class="mv-back" data-mv="leave" title="Back to the guide (Esc)">' +
+          '<svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg><span>Guide</span></button>' +
+          '<div class="mv-title">Multi-view</div><div class="mv-hint">Click a channel to hear it · double-click for full screen</div></div>' +
+        '<div class="mv-state" role="status"></div>';
+      document.body.appendChild(el);
+      el.addEventListener('click', onGridClick);
+      el.addEventListener('dblclick', function (e) {
+        var t = e.target.closest('.mv-tile');
+        if (t) { e.preventDefault(); fullScreenTile(+t.dataset.i); }
+      });
+      onMenuGesture(el, '.mv-tile', function (t, x, y) { tileMenu(+t.dataset.i, { x: x, y: y }); });
+      el.addEventListener('mousemove', wakeChrome);
+      el.addEventListener('touchstart', wakeChrome, { passive: true });
+    }
+    document.body.classList.add('tentacle-multiview-active');
+    el.style.display = '';
+    renderTiles();
+    setState('Starting…');
+    playHeard();
+    keepAwake(true);
+    wakeChrome();
+    if (!MV.keep) MV.keep = setInterval(keepMultiView, MV_KEEPALIVE_MS);
+  }
+
+  function wakeChrome() {
+    if (!MV.view) return;
+    MV.view.classList.remove('idle');
+    clearTimeout(MV.hideTimer);
+    MV.hideTimer = setTimeout(function () { if (MV.view) MV.view.classList.add('idle'); }, 3500);
+  }
+
+  function setState(text, retry) {
+    var s = MV.view && MV.view.querySelector('.mv-state');
+    if (!s) return;
+    s.innerHTML = text ? '<div>' + esc(text) + '</div>' +
+      (retry ? '<div class="mv-state-btns"><button type="button" class="tg-btn" data-mv="retry">Try again</button>' +
+        '<button type="button" class="tg-link" data-mv="leave">Back to the guide</button></div>' : '') : '';
+    s.style.display = text ? '' : 'none';
+  }
+
+  function renderTiles() {
+    var box = MV.view && MV.view.querySelector('.mv-tiles');
+    var s = MV.session;
+    if (!box || !s) return;
+    var W = s.width || 1920, H = s.height || 1080;
+    box.innerHTML = s.tiles.map(function (t, i) {
+      var ended = t.live === false;
+      return '<div class="mv-tile' + (i === MV.heard ? ' heard' : '') + (i === MV.focus ? ' focus' : '') + '" data-i="' + i + '" tabindex="-1"' +
+        ' style="left:' + (t.x / W * 100) + '%;top:' + (t.y / H * 100) + '%;width:' + (t.width / W * 100) + '%;height:' + (t.height / H * 100) + '%">' +
+        '<span class="mv-name">' + (i === MV.heard ? '<i class="mv-note">♪</i>' : '') + esc(tileName(i)) + (ended ? ' · stopped' : '') + '</span>' +
+        '<span class="mv-acts">' +
+          '<button type="button" class="mv-act" data-mv="full" title="Watch full screen"><svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg></button>' +
+          '<button type="button" class="mv-act" data-mv="menu" title="More"><svg viewBox="0 0 24 24"><path d="M12 8a2 2 0 100-4 2 2 0 000 4zm0 2a2 2 0 100 4 2 2 0 000-4zm0 6a2 2 0 100 4 2 2 0 000-4z"/></svg></button>' +
+        '</span></div>';
+    }).join('');
+  }
+
+  // The picture with tile `MV.heard`'s sound; a second <video> takes over
+  // when it plays, so the picture never goes black for a sound change.
+  function playHeard() {
+    var s = MV.session;
+    if (!s || !MV.view) return;
+    var vids = MV.view.querySelectorAll('.mv-video');
+    var cur = MV.player;
+    var video = cur && cur.video === vids[0] ? vids[1] : vids[0];
+    if (MV.spare) { MV.spare.stop(); MV.spare = null; }
+    var player = new LivePicture(video, {
+      mime: 'video/mp4; codecs="avc1.640028, mp4a.40.2"',
+      onEnd: function () {
+        if (MV.player !== player || !MV.session) return;
+        setState('The picture stopped.', true);
+      },
+    });
+    MV.spare = player;
+    video.muted = false;
+    player.start(api().getUrl('TentacleDiscover/MultiView/' + s.id + '/Web', { audio: MV.heard })).then(function () {
+      if (MV.spare !== player) { player.stop(); return; }
+      MV.spare = null;
+      var old = MV.player;
+      MV.player = player;
+      video.classList.add('on');
+      if (old) { old.video.classList.remove('on'); old.stop(); }
+      setState('');
+    }, function (err) {
+      if (MV.spare === player) MV.spare = null;
+      player.stop();
+      if (!MV.session) return;
+      if (!MV.player) setState(err && /ended|404/.test(err.message) ? 'Multi-view ended' : 'The picture didn’t start.', true);
+    });
+  }
+
+  function hear(i) {
+    if (!MV.session || i < 0 || i >= MV.session.tiles.length) return;
+    MV.focus = i;
+    if (i !== MV.heard) { MV.heard = i; renderTiles(); playHeard(); }
+    else renderTiles();
+  }
+
+  function onGridClick(e) {
+    wakeChrome();
+    var b = e.target.closest('[data-mv]');
+    var tile = e.target.closest('.mv-tile');
+    if (b) {
+      e.preventDefault();
+      var what = b.dataset.mv;
+      if (what === 'leave') leaveMultiView();
+      else if (what === 'retry') { setState('Starting…'); playHeard(); }
+      else if (what === 'full' && tile) fullScreenTile(+tile.dataset.i);
+      else if (what === 'menu' && tile) {
+        var r = b.getBoundingClientRect();
+        tileMenu(+tile.dataset.i, { x: r.left, y: r.bottom + 4, el: b });
+      }
+      return;
+    }
+    if (tile) hear(+tile.dataset.i);
+  }
+
+  function tileMenu(i, at) {
+    if (!MV.session) return;
+    MV.focus = i;
+    renderTiles();
+    var n = MV.session.tiles.length;
+    openMenu({
+      title: tileName(i), x: at.x, y: at.y, anchor: at.el,
+      items: [
+        { label: 'Watch full screen', run: function () { fullScreenTile(i); } },
+        { label: 'Swap channel', run: function () { swapMenu(i, at); } },
+        n > 2 ? { label: 'Remove from multi-view', run: function () { changeTiles(i, null); } } : null,
+      ],
+    });
+  }
+
+  function swapMenu(i, at) {
+    var inGrid = {};
+    MV.session.tiles.forEach(function (t, j) { inGrid[normId(itemOf(j))] = true; });
+    var favs = favChannels().filter(function (c) { return !inGrid[normId(c.id)]; });
+    if (!favs.length) { toast('No other favourite channels'); return; }
+    openMenu({
+      title: 'Swap for', x: at.x, y: at.y, anchor: at.el,
+      items: favs.slice(0, 30).map(function (c) {
+        return { label: c.name, run: function () { changeTiles(i, c.id); } };
+      }),
+    });
+  }
+
+  // Tile i swapped for channel `id`, or removed (id null): the same session.
+  function changeTiles(i, id) {
+    var s = MV.session;
+    if (!s || MV.busy) return;
+    var items = s.tiles.map(function (t, j) { return itemOf(j); });
+    if (id) items[i] = id; else items.splice(i, 1);
+    MV.busy = true;
+    setState(id ? 'Swapping…' : 'Removing…');
+    mvRequest('PUT', '/' + s.id, { item_ids: items }).then(function (ns) {
+      MV.busy = false;
+      MV.session = ns;
+      MV.items = items;
+      if (MV.heard >= ns.tiles.length) MV.heard = 0;
+      if (!id && MV.heard > i) MV.heard--;
+      MV.focus = Math.min(MV.focus, ns.tiles.length - 1);
+      renderTiles();
+      playHeard();
+    }, function (err) {
+      MV.busy = false;
+      setState('');
+      toast(err.message);
+    });
+  }
+
+  // Full screen: the channel in Jellyfin's player (its stream is open on
+  // the server already, so no new connection); the session stays (kept
+  // alive), and Back in the player returns to the grid.
+  function fullScreenTile(i) {
+    var id = itemOf(i);
+    if (!id) return;
+    MV.fullScreen = true;
+    MV.heard = i;
+    stopGridPlayers();
+    hideGrid();
+    playChannel(normFind(id) || id);
+  }
+
+  function stopGridPlayers() {
+    if (MV.spare) { MV.spare.stop(); MV.spare = null; }
+    if (MV.player) { MV.player.stop(); MV.player.video.classList.remove('on'); MV.player = null; }
+    keepAwake(false);
+  }
+
+  function hideGrid() {
+    if (MV.view) MV.view.style.display = 'none';
+    document.body.classList.remove('tentacle-multiview-active');
+    closeMenu();
+  }
+
+  function leaveMultiView() {
+    var s = MV.session;
+    MV.session = null;
+    MV.fullScreen = false;
+    stopGridPlayers();
+    hideGrid();
+    clearInterval(MV.keep);
+    MV.keep = null;
+    if (s) mvRequest('DELETE', '/' + s.id).catch(function () { });
+  }
+
+  function keepMultiView() {
+    var s = MV.session;
+    if (!s) { clearInterval(MV.keep); MV.keep = null; return; }
+    // full screen in the player and then somewhere else: it's over
+    if (MV.fullScreen && !onPlayerPage() && !isGuidePage()) { leaveMultiView(); return; }
+    mvRequest('POST', '/' + s.id + '/Keepalive').then(function (d) {
+      if (MV.session !== s || !d || !d.tiles) return;
+      var was = JSON.stringify(s.tiles.map(function (t) { return t.live; }));
+      s.tiles = d.tiles;
+      if (JSON.stringify(d.tiles.map(function (t) { return t.live; })) !== was) renderTiles();
+    }, function (err) {
+      if (MV.session === s && /ended|404/i.test(err.message)) {
+        MV.session = null;
+        stopGridPlayers();
+        if (MV.view && MV.view.style.display !== 'none') setState('Multi-view ended', false);
+        setTimeout(hideGrid, 2500);
+      }
+    });
+  }
+
+  // The screen stays on while the grid plays (a phone or laptop would dim
+  // and lock), and is let go when it stops.
+  function keepAwake(on) {
+    if (!on) {
+      if (MV.wake) { try { MV.wake.release(); } catch (e) { } MV.wake = null; }
+      return;
+    }
+    if (MV.wake || !navigator.wakeLock || document.hidden) return;
+    navigator.wakeLock.request('screen').then(function (w) {
+      if (!MV.player && !MV.spare) { w.release(); return; }
+      MV.wake = w;
+      w.addEventListener('release', function () { if (MV.wake === w) MV.wake = null; });
+    }).catch(function () { });
+  }
+
+  // The browser closes or goes elsewhere: every connection back now, not after 45 s.
+  window.addEventListener('pagehide', function () {
+    var s = MV.session;
+    if (!s) return;
+    try {
+      fetch(mvUrl('/' + s.id), { method: 'DELETE', headers: authHeaders(), keepalive: true });
+    } catch (e) { }
+  });
+
+  function onGridKey(e) {
+    if (!MV.view || MV.view.style.display === 'none' || !MV.session || MENU.el) return;
+    var n = MV.session.tiles.length, i = MV.focus, k = e.key;
+    var cols = 2, row = Math.floor(i / cols), col = i % cols;
+    wakeChrome();
+    if (k === 'ArrowRight' && col === 0 && i + 1 < n) hear(i + 1);
+    else if (k === 'ArrowLeft' && col === 1) hear(i - 1);
+    else if (k === 'ArrowDown' && row === 0 && i + 2 < n) hear(i + 2);
+    else if (k === 'ArrowDown' && row === 0 && n === 3 && i === 1) hear(2);
+    else if (k === 'ArrowUp' && row === 1) hear(i - 2);
+    else if (k === 'Enter') fullScreenTile(i);
+    else if (k === 'ContextMenu' || (k === 'F10' && e.shiftKey)) {
+      var t = MV.view.querySelector('.mv-tile[data-i="' + i + '"]');
+      var r = t ? t.getBoundingClientRect() : { left: 100, top: 100 };
+      tileMenu(i, { x: r.left + 16, y: r.top + 16 });
+    } else if (k === 'Escape' || k === 'Backspace') leaveMultiView();
+    else if (k.indexOf('Arrow') !== 0) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }
+  document.addEventListener('keydown', onGridKey, true);
+
+  // ── In the player: recent channels and the guide (as on the TV) ────
+  // While a Live TV channel plays, Jellyfin's player gets two buttons:
+  //   - Recent channels: the person's last channels, newest first, up to
+  //     10, without the one playing, so the first card flips back to the
+  //     previous channel. From Jellyfin's own per-person last-played date
+  //     (set when any device starts a channel: it follows the person) plus
+  //     this browser's own tunes; their favourites when there are none yet.
+  //     Re-read while open when their data changes anywhere.
+  //   - Guide: Tentacle's guide over the player, the channel playing on in
+  //     the header's box, opened on its row; a programme on now (or a
+  //     channel) switches to it, Escape or the box goes back.
+
+  var RECENT_MAX = 10;
+  var PL = { item: null, asked: 0, band: null, items: null, focus: 0, open: false, tunes: [] };
+
+  function tunesKey() { return 'tentacle-recent-tunes-' + (G.userId || (api() && api().getCurrentUserId()) || ''); }
+
+  function loadTunes() {
+    try { PL.tunes = JSON.parse(localStorage.getItem(tunesKey()) || '[]') || []; } catch (e) { PL.tunes = []; }
+    return PL.tunes;
+  }
+
+  function rememberTune(id) {
+    loadTunes();
+    var n = normId(id);
+    PL.tunes = [{ id: id, at: Date.now() }].concat(PL.tunes.filter(function (t) { return normId(t.id) !== n; })).slice(0, RECENT_MAX + 1);
+    try { localStorage.setItem(tunesKey(), JSON.stringify(PL.tunes)); } catch (e) { }
+  }
+
+  // Server's last-played list + this browser's tunes → newest first, without `playing`.
+  function mergeRecents(server, tunes, playing, max) {
+    var seen = {}, out = [];
+    var all = (server || []).map(function (c) {
+      return { c: c, at: Date.parse(c.UserData && c.UserData.LastPlayedDate) || 0 };
+    });
+    var byId = {};
+    all.forEach(function (x) { byId[normId(x.c.Id)] = x; });
+    (tunes || []).forEach(function (t) {
+      var x = byId[normId(t.id)];
+      if (x) x.at = Math.max(x.at, t.at);
+      else all.push({ c: { Id: t.id, local: true }, at: t.at });
+    });
+    all.sort(function (a, b) { return b.at - a.at; });
+    all.forEach(function (x) {
+      var id = normId(x.c.Id);
+      if (!x.at || seen[id] || id === normId(playing)) return;
+      seen[id] = true;
+      out.push(x.c);
+    });
+    return out.slice(0, max || RECENT_MAX);
+  }
+
+  function readRecents() {
+    var uid = api().getCurrentUserId();
+    var q = {
+      UserId: uid, SortBy: 'DatePlayed', SortOrder: 'Descending', Limit: RECENT_MAX + 1,
+      AddCurrentProgram: true, EnableUserData: true, EnableImageTypes: 'Primary', ImageTypeLimit: 1,
+    };
+    return apiGet('LiveTv/Channels', q).then(function (r) {
+      var server = ((r && r.Items) || []).filter(function (c) { return c.UserData && c.UserData.LastPlayedDate; });
+      var playing = PL.item ? PL.item.Id : '';
+      var list = mergeRecents(server, loadTunes(), playing, RECENT_MAX);
+      // this browser's tunes the server doesn't list yet: read those channels
+      var missing = list.filter(function (c) { return c.local; }).map(function (c) { return c.Id; });
+      var full = missing.length ? apiGet('Items', { Ids: missing.join(','), UserId: uid, Fields: 'ChannelInfo', EnableUserData: true })
+        .then(function (x) { return (x && x.Items) || []; }).catch(function () { return []; }) : Promise.resolve([]);
+      return full.then(function (extra) {
+        var byId = {};
+        extra.forEach(function (c) { byId[normId(c.Id)] = c; });
+        list = list.map(function (c) { return c.local ? byId[normId(c.Id)] : c; }).filter(Boolean);
+        if (list.length) return { title: 'Recent channels', items: list };
+        return apiGet('LiveTv/Channels', { UserId: uid, IsFavorite: true, AddCurrentProgram: true, EnableUserData: true, Limit: 30 })
+          .then(function (f) {
+            var favs = ((f && f.Items) || []).filter(function (c) { return normId(c.Id) !== normId(playing); });
+            return { title: 'Your favorite channels', items: favs };
+          });
+      });
+    });
+  }
+
+  function recentCard(c, i) {
+    var p = c.CurrentProgram, now = Date.now();
+    var s = p && Date.parse(p.StartDate), e = p && Date.parse(p.EndDate);
+    var pct = s && e && e > s ? Math.max(0, Math.min(100, (now - s) / (e - s) * 100)) : 0;
+    var left = e > now ? Math.max(1, Math.round((e - now) / MIN)) : 0;
+    var logo = c.ImageTags && c.ImageTags.Primary
+      ? '<img alt="" src="' + escAttr(api().getUrl('Items/' + c.Id + '/Images/Primary', { maxHeight: 80, tag: c.ImageTags.Primary, quality: 90 })) + '">'
+      : '<span class="tr-noimg">' + esc((c.Name || '').slice(0, 3)) + '</span>';
+    return '<button type="button" class="tpl-card' + (i === PL.focus ? ' focus' : '') + '" data-ch="' + escAttr(c.Id) + '" data-i="' + i + '" title="' + escAttr(c.Name || '') + '">' +
+      '<span class="tpl-logo">' + logo + (c.ChannelNumber ? '<b>' + esc(c.ChannelNumber) + '</b>' : '') + '</span>' +
+      '<span class="tpl-name">' + esc(c.Name || '') + '</span>' +
+      '<span class="tpl-now">' + esc(p ? p.Name : '') + '</span>' +
+      (left ? '<span class="tpl-left">' + (left >= 60 ? Math.floor(left / 60) + ' h ' + (left % 60) + ' min left' : left + ' min left') + '</span>' : '') +
+      (pct ? '<i class="tpl-bar" style="width:' + pct.toFixed(1) + '%"></i>' : '') +
+    '</button>';
+  }
+
+  function openRecents() {
+    if (!PL.band) {
+      var b = PL.band = document.createElement('div');
+      b.id = 'tentacleRecentBand';
+      b.innerHTML = '<div class="tpl-head"><span class="tpl-title"></span>' +
+        '<button type="button" class="tpl-close" title="Close (Esc)">×</button></div><div class="tpl-row"></div>';
+      document.body.appendChild(b);
+      b.addEventListener('click', function (e) {
+        if (e.target.closest('.tpl-close')) { closeRecents(); return; }
+        var card = e.target.closest('.tpl-card');
+        if (card) { closeRecents(); switchChannel(card.dataset.ch); }
+      });
+    }
+    PL.open = true;
+    PL.focus = 0;
+    document.body.classList.add('tentacle-recents-open');
+    PL.band.style.display = '';
+    if (PL.items) renderRecents();
+    else PL.band.querySelector('.tpl-row').innerHTML = '<div class="tpl-wait">Loading…</div>';
+    refreshRecents();
+  }
+
+  function refreshRecents() {
+    readRecents().then(function (r) {
+      PL.items = r;
+      if (PL.open) renderRecents();
+    }).catch(function () {
+      if (PL.open && !PL.items) PL.band.querySelector('.tpl-row').innerHTML = '<div class="tpl-wait">Your channels couldn’t be read.</div>';
+    });
+  }
+
+  function renderRecents() {
+    var r = PL.items;
+    PL.band.querySelector('.tpl-title').textContent = r.title;
+    var row = PL.band.querySelector('.tpl-row');
+    var x = row.scrollLeft;
+    PL.focus = Math.min(PL.focus, Math.max(0, r.items.length - 1));
+    row.innerHTML = r.items.length ? r.items.map(recentCard).join('') :
+      '<div class="tpl-wait">No channels yet. Channels you watch show up here.</div>';
+    row.scrollLeft = x;
+    var f = row.querySelector('.tpl-card.focus');
+    if (f) f.focus({ preventScroll: true });
+  }
+
+  function closeRecents() {
+    PL.open = false;
+    document.body.classList.remove('tentacle-recents-open');
+    if (PL.band) PL.band.style.display = 'none';
+  }
+
+  function switchChannel(id) {
+    rememberTune(id);
+    playChannel(id);
+  }
+
+  function onPlayerKey(e) {
+    if (MENU.el) return;
+    if (PL.open) {
+      var cards = PL.band.querySelectorAll('.tpl-card');
+      var k = e.key;
+      if (k === 'ArrowRight' || k === 'ArrowLeft') {
+        PL.focus = Math.max(0, Math.min(cards.length - 1, PL.focus + (k === 'ArrowRight' ? 1 : -1)));
+        if (cards[PL.focus]) cards[PL.focus].focus();
+      } else if (k === 'Enter' && cards[PL.focus]) { cards[PL.focus].click(); }
+      else if (k === 'Escape' || k === 'ArrowUp' || k === 'Backspace') closeRecents();
+      else if (k === 'ArrowDown') { /* stays */ }
+      else return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  }
+  document.addEventListener('keydown', onPlayerKey, true);
+
+  // What this browser plays (Jellyfin keeps its player to itself; the
+  // server's session for this browser says), asked every few seconds on
+  // the player page.
+  function askPlaying() {
+    var a = api();
+    if (!a || typeof a.deviceId !== 'function' || Date.now() - PL.asked < 3000) return;
+    PL.asked = Date.now();
+    apiGet('Sessions', { DeviceId: a.deviceId() }).then(function (list) {
+      var item = null;
+      (list || []).forEach(function (s) { if (s.NowPlayingItem) item = s.NowPlayingItem; });
+      var was = PL.item && PL.item.Id;
+      PL.item = item;
+      if (item && item.Type === 'TvChannel') {
+        if (normId(item.Id) !== normId(was)) {
+          rememberTune(item.Id);
+          PL.items = null;
+          if (PL.open) refreshRecents();
+          if (G.overlay) { G.lastId = normFind(item.Id) || item.Id; scrollToChannel(G.lastId); }
+        }
+        G.lastId = normFind(item.Id) || G.lastId;
+        if (G.place) G.place.channelId = G.lastId;
+      }
+      osdButtons();
+    }).catch(function () { });
+  }
+
+  var ICON_RECENT = '<svg viewBox="0 0 24 24"><path d="M13 3a9 9 0 00-9 9H1l3.89 3.89.07.14L9 12H6a7 7 0 112.05 4.95l-1.42 1.42A9 9 0 1013 3zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>';
+  var ICON_GUIDE = '<svg viewBox="0 0 24 24"><path d="M3 4h18v2H3V4zm0 4h5v5H3V8zm7 0h11v2H10V8zm0 3h8v2h-8v-2zM3 15h5v5H3v-5zm7 0h11v2H10v-2zm0 3h8v2h-8v-2z"/></svg>';
+
+  // The two buttons in Jellyfin's player bar, only while a channel plays.
+  function osdButtons() {
+    var bar = document.querySelector('.videoOsdBottom .buttons');
+    var live = onPlayerPage() && PL.item && PL.item.Type === 'TvChannel';
+    var mine = bar && bar.querySelector('.tg-osd');
+    if (!live) { if (mine) mine.remove(); return; }
+    if (!bar || mine) return;
+    var wrap = document.createElement('div');
+    wrap.className = 'tg-osd';
+    wrap.innerHTML =
+      '<button type="button" is="paper-icon-button-light" class="paper-icon-button-light autoSize tg-osd-btn" data-osd="recent" title="Recent channels">' + ICON_RECENT + '</button>' +
+      '<button type="button" is="paper-icon-button-light" class="paper-icon-button-light autoSize tg-osd-btn" data-osd="guide" title="Guide">' + ICON_GUIDE + '</button>';
+    var before = bar.querySelector('.btnUserRating') || bar.querySelector('.btnSubtitles');
+    if (before) bar.insertBefore(wrap, before); else bar.appendChild(wrap);
+    wrap.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-osd]');
+      if (!b) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (b.dataset.osd === 'recent') { if (PL.open) closeRecents(); else openRecents(); }
+      else openOverlay();
+    });
+  }
+
+  // ── The guide over the player ──────────────────────────────────────
+
+  function openOverlay() {
+    closeRecents();
+    if (G.overlay) return;
+    G.overlay = true;
+    if (PL.item) G.lastId = normFind(PL.item.Id) || PL.item.Id;
+    document.body.classList.add('tentacle-guide-over-player');
+    G.active = false;
+    activate(true);
+  }
+
+  function closeOverlay() {
+    if (!G.overlay) return;
+    deactivate();
+    G.overlay = false;
+    document.body.classList.remove('tentacle-guide-over-player');
+    if (G.container) G.container.classList.remove('tg-overlay');
+    document.body.style.removeProperty('--tgbox-x');
+  }
+
+  // A channel picked in the player's guide: the guide goes, the channel plays in the player.
+  function closeOverlayFor(channelId) {
+    if (!G.overlay) return;
+    closeOverlay();
+    rememberTune(channelId);
+  }
+
+  // Jellyfin's picture sits in the header's box while the guide is open.
+  function placeBox() {
+    if (!G.overlay || !G.container) return;
+    var box = G.container.querySelector('.tg-box');
+    if (!box) return;
+    var r = box.getBoundingClientRect();
+    var st = document.body.style;
+    st.setProperty('--tgbox-x', r.left + 'px');
+    st.setProperty('--tgbox-y', r.top + 'px');
+    st.setProperty('--tgbox-w', r.width + 'px');
+    st.setProperty('--tgbox-h', r.height + 'px');
+  }
+
+  function scrollToChannel(id) {
+    var sc = G.container && G.container.querySelector('.tg-scroller');
+    var i = G.rows.map(function (c) { return c.id; }).indexOf(id);
+    if (!sc || i < 0) return;
+    var m = G.m, view = sc.clientHeight - m.headH;
+    sc.scrollTop = Math.max(0, i * m.rowH - Math.round((view - m.rowH) / 2));
+    Object.keys(G.mounted).forEach(function (k) { G.mounted[k].classList.toggle('tg-last', k === id); });
+    drawRows();
+    var p = progAt(id, Date.now());
+    G.cursor = { id: id, t: Date.now() };
+    showInfo(id, p);
   }
 
   // ── Live updates ──────────────────────────────────────────────────
@@ -1064,6 +2600,9 @@
   if (watcher && watcher.unref) watcher.unref();   // node (the unit tests)
 
   document.addEventListener('visibilitychange', function () {
+    if (document.hidden) stopPreview();
+    // the screen lock is let go while hidden: multi-view takes it again
+    if (!document.hidden && MV.view && MV.view.style.display !== 'none' && MV.session) keepAwake(true);
     if (!document.hidden && G.active) scheduleReload(0);
   });
 
@@ -1120,6 +2659,7 @@
 
   function playChannel(channelId) {
     G.lastId = channelId;
+    rememberTune(channelId);
     var p = localPlayer();
     if (p) {
       p.play({ ids: [channelId] }).catch(function (err) {
@@ -1214,9 +2754,12 @@
     var on = onPlayerPage();
     if (on) {
       leftPlayerAt = 0;
-      trackPlaying();
+      askPlaying();
+      osdButtons();
     } else if (wasOnPlayerPage) {
       leftPlayerAt = Date.now();
+      PL.item = null;
+      closeRecents();
     }
     wasOnPlayerPage = on;
     if (leftPlayerAt && !strayTimer && (e && e.type === 'playing' || Date.now() - leftPlayerAt < 120000)) {
@@ -1232,6 +2775,10 @@
   // ── Navigation listeners ───────────────────────────────────────────
 
   function onRouteChange() {
+    if (G.overlay) {
+      if (onPlayerPage()) return;
+      closeOverlay();
+    }
     if (isGuidePage()) {
       // Small delay to let Jellyfin finish its view transition
       setTimeout(activate, 50);
@@ -1253,7 +2800,9 @@
     // Shared with the Favorites page (favorited channel cards play on click)
     playChannel: playChannel,
     // For the unit tests (tests/test_livetv_guide.py)
-    internals: { diffChannels: diffChannels, onUserData: onUserData, G: G, computeDays: computeDays, isGuidePage: isGuidePage, progsHtml: progsHtml, chanCell: chanCell, fmtRange: fmtRange, keepPlace: keepPlace, restorePlace: restorePlace },
+    openOverlay: openOverlay,
+    internals: { daysWithData: daysWithData, mergeRecents: mergeRecents, programmeChoices: programmeChoices,
+      LivePicture: LivePicture, MV: MV, PV: PV, PL: PL, diffChannels: diffChannels, onUserData: onUserData, G: G, computeDays: computeDays, isGuidePage: isGuidePage, progsHtml: progsHtml, chanCell: chanCell, fmtRange: fmtRange, keepPlace: keepPlace, restorePlace: restorePlace },
   };
 
   // Initial check

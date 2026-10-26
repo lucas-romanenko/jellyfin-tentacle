@@ -1278,7 +1278,64 @@
     return str.substring(0, max) + '...';
   }
 
+  // ── A card's menu (right-click, a long press; the TV's long press) ────
+  // Continue Watching (a card with a saved place): Remove from Continue
+  // Watching (the saved place goes to 0, watched stays as it was), Play from
+  // start, Mark watched, Details; the card leaves the row at once. Other
+  // cards: Mark watched / unwatched, Details. Channel cards keep their click.
+  var CARD_MENU = '#tentacle-home .mh-card[data-item-id]:not(.mh-card-onnow)';
+
+  function cardMenu(card, x, y) {
+    var M = window.TentacleMenu, a = window.ApiClient;
+    if (!M || !a) return;
+    var id = card.getAttribute('data-item-id'), uid = a.getCurrentUserId();
+    a.getJSON(a.getUrl('Users/' + uid + '/Items/' + id)).then(function (item) {
+      if (!item || item.Type === 'TvChannel' || item.Type === 'Program') return;
+      var ud = item.UserData || {};
+      var details = { label: 'Details', run: function () {
+        if (window.TentacleDetails) window.TentacleDetails.show(id); else location.hash = '#/details?id=' + id;
+      } };
+      var played = function (on) {
+        return a.ajax({ type: on ? 'POST' : 'DELETE', url: a.getUrl('UserPlayedItems/' + id, { userId: uid }) });
+      };
+      var leaveRow = function () { card.remove(); };
+      var failed = function () { M.toast('That didn’t work. Try again in a moment.'); };
+      var items;
+      if (ud.PlaybackPositionTicks > 0) {
+        items = [
+          { label: 'Remove from Continue Watching', run: function () {
+            Promise.resolve(a.ajax({ type: 'POST', url: a.getUrl('UserItems/' + id + '/UserData', { userId: uid }),
+              data: JSON.stringify({ PlaybackPositionTicks: 0 }), contentType: 'application/json' })).then(leaveRow, failed);
+          } },
+          { label: 'Play from start', run: function () {
+            if (window.playbackManager) window.playbackManager.play({ ids: [id], startPositionTicks: 0 });
+          } },
+          { label: 'Mark watched', run: function () { Promise.resolve(played(true)).then(leaveRow, failed); } },
+          details,
+        ];
+      } else {
+        items = [
+          { label: ud.Played ? 'Mark unwatched' : 'Mark watched', run: function () {
+            Promise.resolve(played(!ud.Played)).then(function () { M.toast(ud.Played ? 'Marked unwatched' : 'Marked watched'); }, failed);
+          } },
+          details,
+        ];
+      }
+      M.open({ title: item.Name || '', items: items, x: x, y: y, anchor: card });
+    }).catch(function () { });
+  }
+
+  var cardMenuBound = false;
+  function bindCardMenu() {
+    if (cardMenuBound || !window.TentacleMenu) return;
+    cardMenuBound = true;
+    window.TentacleMenu.onGesture(document, CARD_MENU, cardMenu);
+  }
+
   // ── Start ─────────────────────────────────────────────────────────────
+  // (the menu is Tentacle's, from tentacle-livetv.js, which loads after this)
+  document.addEventListener('DOMContentLoaded', bindCardMenu);
+  setTimeout(bindCardMenu, 0);
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', waitForReady);
   } else {

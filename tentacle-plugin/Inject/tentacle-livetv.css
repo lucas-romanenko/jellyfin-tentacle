@@ -509,6 +509,8 @@ body.tentacle-livetv-active #tentacleLiveTvContainer {
     .tg-links { gap: 6px; }
     .tg-link { width: 36px; height: 36px; padding: 0; justify-content: center; }
     .tg-link span { display: none; }
+    /* Schedule is a tab of the Recordings page: one button less on the row */
+    .tg-links a[href$="tab=4"] { display: none; }
 
     .tg-chan { flex-direction: column; justify-content: center; gap: 2px; padding: 0 4px; }
     .tg-logo { width: 52px; height: 30px; }
@@ -540,3 +542,531 @@ body.tentacle-livetv-active #tentacleLiveTvContainer {
 .tg-mark-wait .tg-recdot { background: #fbbf24; }
 .tg-mark-pv .tg-recdot { background: transparent; box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.55); }
 .tg-prog.tg-mark-rec { box-shadow: inset 0 -2px 0 rgba(248, 113, 113, 0.7); }
+
+/* ==================== Header box: what the pointer is on, live preview ==================== */
+
+.tg-info {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    height: 118px;
+    margin: 0 0 12px;
+    flex: none;
+    min-width: 0;
+}
+
+.tg-box {
+    position: relative;
+    flex: none;
+    width: 210px;
+    height: 118px;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #1a1730;
+    cursor: pointer;
+    transition: width 0.25s, opacity 0.25s;
+}
+
+.tg-box-img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.tg-box-img.logo { object-fit: contain; padding: 22px 40px; box-sizing: border-box; }
+
+/* The <video> shows only while a preview plays: a stopped one leaves no frame behind. */
+.tg-box video {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    background: #000;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.tg-box.playing video { opacity: 1; }
+
+/* No connection spare for previews: no box, the name at the left edge. */
+.tg-info.nobox .tg-box { width: 0; opacity: 0; margin-right: -18px; }
+
+.tg-info-text { flex: 1; min-width: 0; }
+
+.tg-info-title {
+    font-size: 20px;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tg-info-when {
+    margin-top: 4px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--tg-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-variant-numeric: tabular-nums;
+}
+
+.tg-info-when.live { color: #b3abff; }
+
+.tg-info-ov {
+    margin-top: 6px;
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--tg-dim);
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    max-width: 900px;
+}
+
+/* the keyboard's place */
+.tg-prog.kfocus { outline: 2px solid var(--tg-accent); outline-offset: -2px; background: rgba(139, 128, 255, 0.22); }
+
+/* ==================== Multi-view: the button, picking ==================== */
+
+button.tg-link { font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+.tg-mv { margin-left: 0; }
+#tentacleLiveTvContainer.tg-picking .tg-mv { background: var(--tg-accent); border-color: var(--tg-accent); color: #fff !important; }
+
+.tg-pickbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin: 0 0 12px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: rgba(139, 128, 255, 0.1);
+    border: 1px solid rgba(139, 128, 255, 0.35);
+    flex: none;
+}
+
+.tg-pick-title { font-weight: 700; font-size: 15px; }
+.tg-pick-title span { font-weight: 500; color: var(--tg-dim); margin-left: 8px; font-size: 13px; }
+.tg-pick-list { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; min-width: 0; }
+.tg-pick-none { color: var(--tg-dim); font-size: 13px; }
+
+.tg-pick-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 0;
+    border-radius: 999px;
+    padding: 4px 10px 4px 4px;
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--tg-text);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.tg-pick-chip b, .tg-pickno {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--tg-accent);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.tg-pick-chip i { font-style: normal; opacity: 0.6; }
+.tg-pick-start:disabled { opacity: 0.45; cursor: default; }
+
+.tg-logo-wrap { position: relative; display: inline-flex; flex: none; }
+.tg-pickno { position: absolute; top: -4px; left: -4px; box-shadow: 0 0 0 2px #15132a; }
+#tentacleLiveTvContainer.tg-picking .tg-chan, #tentacleLiveTvContainer.tg-picking .tg-prog { cursor: copy; }
+.tg-chan.tg-picked { background: #241f4a; box-shadow: inset 3px 0 0 var(--tg-accent); }
+
+/* ==================== The guide over the player ==================== */
+
+#tentacleLiveTvContainer.tg-overlay {
+    z-index: 1050;
+    padding-top: 20px;
+    background: rgba(17, 15, 30, 0.97);
+}
+
+/* Jellyfin's picture goes into the header's box; its controls wait. */
+body.tentacle-guide-over-player .videoPlayerContainer {
+    position: fixed !important;
+    inset: auto !important;
+    left: var(--tgbox-x, 32px) !important;
+    top: var(--tgbox-y, 80px) !important;
+    width: var(--tgbox-w, 210px) !important;
+    height: var(--tgbox-h, 118px) !important;
+    z-index: 1060 !important;
+    border-radius: 8px;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+body.tentacle-guide-over-player .videoOsdBottom,
+body.tentacle-guide-over-player .upNextContainer,
+body.tentacle-guide-over-player .skinHeader { visibility: hidden !important; }
+
+#tentacleLiveTvContainer.tg-overlay .tg-box-img,
+#tentacleLiveTvContainer.tg-overlay .tg-box video { display: none; }
+#tentacleLiveTvContainer.tg-overlay .tg-box { background: #000; }
+
+/* ==================== In the player: buttons, recent channels ==================== */
+
+.tg-osd { display: inline-flex; align-items: center; }
+.tg-osd-btn svg { width: 28px; height: 28px; fill: currentColor; display: block; }
+
+#tentacleRecentBand {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 1055;
+    padding: 18px 32px 26px;
+    background: linear-gradient(to top, rgba(14, 12, 26, 0.97) 70%, rgba(14, 12, 26, 0));
+    color: rgba(255, 255, 255, 0.92);
+}
+
+body.tentacle-recents-open .videoOsdBottom { visibility: hidden !important; }
+
+.tpl-head { display: flex; align-items: center; margin-bottom: 10px; }
+.tpl-title { font-size: 17px; font-weight: 700; flex: 1; }
+
+.tpl-close {
+    width: 34px;
+    height: 34px;
+    border: 0;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.08);
+    color: #fff;
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.tpl-row {
+    display: flex;
+    gap: 12px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding: 4px 2px;
+}
+
+.tpl-row::-webkit-scrollbar { display: none; }
+
+.tpl-card {
+    position: relative;
+    flex: none;
+    width: 200px;
+    padding: 10px 12px 14px;
+    border: 0;
+    border-radius: 10px;
+    background: #1d1a33;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    overflow: hidden;
+    outline: none;
+    box-shadow: inset 0 0 0 2px transparent;
+    transition: box-shadow 0.12s, background 0.12s;
+}
+
+.tpl-card:focus-visible, .tpl-card.focus:focus { background: #262145; box-shadow: inset 0 0 0 2px #8b80ff; }
+
+.tpl-logo { display: flex; align-items: center; gap: 8px; height: 40px; margin-bottom: 6px; }
+.tpl-logo img { max-width: 72px; max-height: 40px; object-fit: contain; }
+.tpl-logo b { margin-left: auto; padding: 1px 7px; border-radius: 6px; background: rgba(255, 255, 255, 0.1); font-size: 12px; font-variant-numeric: tabular-nums; }
+.tpl-name, .tpl-now, .tpl-left { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tpl-name { font-size: 14px; font-weight: 700; }
+.tpl-now { font-size: 13px; color: rgba(255, 255, 255, 0.7); margin-top: 2px; }
+.tpl-left { font-size: 12px; color: rgba(255, 255, 255, 0.5); margin-top: 2px; }
+.tpl-bar { position: absolute; left: 0; bottom: 0; height: 3px; background: #8b80ff; }
+.tpl-wait { color: rgba(255, 255, 255, 0.6); font-size: 14px; padding: 18px 0; }
+
+/* ==================== Multi-view grid ==================== */
+
+body.tentacle-multiview-active { overflow: hidden; }
+
+#tentacleMultiView {
+    position: fixed;
+    inset: 0;
+    z-index: 1040;
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+}
+
+.mv-stage {
+    position: relative;
+    width: min(100vw, calc(100vh * 16 / 9));
+    aspect-ratio: 16 / 9;
+}
+
+.mv-video {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    background: #000;
+}
+
+.mv-video.on { opacity: 1; }
+.mv-tiles { position: absolute; inset: 0; }
+
+.mv-tile {
+    position: absolute;
+    box-sizing: border-box;
+    border: 3px solid transparent;
+    cursor: pointer;
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+.mv-tile.heard { border-color: #8b80ff; }
+.mv-tile.focus:not(.heard) { border-color: rgba(139, 128, 255, 0.45); }
+
+.mv-name {
+    position: absolute;
+    left: 10px;
+    bottom: 10px;
+    max-width: calc(100% - 20px);
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.6);
+    font-size: 14px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: opacity 0.3s;
+}
+
+.mv-note { font-style: normal; color: #b3abff; margin-right: 6px; }
+
+.mv-acts {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: flex;
+    gap: 6px;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.mv-tile:hover .mv-acts { opacity: 1; }
+
+.mv-act {
+    width: 36px;
+    height: 36px;
+    border: 0;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.6);
+    cursor: pointer;
+    padding: 7px;
+}
+
+.mv-act svg { width: 100%; height: 100%; fill: #fff; }
+
+.mv-top {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 16px 20px;
+    background: linear-gradient(to bottom, rgba(0, 0, 0, 0.7), transparent);
+    transition: opacity 0.3s;
+    pointer-events: none;
+}
+
+.mv-top > * { pointer-events: auto; }
+
+.mv-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 38px;
+    padding: 0 14px;
+    border: 0;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.mv-back svg { width: 18px; height: 18px; fill: #fff; }
+.mv-title { font-size: 18px; font-weight: 700; }
+.mv-hint { font-size: 13px; color: rgba(255, 255, 255, 0.6); }
+
+#tentacleMultiView.idle .mv-top { opacity: 0; }
+#tentacleMultiView.idle { cursor: none; }
+#tentacleMultiView.idle .mv-tile { cursor: none; }
+
+.mv-state {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    padding: 16px 22px;
+    border-radius: 12px;
+    background: rgba(17, 15, 30, 0.9);
+    font-size: 15px;
+    text-align: center;
+}
+
+.mv-state-btns { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
+.mv-state .tg-link { color: #fff !important; }
+
+/* ==================== The menu, the sheet, the toast ==================== */
+
+.tmenu-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 100000;
+}
+
+.tmenu {
+    position: fixed;
+    min-width: 220px;
+    max-width: min(340px, calc(100vw - 16px));
+    max-height: calc(100vh - 16px);
+    overflow-y: auto;
+    padding: 6px;
+    border-radius: 12px;
+    background: #1d1a33;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+    color: rgba(255, 255, 255, 0.92);
+    font-size: 14px;
+}
+
+.tmenu-title {
+    padding: 8px 12px 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.55);
+    line-height: 1.35;
+}
+
+.tmenu-item {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    padding: 9px 12px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+    outline: none;
+}
+
+.tmenu-item small { font-weight: 500; font-size: 12px; color: rgba(255, 255, 255, 0.5); margin-top: 2px; }
+.tmenu-item:focus-visible { background: #8b80ff; color: #fff; }
+.tmenu-item:focus-visible small { color: rgba(255, 255, 255, 0.8); }
+.tmenu-item.danger { color: #fca5a5; }
+.tmenu-item.danger:focus-visible { background: #dc2626; color: #fff; }
+.tmenu-item:active { background: rgba(139, 128, 255, 0.35); }
+@media (hover: hover) {
+    .tmenu-item:hover { background: #8b80ff; color: #fff; }
+    .tmenu-item:hover small { color: rgba(255, 255, 255, 0.8); }
+    .tmenu-item.danger:hover { background: #dc2626; color: #fff; }
+}
+
+/* Details: the programme's own sheet in the middle */
+.tmenu-scrim.details:not(.sheet) { background: rgba(0, 0, 0, 0.5); }
+.tmenu-scrim.details:not(.sheet) .tmenu { left: 50% !important; top: 50% !important; transform: translate(-50%, -50%); width: 460px; max-width: calc(100vw - 32px); padding: 10px; }
+.tmenu-scrim.details .tmenu-title { font-size: 20px; font-weight: 700; color: #fff; padding: 8px 12px 4px; }
+.tmenu-details { padding: 0 12px 10px; }
+.tmenu-pic { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; margin: 4px 0 10px; }
+.tmenu-when { font-weight: 600; color: #b3abff; font-size: 14px; }
+.tmenu-meta { color: rgba(255, 255, 255, 0.55); font-size: 13px; margin-top: 4px; }
+.tmenu-ov { margin-top: 10px; font-size: 14px; line-height: 1.5; color: rgba(255, 255, 255, 0.8); max-height: 9em; overflow-y: auto; }
+
+/* Phones: a sheet at the bottom */
+.tmenu-scrim.sheet { background: rgba(0, 0, 0, 0.45); }
+.tmenu-scrim.sheet .tmenu {
+    left: 0 !important;
+    right: 0;
+    bottom: 0;
+    top: auto !important;
+    max-width: none;
+    max-height: 80vh;
+    border-radius: 16px 16px 0 0;
+    padding: 8px 8px calc(12px + env(safe-area-inset-bottom));
+}
+.tmenu-scrim.sheet .tmenu-item { padding: 13px 14px; font-size: 15px; }
+
+.tmenu-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 28px;
+    z-index: 100001;
+    transform: translate(-50%, 20px);
+    padding: 10px 18px;
+    border-radius: 999px;
+    background: #2a2550;
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s, transform 0.2s;
+    max-width: calc(100vw - 32px);
+    text-align: center;
+}
+
+.tmenu-toast.on { opacity: 1; transform: translate(-50%, 0); }
+
+/* ==================== Phones ==================== */
+
+@media (max-width: 699px) {
+    .tg-info { display: none; }
+    #tentacleLiveTvContainer.tg-overlay .tg-info { display: flex; height: 72px; gap: 12px; margin-bottom: 8px; }
+    #tentacleLiveTvContainer.tg-overlay .tg-box { width: 128px; height: 72px; }
+    .tg-info-title { font-size: 16px; }
+    .tg-info-ov { display: none; }
+    .tg-mv span, .tg-back span { display: none; }
+    .tg-mv, .tg-back { width: 36px; height: 36px; padding: 0; justify-content: center; }
+    .tg-pickbar { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 10px; }
+    .tg-pick-title { align-self: center; }
+    .tg-pick-list { grid-column: 1 / -1; grid-row: 2; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+    .tg-pick-chip { flex: none; }
+    .tg-pick-start { grid-column: 1 / -1; grid-row: 3; }
+    .tg-pick-cancel { grid-column: 2; grid-row: 1; width: auto !important; padding: 0 12px !important; }
+    .tg-pickno { width: 18px; height: 18px; font-size: 11px; }
+    #tentacleRecentBand { padding: 14px 12px 18px; }
+    .tpl-card { width: 160px; }
+    .mv-hint { display: none; }
+    .mv-acts { opacity: 1; }
+    .mv-act { width: 30px; height: 30px; padding: 5px; }
+    .mv-name { font-size: 12px; left: 6px; bottom: 6px; }
+}
+
+@media (hover: hover) {
+    .tpl-card:hover { background: #262145; box-shadow: inset 0 0 0 2px #8b80ff; }
+}
