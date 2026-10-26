@@ -89,8 +89,8 @@ SAMPLE_BYTES = 4
 LEAD_SECONDS = 1.5             # the picture starts this far ahead: the player's buffer
 FIRST_FRAME_SECONDS = 8.0      # the clock waits this long at most for every tile's first frame
 QUEUE_MAX_BYTES = 96 * 1024 * 1024   # of a channel waiting for its decoder (minutes of it)
-CATCH_UP_SECONDS = 45.0        # a tile further behind than this jumps forward ...
-CATCH_UP_TO_SECONDS = 15.0     # ... to this
+CATCH_UP_SECONDS = 45.0        # a tile whose next bytes arrived longer ago than this jumps forward ...
+CATCH_UP_TO_SECONDS = 15.0     # ... to what arrived in the last this
 STUCK_WINDOW = 450             # frames (15 s) a feed is judged over ...
 STUCK_SHARE = 0.85             # ... and how many of them shown already in it make it stuck
 STUCK_MEMORY_SECONDS = 3 * 3600
@@ -564,7 +564,7 @@ class _Tile:
         self.item_id = item_id
         self.response = None      # the stream_proxy response we read
         self.reader = None
-        self.buf = deque()
+        self.buf = deque()        # (when it arrived, bytes)
         self.buf_bytes = 0
         self.arrived = None       # asyncio.Event: bytes (or the end) arrived
         self.head = b""           # the first bytes, for the first decoder
@@ -630,10 +630,10 @@ class _Tile:
     async def _read(self, body) -> None:
         try:
             async for piece in body:
-                self.buf.append(piece)
+                self.buf.append((time.monotonic(), piece))
                 self.buf_bytes += len(piece)
                 while self.buf_bytes > QUEUE_MAX_BYTES and len(self.buf) > 1:
-                    self.buf_bytes -= len(self.buf.popleft())
+                    self.buf_bytes -= len(self.buf.popleft()[1])
                 self.arrived.set()
             logger.info(f"[Multiview] {self.name}: its stream ended")
         except asyncio.CancelledError:
@@ -652,43 +652,44 @@ class _Tile:
                 return None
             self.arrived.clear()
             await self.arrived.wait()
-        piece = self.buf.popleft()
+        _, piece = self.buf.popleft()
         self.buf_bytes -= len(piece)
         return piece
 
-    def seconds_behind(self) -> Optional[float]:
-        """How much of the channel waits in front of the decoder, in seconds
-        (its bitrate measured from what was shown); None until known."""
-        if self.frames < 300 or not self.fed:
-            return None
-        return self.buf_bytes / (self.fed / (self.frames * TICK))
+    def seconds_behind(self) -> float:
+        """How long the bytes the decoder gets next have waited: how far the
+        tile is behind what arrived. By time, not bytes: a re-dial the
+        stream proxy couldn't join resends seconds already sent, which the
+        decoder gets through at once (their frames are behind its clock)."""
+        return time.monotonic() - self.buf[0][0] if self.buf else 0.0
 
     def drop_to(self, seconds: float) -> int:
-        """Leave only the last `seconds` of the buffer, from a keyframe: the
-        tile jumps forward. Bytes dropped."""
-        behind = self.seconds_behind()
-        if not behind or behind <= seconds:
-            return 0
-        keep = int(self.buf_bytes * seconds / behind)
+        """Leave only what arrived in the last `seconds`, from a keyframe:
+        the tile jumps forward. Bytes dropped."""
+        now = time.monotonic()
         dropped = 0
-        while self.buf and self.buf_bytes - len(self.buf[0]) >= keep:
-            piece = self.buf.popleft()
-            self.buf_bytes -= len(piece)
-            dropped += len(piece)
+        while self.buf and now - self.buf[0][0] > seconds:
+            dropped += len(self.buf.popleft()[1])
+        if not dropped:
+            return 0
+        self.buf_bytes -= dropped
         self.head = b""
         return dropped + self.from_keyframe()
 
     def from_keyframe(self) -> int:
         """Start what waits at its first keyframe (a decoder started mid-way
-        shows broken pictures until one): bytes skipped."""
-        rest = b"".join(self.buf)
-        at = _video_key_offset(rest)
-        if not at:
-            return 0
-        self.buf.clear()
-        self.buf.append(rest[at:])
-        self.buf_bytes = len(rest) - at
-        return at
+        shows broken pictures until one): bytes skipped. Looks at the first
+        few MB only."""
+        head, first = bytearray(), None
+        while self.buf and len(head) < 8 * 1024 * 1024:
+            at, piece = self.buf.popleft()
+            first = at if first is None else first
+            head += piece
+        skip = _video_key_offset(bytes(head)) or 0
+        if len(head) > skip:
+            self.buf.appendleft((first, bytes(head[skip:])))
+        self.buf_bytes -= skip
+        return skip
 
     async def feed(self, dec: _Decoder) -> None:
         """Copy the channel into `dec`'s input until either side ends; at the
@@ -765,11 +766,10 @@ class _Tile:
 
     def describe(self, index: int, place: tuple) -> dict:
         x, y, w, h = place
-        behind = self.seconds_behind()
         return {"index": index, "audio_track": index, "item_id": self.item_id, "key": self.key,
                 "channel_id": self.channel_id, "name": self.name, "has_audio": self.has_audio,
                 "live": not self.ended, "x": x, "y": y, "width": w, "height": h,
-                "buffer_seconds": round(behind, 1) if behind is not None else None,
+                "buffer_seconds": round(self.seconds_behind(), 1),
                 "stalls": self.stalls, "held_seconds": round(self.held * TICK, 1)}
 
 
@@ -777,15 +777,18 @@ class _Tile:
 
 _BLACK = bytes([16]) * (TILE_W * TILE_H) + bytes([128]) * (TILE_W * TILE_H // 2)
 _AUDIO_CAP = RATE * SAMPLE_BYTES * 2      # sound read ahead of its frames, at most
+_SILENCE = bytes(SAMPLE_BYTES * (RATE // 29 + 1))   # a tick of it, and more
+# Frame buffers per place, reused in turn: read ahead, the one on screen,
+# the ones waiting for the encoder (PENDING_FRAMES and the newest) and two
+# more, so one is never read into while it is still to be written.
+RING_FRAMES = READ_AHEAD_FRAMES + PENDING_FRAMES + 4
 
 
 def _fill(fd: int, buf: bytearray, upto: int) -> None:
     while len(buf) < upto:
         try:
             got = os.read(fd, upto - len(buf))
-        except (BlockingIOError, InterruptedError):
-            return
-        except OSError:
+        except OSError:      # nothing ready (BlockingIOError) or the decoder gone
             return
         if not got:
             return
@@ -798,11 +801,15 @@ class _Slot:
     def __init__(self):
         self.decoder = None
         self.frame = _BLACK
-        self.partial = bytearray()   # the frame being read
-        self.ready = deque()         # frames read ahead
+        self.ring = [bytearray(FRAME_BYTES) for _ in range(RING_FRAMES)]
+        self.next = 0             # the ring buffer the next frame is read into
+        self.got = 0              # bytes of it read so far
+        self.ready = deque()      # frames read ahead
         self.abuf = bytearray()
+        self.apos = 0             # sound in abuf before this was taken
         self.started = False      # a frame was shown
         self.held_run = 0
+        self.judged = None        # the tile the window below is of
         self.window = deque()     # (frame signature, seen before in the window)
         self.counts = {}          # signature -> times in the window
         self.seen = 0
@@ -814,7 +821,8 @@ class _Clock(threading.Thread):
     nothing ready shows its last frame and is silent. A thread of its own,
     so a busy event loop doesn't make the picture late. Reading one frame a
     tick is also what paces each decoder (it waits on its full pipe), and so
-    the channel's bytes wait in the tile's buffer."""
+    the channel's bytes wait in the tile's buffer. Frames are read into the
+    place's ring of buffers and written from them: four tiles are ~90 MB/s."""
 
     def __init__(self, session: "Session", video_fds: list, audio_fds: list):
         super().__init__(daemon=True, name=f"multiview-{session.id[:6]}")
@@ -825,7 +833,8 @@ class _Clock(threading.Thread):
         # The encoder's inputs, a tile's picture then its sound, and what
         # waits to be written to each (non-blocking).
         self.fds = [fd for pair in zip(video_fds, audio_fds) for fd in pair]
-        self.pending = [bytearray() for _ in self.fds]
+        self.pending = [deque() for _ in self.fds]
+        self.pending_bytes = [0] * len(self.fds)
         self.limits = [PENDING_FRAMES * FRAME_BYTES, PENDING_FRAMES * RATE * SAMPLE_BYTES // 30] * len(video_fds)
         self.halt = threading.Event()
         self.ticks = 0
@@ -848,13 +857,15 @@ class _Clock(threading.Thread):
                     self.late += 1
                     if now - due > 2.0:   # the host stood still: go on from now, don't race
                         start = now - k * TICK
+                if k * TICK < LEAD_SECONDS:
+                    self._lead_frames()
                 upto = round((k + 1) * TICK * RATE)
                 need, samples = upto - samples, upto
                 tiles = self.session.tiles
                 for i, slot in enumerate(self.slots):
                     frame, sound = self._take(slot, tiles[i] if i < len(tiles) else None, need)
-                    self.pending[2 * i] += frame
-                    self.pending[2 * i + 1] += sound
+                    self._queue(2 * i, memoryview(frame))
+                    self._queue(2 * i + 1, sound)
                 self._flush()
                 k += 1
                 self.ticks = k
@@ -863,24 +874,33 @@ class _Clock(threading.Thread):
                 self.error = e
                 logger.info(f"[Multiview] {self.session.id[:6]}: clock stopped: {e}")
 
+    def _queue(self, i: int, data) -> None:
+        self.pending[i].append(data)
+        self.pending_bytes[i] += len(data)
+
     def _flush(self) -> None:
         """Hand the encoder what waits for it, never waiting on one input
         while another starves (ffmpeg reads its inputs in its own order):
         until no input has more than PENDING_FRAMES ticks waiting."""
         while True:
             waiting = []
-            for fd, buf in zip(self.fds, self.pending):
-                while buf:
+            for i, fd in enumerate(self.fds):
+                queue = self.pending[i]
+                while queue:
                     try:
-                        n = os.write(fd, buf)
+                        n = os.write(fd, queue[0])
                     except BlockingIOError:
                         break
-                    del buf[:n]
-                if buf:
+                    self.pending_bytes[i] -= n
+                    if n < len(queue[0]):
+                        queue[0] = memoryview(queue[0])[n:]
+                        break
+                    queue.popleft()
+                if queue:
                     waiting.append(fd)
             if not waiting or self.halt.is_set():
                 return
-            if all(len(b) <= lim for b, lim in zip(self.pending, self.limits)):
+            if all(b <= lim for b, lim in zip(self.pending_bytes, self.limits)):
                 return
             select.select([], waiting, [], 0.5)
 
@@ -900,6 +920,24 @@ class _Clock(threading.Thread):
                 return
             self.halt.wait(0.02)
 
+    def _lead_frames(self) -> None:
+        """While the picture runs ahead at the start (LEAD_SECONDS, no tick
+        due yet) a decoder busy starting has a moment for its next frame
+        (0.2 s at most) instead of a repeated one."""
+        end = time.monotonic() + 0.2
+        tiles = self.session.tiles
+        while not self.halt.is_set():
+            missing = 0
+            for i, slot in enumerate(self.slots):
+                tile = tiles[i] if i < len(tiles) else None
+                dec = tile.decoder if tile is not None else None
+                if dec is not None and not dec.exited:
+                    self._read_ahead(slot, dec)
+                    missing += not slot.ready
+            if not missing or time.monotonic() > end:
+                return
+            self.halt.wait(0.005)
+
     def _take(self, slot: _Slot, tile: Optional[_Tile], need: int) -> tuple:
         """This tick's frame and `need` samples of sound for one place."""
         dec = tile.decoder if tile is not None else None
@@ -913,47 +951,62 @@ class _Clock(threading.Thread):
                 slot.held_run += 1
                 if slot.held_run == 15:
                     tile.stalls += 1
-            return slot.frame, bytes(nbytes)
+            return slot.frame, _SILENCE[:nbytes]
         slot.frame = slot.ready.popleft()
         slot.started = True
         slot.held_run = 0
         tile.frames += 1
         self._judge(slot, tile)
-        if dec is not None and dec.audio_fd is not None or len(slot.abuf):
-            sound = bytes(slot.abuf[:nbytes])
-            del slot.abuf[:nbytes]
-            if len(sound) < nbytes:
-                sound += bytes(nbytes - len(sound))
+        have = len(slot.abuf) - slot.apos
+        if have >= nbytes:
+            sound = bytes(slot.abuf[slot.apos:slot.apos + nbytes])
+            slot.apos += nbytes
         else:
-            sound = bytes(nbytes)
+            sound = bytes(slot.abuf[slot.apos:]) + _SILENCE[:nbytes - have]
+            slot.apos = len(slot.abuf)
+        if slot.apos > _AUDIO_CAP // 2:
+            del slot.abuf[:slot.apos]
+            slot.apos = 0
         return slot.frame, sound
 
     def _read_ahead(self, slot: _Slot, dec: Optional[_Decoder]) -> None:
         """Up to READ_AHEAD_FRAMES of the tile's frames (and their sound) from
         its decoder, without waiting. A new decoder starts afresh."""
         if dec is not slot.decoder:
-            slot.decoder, slot.partial, slot.abuf = dec, bytearray(), bytearray()
+            slot.decoder, slot.got, slot.abuf, slot.apos = dec, 0, bytearray(), 0
             slot.ready.clear()
         if dec is None:
             return
         with dec.lock:
             if dec.video_fd is not None:
                 while len(slot.ready) < READ_AHEAD_FRAMES:
-                    _fill(dec.video_fd, slot.partial, FRAME_BYTES)
-                    if len(slot.partial) < FRAME_BYTES:
+                    buf = slot.ring[slot.next]
+                    try:
+                        while slot.got < FRAME_BYTES:
+                            n = os.readv(dec.video_fd, [memoryview(buf)[slot.got:]])
+                            if not n:
+                                break
+                            slot.got += n
+                    except OSError:
+                        pass
+                    if slot.got < FRAME_BYTES:
                         break
-                    slot.ready.append(bytes(slot.partial))
-                    slot.partial = bytearray()
+                    slot.ready.append(buf)
+                    slot.next = (slot.next + 1) % RING_FRAMES
+                    slot.got = 0
             if dec.audio_fd is not None:
-                _fill(dec.audio_fd, slot.abuf, _AUDIO_CAP)
+                _fill(dec.audio_fd, slot.abuf, slot.apos + _AUDIO_CAP)
 
     def _judge(self, slot: _Slot, tile: _Tile) -> None:
         """A feed that shows the same few frames over and over (a still
         picture, or a clip looping: a broken 4K feed, 25 Oct, 34 different
         frames in 30 s) is stuck. Judged by how many of the last STUCK_WINDOW
-        frames had been shown already within it: 92-100 % there, 0 % on a
-        live cartoon channel."""
-        sig = hash(slot.frame[::1021])
+        frames of this tile had been shown already within them: 92-100 %
+        there, 0 % on a live cartoon channel. A place that moved to another
+        feed starts a new window."""
+        if slot.judged is not tile:
+            slot.judged, slot.window, slot.counts, slot.seen = tile, deque(), {}, 0
+        sig = hash(bytes(slot.frame[::1021]))
         seen = slot.counts.get(sig, 0) > 0
         slot.window.append((sig, seen))
         slot.counts[sig] = slot.counts.get(sig, 0) + 1
@@ -1144,7 +1197,7 @@ class Session:
                         await t.start_decoder(self.encoder == "vaapi")
                         continue
                     behind = t.seconds_behind()
-                    if behind is not None and behind > CATCH_UP_SECONDS:
+                    if behind > CATCH_UP_SECONDS:
                         dropped = t.drop_to(CATCH_UP_TO_SECONDS)
                         if dropped:
                             t.catch_ups += 1
@@ -1192,6 +1245,9 @@ class Session:
                     await new.close()
                     return
                 await new.start_decoder(self.encoder == "vaapi")
+                # The place's counts go on (what was on screen there, whichever feed).
+                new.frames, new.held, new.stalls = old.frames, old.held, old.stalls
+                new.decoder_restarts, new.catch_ups = old.decoder_restarts, old.catch_ups
                 self.tiles[i] = new
                 self.moves.append((i, old.channel_id, cid, why))
                 logger.info(f"[Multiview] {self.id[:6]} {old.name}: {why} (channel {old.channel_id}), "

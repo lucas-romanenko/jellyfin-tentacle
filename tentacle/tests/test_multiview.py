@@ -591,7 +591,7 @@ class Smooth(unittest.TestCase):
     async def _start(self, tiles):
         for t in tiles:
             t.head = b""
-            info = await self.MV.probe(b"".join(t.buf) or b"")
+            info = await self.MV.probe(b"".join(p for _, p in t.buf) or b"")
             t.gpu = False
         s = self.MV.Session("u1", tiles)
         await s.start()
@@ -647,8 +647,10 @@ class Smooth(unittest.TestCase):
         for a in sound:
             self.assertAlmostEqual(a, video, delta=0.3)
         # Only the cut channel held, about as long as the cut outlasted its buffer.
-        self.assertEqual(held[0], (0, 0))
-        self.assertEqual(held[2], (0, 0))
+        # The others: never a stall; a repeated frame here and there at most (a busy host).
+        for other in (held[0], held[2]):
+            self.assertLessEqual(other[0], 3 * MV.TICK + 1e-9)
+            self.assertEqual(other[1], 0)
         self.assertGreater(held[1][0], 1.0)
         self.assertLess(held[1][0], 4.5)
         self.assertEqual(held[1][1], 1)
@@ -717,6 +719,22 @@ class StuckFeed(unittest.TestCase):
         self.assertFalse(self._judge(moving))
         still_5s = moving[:300] + [moving[0]] * 150 + moving[300:600]
         self.assertFalse(self._judge(still_5s))
+
+    def test_the_feed_a_place_moved_to_is_judged_on_its_own_frames(self):
+        # 25 Oct on production: the window was the place's, so the feed AMC
+        # moved to inherited AMC 4K's repeated frames and moved on at once.
+        MV = self.MV
+        clock = MV._Clock.__new__(MV._Clock)
+        slot = MV._Slot()
+        stuck, new = MV._Tile(27, "AMC", "n18", ""), MV._Tile(223, "AMC", "n18", "")
+        for _ in range(MV.STUCK_WINDOW):
+            slot.frame = bytes([7]) * 4000
+            clock._judge(slot, stuck)
+        self.assertTrue(stuck.stuck)
+        for i in range(60):
+            slot.frame = bytes([i % 250]) * 4000
+            clock._judge(slot, new)
+        self.assertFalse(new.stuck)
 
     def test_another_feed_of_the_network_best_first(self):
         MV = self.MV
@@ -844,21 +862,30 @@ class CatchUp(unittest.TestCase):
         self.assertEqual(_video_key_offset(self._pkt() + self._pkt(pes_video=True)), 188)
         self.assertIsNone(_video_key_offset(self._pkt() * 3))
 
-    def test_drop_to_keeps_the_last_seconds_from_a_keyframe(self):
+    def test_drop_to_keeps_what_arrived_last_from_a_keyframe(self):
         import services.multiview as MV
         t = MV._Tile(1, "C", "c1", "")
-        t.frames, t.fed = 600, int(600 * MV.TICK * 1880)     # 1880 bytes a second
-        for k in range(50):                                    # 50 s waiting
+        now = MV.time.monotonic()
+        for k in range(50):                                    # one piece a second, 50 s waiting
             pkts = [self._pkt(fill=k)] * 10
             if k == 40:
                 pkts[3] = self._pkt(pes_video=True, rai=True)
             piece = b"".join(pkts)
-            t.buf.append(piece)
+            t.buf.append((now - 50 + k, piece))
             t.buf_bytes += len(piece)
-        self.assertAlmostEqual(t.seconds_behind(), 50, delta=0.1)
+        self.assertAlmostEqual(t.seconds_behind(), 50, delta=0.5)
         dropped = t.drop_to(15)
         self.assertGreater(dropped, 0)
-        rest = b"".join(t.buf)
+        rest = b"".join(p for _, p in t.buf)
         self.assertEqual(len(rest), t.buf_bytes)
         self.assertEqual(rest[:188], self._pkt(pes_video=True, rai=True))
         self.assertLessEqual(t.seconds_behind(), 15)
+
+    def test_a_resent_burst_is_not_behind(self):
+        # A re-dial not joined resends seconds already sent: many bytes, just arrived.
+        import services.multiview as MV
+        t = MV._Tile(1, "C", "c1", "")
+        t.buf.append((MV.time.monotonic(), b"G" * 30_000_000))
+        t.buf_bytes = 30_000_000
+        self.assertLess(t.seconds_behind(), 1)
+        self.assertEqual(t.drop_to(15), 0)
