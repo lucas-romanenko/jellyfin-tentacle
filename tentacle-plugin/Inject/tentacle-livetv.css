@@ -799,6 +799,12 @@ body.tentacle-recents-open .videoOsdBottom { visibility: hidden !important; }
 
 body.tentacle-multiview-active { overflow: hidden; }
 
+/* Like a player: nothing of the page over the picture (Lucas, 26 Oct: the
+   logo, back button and clock sat on top of the grid). */
+body.tentacle-multiview-active .moonfin-navbar,
+body.tentacle-multiview-active .moonfin-libraries-list,
+body.tentacle-multiview-active .skinHeader { display: none !important; }
+
 #tentacleMultiView {
     position: fixed;
     inset: 0;
@@ -815,6 +821,26 @@ body.tentacle-multiview-active { overflow: hidden; }
     width: min(100vw, calc(100vh * 16 / 9));
     aspect-ratio: 16 / 9;
 }
+
+/* A channel filling the screen: the grid's picture scaled onto its tile */
+.mv-stage { overflow: hidden; }
+.mv-zoom { position: absolute; inset: 0; transform-origin: 0 0; transition: transform 0.25s ease; }
+#tentacleMultiView.zoomed .mv-tiles { display: none; }
+#tentacleMultiView.zoomed .mv-top { display: none; }
+.mv-zoombar { display: none; }
+#tentacleMultiView.zoomed .mv-zoombar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 16px 20px;
+    background: linear-gradient(to bottom, rgba(0, 0, 0, 0.7), transparent);
+    transition: opacity 0.3s;
+}
+#tentacleMultiView.zoomed.idle .mv-zoombar { opacity: 0; }
 
 .mv-video {
     position: absolute;
@@ -935,7 +961,7 @@ body.tentacle-multiview-active { overflow: hidden; }
 }
 
 .mv-state-btns { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
-.mv-state .tg-link { color: #fff !important; }
+.mv-state .tg-link { color: #fff !important; width: auto !important; padding: 0 14px !important; white-space: nowrap; }
 
 /* ==================== The menu, the sheet, the toast ==================== */
 
@@ -1062,6 +1088,7 @@ body.tentacle-multiview-active { overflow: hidden; }
     #tentacleRecentBand { padding: 14px 12px 18px; }
     .tpl-card { width: 160px; }
     .mv-hint { display: none; }
+    .mv-back span { display: none; }
     .mv-acts { opacity: 1; }
     .mv-act { width: 30px; height: 30px; padding: 5px; }
     .mv-name { font-size: 12px; left: 6px; bottom: 6px; }

@@ -1482,7 +1482,16 @@ public class TentacleDiscoverController : ControllerBase
 
         try
         {
-            using var request = new HttpRequestMessage(method, AppendUserId($"{baseUrl}{path}"));
+            // One multi-view per device (the TV and a browser of the same person each
+            // keep theirs): Tentacle is told the device of the caller's token.
+            var url = AppendUserId($"{baseUrl}{path}");
+            var deviceId = User.FindFirst("Jellyfin-DeviceId")?.Value;
+            if (!string.IsNullOrEmpty(deviceId))
+            {
+                url += (url.Contains('?') ? "&" : "?") + "deviceId=" + Uri.EscapeDataString(deviceId);
+            }
+
+            using var request = new HttpRequestMessage(method, url);
             if (method == HttpMethod.Post || method == HttpMethod.Put)
             {
                 using var reader = new StreamReader(Request.Body);
