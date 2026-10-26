@@ -268,16 +268,17 @@
   // ends a long press is swallowed.
   function onMenuGesture(root, selector, handler) {
     var timer = null, start = null, fired = 0;
+    // capture: a row that handles its own touches (Home's) doesn't hide them
     root.addEventListener('contextmenu', function (e) {
-      var el = e.target.closest(selector);
+      var el = e.target.closest && e.target.closest(selector);
       if (!el || !root.contains(el)) return;
       e.preventDefault();
       if (Date.now() - fired < 800) return;   // the long press already opened it
       fired = Date.now();
       handler(el, e.clientX, e.clientY);
-    });
+    }, true);
     root.addEventListener('touchstart', function (e) {
-      var el = e.target.closest(selector);
+      var el = e.target.closest && e.target.closest(selector);
       if (!el || e.touches.length !== 1) return;
       var t = e.touches[0];
       start = { x: t.clientX, y: t.clientY };
@@ -289,7 +290,7 @@
         if (navigator.vibrate) { try { navigator.vibrate(10); } catch (x) { } }
         handler(el, start.x, start.y);
       }, 500);
-    }, { passive: true });
+    }, { passive: true, capture: true });
     var cancel = function (e) {
       // the finger lifted after a long press: no click (it would land on the menu's backdrop)
       if (e.type === 'touchend' && Date.now() - fired < 1500 && e.cancelable) e.preventDefault();
@@ -301,9 +302,9 @@
       clearTimeout(timer);
       timer = null;
     };
-    root.addEventListener('touchmove', cancel, { passive: true });
-    root.addEventListener('touchend', cancel);
-    root.addEventListener('touchcancel', cancel);
+    root.addEventListener('touchmove', cancel, { passive: true, capture: true });
+    root.addEventListener('touchend', cancel, true);
+    root.addEventListener('touchcancel', cancel, true);
     document.addEventListener('click', function (e) {
       if (Date.now() - fired < 800 && !(e.target.closest && e.target.closest('.tmenu'))) { e.preventDefault(); e.stopImmediatePropagation(); }
     }, true);
