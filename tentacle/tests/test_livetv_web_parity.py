@@ -151,6 +151,28 @@ class MultiViewPicks(unittest.TestCase):
         self.assertIn("keepalive: true", JS)
 
 
+@unittest.skipUnless(HAVE_NODE, "node is not installed")
+class FirstPageLoad(unittest.TestCase):
+    """A first page load opens the guide before Jellyfin web has signed in."""
+
+    def test_no_empty_user_id_in_a_post(self):
+        sent = run("""
+          var bodies = [];
+          ApiClient.getCurrentUserId = function () { return ''; };
+          ApiClient.ajax = function (o) { bodies.push(JSON.parse(o.data)); return Promise.resolve({}); };
+          T.G.userId = '';
+          window.TentacleLiveTV.internals.apiPost('LiveTv/Programs', { UserId: '', Limit: 1 });
+          ApiClient.getCurrentUserId = function () { return 'u9'; };
+          window.TentacleLiveTV.internals.apiPost('LiveTv/Programs', { UserId: '', Limit: 1 });
+          return bodies;
+        """)
+        self.assertNotIn("UserId", sent[0])          # none: Jellyfin takes the caller
+        self.assertEqual("u9", sent[1]["UserId"])    # learnt once signed in
+
+    def test_previews_asked_once_signed_in(self):
+        self.assertIn("if (PV.poll && !PV.asked) pollPreview();", JS)
+
+
 class PreviewAndPlayer(unittest.TestCase):
     def test_preview_waits_and_asks_tentacle(self):
         self.assertIn("PREVIEW_REST_MS = 1500", JS)
