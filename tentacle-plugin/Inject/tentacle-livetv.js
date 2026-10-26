@@ -344,6 +344,7 @@
     if (!MS) return Promise.reject(new Error('This browser can\'t play live pictures'));
     var ms = this.ms = new MS();
     var v = this.video;
+    v.__livePicture = this;   // the element is this one's until another takes it
     if (window.ManagedMediaSource && MS === window.ManagedMediaSource) v.disableRemotePlayback = true;
     v.src = URL.createObjectURL(ms);
     var ctl = this.abort = typeof AbortController !== 'undefined' ? new AbortController() : null;
@@ -356,11 +357,12 @@
       };
       v.addEventListener('playing', function onPlaying() {
         v.removeEventListener('playing', onPlaying);
+        if (v.__livePicture !== self) return;   // another picture's frames
         if (!done) { done = true; resolve(); }
       });
       // the stream ended (the session closed, the server went away) and what came has played
-      v.addEventListener('ended', function () { if (!self.stopped) fail(new Error('ended')); });
-      v.addEventListener('error', function () { if (!self.stopped) fail(new Error('This picture can\u2019t be played')); });
+      v.addEventListener('ended', function () { if (!self.stopped && v.__livePicture === self) fail(new Error('ended')); });
+      v.addEventListener('error', function () { if (!self.stopped && v.__livePicture === self) fail(new Error('This picture can\u2019t be played')); });
       ms.addEventListener('sourceopen', function () {
         try { self.sb = ms.addSourceBuffer(self.opts.mime || 'video/mp4; codecs="avc1.640028"'); }
         catch (e) { fail(e); return; }
@@ -440,8 +442,12 @@
     clearInterval(this.timer);
     if (this.abort) { try { this.abort.abort(); } catch (e) { } }
     var v = this.video;
-    try { v.pause(); } catch (e) { }
-    try { v.removeAttribute('src'); v.load(); } catch (e) { }
+    // a later picture may have this <video> already: leave it alone then
+    if (v.__livePicture === this) {
+      v.__livePicture = null;
+      try { v.pause(); } catch (e) { }
+      try { v.removeAttribute('src'); v.load(); } catch (e) { }
+    }
     if (this.ms && this.ms.readyState === 'open') { try { this.ms.endOfStream(); } catch (e) { } }
     this.ms = this.sb = null;
     this.queue = [];
@@ -1891,7 +1897,9 @@
 
   function openGrid() {
     if (!MV.session) return;
+    var showing = MV.view && MV.view.style.display !== 'none' && (MV.player || MV.spare);
     MV.fullScreen = false;
+    if (showing) return;
     var el = MV.view;
     if (!el) {
       el = MV.view = document.createElement('div');
@@ -2195,7 +2203,10 @@
   }
 
   // The browser closes or goes elsewhere: every connection back now, not after 45 s.
-  window.addEventListener('pagehide', function () {
+  window.addEventListener('pagehide', function (e) {
+    // Only the browser's own: Jellyfin Web fires 'pagehide' on its views when
+    // it switches them (to the player too), and those bubble up here.
+    if (e.target !== window && e.target !== document) return;
     var s = MV.session;
     if (!s) return;
     try {
@@ -2811,8 +2822,10 @@
     var out = [];
     if (!leftPlayerAt || onPlayerPage()) return out;
     document.querySelectorAll('video').forEach(function (v) {
-      // live TV plays through hls.js (a blob: source); a theme video doesn't
-      if (v.paused || v.ended || v === document.pictureInPictureElement || !/^blob:/.test(v.currentSrc || '')) {
+      // live TV plays through hls.js (a blob: source); a theme video doesn't;
+      // Tentacle's own pictures (multi-view, the guide's preview) are no strays
+      if (v.paused || v.ended || v === document.pictureInPictureElement || !/^blob:/.test(v.currentSrc || '') ||
+          v.__livePicture) {
         v.__tgOff = null;
         return;
       }
