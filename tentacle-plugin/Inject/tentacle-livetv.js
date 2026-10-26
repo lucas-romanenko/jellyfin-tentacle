@@ -2155,7 +2155,7 @@
   //     channel) switches to it, Escape or the box goes back.
 
   var RECENT_MAX = 10;
-  var PL = { item: null, asked: 0, band: null, items: null, focus: 0, open: false, tunes: [] };
+  var PL = { item: null, asked: 0, band: null, items: null, focus: 0, open: false, tunes: [], reread: null };
 
   function tunesKey() { return 'tentacle-recent-tunes-' + (G.userId || (api() && api().getCurrentUserId()) || ''); }
 
@@ -2466,6 +2466,11 @@
       return;
     }
     if (!msg || (msg.MessageType !== 'UserDataChanged' && msg.MessageType !== 'LibraryChanged')) return;
+    // the player's recent channels, open: a channel played (or starred) on another device shows
+    if (PL.open && msg.MessageType === 'UserDataChanged' && msg.Data && normId(msg.Data.UserId) === normId(api().getCurrentUserId())) {
+      clearTimeout(PL.reread);
+      PL.reread = setTimeout(refreshRecents, 500);
+    }
     var copy = { MessageType: msg.MessageType, Data: msg.MessageType === 'UserDataChanged' ? msg.Data : null };
     if (relay) { try { relay.postMessage(copy); } catch (x) { } }
     onMessage(copy);
