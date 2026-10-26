@@ -1,9 +1,14 @@
 """
 Tentacle - Provider health
 
-Every hour, per IPTV provider: log in to its API and open one short test
-stream. A provider that stops answering (403 from an IP block, an expired
-account, a moved URL) used to break every stream with nothing saying so.
+Every hour, per IPTV provider: one light check of the address in use, a
+player_api login (an M3U link: the first 64 KB of the playlist). Never a
+test stream, and never the other addresses: those are logged in to only
+when the address in use failed (one at a time, services/provider_addresses
+check_backups) or when the admin asks (Test all). Lucas, 25 Oct 2026: "we
+can not be using 7 connections every hour to test". A provider that stops
+answering (403 from an IP block, an expired account, a moved URL) used to
+break every stream with nothing saying so.
 
 - A failure is confirmed by one more check RETRY_DELAY_SECONDS later before
   it counts, so one blip raises no banner and no message.
@@ -12,11 +17,17 @@ account, a moved URL) used to break every stream with nothing saying so.
 - One Pushover message when a provider starts failing, one when it works
   again; nothing on the hours in between. A send that failed is tried again
   on the next run.
-- Each check is a real connection on the account, and a one-connection
-  account answers a second one by cutting the first (often a recording,
-  services/provider_activity.py). So a run looks before every connection
-  it opens and stops, with no verdict, once Tentacle proxies live TV or a
-  protected recording; the next hour tries again.
+- Nothing runs while anything plays or records
+  (provider_activity.something_busy: Tentacle's live streams, a protected
+  recording, Jellyfin playing, GET /api/live/recordings/busy). A run looks
+  before every request it makes and stops, with no verdict, once that
+  changes; the next hour tries again.
+- Refused or broken streams are learned from the streams people open
+  (`note`, services/provider_status), not from test streams.
+- The address in use failing never switches it: the banner names the
+  failing address and one that works, with Switch / Keep
+  (services/provider_addresses.offer_for); nothing changes until the admin
+  chooses.
 - What syncs and live streams already learn counts too (`note`, #652), with
   no connection of its own: a refusal (401/403) is confirmed by a second one
   RETRY_DELAY_SECONDS or more later, a sync or stream that worked clears a
@@ -34,13 +45,12 @@ import re
 import threading
 import time
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import requests
 
 from models.database import (
     SessionLocal, get_setting, set_setting, log_activity,
-    Provider, Movie, LiveChannel, StreamHealth,
+    Provider,
 )
 from services.log_redaction import redact
 
@@ -53,21 +63,18 @@ RETRY_DELAY_SECONDS = 120
 SUSPECT_SECONDS = 3600
 API_TIMEOUT = (10, 20)
 STREAM_TIMEOUT = (10, 15)
-PROBE_PAUSE_SECONDS = 3.0
-MAX_MOVIE_CANDIDATES = 3
-MAX_CHANNEL_CANDIDATES = 2
 M3U_HEAD_BYTES = 65536
 DEFAULT_UA = "TiviMate/4.7.0 (Linux; Android 12)"
 # A start (about 25 deploys a day) checks again only when the last check is
-# this old: each check is a real connection on every provider and address.
+# this old: each check is a login on every provider.
 MIN_GAP_SECONDS = 3600
 # "Not right now": the account is over its connection limit or rate-limited.
 # No verdict either way; the state stays as it was.
 BUSY_STATUSES = {429, 509}
 GONE_STATUSES = {404, 410}
 
-# The hourly job and "Check now" never run at once: two checks are two
-# connections, which is what a one-connection account cuts a stream for.
+# The hourly job, "Check now" and Test all never run at once: one request
+# to the provider at a time.
 _run_lock = threading.Lock()
 # Held for each read-change-write of the state: by `note` (syncs, streams)
 # and by a check's saves, so neither writes over what the other just wrote.
@@ -130,6 +137,12 @@ def _busy(step: str, code=None) -> dict:
 def _aside(step: str) -> dict:
     """Stood aside: live TV or a recording started while the run was under way."""
     return {**_busy(step), "aside": True}
+
+
+def _untested() -> dict:
+    """Nothing to ask without opening a stream (an M3U file): no verdict.
+    Its streams tell provider health how they go (`note`)."""
+    return {"verdict": "untested", "step": "api"}
 
 
 def _fail(step: str, kind: str, code=None, detail: str = "") -> dict:
@@ -196,7 +209,7 @@ def reason(outcome: dict, since: datetime, now: datetime) -> str:
             f"Likely IP block or the account over its connection limit")
 
 
-# ─── Step 1: the API ──────────────────────────────────────────────────────────
+# ─── The check: the API ───────────────────────────────────────────────────────
 
 def _epoch(value):
     try:
@@ -301,99 +314,11 @@ def _check_api(p: Provider, ua: str):
     return _check_xtream_api(p, ua)
 
 
-# ─── Step 2: a test stream ────────────────────────────────────────────────────
-
-def _candidates(db, p: Provider) -> list:
-    """Provider URLs to open, in order: a few of its VOD movies (by the
-    provider's own address, never through Tentacle's /api/vod), then its
-    first live channels."""
-    from services import vod_tokens
-    from services.stream_health import _read_strm, _parse_stream_id, _direct_url
-    known_bad = {row.strm_path for row in db.query(StreamHealth.strm_path).all()}
-    urls = []
-    movies = (db.query(Movie)
-              .filter(Movie.provider_id == p.id, Movie.strm_path.isnot(None))
-              .order_by(Movie.id).limit(50).all())
-    for m in movies:
-        if len(urls) >= MAX_MOVIE_CANDIDATES:
-            break
-        if m.strm_disabled or m.strm_path in known_bad or not Path(m.strm_path).is_file():
-            continue
-        url = _read_strm(m.strm_path)
-        if not url:
-            continue
-        kind, stream_id = _parse_stream_id(url)
-        direct = _direct_url(url, kind, stream_id, p)
-        if direct.startswith(("http://", "https://")) and not vod_tokens.is_vod_url(direct):
-            urls.append(direct)
-    channels = (db.query(LiveChannel)
-                .filter(LiveChannel.provider_id == p.id)
-                .order_by(LiveChannel.enabled.desc(), LiveChannel.id)
-                .limit(MAX_CHANNEL_CANDIDATES).all())
-    urls += [c.stream_url for c in channels
-             if (c.stream_url or "").startswith(("http://", "https://"))]
-    return urls
-
-
-def _probe(url: str, ua: str) -> tuple:
-    """(ok | gone | busy | fail | empty | unreachable, HTTP code or the error)."""
-    try:
-        with requests.get(url, headers={"Range": "bytes=0-65535", "User-Agent": ua},
-                          timeout=STREAM_TIMEOUT, stream=True, allow_redirects=True) as r:
-            code = r.status_code
-            if code in (200, 206):
-                for chunk in r.iter_content(65536):
-                    if chunk:
-                        return "ok", code
-                return "empty", code
-            if code in GONE_STATUSES:
-                return "gone", code
-            if code in BUSY_STATUSES:
-                return "busy", code
-            return "fail", code
-    except requests.RequestException as e:
-        return "unreachable", e
-
-
-def _check_streams(db, p: Provider, ua: str, api_ok: bool, sleep) -> dict:
-    urls = _candidates(db, p)
-    if not urls:
-        return _ok(stream_tested=False)
-    for index, url in enumerate(urls):
-        if index:
-            sleep(PROBE_PAUSE_SECONDS)
-        if _stand_aside(db):
-            return _aside("stream")
-        result, code = _probe(url, ua)
-        if result == "ok":
-            return _ok(stream_tested=True)
-        if result == "gone":
-            continue        # that title left the provider, not the provider itself
-        if result == "busy":
-            return _busy("stream", code)
-        if result == "unreachable":
-            out = _unreachable("stream", code)
-        elif result == "empty":
-            out = _fail("stream", "empty", code)
-        else:
-            out = _fail("stream", "http", code)
-        out["api_ok"] = api_ok
-        return out
-    out = _fail("stream", "streams_gone", 404)
-    out["api_ok"] = api_ok
-    return out
-
-
 def check_provider(db, p: Provider, sleep=time.sleep) -> dict:
-    """One check: the API first; its failure is the reason (no stream test)."""
-    ua = p.user_agent or DEFAULT_UA
-    api = _check_api(p, ua)
-    if api is not None and api["verdict"] != "ok":
-        return api
-    out = _check_streams(db, p, ua, api_ok=api is not None, sleep=sleep)
-    if api is not None and api.get("expires") and out.get("verdict") == "ok":
-        out["expires"] = api["expires"]     # "the account ends soon" (services/provider_status)
-    return out
+    """One light check of the address in use: the login (an M3U link: the
+    start of its playlist). No test stream; an M3U file has nothing to ask."""
+    api = _check_api(p, p.user_agent or DEFAULT_UA)
+    return _untested() if api is None else api
 
 
 # ─── State ────────────────────────────────────────────────────────────────────
@@ -446,7 +371,8 @@ def _unknown() -> dict:
     return {"state": "unknown", "since": None, "checked_at": None, "skipped_at": None,
             "step": None, "code": None, "kind": None, "reason": None,
             "alerted": False, "recovery_due": None, "suspect": None,
-            "case": None, "case_detail": None, "back": None}
+            "case": None, "case_detail": None, "back": None,
+            "offer": None, "kept": None}
 
 
 def _watched(db) -> list:
@@ -455,8 +381,8 @@ def _watched(db) -> list:
 
 
 def _stand_aside(db) -> bool:
-    from services.provider_activity import jellyfin_playing, live_streams_active, recording_protected
-    return live_streams_active() or recording_protected(db) or jellyfin_playing(db)
+    from services.provider_activity import something_busy
+    return something_busy(db)
 
 
 def _link(db) -> str:
@@ -491,7 +417,7 @@ def _apply(db, state: dict, p: Provider, outcome: dict, first_at: datetime, now:
         if outcome.get("expires"):
             entry["expires"] = outcome["expires"]
         entry.update(state="ok", since=None, step=None, code=None, kind=None, reason=None, alerted=False,
-                     case=None, case_detail=None, other_route=None, expired_on=None)
+                     case=None, case_detail=None, other_route=None, expired_on=None, offer=None, kept=None)
     else:
         if prev.get("state") == "failing":
             since = _parse(prev.get("since")) or first_at
@@ -503,6 +429,9 @@ def _apply(db, state: dict, p: Provider, outcome: dict, first_at: datetime, now:
         else:
             since = first_at
             entry["alerted"] = False
+        if prev.get("state") != "failing":
+            # A new incident: what the admin kept last time is asked again
+            entry.update(offer=None, kept=None)
         entry["recovery_due"] = None
         text = reason(outcome, since, now)
         if prev.get("state") != "failing" or prev.get("kind") != outcome.get("kind") \
@@ -600,6 +529,19 @@ def check_providers(db, confirm_delay=RETRY_DELAY_SECONDS, sleep=time.sleep) -> 
             if outcomes[pid]["verdict"] == "ok":
                 logger.info(f"[Provider health] {p.name}: the failure did not repeat")
 
+    # A confirmed failure of the address in use: its other addresses are
+    # logged in to (one at a time, never while anything plays or records),
+    # so the diagnosis and the banner's offer know which of them works.
+    from services import provider_addresses
+    for p in providers:
+        out = outcomes.get(p.id) or {}
+        try:
+            provider_addresses.record_in_use(db, p, out)
+            if out.get("verdict") == "fail":
+                provider_addresses.check_backups(db, p, out, sleep=sleep)
+        except Exception:
+            logger.exception("[Provider health] checking the other addresses failed")
+            db.rollback()
     for p in providers:
         if (outcomes.get(p.id) or {}).get("verdict") == "fail":
             _diagnose(db, p, outcomes[p.id])
@@ -609,22 +551,72 @@ def check_providers(db, confirm_delay=RETRY_DELAY_SECONDS, sleep=time.sleep) -> 
         for p in providers:
             if p.id in outcomes:
                 _apply(db, state, p, outcomes[p.id], first_at[p.id], now)
+            _offer(db, state, p)
         _save_state(db, state)
-    # The backups of each provider with several addresses, and a switch where
-    # the address in use is failing (services/provider_addresses.py).
-    switched = []
-    try:
-        from services import provider_addresses
-        switched = provider_addresses.check_backups(db, providers, outcomes, state, sleep=sleep)
-    except Exception:
-        logger.exception("[Provider health] checking the backup addresses failed")
-        db.rollback()
-    for done in switched:
-        state = address_switched(db, done["provider_id"]) or state
     failing = [s for s in state.values() if s.get("state") == "failing"]
     checked = sum(1 for o in outcomes.values() if o["verdict"] in ("ok", "fail"))
-    return {"skipped": bool(logged), "checked": checked, "failing": len(failing),
-            "switched": len(switched)}
+    return {"skipped": bool(logged), "checked": checked, "failing": len(failing)}
+
+
+def _offer(db, state: dict, p: Provider) -> None:
+    """The banner's Switch / Keep for one provider (into its state entry,
+    under _state_lock): the address in use is failing and another of its
+    addresses works. Pushover says so once per offered address; nothing
+    switches by itself (Lucas, 25 Oct 2026: "admin user can decide to
+    switch or not")."""
+    from services import provider_addresses, pushover
+    key = str(p.id)
+    entry = state.get(key)
+    if not isinstance(entry, dict):
+        return
+    before = entry.get("offer") if isinstance(entry.get("offer"), dict) else None
+    offer = provider_addresses.offer_for(p, entry)
+    entry["offer"] = offer
+    if offer and (before or {}).get("to") != offer["to"]:
+        msg = (f"Provider {p.name}: the address in use ({offer['from']}) fails its checks and "
+               f"{offer['to']} works. Tentacle asks before switching")
+        logger.info(f"[Provider health] {msg}")
+        log_activity(db, "provider_address", msg)
+        pushover.send(db, f"Tentacle: {p.name}: another address works",
+                      f"{offer['from']} fails; {offer['to']} works. Open Tentacle (Health) to switch or keep "
+                      f"the one in use.", _link(db))
+
+
+def refresh_offer(db, provider_id: int) -> None:
+    """After the admin tested the addresses (Test all): the offer as the
+    new results say."""
+    p = db.get(Provider, provider_id)
+    if p is None:
+        return
+    with _state_lock:
+        state = _load_fresh(db)
+        _offer(db, state, p)
+        _save_state(db, state)
+
+
+def keep_address(db, provider_id: int, url: str) -> bool:
+    """"Keep": the address in use stays, and `url` is not offered again
+    for this incident (the next failure asks again). Another address that
+    works may be offered instead. False when there is no such offer."""
+    from services.provider_addresses import normalize
+    p = db.get(Provider, provider_id)
+    if p is None:
+        return False
+    with _state_lock:
+        state = _load_fresh(db)
+        entry = state.get(str(p.id))
+        if not isinstance(entry, dict) or entry.get("state") != "failing":
+            return False
+        kept = [u for u in (entry.get("kept") or []) if isinstance(u, str)]
+        if normalize(url) not in kept:
+            kept.append(normalize(url))
+        entry["kept"] = kept
+        _offer(db, state, p)
+        _save_state(db, state)
+    msg = f"Provider {p.name}: kept {normalize(p.server_url)}; not switching to {normalize(url)}"
+    logger.info(f"[Provider health] {msg}")
+    log_activity(db, "provider_address", msg)
+    return True
 
 
 def _diagnose(db, p: Provider, outcome: dict) -> None:
@@ -666,20 +658,21 @@ def record(db, p: Provider, outcome: dict, first_at: datetime) -> None:
     with _state_lock:
         state = _load_fresh(db)
         _apply(db, state, p, outcome, first_at, _now())
+        _offer(db, state, p)        # from the other addresses' latest logins; none is asked here
         _save_state(db, state)
 
 
 def address_switched(db, provider_id: int):
-    """The provider now uses another address (by hand or by itself): its
-    failure was the old address's. Cleared quietly, since the switch sent its
-    own message; the next check says how the new one does."""
+    """The admin moved the provider to another address: its failure was the
+    old address's. Cleared quietly, with the offer; the next check says how
+    the new one does."""
     with _state_lock:
         state = _load_fresh(db)
         entry = state.get(str(provider_id))
         if not entry:
             return state
         entry.update(state="unknown", since=None, step=None, code=None, kind=None, reason=None,
-                     alerted=False, recovery_due=None, suspect=None)
+                     alerted=False, recovery_due=None, suspect=None, offer=None, kept=None)
         _save_state(db, state)
         return state
 
@@ -761,7 +754,7 @@ def run_provider_health() -> bool:
     """The hourly job. False (nothing checked) while a check is running, or
     while the nightly sync is asking the providers for everything: its
     requests already tell provider health how they went (`note`), and a login
-    plus a test stream on top of its burst is what a panel holds an account
+    on top of its burst is what a panel holds an account
     back for (#709). The next hour checks."""
     from routers.sync import nightly_running
     if nightly_running():
@@ -837,8 +830,19 @@ def provider_view(db) -> list:
         out.append({"id": p.id, "name": p.name, "provider_type": p.provider_type or "xtream",
                     **{k: entry.get(k) for k in _SHOWN}, "guide_problem": guide,
                     "case": said.get("kind"), "headline": said.get("title"), "plain": said.get("text"),
-                    "channels_down": provider_status.broken_channels(p.id) if p.live_tv_enabled else []})
+                    "channels_down": provider_status.broken_channels(p.id) if p.live_tv_enabled else [],
+                    # Switch / Keep on the banner (provider_addresses.offer_for)
+                    "address_offer": entry.get("offer") if entry.get("state") == "failing" else None,
+                    "other_addresses": _other_addresses(p)})
     return out
+
+
+def _other_addresses(p: Provider) -> int:
+    """How many addresses besides the one in use (an Xtream provider)."""
+    from services.provider_addresses import is_current
+    if (p.provider_type or "xtream") != "xtream":
+        return 0
+    return sum(1 for a in p.addresses if not is_current(p, a))
 
 
 def public_status(db) -> tuple:

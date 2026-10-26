@@ -11,16 +11,21 @@ backups.
   out of it (scheme://host[:port] only: a path or a login in it is dropped).
 - test_address: from the server, one address at a time: the name lookup,
   Cloudflare or not, the login (account status, connections in use / max),
-  then the time to the first bytes of a live channel and of a film, with the
-  provider's User-Agent. The stream tests are skipped while anyone uses the
-  account (Tentacle's own streams, Jellyfin playing, or the provider counting
-  a connection in use): a one-connection account cuts a stream for a second
-  connection.
-- The hourly provider health check also checks the backups
-  (check_backups), so the ranking covers the evening, when blocks happen.
-- switch_to: "Use this one", or by itself when the address in use is failing
-  (two checks in a row, services.provider_health) and a backup works. Same
-  provider, so nothing is imported again and nothing is deleted:
+  then (Test all only, the admin asked) the time to the first bytes of a
+  live channel and of a film, with the provider's User-Agent. The stream
+  tests are skipped while anyone uses the account (Tentacle's own streams,
+  Jellyfin playing, or the provider counting a connection in use): a
+  one-connection account cuts a stream for a second connection.
+- The hourly provider health check logs in to the address in use only. The
+  others are logged in to (no stream) only when the address in use failed
+  (check_backups) or when the admin presses Test all.
+- Nothing switches by itself (Lucas, 25 Oct 2026: "we shouldn't auto switch
+  providers ... admin user can decide to switch or not"). When the address
+  in use is failing and another works, the Health banner names both with
+  Switch / Keep (offer_for, services.provider_health); Keep leaves it and
+  stops offering that address until the next failure.
+- switch_to: "Use this one" or the banner's Switch. Same provider, so
+  nothing is imported again and nothing is deleted:
   * Live TV channels are pointed at the new address (rewrite_xtream_channel_
     urls); their ids, numbers, guide and recordings stay as they are.
   * .strm files that play through Tentacle (the default) hold Tentacle's own
@@ -51,7 +56,7 @@ import requests
 
 from models.database import (
     SessionLocal, Provider, ProviderAddress, Movie, Series, ProviderCategory,
-    get_setting, log_activity, tentacle_address,
+    get_setting, log_activity,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,10 +67,9 @@ API_TIMEOUT = (8, 12)
 STREAM_TIMEOUT = (8, 12)
 FIRST_BYTES = 65536
 PAUSE_BETWEEN_CONNECTIONS = 3.0  # the account frees a closed connection after a moment
-AUTO_SWITCH_MODES = ("switch", "switch_back", "off")
-# A switch back to the preferred address waits for this many good checks in a
-# row of it, so a flapping address isn't switched to and from every hour.
-SWITCH_BACK_AFTER = 2
+# Another address is offered when its latest test (a login at least) worked
+# this recently.
+OFFER_FRESH = timedelta(hours=2)
 # After a switch, the first sync that reads everything ends the probation;
 # "everything" is at least this share of the titles the provider had.
 PROBATION_SEEN_SHARE = 0.95
@@ -174,9 +178,9 @@ def is_current(p: Provider, a: ProviderAddress) -> bool:
 # ─── One address, tested ──────────────────────────────────────────────────────
 
 def _someone_watching(db) -> bool:
-    from services.provider_activity import jellyfin_playing, live_streams_active, recording_protected
+    from services.provider_activity import something_busy
     try:
-        return live_streams_active() or recording_protected(db) or jellyfin_playing(db)
+        return something_busy(db)
     except Exception:
         return True     # can't tell: don't open a connection
 
@@ -451,6 +455,9 @@ def test_all(provider_id: int, sleep=time.sleep) -> bool:
             _record(a, test_address(db, p, a.url, sleep=sleep))
             db.commit()
         logger.info(f"[Addresses] {p.name}: tested {len(ids)} address(es)")
+        provider_health.refresh_offer(db, p.id)
+        from services import live_updates
+        live_updates.publish("health", admins=True)     # the Health banner, whatever was found
         return True
     except Exception:
         logger.exception("[Addresses] test failed")
@@ -473,17 +480,17 @@ def start_test_all(provider_id: int) -> bool:
 
 # ─── Switching ────────────────────────────────────────────────────────────────
 
-def switch_to(db, p: Provider, url: str, why: str, by_hand: bool) -> dict:
-    """Make `url` the address in use. The same provider: its rows, files,
-    channels, guide and recordings all stay (see the module docstring)."""
+def switch_to(db, p: Provider, url: str, why: str) -> dict:
+    """Make `url` the address in use, as the admin chose. The same provider:
+    its rows, files, channels, guide and recordings all stay (see the module
+    docstring)."""
     from routers.livetv import _xtream_login, rewrite_xtream_channel_urls
     from services import provider_relink
     new = normalize(url)
     if not new:
         raise ValueError("Not an address")
     old = normalize(p.server_url)
-    if by_hand:
-        p.preferred_address = new
+    p.preferred_address = new
     ensure_current(db, p)
     if not any(normalize(a.url) == new for a in p.addresses):
         p.addresses.append(ProviderAddress(url=new, history=[]))
@@ -502,10 +509,6 @@ def switch_to(db, p: Provider, url: str, why: str, by_hand: bool) -> dict:
     msg = f"Provider {p.name} now uses {new} instead of {old} ({why})"
     logger.info(f"[Addresses] {msg}")
     log_activity(db, "provider_address", msg)
-    if not by_hand:
-        from services import pushover
-        pushover.send(db, f"Tentacle: {p.name} switched address", f"Now {new}: {why}.",
-                      (get_setting(db, "external_url", "") or "").strip() or tentacle_address(db))
     return {"switched": True, "provider_id": p.id, "channels": channels, "from": old, "to": new}
 
 
@@ -594,73 +597,76 @@ def _backups(p: Provider) -> list:
     return [a for a in p.addresses if not is_current(p, a)]
 
 
-def check_backups(db, providers, outcomes: dict, state: dict, sleep=time.sleep) -> list:
-    """Run by the hourly provider health check after the addresses in use:
-    test each backup (one at a time; streams only while nobody watches),
-    then switch where the rules say so. Returns what was switched."""
-    switched = []
-    for p in providers:
-        if (p.provider_type or "xtream") != "xtream" or not p.addresses:
-            continue
-        ensure_current(db, p)
-        current = next((a for a in p.addresses if is_current(p, a)), None)
-        out = outcomes.get(p.id) or {}
-        if current is not None and out.get("verdict") in ("ok", "fail"):
-            # What the check itself found for the address in use
-            _record(current, {"at": datetime.utcnow().isoformat() + "Z", "ok": out["verdict"] == "ok",
-                              "word": WORKS if out["verdict"] == "ok" else _word_for(out),
-                              **{k: (current.last_result or {}).get(k) for k in ("ip", "cloudflare", "login", "live", "vod")},
-                              "streams_skipped": None})
-        backups = _backups(p)
-        if not backups:
-            db.commit()
-            continue
-        failing = (state.get(str(p.id)) or {}).get("state") == "failing"
-        for a in backups:
-            if _someone_watching(db) and not failing:
-                break       # the next hour tries again; nothing urgent
+def record_in_use(db, p: Provider, outcome: dict) -> None:
+    """What the hourly check found for the address in use, into its row of
+    the table. Commits."""
+    if (p.provider_type or "xtream") != "xtream" or outcome.get("verdict") not in ("ok", "fail"):
+        return
+    ensure_current(db, p)
+    current = next((a for a in p.addresses if is_current(p, a)), None)
+    if current is None:
+        return
+    ok = outcome["verdict"] == "ok"
+    _record(current, {"at": datetime.utcnow().isoformat() + "Z", "ok": ok,
+                      "word": LOGIN_ONLY if ok else _word_for(outcome),
+                      **{k: (current.last_result or {}).get(k) for k in ("ip", "cloudflare", "login")},
+                      "live": None, "vod": None, "streams_skipped": "hourly check, login only"})
+    db.commit()
+
+
+# A failure of the account itself: every address answers the same.
+_ACCOUNT_KINDS = ("login", "expired", "status")
+
+
+def check_backups(db, p: Provider, outcome: dict, sleep=time.sleep) -> int:
+    """The address in use failed (a confirmed failure of the hourly check):
+    log in to each other address, one at a time, no stream, so the banner
+    can offer one that works. Not for an account problem (the same on
+    every address), and never while anything plays or records: it stops
+    at once then, the next hour tries again. Returns how many were tried."""
+    if (p.provider_type or "xtream") != "xtream" or outcome.get("kind") in _ACCOUNT_KINDS:
+        return 0
+    ensure_current(db, p)
+    tried = 0
+    for a in _backups(p):
+        if _someone_watching(db):
+            logger.info(f"[Addresses] {p.name}: something plays or records; the other addresses wait")
+            break
+        if tried:
             sleep(PAUSE_BETWEEN_CONNECTIONS)
-            _record(a, test_address(db, p, a.url, streams=True, sleep=sleep))
-            db.commit()
-        done = _maybe_switch(db, p, failing)
-        if done:
-            switched.append(done)
-    return switched
+        _record(a, test_address(db, p, a.url, streams=False, sleep=sleep))
+        db.commit()
+        tried += 1
+    return tried
 
 
-def _proven(a: ProviderAddress, now: datetime) -> bool:
-    """A backup worth switching to: its streams started at its latest test,
-    or its login works now (streams not tried, someone was watching) and its
-    streams started at a test in the last day."""
+def _works_now(a: ProviderAddress, now: datetime) -> bool:
+    """Its latest test worked (a login at least), within OFFER_FRESH."""
     r = a.last_result or {}
-    if r.get("word") == WORKS:
-        return True
-    if r.get("word") != LOGIN_ONLY:
+    if not r.get("ok"):
         return False
-    for h in a.history or []:
-        try:
-            at = datetime.fromisoformat(str(h.get("at", "")).rstrip("Z"))
-        except ValueError:
-            continue
-        if h.get("word") == WORKS and now - at <= HISTORY_DAY:
-            return True
-    return False
+    try:
+        at = datetime.fromisoformat(str(r.get("at", "")).rstrip("Z"))
+    except ValueError:
+        return False
+    return now - at <= OFFER_FRESH
 
 
-def _maybe_switch(db, p: Provider, failing: bool):
-    mode = p.address_auto_switch if p.address_auto_switch in AUTO_SWITCH_MODES else "switch"
-    if mode == "off":
+def offer_for(p: Provider, entry: dict):
+    """What the banner offers for a provider's health state `entry`: the
+    address in use is failing and another works ({"from", "to",
+    "address_id", "word", "tested_at"}), or None. The best that works first,
+    leaving out what the admin kept the address in use against (entry
+    "kept") in this incident."""
+    if (p.provider_type or "xtream") != "xtream" or not isinstance(entry, dict) \
+            or entry.get("state") != "failing" or (entry.get("case") == "account"):
         return None
     now = datetime.utcnow()
-    good = [a for a in _backups(p) if _proven(a, now)]
-    if failing and good:
-        best = sorted(good, key=lambda a: _score(a, now))[0]
-        return switch_to(db, p, best.url, "the address in use failed its checks and this one works", by_hand=False)
-    if not failing and mode == "switch_back" and p.preferred_address \
-            and normalize(p.preferred_address) != normalize(p.server_url):
-        pref = next((a for a in p.addresses if normalize(a.url) == normalize(p.preferred_address)), None)
-        recent = (pref.history or [])[-SWITCH_BACK_AFTER:] if pref else []
-        if len(recent) == SWITCH_BACK_AFTER and all(h.get("ok") for h in recent) \
-                and (pref.last_result or {}).get("word") == WORKS:
-            return switch_to(db, p, pref.url, "your chosen address works again", by_hand=False)
-    return None
+    kept = {normalize(u) for u in entry.get("kept") or [] if isinstance(u, str)}
+    good = [a for a in _backups(p) if _works_now(a, now) and normalize(a.url) not in kept]
+    if not good:
+        return None
+    best = sorted(good, key=lambda a: _score(a, now))[0]
+    r = best.last_result or {}
+    return {"from": normalize(p.server_url), "to": normalize(best.url), "address_id": best.id,
+            "word": r.get("word") or LOGIN_ONLY, "tested_at": r.get("at")}

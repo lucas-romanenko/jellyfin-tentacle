@@ -764,8 +764,9 @@ def setup_scheduler(db):
     )
     logger.info("Stream health sweep scheduled: daily at 04:30")
 
-    # Provider health: log in to each provider and open one test stream every
-    # hour; a confirmed failure shows on the dashboard and goes to Pushover
+    # Provider health: every hour, one login on each provider's address in
+    # use (no test stream, never while anything plays or records); a
+    # confirmed failure shows on the dashboard and goes to Pushover
     # (services/provider_health.py). Once shortly after start, so the state is
     # fresh after a restart, unless the last check is under an hour old: then
     # the hourly run comes an hour after that one ("Check now" still runs).
@@ -788,7 +789,7 @@ def setup_scheduler(db):
                     f"(last check {last.strftime('%H:%M')}), next at {due.strftime('%H:%M')}")
 
     # A provider said down or refusing: "/" of its address (no login) every 5
-    # minutes, and a full check as soon as it answers again, so "back" shows
+    # minutes, and a check (a login) as soon as it answers again, so "back" shows
     # without waiting for the hourly check (services/provider_status.py).
     from services.provider_status import watch as watch_provider_status
     scheduler.add_job(

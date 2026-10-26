@@ -634,7 +634,6 @@ function renderProvAddrPanel(id) {
   const prog = running
     ? `Testing ${escHtml(_addrHost(data.test.current || ''))} (${(data.test.done || 0) + 1} of ${data.test.total || '?'})&hellip;`
     : 'One address at a time; streams are skipped while anyone is watching.';
-  const mode = data.auto_switch || 'switch';
   panel.innerHTML = `
     <div class="addr-list">${rows}</div>
     <div class="provider-panel-foot">
@@ -645,13 +644,7 @@ function renderProvAddrPanel(id) {
       <textarea class="form-input" id="prov-addr-text-${id}" rows="2" placeholder="Paste the provider&rsquo;s message with its other addresses" aria-label="Addresses to add"></textarea>
       <button class="btn btn-secondary btn-sm" onclick="addProviderAddresses(${id})">Add</button>
     </div>
-    <label class="addr-mode">When the address in use fails
-      <select class="form-input" onchange="setAddressAutoSwitch(${id}, this.value)" aria-label="When the address in use fails">
-        <option value="switch" ${mode === 'switch' ? 'selected' : ''}>switch to the best backup</option>
-        <option value="switch_back" ${mode === 'switch_back' ? 'selected' : ''}>switch, and come back when it works again</option>
-        <option value="off" ${mode === 'off' ? 'selected' : ''}>only tell me</option>
-      </select>
-    </label>`;
+    <div class="addr-mode">When the address in use fails, Tentacle logs in to the others and Health offers one that works: Switch or Keep. Nothing switches by itself.</div>`;
 }
 
 async function addProviderAddresses(id) {
@@ -722,15 +715,6 @@ function _pollAddrTest(id) {
       toast(`Tested: ${works} of ${(data.addresses || []).length} work`, works ? 'success' : 'error', 5000);
     }
   }, 2000);
-}
-
-async function setAddressAutoSwitch(id, mode) {
-  try {
-    srcState.addr[id] = await api(`/api/providers/${id}/addresses/settings`, { method: 'PUT', body: { auto_switch: mode } });
-    toast(mode === 'off' ? 'Saved: you are told, nothing switches' : 'Saved', 'success');
-  } catch (e) {
-    toast(e.message, 'error');
-  }
 }
 
 // ── Live TV per provider: streams at once; channel numbers (under More) ──

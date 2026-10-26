@@ -7189,7 +7189,7 @@ function renderHealthLog() {
     setProvCatFilter, renderProvCats, provCatToggle, provCatsSelectShown, provCatsRefresh, provCatsSave,
     renderProvGroups, provGroupToggle, provGroupsSelectShown, provGroupsRefresh, provGroupsSave,
     loadArrSources, saveTentacleAddress, onLiveProviderChange,
-    addProviderAddresses, removeProviderAddress, useProviderAddress, testProviderAddresses, setAddressAutoSwitch,
+    addProviderAddresses, removeProviderAddress, useProviderAddress, testProviderAddresses,
     saveProviderLiveNumber,
     // Activity
     loadActivity, startActivityPolling, stopActivityPolling,

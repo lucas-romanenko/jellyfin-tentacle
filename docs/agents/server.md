@@ -555,26 +555,30 @@ movies/series, then Sonarr/Radarr text-lookup titles TMDB lacks (TheTVDB).
   newest `checked_at` is under an hour old: then that start checks nothing,
   logs "start-up check skipped", and the hourly run starts an hour after the
   last check, `next_due`; "Check now" always runs), per provider
-  that is `active` or has `live_tv_enabled`: the API login (Xtream
-  `player_api.php`: status, `auth`, account `status`, `exp_date`; M3U URL:
-  the first 64 KB must be `#EXTM3U`; M3U file: none), then a 64 KB Range GET
-  of up to 3 of its VOD movies (the provider's own URL, `_direct_url`) and
-  then its first 2 live channels. 404/410 tries the next title; 429/509 is
-  no verdict; an API failure skips the stream step.
+  that is `active` or has `live_tv_enabled`: one light check of the address
+  in use, the API login (Xtream `player_api.php`: status, `auth`, account
+  `status`, `exp_date`; M3U URL: the first 64 KB must be `#EXTM3U`; M3U
+  file: nothing to ask, verdict `untested`, no verdict). No test stream
+  (Lucas, 25 Oct 2026: "we can not be using 7 connections every hour to
+  test"): refused or broken streams come from the streams people open
+  (`note`, provider_status). 429/509 is no verdict.
 - A new failure is checked again 2 minutes later (`RETRY_DELAY_SECONDS`)
   before it counts. "Check now" (`POST /api/health/providers/check`) skips
-  that confirmation. Both look for `live_streams_active()`,
-  `recording_protected()` or `jellyfin_playing()` (Jellyfin `/Sessions` has
-  a `NowPlayingItem`, or doesn't answer: a VOD .strm plays straight from the
-  provider, and a test stream next to it cuts it) before every connection
-  (each provider, each test stream, each confirming re-check) and stand
-  aside once one is true: no
+  that confirmation. Both look for `provider_activity.something_busy()`:
+  `live_streams_active()`, `recording_protected()`, `jellyfin_playing()`
+  (Jellyfin `/Sessions` has a `NowPlayingItem`, or doesn't answer: a VOD
+  .strm plays straight from the provider) or `routers.recordings.busy_now()`
+  (GET /api/live/recordings/busy's answer: recording now or within 20 min;
+  Jellyfin set up but its timers unreadable counts as busy), before every
+  request (each provider, each confirming re-check, each other address)
+  and stand aside once one is true: no
   verdict, the state kept, `skipped_at` set; the result says `skipped` and
   `checked` counts only the providers that got a verdict. One lock keeps
   them from running at once (409).
 - State: setting `provider_health` (JSON by provider id: `state`
   ok/failing/unknown, `since`, `checked_at`, `skipped_at`, `step`, `code`,
-  `kind`, `reason`, `alerted`, `recovery_due`, `suspect`). Reasons never
+  `kind`, `reason`, `alerted`, `recovery_due`, `suspect`, `offer`, `kept`).
+  Reasons never
   carry a URL or a login; times are the container's local time (`TZ`).
 - Syncs and live streams feed the same state through `note(db, provider_id,
   ok, step, code)` (#652): no connection of its own, commits its own write,
@@ -1180,12 +1184,21 @@ User docs: `docs/features/live-tv.md`.
   backups. `add_from_text` picks addresses out of a pasted message
   (scheme://host[:port] only). `test_address`: DNS, Cloudflare, login
   (status, connections), first bytes of a live channel and a film, one
-  connection at a time, streams skipped while anyone uses the account
-  (`_someone_watching` or the account's `active_cons`). The hourly provider
-  health check calls `check_backups` after the addresses in use; a failing
-  address (two failed checks: the check and its confirmation) is replaced by
-  the best backup whose streams worked (`address_auto_switch`: switch,
-  switch_back to `preferred_address` after two good checks, off). `switch_to`
+  connection at a time, streams (Test all only) skipped while anyone uses
+  the account (`_someone_watching` or the account's `active_cons`). The
+  hourly check records its verdict on the address in use (`record_in_use`)
+  and logs in to the others (`check_backups`, `streams=False`) only after
+  a confirmed failure that isn't the account's, never while
+  `something_busy`. Nothing switches by itself (Lucas, 25 Oct 2026; the
+  old `address_auto_switch` column is dropped by `_drop_retired_columns`):
+  `offer_for` picks the best other address whose latest test worked within
+  `OFFER_FRESH` (2 h) and wasn't kept, into the health state's `offer`
+  (provider_health `_offer`: Activity and one Pushover per offered
+  address; `_save_state` publishes `health`, so open dashboards redraw).
+  The Health banner shows it with Switch (`POST .../addresses/{id}/use`,
+  then `address_switched` clears the failure, the offer and `kept`) and
+  Keep (`POST .../addresses/{id}/keep`, `keep_address`: added to `kept`
+  until the state is ok again; a new failure asks again). `switch_to`
   is the save path (`rewrite_xtream_channel_urls`, `provider_relink`) plus a
   probation: marks from the old address's listings are cleared and the sync
   marks and prunes nothing until a full sync on the new address read

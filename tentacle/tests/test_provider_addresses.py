@@ -2,9 +2,10 @@
 
 When an address stops working (an ISP blocking one IP on game nights), the
 provider sends a message with others. The card keeps them: one in use (the
-provider's server_url), the rest backups; a test from the server ranks them,
-the hourly check keeps testing the backups, and a switch (by hand or by
-itself) moves the provider without importing anything again.
+provider's server_url), the rest backups; a test from the server ranks them.
+The hourly check logs in to the backups only when the address in use failed;
+nothing switches by itself: the Health banner offers Switch / Keep, and a
+switch moves the provider without importing anything again.
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
@@ -299,7 +300,7 @@ class SwitchKeepsTheLibrary(_Db):
         self.db.commit()
         self.mtime = self.routed.stat().st_mtime_ns
 
-    def _switch(self, url="http://cf.bearsp.xyz", by_hand=True):
+    def _switch(self, url="http://cf.bearsp.xyz"):
         from services import provider_relink
 
         def relink_now(provider_id, before):
@@ -307,7 +308,7 @@ class SwitchKeepsTheLibrary(_Db):
                 provider_relink.relink_strms(self.db, self.db.get(Provider, provider_id), before)
         with mock.patch.object(provider_relink, "start_relink", relink_now), \
                 mock.patch("services.pushover.send", lambda *a, **k: True):
-            return pa.switch_to(self.db, self.p, url, "chosen by hand", by_hand=by_hand)
+            return pa.switch_to(self.db, self.p, url, "chosen by hand")
 
     def test_rows_ids_and_jellyfin_items_stay(self):
         before = [(m.id, m.tmdb_id, m.strm_path, m.jellyfin_item_id) for m in self.db.query(Movie).order_by(Movie.id)]
@@ -352,8 +353,8 @@ class SwitchKeepsTheLibrary(_Db):
 
 
 class TheHourlyCheck(_Db):
-    """check_backups: the backups are tested after the address in use, and a
-    failing address is replaced by a backup that works."""
+    """check_backups: the other addresses are logged in to (no stream) only
+    after the address in use failed, and nothing switches by itself."""
 
     def setUp(self):
         super().setUp()
@@ -362,95 +363,248 @@ class TheHourlyCheck(_Db):
         self.tested = []
 
         def fake_test(db, p, url, streams=True, sleep=None):
-            self.tested.append(url)
-            word = self.results.get(url, pa.WORKS)
+            self.tested.append((url, streams))
+            word = self.results.get(url, pa.LOGIN_ONLY)
             return {"at": datetime.utcnow().isoformat() + "Z", "ok": word in (pa.WORKS, pa.LOGIN_ONLY),
                     "word": word, "ip": None, "cloudflare": None, "login": None, "live": None,
                     "vod": None, "streams_skipped": None}
         t = mock.patch.object(pa, "test_address", fake_test)
         t.start()
         self.addCleanup(t.stop)
-        self.switched = []
-
-        def fake_switch(db, p, url, why, by_hand):
-            self.switched.append((url, why, by_hand))
-            p.server_url = url
-            return {"switched": True, "provider_id": p.id}
-        s = mock.patch.object(pa, "switch_to", fake_switch)
+        s = mock.patch.object(pa, "switch_to", side_effect=AssertionError("never switches by itself"))
         s.start()
         self.addCleanup(s.stop)
 
-    def _run(self, failing):
-        verdict = "fail" if failing else "ok"
-        state = {str(self.p.id): {"state": "failing" if failing else "ok", "reason": "no answer"}}
-        return pa.check_backups(self.db, [self.p], {self.p.id: {"verdict": verdict}}, state, sleep=lambda s: None)
+    def _run(self, kind="unreachable"):
+        return pa.check_backups(self.db, self.p, {"verdict": "fail", "kind": kind}, sleep=lambda s: None)
 
-    def test_backups_are_tested_every_hour(self):
-        self._run(failing=False)
-        self.assertEqual(["http://cf.bearsp.xyz", "http://bearsclub.online"], self.tested)
-        self.assertEqual([], self.switched)
+    def test_a_login_on_each_other_address_and_no_stream(self):
+        self.assertEqual(2, self._run())
+        self.assertEqual([("http://cf.bearsp.xyz", False), ("http://bearsclub.online", False)], self.tested)
 
-    def test_failing_switches_to_the_best_backup_that_works(self):
-        self.results["http://cf.bearsp.xyz"] = "refused (403)"
-        self._run(failing=True)
-        self.assertEqual([("http://bearsclub.online",
-                           "the address in use failed its checks and this one works", False)], self.switched)
-
-    def test_no_switch_when_no_backup_works(self):
-        self.results.update({"http://cf.bearsp.xyz": "no answer", "http://bearsclub.online": "refused (403)"})
-        self._run(failing=True)
-        self.assertEqual([], self.switched)
-
-    def test_no_switch_on_a_login_alone(self):
-        """Streams refused (511) behind a working login is what a VPN exit
-        gets: a login is not enough, unless its streams worked today."""
-        self.results.update({"http://cf.bearsp.xyz": pa.LOGIN_ONLY, "http://bearsclub.online": pa.LOGIN_ONLY})
-        self._run(failing=True)
-        self.assertEqual([], self.switched)
-
-    def test_off_only_says_so(self):
-        self.p.address_auto_switch = "off"
-        self.db.commit()
-        self._run(failing=True)
-        self.assertEqual([], self.switched)
-
-    def test_switch_back_once_the_chosen_one_works_twice(self):
-        self.p.address_auto_switch = "switch_back"
-        self.p.preferred_address = "http://bearsk.xyz"
-        self.p.server_url = "http://cf.bearsp.xyz"
-        self.db.commit()
-        self.results["http://bearsk.xyz"] = pa.WORKS
-        self._run(failing=False)
-        self.assertEqual([], self.switched)          # one good check: not yet
-        self._run(failing=False)
-        self.assertEqual([("http://bearsk.xyz", "your chosen address works again", False)], self.switched)
-
-    def test_while_someone_watches_backups_wait_unless_it_is_urgent(self):
-        self.watching = True
-        self._run(failing=False)
+    def test_not_for_an_account_problem(self):
+        for kind in ("login", "expired", "status"):
+            self.assertEqual(0, self._run(kind))
         self.assertEqual([], self.tested)
-        self._run(failing=True)
-        self.assertEqual(2, len(self.tested))
+
+    def test_never_while_anything_plays_or_records(self):
+        self.watching = True
+        self.assertEqual(0, self._run())
+        self.assertEqual([], self.tested)
+
+    def test_offer_names_the_failing_address_and_the_best_that_works(self):
+        self.results["http://cf.bearsp.xyz"] = "refused (403)"
+        self._run()
+        entry = {"state": "failing", "case": "blocked"}
+        offer = pa.offer_for(self.p, entry)
+        backup = next(a for a in self.p.addresses if a.url == "http://bearsclub.online")
+        self.assertEqual({"from": "http://bearsk.xyz", "to": "http://bearsclub.online", "address_id": backup.id,
+                          "word": pa.LOGIN_ONLY}, {k: v for k, v in offer.items() if k != "tested_at"})
+        self.assertEqual("http://bearsk.xyz", self.p.server_url, "nothing switched")
+
+    def test_no_offer_when_nothing_else_works_or_it_is_not_failing(self):
+        self.results.update({"http://cf.bearsp.xyz": "no answer", "http://bearsclub.online": "refused (403)"})
+        self._run()
+        self.assertIsNone(pa.offer_for(self.p, {"state": "failing", "case": "down"}))
+        self.results.clear()
+        self._run()
+        self.assertIsNone(pa.offer_for(self.p, {"state": "ok"}))
+        self.assertIsNone(pa.offer_for(self.p, {"state": "failing", "case": "account"}))
+
+    def test_a_kept_address_is_not_offered_again_another_may_be(self):
+        self._run()
+        first = pa.offer_for(self.p, {"state": "failing"})["to"]
+        second = pa.offer_for(self.p, {"state": "failing", "kept": [first]})["to"]
+        self.assertNotEqual(first, second)
+        self.assertIsNone(pa.offer_for(self.p, {"state": "failing", "kept": [first, second]}))
+
+    def test_an_old_result_is_not_offered(self):
+        self._run()
+        for a in self.p.addresses:
+            a.last_result = {**(a.last_result or {}), "at": (datetime.utcnow() - timedelta(hours=3)).isoformat() + "Z"}
+        self.assertIsNone(pa.offer_for(self.p, {"state": "failing"}))
 
 
-class ProviderHealthRunsThem(_Db):
-    def test_the_health_check_tests_backups_and_clears_a_switched_failure(self):
+class _Health(_Db):
+    """provider_health.check_providers with the address in use failing and a
+    backup that logs in: the banner's offer, Keep and Switch."""
+
+    def setUp(self):
+        super().setUp()
         from services import provider_health
+        self.ph = provider_health
         pa.add_from_text(self.db, self.p, "cf.bearsp.xyz")
-        calls = []
+        self.backup = next(a for a in self.p.addresses if a.url == "http://cf.bearsp.xyz")
+        self.sent = []
+        self.published = []
+        self.logins = []
 
-        def fake_backups(db, providers, outcomes, state, sleep=None):
-            calls.append([p.id for p in providers])
-            return [{"switched": True, "provider_id": self.p.id}]
-        failing = {"verdict": "fail", "step": "api", "kind": "unreachable", "code": None, "detail": "no answer"}
-        with mock.patch.object(provider_health, "_stand_aside", lambda db: False), \
-                mock.patch.object(provider_health, "check_provider", lambda db, p, sleep: failing), \
-                mock.patch.object(pa, "check_backups", fake_backups), \
-                mock.patch("services.pushover.send", lambda *a, **k: True):
-            out = provider_health.check_providers(self.db, confirm_delay=0, sleep=lambda s: None)
-        self.assertEqual([[self.p.id]], calls)
-        self.assertEqual(1, out["switched"])
-        self.assertEqual("unknown", provider_health.load_state(self.db)[str(self.p.id)]["state"])
+        def fake_test(db, p, url, streams=True, sleep=None):
+            self.logins.append((url, streams))
+            return {"at": datetime.utcnow().isoformat() + "Z", "ok": True, "word": pa.LOGIN_ONLY, "ip": None,
+                    "cloudflare": None, "login": {"ok": True, "seconds": 0.4}, "live": None, "vod": None,
+                    "streams_skipped": "not tested this time"}
+        self.failing = {"verdict": "fail", "step": "api", "kind": "unreachable", "code": None, "detail": "no answer"}
+        self.outcome = self.failing
+        for p in (mock.patch.object(provider_health, "_stand_aside", lambda db: False),
+                  mock.patch.object(provider_health, "check_provider", lambda db, p, sleep: self.outcome),
+                  mock.patch.object(pa, "test_address", fake_test),
+                  mock.patch("services.provider_status.look",
+                             lambda p, o: {"case": "blocked", "detail": "silent", "probes": []}),
+                  mock.patch("services.pushover.send", lambda db, title, msg, url=None: self.sent.append(title) or True),
+                  mock.patch("services.live_updates.publish",
+                             lambda topic, **kw: self.published.append((topic, kw.get("admins")))),
+                  mock.patch.object(pa, "switch_to", side_effect=AssertionError("never switches by itself"))):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def check(self):
+        return self.ph.check_providers(self.db, confirm_delay=0, sleep=lambda s: None)
+
+    def entry(self):
+        return self.ph.load_state(self.db)[str(self.p.id)]
+
+
+class TheBannerAsks(_Health):
+    def test_the_address_in_use_failing_is_offered_not_switched(self):
+        self.check()
+        self.assertEqual("http://bearsk.xyz", self.p.server_url)
+        offer = self.entry()["offer"]
+        self.assertEqual(("http://bearsk.xyz", "http://cf.bearsp.xyz", self.backup.id),
+                         (offer["from"], offer["to"], offer["address_id"]))
+        self.assertEqual([("http://cf.bearsp.xyz", False)], self.logins, "one login, no stream")
+        [view] = self.ph.provider_view(self.db)
+        self.assertEqual(offer, view["address_offer"])
+        self.assertEqual(1, view["other_addresses"])
+        self.assertIn("Another of its addresses works: switch to it, or keep this one", view["plain"])
+        # Open dashboards hear it (live update), and the phone once
+        self.assertIn(("health", True), self.published)
+        self.assertEqual(["Tentacle: Bears is failing", "Tentacle: Bears: another address works"], self.sent)
+        self.check()
+        self.assertEqual(2, len(self.sent), "the same offer is not sent again")
+
+    def test_keep_stops_offering_it_for_this_incident(self):
+        self.check()
+        self.published.clear()
+        self.assertTrue(self.ph.keep_address(self.db, self.p.id, "http://cf.bearsp.xyz"))
+        self.assertIsNone(self.entry()["offer"])
+        self.assertEqual(["http://cf.bearsp.xyz"], self.entry()["kept"])
+        self.assertIn(("health", True), self.published, "the banner's buttons go away everywhere")
+        self.check()
+        self.assertIsNone(self.entry()["offer"], "still kept on the next hour")
+        self.assertEqual("http://bearsk.xyz", self.p.server_url)
+        # It works again, then fails again: a new incident asks again
+        self.outcome = {"verdict": "ok"}
+        self.check()
+        self.assertIsNone(self.entry()["kept"])
+        self.outcome = self.failing
+        self.check()
+        self.assertEqual("http://cf.bearsp.xyz", self.entry()["offer"]["to"])
+
+    def test_keep_without_a_failure_is_refused(self):
+        self.outcome = {"verdict": "ok"}
+        self.check()
+        self.assertFalse(self.ph.keep_address(self.db, self.p.id, "http://cf.bearsp.xyz"))
+
+    def test_while_it_works_the_other_addresses_are_left_alone(self):
+        self.outcome = {"verdict": "ok"}
+        for _ in range(3):
+            self.check()
+        self.assertEqual([], self.logins)
+        self.assertIsNone(self.entry()["offer"])
+
+    def test_switch_clears_the_failure_and_the_offer(self):
+        self.check()
+        self.ph.address_switched(self.db, self.p.id)
+        e = self.entry()
+        self.assertEqual(("unknown", None, None), (e["state"], e["offer"], e["kept"]))
+
+
+class TheBannerRoutes(_Health):
+    """POST .../addresses/{id}/use (Switch) and .../keep (Keep), admins only."""
+
+    def setUp(self):
+        super().setUp()
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from models.database import TentacleUser, get_db
+        from routers import providers
+        self.db.add(Setting(key="session_secret", value="s3cret"))
+        admin = TentacleUser(jellyfin_user_id="a1", display_name="Admin", is_admin=True)
+        viewer = TentacleUser(jellyfin_user_id="v1", display_name="Viewer", is_admin=False)
+        self.db.add_all([admin, viewer])
+        self.db.commit()
+        self.admin_id, self.viewer_id = admin.id, viewer.id
+        app = FastAPI()
+        app.include_router(providers.router)
+        make = sessionmaker(bind=self.db.bind)
+
+        def _db():
+            db = make()
+            try:
+                yield db
+            finally:
+                db.close()
+        app.dependency_overrides[get_db] = _db
+        self.client = TestClient(app)
+        self.check()
+
+    def sign_in(self, user_id):
+        from routers import auth
+        self.client.cookies.set(auth.COOKIE_NAME, auth._sign_session(user_id, "s3cret"))
+
+    def test_keep(self):
+        self.sign_in(self.admin_id)
+        r = self.client.post(f"/api/providers/{self.p.id}/addresses/{self.backup.id}/keep")
+        self.assertEqual(200, r.status_code, r.text)
+        self.db.expire_all()
+        self.assertIsNone(self.entry()["offer"])
+        self.assertEqual("http://bearsk.xyz", self.db.get(Provider, self.p.id).server_url)
+
+    def test_switch(self):
+        self.sign_in(self.admin_id)
+        done = []
+        with mock.patch.object(pa, "switch_to", lambda db, p, url, why: done.append((url, why)) or
+                               {"switched": True, "provider_id": p.id, "to": url}):
+            r = self.client.post(f"/api/providers/{self.p.id}/addresses/{self.backup.id}/use")
+        self.assertEqual(200, r.status_code, r.text)
+        self.assertEqual([("http://cf.bearsp.xyz", "chosen by hand")], done)
+        self.db.expire_all()
+        self.assertIsNone(self.entry()["offer"])
+
+    def test_viewers_and_strangers_are_refused(self):
+        for who in (None, self.viewer_id):
+            if who:
+                self.sign_in(who)
+            r = self.client.post(f"/api/providers/{self.p.id}/addresses/{self.backup.id}/keep")
+            self.assertIn(r.status_code, (401, 403))
+        self.db.expire_all()
+        self.assertIsNotNone(self.entry()["offer"])
+
+    def test_the_old_auto_switch_setting_is_gone(self):
+        self.sign_in(self.admin_id)
+        r = self.client.put(f"/api/providers/{self.p.id}/addresses/settings", json={"auto_switch": "switch"})
+        self.assertIn(r.status_code, (404, 405))
+        self.assertNotIn("auto_switch", self.client.get(f"/api/providers/{self.p.id}/addresses").json())
+
+
+class TheOldAutoSwitchSettingIsDropped(unittest.TestCase):
+    def test_the_column_goes_and_the_providers_stay(self):
+        import sqlite3
+        conn = sqlite3.connect(temp_dir(self) + "/t.db")
+        self.addCleanup(conn.close)
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE providers (id INTEGER PRIMARY KEY, name TEXT, server_url TEXT, "
+                    "address_auto_switch TEXT DEFAULT 'switch', preferred_address TEXT)")
+        cur.execute("INSERT INTO providers (name, server_url, address_auto_switch, preferred_address) "
+                    "VALUES ('Bears', 'http://bearsk.xyz', 'switch_back', 'http://bearsk.xyz')")
+        conn.commit()
+        mdb._drop_retired_columns(cur, conn)
+        mdb._drop_retired_columns(cur, conn)        # twice is fine
+        self.assertNotIn("address_auto_switch", mdb._existing_columns(cur, "providers"))
+        self.assertEqual([("Bears", "http://bearsk.xyz", "http://bearsk.xyz")],
+                         cur.execute("SELECT name, server_url, preferred_address FROM providers").fetchall())
+        self.assertNotIn("address_auto_switch", mdb.Provider.__table__.columns)
 
 
 class DeletingTheProviderTakesItsAddresses(_Db):
@@ -514,7 +668,7 @@ class TheSyncAfterASwitch(NightlyHarness):
     def _switch(self):
         from services import provider_relink
         with mock.patch.object(provider_relink, "start_relink", lambda *a: None):
-            pa.switch_to(self.db, self.provider, "http://cf.provider", "test", by_hand=True)
+            pa.switch_to(self.db, self.provider, "http://cf.provider", "test")
 
     def test_a_failed_listing_marks_nothing(self):
         self._switch()
@@ -613,8 +767,7 @@ class TheAddressInUseInTheTable(_Db):
         pa.ensure_current(self.db, self.p)
         self.db.commit()
         failing = {"verdict": "fail", "kind": "unreachable", "detail": "no answer", "step": "api"}
-        with mock.patch.object(pa, "_maybe_switch", lambda db, p, f: None):
-            pa.check_backups(self.db, [self.p], {self.p.id: failing}, {}, sleep=lambda s: None)
+        pa.record_in_use(self.db, self.p, failing)
         current = self.p.addresses[0]
         self.assertEqual("no answer", current.last_result["word"])
         self.assertFalse(current.history[-1]["ok"])

@@ -68,6 +68,12 @@ def recordings_busy(soon_minutes: int = Query(BUSY_SOON_MINUTES, ge=0, le=24 * 6
     pre-padding) within `soon_minutes`; a restart of Tentacle or Jellyfin
     now would cut it. `known` is false when Jellyfin couldn't be asked: a
     caller should treat that as busy (it can't tell)."""
+    return busy_now(db, soon_minutes)
+
+
+def busy_now(db: Session, soon_minutes: int = BUSY_SOON_MINUTES) -> dict:
+    """GET /api/live/recordings/busy's answer, for Tentacle's own background
+    work too (services/provider_activity.something_busy)."""
     from routers.livetv import _jellyfin_timers, _stream_slots
     url = (get_setting(db, "jellyfin_url", "") or "").strip()
     key = (get_setting(db, "jellyfin_api_key", "") or "").strip()

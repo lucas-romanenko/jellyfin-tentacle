@@ -143,8 +143,8 @@ class Case(Base_):
                                 stream_url=SERVER + "/live/u/p/43.ts", stream_id="43"))
         self.db.commit()
         self.clock[0] = datetime(2026, 10, 25, 18, 30).astimezone()
-        # Backups tested by the hourly check: none of these tests switch
-        p = mock.patch("services.provider_addresses.check_backups", return_value=[])
+        # The other addresses, logged in to after a failure: not here
+        p = mock.patch("services.provider_addresses.check_backups", return_value=0)
         p.start()
         self.addCleanup(p.stop)
         # A quick look runs in a thread on Tentacle's own database: here
