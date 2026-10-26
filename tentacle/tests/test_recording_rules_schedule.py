@@ -185,6 +185,93 @@ class Fetching(unittest.TestCase):
         self.assertEqual([], self.calls)
 
 
+class MoreSources(unittest.TestCase):
+    """EuroLeague's own schedule; soccer clubs and national teams from ESPN's
+    "all" schedule (every competition merged: cups, Europe, friendlies)."""
+
+    def setUp(self):
+        d = temp_dir(self)
+        pt = mock.patch.dict(os.environ, {"DATA_DIR": d})
+        pt.start()
+        self.addCleanup(pt.stop)
+        S._mem.clear()
+        self.addCleanup(S._mem.clear)
+        self.calls = []
+
+    def answer(self, body):
+        r = mock.Mock()
+        r.json.return_value = body
+        return r
+
+    def el_get(self, url, session=None):
+        self.calls.append(url)
+        club = lambda code, name, short: {"code": code, "name": name, "abbreviatedName": short,
+                                          "editorialName": short, "clubPermanentName": name}
+        if url.endswith("/clubs"):
+            return self.answer({"data": [club("PAN", "Panathinaikos AKTOR Athens", "Panathinaikos"),
+                                         club("MAD", "Real Madrid", "Real Madrid"),
+                                         club("OLY", "Olympiacos Piraeus", "Olympiacos")]})
+        game = lambda date, home, road, **kw: dict({"utcDate": date, "confirmedDate": True, "confirmedHour": True,
+                                                    "local": {"club": club(home, home, home)},
+                                                    "road": {"club": club(road, road, road)}}, **kw)
+        return self.answer({"data": [game("2026-10-22T18:15:00Z", "PAN", "MAD"),
+                                     game("2026-10-30T17:30:00Z", "OLY", "PAN"),
+                                     game("2027-01-01T00:00:00Z", "PAN", "OLY", confirmedDate=False)]})
+
+    def test_euroleague(self):
+        with mock.patch("services.recording_art.logos._get", self.el_get), \
+                mock.patch.object(S, "_season_year", lambda now=None: 2026):
+            s = S.schedule("euroleague", "pan")
+        self.assertEqual([(datetime(2026, 10, 22, 18, 15), "rma", True), (datetime(2026, 10, 30, 17, 30), "oly", False)],
+                         [(g.start, g.opponent, g.home) for g in s.games], "a game with no date yet is left out")
+        self.assertFalse(s.complete, "domestic league games aren't in it")
+        self.assertTrue(any("games?teamCode=PAN" in u and "/seasons/E2026/" in u for u in self.calls), self.calls)
+        # the same two clubs a week later is a domestic game it doesn't have, not a rerun
+        self.assertIsNone(S.verdict(s, datetime(2026, 10, 29, 19, 0), ["rma"]))
+        self.assertIn("played the Real", S.verdict(s, datetime(2026, 10, 24, 19, 0), ["rma"]) or "")
+
+    def test_the_season_year(self):
+        self.assertEqual(2026, S._season_year(datetime(2026, 10, 26)))
+        self.assertEqual(2026, S._season_year(datetime(2027, 5, 20)))
+
+    def espn_get(self, url, session=None):
+        self.calls.append(url)
+        if url.endswith("/teams?limit=500"):
+            teams = {"soccer/eng.1": [("359", "Arsenal", "ARS"), ("363", "Chelsea", "CHE")],
+                     "soccer/fifa.friendly": [("206", "Canada", "CAN")],
+                     "soccer/fifa.worldq.concacaf": [("206", "Canada", "CAN"), ("215", "Guatemala", "GUA")]}
+            path = url.split("/sports/")[1].split("/teams")[0]
+            return self.answer({"sports": [{"leagues": [{"teams": [
+                {"team": {"id": i, "displayName": n, "abbreviation": a}} for i, n, a in teams.get(path, [])]}]}]})
+        side = lambda i, h, n: {"homeAway": h, "team": {"id": i, "shortDisplayName": n}}
+        ev = lambda date, home, away: {"date": date, "competitions": [{"competitors": [side(*home, "home"),
+                                                                                       side(*away, "away")]}]}
+        if "/soccer/all/teams/359/schedule" in url:
+            if url.endswith("?fixture=true"):
+                return self.answer({"events": [ev("2026-10-27T20:00Z", ("999", "Fleetwood"), ("359", "Arsenal"))]})
+            return self.answer({"events": [ev("2026-10-24T14:00Z", ("359", "Arsenal"), ("363", "Chelsea"))]})
+        if "/soccer/all/teams/206/schedule" in url and url.endswith("?fixture=true"):
+            return self.answer({"events": [ev("2026-11-14T02:00Z", ("215", "Guatemala"), ("206", "Canada")),
+                                           ev("2026-11-17T01:00Z", ("206", "Canada"), ("215", "Guatemala"))]})
+        return self.answer({"events": []})
+
+    def test_a_clubs_cup_tie_is_in_its_schedule(self):
+        with mock.patch("services.recording_art.logos._get", self.espn_get):
+            s = S.schedule("epl", "ars")
+        self.assertEqual([(datetime(2026, 10, 24, 14), "che"), (datetime(2026, 10, 27, 20), None)],
+                         [(g.start, g.opponent) for g in s.games])
+        self.assertTrue(all("/soccer/all/" in u for u in self.calls if "/schedule" in u))
+        self.assertFalse(s.complete, "a friendly ESPN doesn't have must never drop a game")
+        self.assertIsNone(S.verdict(s, datetime(2026, 10, 27, 20), []), "the League Cup tie")
+
+    def test_national_teams(self):
+        with mock.patch("services.recording_art.logos._get", self.espn_get):
+            s = S.schedule("fifa", "can")
+        self.assertEqual(["gua", "gua"], [g.opponent for g in s.games])
+        self.assertTrue(S.confirms(s, datetime(2026, 11, 17, 1), {"gua"}))
+        self.assertFalse(s.complete)
+
+
 class Guide(unittest.TestCase):
     def test_previously_shown_and_new_are_read(self):
         from services.xmltv import parse_xmltv

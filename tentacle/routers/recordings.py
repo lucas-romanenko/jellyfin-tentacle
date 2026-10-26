@@ -415,8 +415,12 @@ def preview_rule(body: RuleBody, request: Request, db: Session = Depends(get_db)
     items = G.airings(db, now)
     others_rules = [r for r in book.load_rules(db) if r.mode == "record" and r.id != body.id]
     games = S.for_rules([rule] + others_rules)
-    pl = P.plan_rule(rule, items, now, games.get((rule.league, rule.team)))
-    others = [P.plan_rule(r, items, now, games.get((r.league, r.team))) for r in others_rules]
+    # what the saved rule recorded: the same game again is a rerun
+    saved = db.get(RecordingRule, body.id) if body.id else None
+    mine = [P.Rule(id=saved.id, name=saved.name, mode=saved.mode or "preview")] if saved else []
+    done = book.recorded(db, mine + others_rules, now)
+    pl = P.plan_rule(rule, items, now, games.get((rule.league, rule.team)), done.get(body.id, ()) if saved else ())
+    others = [P.plan_rule(r, items, now, games.get((r.league, r.team)), done.get(r.id, ())) for r in others_rules]
     limits: dict = {}
 
     def limit_of(pid):
