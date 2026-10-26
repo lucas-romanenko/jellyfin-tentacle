@@ -15,6 +15,14 @@ A rerun of a game is never recorded: a team rule's listing is checked
 against the team's real schedule (schedule.py: an old game, or none of
 theirs then) and a sports listing the guide marks as shown before is one
 too; both go to the near misses with the reason.
+
+The same game is never recorded twice, in every league, schedule or not:
+once a team rule has recorded (or booked) the team against an opponent, the
+same two teams again within MATCHUP_WINDOW is a rerun ("the Canadiens vs
+the Blackhawks was recorded on Fri 23 Oct"). Not when it is the playoffs (a
+series meets every other night), a "Live" listing, or a game the team's
+schedule has then (Canada and Guatemala play twice in three days); never
+in MLB, whose teams play series of three days running.
 """
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -28,6 +36,9 @@ GAME_WINDOW = timedelta(minutes=45)       # the same programme on another channe
 TEAM_WINDOW = timedelta(minutes=90)       # a team plays one game at a time (event slots' times are rough)
 REPLAY_AFTER = timedelta(minutes=60)      # the same programme this much later is a replay
 PREGAME_GAP = timedelta(minutes=15)       # the game follows its pregame show within this
+MATCHUP_WINDOW = timedelta(days=4)        # the same two teams again this soon: a rerun (the CFL's
+                                          # home-and-home is a week apart)
+_SERIES_LEAGUES = ("mlb",)                # the same two teams days running: only the schedule decides
 _OTHER_SERIES = ("F1 Academy", "Formula E", "Formula 2", "Formula 3", "F2", "F3", "Moto2", "Moto3", "MotoE")
 
 
@@ -82,6 +93,19 @@ class Event:
 class NearMiss:
     airing: object
     reason: str
+
+
+@dataclass
+class Recorded:
+    """A game this rule recorded or booked (recording_bookings): a later
+    showing of the same two teams is checked against it."""
+    start: datetime
+    title: str = ""
+    sub_title: str = ""
+    description: str = ""
+    channel_raw: str = ""
+    from_event: bool = False
+    category: str = ""
 
 
 @dataclass
@@ -188,8 +212,10 @@ def rerun(rule: Rule, o: Option, schedule: Optional[S.Schedule]) -> Optional[str
     return None
 
 
-def plan_rule(rule: Rule, airings: list, now: datetime, schedule: Optional[S.Schedule] = None) -> RulePlan:
-    """`schedule`: the team's real games (team rules), None when unknown."""
+def plan_rule(rule: Rule, airings: list, now: datetime, schedule: Optional[S.Schedule] = None,
+              recorded: tuple = ()) -> RulePlan:
+    """`schedule`: the team's real games (team rules), None when unknown.
+    `recorded`: what the rule recorded or booked lately (Recorded)."""
     shortest = min_minutes(rule)
     found: dict = {}
     games = []      # (airing, opponents named, home) of team listings that name a game
@@ -295,7 +321,53 @@ def plan_rule(rule: Rule, airings: list, now: datetime, schedule: Optional[S.Sch
             ev.state = "replay" if rule.skip_replays else "record"
             ev.reason = f"a replay of {a.start:%H:%M} UTC on {a.channel}" if rule.skip_replays else ""
         events.append(ev)
+    if rule.kind == "team" and rule.skip_replays and rule.league not in _SERIES_LEAGUES:
+        events = _same_matchup(rule, events, recorded, schedule, now, reruns)
     return RulePlan(rule, events, (reruns + near)[:40], reruns)
+
+
+def _exempt(rule: Rule, listings: list) -> bool:
+    """A playoff game (a series meets every other night) or a "Live" listing."""
+    lg = LG.league(rule.league)
+    return any(M.is_live_title(a.title) or M.is_playoff(_listing(a), lg) for a in listings)
+
+
+def _same_matchup(rule: Rule, events: list, recorded: tuple, schedule: Optional[S.Schedule],
+                  now: datetime, reruns: list) -> list:
+    """The events left once a game whose two teams met in one recorded or
+    booked within MATCHUP_WINDOW before it is taken out (to `reruns`, with
+    the reason). Past recordings and this plan's games are walked in order,
+    so a rerun never counts as the game a later one repeats. An event
+    channel's slot only says a time (its date is the guide's guess: a
+    Saturday game named on Friday lands on Friday), so one never makes a
+    regular channel's listing a rerun."""
+    walk = []           # (start, opponents, listings, event or None)
+    for r in recorded:
+        ok, _, _, _, opponents = _hit(rule, r)
+        if ok and opponents:
+            walk.append((r.start, set(opponents), [r], None))
+    for ev in events:
+        if ev.state != "replay":
+            opponents = {t for o in ev.options for t in o.opponents}
+            if opponents:
+                walk.append((ev.best.airing.start, opponents, [o.airing for o in ev.options], ev))
+    walk.sort(key=lambda w: (w[0], w[3] is not None))
+    games, out = [], set()      # games: (start, opponents, on a regular channel) that count
+    for start, opponents, listings, ev in walk:
+        regular = any(not a.from_event for a in listings)
+        before = [g for g in games if TEAM_WINDOW < start - g[0] <= MATCHUP_WINDOW and g[1] & opponents
+                  and (g[2] or not regular)]
+        if before and not _exempt(rule, listings) and not S.confirms(schedule, start, opponents):
+            if ev is not None:
+                g_start, g_opp, _ = before[-1]
+                me, them = S._the(rule.league, rule.team), S._the(rule.league, sorted(g_opp & opponents)[0])
+                done = "was recorded" if g_start < now else "is set to record"
+                why = f"rerun: {me} vs {them} {done} on {S._day(g_start)}"
+                reruns.extend(NearMiss(o.airing, why) for o in ev.options)
+                out.add(id(ev))
+            continue
+        games.append((start, opponents, regular))
+    return [e for e in events if id(e) not in out]
 
 
 # ── Connections ─────────────────────────────────────────────────────────────

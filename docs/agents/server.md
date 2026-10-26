@@ -1326,18 +1326,33 @@ schedule or score service: games are found in the guide Tentacle serves.
   `provider_stream_limit` and the windows of timers Tentacle didn't make;
   a first showing that can't fit takes its replay; else `waiting` with why.
   Reruns (`plan.rerun`, unless the rule records replays): a team listing is
-  checked against the team's real games (`schedule.py`: ESPN's public team
-  schedule, no key, per team every 6 h, kept in `DATA_DIR/team_logos/schedule-*.json`;
-  NHL/NBA/WNBA/NFL/MLB are every game, MLS and the big five soccer leagues
-  only that league's): an opponent it played earlier and no game against
-  them within 4 h, another opponent than the one played then, or (every-game
-  leagues, inside the schedule's dates) no game then at all is a rerun. A
-  team or series listing the feed marks `<previously-shown>` (stored as
-  `epg_programs.previously_shown`; `<new>`/`<premiere>` = False) is one too
-  unless its title says `Live:`. Reruns go first in the near misses with
-  the reason; a `booked` one is cancelled by the scan. ESPN unreachable: the
-  last copy, else no schedule (plans as before); CFL, EuroLeague, FIFA and
-  IIHF have none.
+  checked against the team's real games (`schedule.py`, no key, per team
+  every 6 h, kept in `DATA_DIR/team_logos/schedule-*.json`; ESPN's team
+  schedule for NHL/NBA/WNBA/NFL/MLB, every game; ESPN's `soccer/all` team
+  schedule, every competition merged (league, cups, Europe, Concacaf,
+  qualifiers, Nations League, friendlies), for MLS, the big five and FIFA
+  national teams, team ids from the leagues' (and second divisions',
+  friendlies', qualifiers') team lists; EuroLeague's own
+  `api-live.euroleague.net/v2/.../games?teamCode=`, play-in/playoffs/Final
+  Four once set, unconfirmed dates left out): an opponent it played earlier
+  (soccer 21 days back, EuroLeague 4: domestic games aren't in it) and no
+  game against them within 4 h, another opponent than the one played then,
+  or (every-game leagues only, inside the schedule's dates) no game then at
+  all is a rerun. A team or series listing the feed marks
+  `<previously-shown>` (stored as `epg_programs.previously_shown`;
+  `<new>`/`<premiere>` = False) is one too unless its title says `Live:`.
+  Recorded matchup (`plan._same_matchup`, every league, schedule or not):
+  the same two teams (`Option.opponents`) within 4 days (`MATCHUP_WINDOW`)
+  after a game the rule recorded or booked (`book.recorded`:
+  recording_bookings booked/recording/ended/covered, a preview rule's
+  previews; titles re-matched, nothing stored) or an earlier game in this
+  plan is a rerun; not for playoffs (`playoff_words`), `Live` titles, a game
+  the schedule has then (`schedule.confirms`), or MLB (series). Walked in
+  time order, so a rerun never counts as the game; an event channel's slot
+  (its date is a guess) never makes a regular channel's listing a rerun. Reruns go first in the
+  near misses with the reason; a `booked` one is cancelled by the scan.
+  Source unreachable: the last copy, else no schedule (plans as before);
+  CFL and IIHF have none (the recorded matchup covers them).
 - `book.py`: the only writer of Jellyfin timers, one scan at a time (`_lock`):
   every 30 min (`recording_rules` job), 3 s after a rule change
   (`request_scan`), 10 min after a guide refresh (`jellyfin_guide`). Booking =

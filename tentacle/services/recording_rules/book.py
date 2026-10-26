@@ -66,6 +66,29 @@ def load_rules(db: Session, only_active: bool = True) -> list:
     return [rule_of(r, terms.get(r.id, []), chans.get(r.id, [])) for r in rows]
 
 
+# What a rule recorded or booked (a later showing of the same game is a
+# rerun): booked, recording, ended and covered (someone's own timer records
+# it); a rule in preview, what it would have recorded. Not skipped (someone
+# said no), waiting, failed or lost: nothing records those.
+RECORDED = ("booked", "recording", "ended", "covered")
+
+
+def recorded(db: Session, rules: list, now: datetime) -> dict:
+    """rule id → [plan.Recorded] of its team games since MATCHUP_WINDOW ago."""
+    team = {r.id: r for r in rules if r.kind == "team"}
+    if not team:
+        return {}
+    since = now - P.MATCHUP_WINDOW - P.TEAM_WINDOW
+    out: dict = {}
+    for b in db.query(RecordingBooking).filter(RecordingBooking.rule_id.in_(list(team)),
+                                               RecordingBooking.start >= since).order_by(RecordingBooking.start):
+        if b.state in RECORDED or (b.state == "preview" and team[b.rule_id].mode != "record"):
+            out.setdefault(b.rule_id, []).append(P.Recorded(
+                b.start, b.title or "", b.sub_title or "", b.description or "", b.channel_name or "",
+                bool(b.from_event)))
+    return out
+
+
 # ── Jellyfin ────────────────────────────────────────────────────────────────
 
 def _iso(dt: datetime) -> str:
@@ -160,7 +183,9 @@ def scan(db: Session, jf=None, now: Optional[datetime] = None, airings: Optional
 
         from services.recording_rules import schedule as S
         games = S.for_rules(rules)
-        plans = [P.plan_rule(r, items, now, games.get((r.league, r.team))) for r in rules]
+        done = recorded(db, rules, now)
+        plans = [P.plan_rule(r, items, now, games.get((r.league, r.team)), done.get(r.id, ()))
+                 for r in rules]
         fit_plans(plans, held, limit_of)
         summary = {"rules": len(rules), "listings": len(items), "booked": 0, "preview": 0, "waiting": 0,
                    "covered": 0, "cancelled": 0, "changed": False}
