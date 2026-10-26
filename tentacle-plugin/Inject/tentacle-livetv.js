@@ -94,6 +94,9 @@
   }
 
   function apiPost(path, body) {
+    // A first page load opens the guide before Jellyfin web has signed in:
+    // an empty UserId is refused (400), none is the signed-in caller.
+    if (body && 'UserId' in body) { learnUser(); body.UserId = G.userId || undefined; }
     return api().ajax({
       type: 'POST',
       url: api().getUrl(path),
@@ -1116,7 +1119,11 @@
       ids.forEach(function (id) { if (G.mounted[id]) fillProgs(G.mounted[id], id); });
       firstInfo();
       if (G.cursor) showCursor(false);
-    }).catch(done);
+    }).catch(function () {
+      done();
+      // not read (Jellyfin still starting, a blip): the rows in view ask again
+      setTimeout(function () { if (G.active) drawRows(); }, 2000);
+    });
   }
 
   // Every 30 s: move the now line; at a programme change redraw what's in view.
@@ -1334,6 +1341,7 @@
   }
 
   function pollPreview() {
+    learnUser();
     if (!G.active || G.overlay || (G.m && G.m.phone) || !G.userId) return;
     PV.asked = Date.now();
     var q = { userId: G.userId };
@@ -2511,6 +2519,8 @@
   function onLiveTick() {
     if (!G.active) return;
     learnUser();
+    // a first page load opens the guide before Jellyfin signed in: ask about previews once it has
+    if (PV.poll && !PV.asked) pollPreview();
     watchSocket();
     // No websocket (blocked, or reconnecting): read the list every 10 s.
     if (!socketOpen() && Date.now() - G.reload.at >= POLL_MS) scheduleReload(0);
@@ -2808,7 +2818,7 @@
     playChannel: playChannel,
     // For the unit tests (tests/test_livetv_guide.py)
     openOverlay: openOverlay,
-    internals: { daysWithData: daysWithData, mergeRecents: mergeRecents, programmeChoices: programmeChoices,
+    internals: { apiPost: apiPost, daysWithData: daysWithData, mergeRecents: mergeRecents, programmeChoices: programmeChoices,
       LivePicture: LivePicture, MV: MV, PV: PV, PL: PL, diffChannels: diffChannels, onUserData: onUserData, G: G, computeDays: computeDays, isGuidePage: isGuidePage, progsHtml: progsHtml, chanCell: chanCell, fmtRange: fmtRange, keepPlace: keepPlace, restorePlace: restorePlace },
   };
 
