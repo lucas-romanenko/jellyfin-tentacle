@@ -23,6 +23,7 @@ from test_livetv_open_single_fetch import PANEL, TOKENIZED, _redirect, _resp
 from test_livetv_raw_reconnect import _dropped, _live
 from test_livetv_reconnect_budget import _play
 from test_livetv_token_expiry import CHANNEL, Panel, _r, _stream
+from test_livetv_token_expiry import setUpModule, tearDownModule  # noqa: F401  the tokenized re-read
 
 A = b"G" + b"a" * 187          # one TS packet
 B = b"G" + b"b" * 187
