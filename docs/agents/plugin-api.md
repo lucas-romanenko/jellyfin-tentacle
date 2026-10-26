@@ -146,6 +146,8 @@ Gotchas:
 | POST | `/TentacleDiscover/MultiView/{id}/Keepalive` | user | KeepMultiView (every ~15 s while a channel plays full screen) | yes |
 | DELETE | `/TentacleDiscover/MultiView/{id}` | user | CloseMultiView | yes |
 | GET | `/TentacleDiscover/MultiView/{id}/Stream` | anonymous; the session id is the secret | MultiViewStream (the picture passed through, MPEG-TS) | yes |
+| GET | `/TentacleDiscover/MultiView/{id}/Web?audio=N` | anonymous; the session id is the secret | MultiViewWeb (`web.mp4`: fragmented MP4 with tile N's sound, for Jellyfin Web) | no (web) |
+| GET | `/TentacleDiscover/LivePreview/{itemId}/Stream` | user | LivePreviewStream (`/api/live/preview/{id}/stream.mp4`, caller's token passed on: the web guide's muted preview) | no (web) |
 | GET | `/Tentacle/recordings.js`, `/Tentacle/recordings.css` | none | GetRecordingsJs/Css |  |
 | GET | `/TentacleDiscover/Genres` | user | GetGenres | yes |
 | GET | `/TentacleDiscover/ImageProxy/{cacheKey}` | none | ImageProxy |  |

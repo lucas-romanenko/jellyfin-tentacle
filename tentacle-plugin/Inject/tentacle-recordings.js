@@ -7,6 +7,12 @@
 //     Record in Jellyfin; what teams and rules in preview would record, folded.
 //   - Recordings: what Jellyfin has recorded, newest first (a tap opens it to
 //     play), and what is recording now.
+//   - A click plays (Resume where it was left); one recording now plays the
+//     channel live, on the stream the recording already reads (no new
+//     connection). Right-click / a long press (as the TV's long press):
+//     Resume, Play from start, Mark watched / unwatched, Delete recording…
+//     (when Jellyfin allows it, confirmed), Details; recording now: Watch
+//     live, Details.
 // Read-only: teams and rules are picked in Tentacle (Recordings page). Data:
 // TentacleDiscover/Recordings/* (the plugin passes the caller's own token on to
 // Tentacle) and Jellyfin's LiveTv/Recordings and LiveTv/Timers.
@@ -16,7 +22,7 @@
   'use strict';
 
   var POLL_MS = 30000;
-  var R = { active: false, tab: 0, container: null, poll: null, socket: null, seq: 0 };
+  var R = { active: false, tab: 0, container: null, poll: null, socket: null, seq: 0, items: {} };
 
   function esc(str) {
     if (str === null || str === undefined) return '';
@@ -85,8 +91,17 @@
     document.body.appendChild(el);
     el.addEventListener('click', function (e) {
       var a = e.target.closest('[data-item]');
-      if (a) { location.hash = '#/details?id=' + encodeURIComponent(a.getAttribute('data-item')); }
+      if (!a) return;
+      var item = R.items[a.getAttribute('data-item')];
+      if (item && R.tab === 3) { e.preventDefault(); play(item, false); return; }
+      location.hash = '#/details?id=' + encodeURIComponent(a.getAttribute('data-item'));
     });
+    if (window.TentacleMenu) {
+      window.TentacleMenu.onGesture(el, '.tr-card[data-item]', function (card, x, y) {
+        var item = R.items[card.getAttribute('data-item')];
+        if (item) recordingMenu(item, { x: x, y: y, el: card });
+      });
+    }
     R.container = el;
   }
 
@@ -125,8 +140,12 @@
         apiGet('TentacleDiscover/Recordings/rules', { userId: uid }).catch(function () { return null; }),
         apiGet('LiveTv/Timers', { IsActive: false }).catch(function () { return null; }),
       ]).then(function (r) { return renderSchedule(r[0], r[1], r[2]); })
-      : apiGet('LiveTv/Recordings', { UserId: uid, Fields: 'Overview,DateCreated,PremiereDate', EnableImageTypes: 'Primary,Thumb', ImageTypeLimit: 1, Limit: 300 })
-        .then(renderRecordings, function () { return '<div class="tr-none">Recordings couldn’t be read from Jellyfin.</div>'; });
+      : apiGet('LiveTv/Recordings', { UserId: uid, Fields: 'Overview,DateCreated,PremiereDate,CanDelete', EnableUserData: true, EnableImageTypes: 'Primary,Thumb', ImageTypeLimit: 1, Limit: 300 })
+        .then(function (r) {
+          R.items = {};
+          ((r && r.Items) || []).forEach(function (i) { R.items[i.Id] = i; });
+          return renderRecordings(r);
+        }, function () { return '<div class="tr-none">Recordings couldn’t be read from Jellyfin.</div>'; });
     p.then(function (html) {
       if (seq !== R.seq || !R.active || R.tab !== tab) return;
       var body = R.container.querySelector('.tr-body');
@@ -221,6 +240,63 @@
     if (now.length) html += '<div class="tr-h">Recording now</div><div class="tr-grid">' + now.map(card).join('') + '</div>';
     html += '<div class="tr-h">Recorded</div><div class="tr-grid">' + done.map(card).join('') + '</div>';
     return html;
+  }
+
+  // ── Play, and the menu ───────────────────────────────────────────────
+
+  function recording(item) { return item.Status === 'InProgress'; }
+
+  function position(item) { return (item.UserData && item.UserData.PlaybackPositionTicks) || 0; }
+
+  // A finished recording plays where it was left (`fromStart`: from 0:00);
+  // one still recording plays its channel live: Jellyfin joins the stream the
+  // recording reads (the growing file itself won't play: NoCompatibleStream).
+  function play(item, fromStart) {
+    if (recording(item) && item.ChannelId && window.TentacleLiveTV) {
+      window.TentacleLiveTV.playChannel(item.ChannelId);
+      return;
+    }
+    var pm = window.playbackManager;
+    if (!pm || typeof pm.play !== 'function') { location.hash = '#/details?id=' + encodeURIComponent(item.Id); return; }
+    var opts = { ids: [item.Id] };
+    if (!fromStart && position(item)) opts.startPositionTicks = position(item);
+    pm.play(opts);
+  }
+
+  function setWatched(item, watched) {
+    var a = api();
+    Promise.resolve(a.ajax({ type: watched ? 'POST' : 'DELETE', url: a.getUrl('UserPlayedItems/' + item.Id, { userId: a.getCurrentUserId() }) }))
+      .then(function () { setTimeout(load, 300); }, function () { window.TentacleMenu.toast('That didn’t work. Try again in a moment.'); });
+  }
+
+  function remove(item) {
+    var a = api();
+    Promise.resolve(a.ajax({ type: 'DELETE', url: a.getUrl('Items/' + item.Id) }))
+      .then(function () { window.TentacleMenu.toast('Recording deleted'); setTimeout(load, 300); },
+        function () { window.TentacleMenu.toast('The recording couldn’t be deleted.'); });
+  }
+
+  function recordingMenu(item, at) {
+    var M = window.TentacleMenu;
+    var name = item.EpisodeTitle && item.Name ? item.Name + ': ' + item.EpisodeTitle : (item.Name || '');
+    var details = { label: 'Details', run: function () { location.hash = '#/details?id=' + encodeURIComponent(item.Id); } };
+    var items;
+    if (recording(item)) {
+      items = [{ label: 'Watch live', run: function () { play(item, false); } }, details];
+    } else {
+      var played = !!(item.UserData && item.UserData.Played);
+      items = [
+        position(item) ? { label: 'Resume', run: function () { play(item, false); } } : null,
+        { label: position(item) ? 'Play from start' : 'Play', run: function () { play(item, true); } },
+        { label: played ? 'Mark unwatched' : 'Mark watched', run: function () { setWatched(item, !played); } },
+        item.CanDelete ? { label: 'Delete recording…', run: function () {
+          M.confirm({ message: name + ' is deleted for everyone in the household. This can’t be undone.',
+            confirm: 'Delete recording', cancel: 'Keep it', danger: true, anchor: at.el, run: function () { remove(item); } });
+        } } : null,
+        details,
+      ];
+    }
+    M.open({ title: name, items: items, x: at.x, y: at.y, anchor: at.el });
   }
 
   // ── Live ─────────────────────────────────────────────────────────────

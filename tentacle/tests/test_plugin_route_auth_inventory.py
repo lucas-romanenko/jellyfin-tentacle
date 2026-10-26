@@ -23,6 +23,8 @@ ANONYMOUS = {
     ("DiscoverController.cs", "ImageProxy/{cacheKey}"): "<img> tags cannot send auth; md5(url) + TVDB host checked",
     ("DiscoverController.cs", "MultiView/{sessionId}/Stream"): "the multi-view picture for a player; the session id "
                                                                  "is the secret, only Tentacle's multi-view path is reached",
+    ("DiscoverController.cs", "MultiView/{sessionId}/Web"): "the same picture for a browser's player (fMP4); the "
+                                                              "session id is the secret",
 }
 # Injected client assets: /Tentacle/<name>.js|.css|.png, served to the login page too.
 _STATIC_ASSET = re.compile(r"\A/Tentacle/[\w-]+\.(?:js|css|png)\Z")

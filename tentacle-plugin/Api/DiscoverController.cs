@@ -4,6 +4,7 @@ using System.Text.Json;
 using Jellyfin.Plugin.Tentacle.Configuration;
 using MediaBrowser.Controller.Net;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 
@@ -1541,6 +1542,87 @@ public class TentacleDiscoverController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogDebug("[Tentacle Discover] Multi-view picture ended: {Error}", ex.Message);
+            if (!Response.HasStarted)
+            {
+                Response.StatusCode = 502;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The multi-view picture for a web browser (fragmented MP4 with the sound of tile
+    /// <paramref name="audio"/> only), passed through as it comes. Anonymous like
+    /// <see cref="MultiViewStream"/>: the session id is the secret.
+    /// </summary>
+    /// <param name="sessionId">The multi-view session.</param>
+    /// <param name="audio">Which tile is heard (0-3).</param>
+    [HttpGet("MultiView/{sessionId}/Web")]
+    public Task MultiViewWeb([FromRoute] string sessionId, [FromQuery] int audio = 0) =>
+        MultiViewId.IsMatch(sessionId)
+            ? PassWebStream($"/api/live/multiview/{sessionId}/web.mp4?audio={Math.Clamp(audio, 0, 3)}", false)
+            : NotFoundStream();
+
+    /// <summary>
+    /// The guide's muted live preview of one channel for a web browser (small silent
+    /// fragmented MP4), for the signed-in caller (Tentacle checks their token and that
+    /// the channel is in their lineup, and refuses when no connection is spare).
+    /// </summary>
+    /// <param name="itemId">The Jellyfin channel item id.</param>
+    [HttpGet("LivePreview/{itemId}/Stream")]
+    [Authorize]
+    public Task LivePreviewStream([FromRoute] string itemId) =>
+        Guid.TryParse(itemId, out var id)
+            ? PassWebStream($"/api/live/preview/{id:N}/stream.mp4", true)
+            : NotFoundStream();
+
+    private Task NotFoundStream()
+    {
+        Response.StatusCode = 404;
+        return Task.CompletedTask;
+    }
+
+    private async Task PassWebStream(string path, bool asCaller)
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            Response.StatusCode = 503;
+            return;
+        }
+
+        var aborted = HttpContext.RequestAborted;
+        try
+        {
+            var url = baseUrl + path;
+            using var response = await StreamClient.GetAsync(
+                asCaller ? AppendUserId(url) : url, HttpCompletionOption.ResponseHeadersRead, aborted);
+            Response.StatusCode = (int)response.StatusCode;
+            Response.Headers["Cache-Control"] = "no-cache, no-store";
+            if (!response.IsSuccessStatusCode)
+            {
+                Response.ContentType = "application/json";
+                await Response.WriteAsync(await response.Content.ReadAsStringAsync(aborted), aborted);
+                return;
+            }
+
+            Response.ContentType = "video/mp4";
+            await using var upstream = await response.Content.ReadAsStreamAsync(aborted);
+            var buffer = new byte[64 * 1024];
+            int read;
+            while ((read = await upstream.ReadAsync(buffer, aborted)) > 0)
+            {
+                // Each fragment reaches the browser as soon as it is made.
+                await Response.Body.WriteAsync(buffer.AsMemory(0, read), aborted);
+                await Response.Body.FlushAsync(aborted);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The browser went away.
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("[Tentacle Discover] Web live picture ended: {Error}", ex.Message);
             if (!Response.HasStarted)
             {
                 Response.StatusCode = 502;

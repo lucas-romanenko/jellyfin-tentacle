@@ -11,7 +11,7 @@ import asyncio
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from models.database import LiveChannel, SessionLocal, TentacleUser, get_db
 from routers.auth import get_user_from_request
 from services import multiview as MV
+from services import web_stream as WS
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -34,9 +35,9 @@ def _uid(user: TentacleUser) -> str:
     return (user.jellyfin_user_id or "").replace("-", "")
 
 
-def _picks(db: Session, user: TentacleUser, body: StartBody) -> list:
+def _picks(db: Session, user: TentacleUser, body: StartBody, count: bool = True) -> list:
     """[(channel_id, name, key, item_id)] for the asked channels, in order,
-    from this person's own lineup only."""
+    from this person's own lineup only (`count`: 2 to 4 of them)."""
     from routers.my_livetv import my_lineup
     from services import livetv_lineups as L
     from services import livetv_tuners as T
@@ -64,7 +65,7 @@ def _picks(db: Session, user: TentacleUser, body: StartBody) -> list:
             continue
         seen.add(cid)
         out.append((cid, entry["name"], entry["key"], item_id or item_of.get(entry["key"]) or ""))
-    if not MV.MIN_TILES <= len(out) <= MV.MAX_TILES:
+    if count and not MV.MIN_TILES <= len(out) <= MV.MAX_TILES:
         raise HTTPException(400, f"Pick {MV.MIN_TILES} to {MV.MAX_TILES} different channels")
     return out
 
@@ -190,3 +191,68 @@ async def multiview_stream(session_id: str):
         raise HTTPException(404, "This multi-view has ended")
     return StreamingResponse(s.read(), media_type="video/mp2t",
                              headers={"Cache-Control": "no-cache, no-store", "Connection": "close"})
+
+
+# ── For web browsers (Jellyfin Web): fragmented MP4 (services/web_stream.py) ──
+
+_MP4_HEADERS = {"Cache-Control": "no-cache, no-store", "Connection": "close"}
+
+
+@router.get("/api/live/multiview/{session_id}/web.mp4")
+async def multiview_web(session_id: str, audio: int = 0):
+    """The picture for a browser: fMP4 with only tile `audio`'s sound (a
+    browser can't switch sound tracks). Open like stream.ts: the id is the secret."""
+    s = MV.get(session_id)
+    if s is None:
+        raise HTTPException(404, "This multi-view has ended")
+    ffmpeg = MV._ffmpeg()
+    if not ffmpeg:
+        raise HTTPException(503, "Multi-view needs ffmpeg on the Tentacle server.")
+    audio = max(0, min(int(audio), len(s.tiles) - 1))
+    return StreamingResponse(WS.fmp4(s.read(), WS.multiview_args(ffmpeg, audio)),
+                             media_type="video/mp4", headers=_MP4_HEADERS)
+
+
+@router.get("/api/live/preview/{item_id}/stream.mp4")
+async def preview_stream(item_id: str, user: TentacleUser = Depends(get_user_from_request),
+                         db: Session = Depends(get_db)):
+    """The guide's muted live preview of one channel of this person's own
+    lineup, for a browser: small silent fMP4. Joins the channel like the
+    tuner (a channel already open costs no connection); a new connection
+    only while /api/live/preview says a preview may run."""
+    from routers import livetv as LT
+    ffmpeg = MV._ffmpeg()
+    if not ffmpeg:
+        raise HTTPException(503, "Previews need ffmpeg on the Tentacle server.")
+    cid, name, _key, _item = _picks(db, user, StartBody(item_ids=[item_id]), count=False)[0]
+    shared = LT._shared_streams.get(cid)
+    if shared is None or shared._closed:
+        answer = await LT.live_preview(previewing=False, user=user, db=db)
+        if not answer.get("previews"):
+            raise HTTPException(409, "No connection is free for a preview right now")
+    try:
+        resp = await LT.stream_proxy(cid, db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(503, f"{name} didn't open: {e}")
+    body = getattr(resp, "body_iterator", None)
+    if body is None or (getattr(resp, "headers", {}) or {}).get("x-tentacle-reason"):
+        await _leave(resp)
+        raise HTTPException(503, f"{name} isn't coming through right now")
+
+    async def done():
+        await _leave(resp)
+
+    return StreamingResponse(WS.fmp4(body, WS.preview_args(ffmpeg), done),
+                             media_type="video/mp4", headers=_MP4_HEADERS)
+
+
+async def _leave(resp) -> None:
+    """Give a stream_proxy subscription back (the upstream closes when it was the last)."""
+    shared = getattr(resp, "_shared", None)
+    if shared is not None:
+        try:
+            await shared.unsubscribe(resp._q)
+        except Exception as e:
+            logger.info(f"[Preview] unsubscribe: {e}")
