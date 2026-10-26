@@ -187,8 +187,8 @@ Declared on the app in `main.py` (no router, all **none**; listed in
 | GET | `/api/live/logo/{name}` | none | livetv.py:channel_logo_copy (Tentacle's copy of a channel logo that went dead, services/channel_logos.py; only hash-named files of the logo cache) |
 | GET | `/api/live/stream/{channel_id}` | none | livetv.py:stream_proxy |
 | GET | `/api/live/streams` | admin or internal | livetv.py:live_streams |
-| GET | `/api/live/multiview` | signed in | multiview.py:multiview_state (can this person start a multi-view now: `can_start`, `max_tiles` from free connections with recordings starting within 30 min set aside, `message` when not; their running `session`) |
-| POST | `/api/live/multiview` | signed in | multiview.py:multiview_start (`{item_ids}` Jellyfin channel ids or `{keys}`, 2-4 from their own lineup; 409 with a plain message when connections are short; replaces their running one) |
+| GET | `/api/live/multiview` | signed in | multiview.py:multiview_state (can this person start a multi-view now on `?deviceId=`: `can_start`, `max_tiles` from free connections with recordings starting within 30 min set aside, `message` when not; their running `session` on that device) |
+| POST | `/api/live/multiview` | signed in | multiview.py:multiview_start (`{item_ids}` Jellyfin channel ids or `{keys}`, 2-4 from their own lineup; 409 with a plain message when connections are short; replaces their running one on the same `?deviceId=` only, one per device) |
 | PUT | `/api/live/multiview/{session_id}` | owner | multiview.py:multiview_change (other channels: kept ones stay open, removed ones go first) |
 | POST | `/api/live/multiview/{session_id}/keepalive` | owner | multiview.py:multiview_keepalive (while a channel plays full screen; answers the session, a tile whose stream ended has `live` false) |
 | DELETE | `/api/live/multiview/{session_id}` | owner | multiview.py:multiview_close (every connection given back) |

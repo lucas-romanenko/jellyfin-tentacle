@@ -91,18 +91,28 @@ def _unavailable() -> Optional[str]:
     return None
 
 
+def _device(device_id: str) -> str:
+    """The Jellyfin device the caller plays on (the plugin passes the device id
+    of the caller's token). Like userId, a claim: it only picks among the
+    signed-in person's own sessions."""
+    return (device_id or "").strip()[:128]
+
+
 @router.get("/api/live/multiview")
-async def multiview_state(user: TentacleUser = Depends(get_user_from_request), db: Session = Depends(get_db)):
-    """Whether this person can start a multi-view now, and how many channels
-    it can have: free connections (recordings starting soon set aside); a
-    session of theirs that runs gives its connections back to the count."""
+async def multiview_state(deviceId: str = "", user: TentacleUser = Depends(get_user_from_request),
+                          db: Session = Depends(get_db)):
+    """Whether this person can start a multi-view now on this device, and how
+    many channels it can have: free connections (recordings starting soon set
+    aside); their session on this device gives its connections back to the
+    count (it is the one a new one replaces)."""
     reason = _unavailable()
-    mine = MV.of_user(_uid(user))
+    device = _device(deviceId)
+    mine = MV.of_user(_uid(user), device)
     soon = await asyncio.to_thread(_soon)
     check = MV.free_connections(db, [], soon)
     free = check["free"]
     if free is not None:
-        free += MV.own_connections(_uid(user))   # theirs come back when it is replaced
+        free += MV.own_connections(_uid(user), device_id=device)   # theirs come back when it is replaced
     max_tiles = MV.MAX_TILES if free is None else max(0, min(MV.MAX_TILES, free))
     can = reason is None and max_tiles >= MV.MIN_TILES
     message = reason or ("" if can else MV.refusal_message(MV.MIN_TILES, max(free or 0, 0), soon))
@@ -111,13 +121,13 @@ async def multiview_state(user: TentacleUser = Depends(get_user_from_request), d
             "session": mine[0].describe() if mine else None}
 
 
-async def _start(db: Session, user: TentacleUser, body: StartBody) -> dict:
+async def _start(db: Session, user: TentacleUser, body: StartBody, device: str = "") -> dict:
     reason = _unavailable()
     if reason:
         raise HTTPException(503, reason)
     picks = _picks(db, user, body)
     channels = db.query(LiveChannel).filter(LiveChannel.id.in_([p[0] for p in picks])).all()
-    mine = MV.of_user(_uid(user))
+    mine = MV.of_user(_uid(user), device)
     keep = {t.channel_id for s in mine for t in s.tiles}
     soon = await asyncio.to_thread(_soon)
     # A channel of their running multi-view is open already: it needs no new connection.
@@ -125,17 +135,18 @@ async def _start(db: Session, user: TentacleUser, body: StartBody) -> dict:
     if not check["ok"]:
         raise HTTPException(409, check["message"])
     try:
-        session = await MV.start(_uid(user), picks, SessionLocal)
+        session = await MV.start(_uid(user), picks, SessionLocal, device)
     except MV.MultiviewError as e:
         raise HTTPException(e.status, str(e))
     return session.describe()
 
 
 @router.post("/api/live/multiview")
-async def multiview_start(body: StartBody, user: TentacleUser = Depends(get_user_from_request),
+async def multiview_start(body: StartBody, deviceId: str = "", user: TentacleUser = Depends(get_user_from_request),
                           db: Session = Depends(get_db)):
-    """Start a multi-view on 2-4 channels (replaces this person's running one)."""
-    return await _start(db, user, body)
+    """Start a multi-view on 2-4 channels (replaces this person's running one
+    on this device; one on another device plays on)."""
+    return await _start(db, user, body, _device(deviceId))
 
 
 @router.put("/api/live/multiview/{session_id}")
@@ -152,7 +163,7 @@ async def multiview_change(session_id: str, body: StartBody,
     if new:
         soon = await asyncio.to_thread(_soon)
         check = MV.free_connections(db, new, soon)
-        freed = MV.own_connections(_uid(user), only=held - wanted)
+        freed = MV.own_connections(_uid(user), only=held - wanted, device_id=s.device_id)
         if not check["ok"] and check["free"] is not None and check["needed"] > check["free"] + freed:
             raise HTTPException(409, check["message"])
     try:

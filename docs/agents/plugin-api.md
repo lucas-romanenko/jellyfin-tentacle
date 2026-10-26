@@ -140,7 +140,7 @@ Gotchas:
 | GET | `/TentacleDiscover/FamilyStatus` | user | GetFamilyStatus | yes |
 | GET | `/TentacleDiscover/LivePreview` | user | GetLivePreview (`/api/live/preview`, caller's token passed on; `?previewing=true`; no answer = `previews` false) | yes |
 | GET | `/TentacleDiscover/Recordings/{upcoming,history,marks,rules}` | user | GetRecordings (read-only, caller's token passed on) | yes |
-| GET | `/TentacleDiscover/MultiView` | user | GetMultiView (multi-view: can the caller start one, `max_tiles`, their running session) | yes |
+| GET | `/TentacleDiscover/MultiView` | user | GetMultiView (multi-view: can the caller start one, `max_tiles`, their running session; every MultiView call passes the device id of the caller's token on as `deviceId`: one multi-view per device) | yes |
 | POST | `/TentacleDiscover/MultiView` | user | StartMultiView (`{item_ids}`; 409 + message when connections are short) | yes |
 | PUT | `/TentacleDiscover/MultiView/{id}` | user | ChangeMultiView (swap / remove a channel) | yes |
 | POST | `/TentacleDiscover/MultiView/{id}/Keepalive` | user | KeepMultiView (every ~15 s while a channel plays full screen) | yes |

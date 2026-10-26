@@ -358,6 +358,9 @@
         v.removeEventListener('playing', onPlaying);
         if (!done) { done = true; resolve(); }
       });
+      // the stream ended (the session closed, the server went away) and what came has played
+      v.addEventListener('ended', function () { if (!self.stopped) fail(new Error('ended')); });
+      v.addEventListener('error', function () { if (!self.stopped) fail(new Error('This picture can\u2019t be played')); });
       ms.addEventListener('sourceopen', function () {
         try { self.sb = ms.addSourceBuffer(self.opts.mime || 'video/mp4; codecs="avc1.640028"'); }
         catch (e) { fail(e); return; }
@@ -372,7 +375,14 @@
           var read = function () {
             return reader.read().then(function (x) {
               if (self.stopped) return;
-              if (x.done) { fail(new Error('ended')); return; }
+              if (x.done) {
+                // what came still plays; then the media source ends ('ended' above)
+                self.finished = true;
+                if (!self.sawData) { fail(new Error('ended')); return; }
+                self.pump();
+                return;
+              }
+              self.sawData = true;
               self.queue.push(x.value);
               self.pump();
               return read();
@@ -389,7 +399,11 @@
 
   LivePicture.prototype.pump = function () {
     var sb = this.sb;
-    if (!sb || sb.updating || !this.queue.length || this.stopped) return;
+    if (!sb || sb.updating || this.stopped) return;
+    if (!this.queue.length) {
+      if (this.finished && this.ms && this.ms.readyState === 'open') { try { this.ms.endOfStream(); } catch (e) { } }
+      return;
+    }
     var n = 0, i;
     for (i = 0; i < this.queue.length; i++) n += this.queue[i].length;
     var buf = new Uint8Array(n), at = 0;
@@ -1741,12 +1755,17 @@
   // one picture of them (TentacleDiscover/MultiView, the TV's session),
   // here as fMP4 with the sound of the channel being heard. A click on a
   // channel hears it (a second read, swapped in when it plays), a double
-  // click (or its ⤢) plays it full screen in Jellyfin's player, whose Back
-  // comes back to the grid; its menu swaps or removes it. Leaving gives
-  // every connection back at once. The screen stays awake while it plays.
+  // click (or its ⤢, Enter) fills the screen with it: the grid's own picture
+  // zoomed onto that channel, so it is there at once, costs no connection
+  // and rides through the provider's cuts like the grid does (a player of
+  // the channel stalled on every cut: with 4 channels open the provider
+  // closes each one every 10-15 s). Esc, Back or a double click returns to
+  // the grid; arrows go to the next channel. Its menu swaps or removes a
+  // channel. Leaving gives every connection back at once. The screen stays
+  // awake while it plays.
 
   var MV_KEEPALIVE_MS = 15000;
-  var MV = { picking: false, picks: [], max: 4, session: null, items: [], view: null, heard: 0, focus: 0,
+  var MV = { picking: false, picks: [], max: 4, session: null, items: [], view: null, heard: 0, focus: 0, zoom: -1,
     player: null, spare: null, keep: null, wake: null, fullScreen: false, busy: false, hideTimer: null };
 
   function mvUrl(path) { return api().getUrl('TentacleDiscover/MultiView' + (path || '')); }
@@ -1878,16 +1897,22 @@
       el = MV.view = document.createElement('div');
       el.id = 'tentacleMultiView';
       el.innerHTML =
-        '<div class="mv-stage"><video class="mv-video" playsinline></video><video class="mv-video" playsinline></video><div class="mv-tiles"></div></div>' +
+        '<div class="mv-stage"><div class="mv-zoom"><video class="mv-video" playsinline></video><video class="mv-video" playsinline></video><div class="mv-tiles"></div></div></div>' +
         '<div class="mv-top"><button type="button" class="mv-back" data-mv="leave" title="Back to the guide (Esc)">' +
           '<svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg><span>Guide</span></button>' +
-          '<div class="mv-title">Multi-view</div><div class="mv-hint">Click a channel to hear it · double-click for full screen</div></div>' +
+          '<div class="mv-title">Multi-view</div><div class="mv-hint">Click a channel to hear it · double-click to fill the screen</div></div>' +
+        '<div class="mv-zoombar"><button type="button" class="mv-back" data-mv="unzoom" title="Back to all channels (Esc)">' +
+          '<svg viewBox="0 0 24 24"><path d="M3 3h8v8H3V3zm10 0h8v8h-8V3zM3 13h8v8H3v-8zm10 0h8v8h-8v-8z"/></svg><span>All channels</span></button>' +
+          '<div class="mv-title mv-zoomname"></div></div>' +
         '<div class="mv-state" role="status"></div>';
       document.body.appendChild(el);
       el.addEventListener('click', onGridClick);
       el.addEventListener('dblclick', function (e) {
+        if (e.target.closest('[data-mv], .mv-top, .mv-zoombar')) return;
+        e.preventDefault();
+        if (MV.zoom >= 0) { unzoom(); return; }
         var t = e.target.closest('.mv-tile');
-        if (t) { e.preventDefault(); fullScreenTile(+t.dataset.i); }
+        if (t) zoomTile(+t.dataset.i);
       });
       onMenuGesture(el, '.mv-tile', function (t, x, y) { tileMenu(+t.dataset.i, { x: x, y: y }); });
       el.addEventListener('mousemove', wakeChrome);
@@ -1917,6 +1942,23 @@
       (retry ? '<div class="mv-state-btns"><button type="button" class="tg-btn" data-mv="retry">Try again</button>' +
         '<button type="button" class="tg-link" data-mv="leave">Back to the guide</button></div>' : '') : '';
     s.style.display = text ? '' : 'none';
+  }
+
+  // The heard and focused tile marked in place (a click must not rebuild the
+  // tiles: a double click needs both clicks on the same element).
+  function markTiles() {
+    var box = MV.view && MV.view.querySelector('.mv-tiles');
+    var s = MV.session;
+    if (!box || !s) return;
+    var els = box.querySelectorAll('.mv-tile');
+    if (els.length !== s.tiles.length) { renderTiles(); return; }
+    for (var i = 0; i < els.length; i++) {
+      els[i].classList.toggle('heard', i === MV.heard);
+      els[i].classList.toggle('focus', i === MV.focus);
+      var note = els[i].querySelector('.mv-note');
+      if (i === MV.heard && !note) els[i].querySelector('.mv-name').insertAdjacentHTML('afterbegin', '<i class="mv-note">♪</i>');
+      if (i !== MV.heard && note) note.remove();
+    }
   }
 
   function renderTiles() {
@@ -1949,6 +1991,8 @@
       mime: 'video/mp4; codecs="avc1.640028, mp4a.40.2"',
       onEnd: function () {
         if (MV.player !== player || !MV.session) return;
+        // a blip (the connection to the server): read again, quietly, twice
+        if ((MV.retries || 0) < 2) { MV.retries = (MV.retries || 0) + 1; playHeard(); return; }
         setState('The picture stopped.', true);
       },
     });
@@ -1957,6 +2001,7 @@
     player.start(api().getUrl('TentacleDiscover/MultiView/' + s.id + '/Web', { audio: MV.heard })).then(function () {
       if (MV.spare !== player) { player.stop(); return; }
       MV.spare = null;
+      MV.retries = 0;
       var old = MV.player;
       MV.player = player;
       if (old) { old.video.classList.remove('on'); old.stop(); }
@@ -1974,8 +2019,8 @@
   function hear(i) {
     if (!MV.session || i < 0 || i >= MV.session.tiles.length) return;
     MV.focus = i;
-    if (i !== MV.heard) { MV.heard = i; renderTiles(); playHeard(); }
-    else renderTiles();
+    if (i !== MV.heard) { MV.heard = i; markTiles(); playHeard(); }
+    else markTiles();
   }
 
   function onGridClick(e) {
@@ -1987,25 +2032,50 @@
       var what = b.dataset.mv;
       if (what === 'leave') leaveMultiView();
       else if (what === 'retry') { setState('Starting…'); playHeard(); }
-      else if (what === 'full' && tile) fullScreenTile(+tile.dataset.i);
+      else if (what === 'full' && tile) zoomTile(+tile.dataset.i);
+      else if (what === 'unzoom') unzoom();
       else if (what === 'menu' && tile) {
         var r = b.getBoundingClientRect();
         tileMenu(+tile.dataset.i, { x: r.left, y: r.bottom + 4, el: b });
       }
       return;
     }
-    if (tile) hear(+tile.dataset.i);
+    if (tile && MV.zoom < 0) hear(+tile.dataset.i);
+  }
+
+  // Tile i fills the screen: the grid's picture scaled onto it, its sound heard.
+  function zoomTile(i) {
+    var s = MV.session;
+    if (!s || !MV.view || i < 0 || i >= s.tiles.length) return;
+    closeMenu();
+    hear(i);
+    MV.zoom = i;
+    var t = s.tiles[i], W = s.width || 1920, H = s.height || 1080;
+    MV.view.querySelector('.mv-zoom').style.transform =
+      'scale(' + (W / t.width) + ',' + (H / t.height) + ') translate(' + (-t.x / W * 100) + '%,' + (-t.y / H * 100) + '%)';
+    MV.view.querySelector('.mv-zoomname').textContent = tileName(i);
+    MV.view.classList.add('zoomed');
+    wakeChrome();
+  }
+
+  function unzoom() {
+    if (!MV.view) return;
+    MV.zoom = -1;
+    MV.view.querySelector('.mv-zoom').style.transform = '';
+    MV.view.classList.remove('zoomed');
+    markTiles();
   }
 
   function tileMenu(i, at) {
     if (!MV.session) return;
     MV.focus = i;
-    renderTiles();
+    markTiles();
     var n = MV.session.tiles.length;
     openMenu({
       title: tileName(i), x: at.x, y: at.y, anchor: at.el,
       items: [
-        { label: 'Watch full screen', run: function () { fullScreenTile(i); } },
+        { label: 'Fill the screen', run: function () { zoomTile(i); } },
+        { label: 'Open in the player', hint: 'Jellyfin\u2019s player: pause, subtitles', run: function () { fullScreenTile(i); } },
         { label: 'Swap channel', run: function () { swapMenu(i, at); } },
         n > 2 ? { label: 'Remove from multi-view', run: function () { changeTiles(i, null); } } : null,
       ],
@@ -2040,7 +2110,7 @@
       if (MV.heard >= ns.tiles.length) MV.heard = 0;
       if (!id && MV.heard > i) MV.heard--;
       MV.focus = Math.min(MV.focus, ns.tiles.length - 1);
-      renderTiles();
+      unzoom();
       playHeard();
     }, function (err) {
       MV.busy = false;
@@ -2076,6 +2146,8 @@
 
   function leaveMultiView() {
     var s = MV.session;
+    MV.zoom = -1;
+    if (MV.view) { MV.view.classList.remove('zoomed'); MV.view.querySelector('.mv-zoom').style.transform = ''; }
     MV.session = null;
     MV.fullScreen = false;
     stopGridPlayers();
@@ -2134,12 +2206,21 @@
     var n = MV.session.tiles.length, i = MV.focus, k = e.key;
     var cols = 2, row = Math.floor(i / cols), col = i % cols;
     wakeChrome();
+    if (MV.zoom >= 0) {
+      if (k === 'Escape' || k === 'Backspace' || k === 'Enter') unzoom();
+      else if (k === 'ArrowRight' || k === 'ArrowDown') zoomTile((MV.zoom + 1) % n);
+      else if (k === 'ArrowLeft' || k === 'ArrowUp') zoomTile((MV.zoom + n - 1) % n);
+      else return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      return;
+    }
     if (k === 'ArrowRight' && col === 0 && i + 1 < n) hear(i + 1);
     else if (k === 'ArrowLeft' && col === 1) hear(i - 1);
     else if (k === 'ArrowDown' && row === 0 && i + 2 < n) hear(i + 2);
     else if (k === 'ArrowDown' && row === 0 && n === 3 && i === 1) hear(2);
     else if (k === 'ArrowUp' && row === 1) hear(i - 2);
-    else if (k === 'Enter') fullScreenTile(i);
+    else if (k === 'Enter') zoomTile(i);
     else if (k === 'ContextMenu' || (k === 'F10' && e.shiftKey)) {
       var t = MV.view.querySelector('.mv-tile[data-i="' + i + '"]');
       var r = t ? t.getBoundingClientRect() : { left: 100, top: 100 };

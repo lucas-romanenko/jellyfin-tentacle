@@ -433,6 +433,27 @@ class EndToEnd(Base):
         self.assertTrue(new)
         self.assertEqual(self.opens.count(a.id), 1, "a channel in both was closed in between")
 
+    def test_one_per_device_the_other_devices_plays_on(self):
+        # Lucas (26 Oct): a multi-view started on the web ended the TV's
+        p = self._provider(limit=8)
+        a, b, c, d = (self._channel(p, n) for n in "ABCD")
+
+        async def body():
+            tv = await self.MV.start("u1", [(a.id, "A", "ca", ""), (b.id, "B", "cb", "")], self.Session, "tv-1")
+            web = await self.MV.start("u1", [(c.id, "C", "cc", ""), (d.id, "D", "cd", "")], self.Session, "web-1")
+            both = (self.MV.get(tv.id) is tv, self.MV.get(web.id) is web)
+            mine = ([s.id for s in self.MV.of_user("u1", "tv-1")], len(self.MV.of_user("u1")))
+            web2 = await self.MV.start("u1", [(c.id, "C", "cc", ""), (a.id, "A", "ca", "")], self.Session, "web-1")
+            after = (self.MV.get(tv.id) is tv, self.MV.get(web.id), self.MV.get(web2.id) is web2)
+            own = self.MV.own_connections("u1", device_id="web-1")
+            return both, mine, after, own, tv.id
+
+        both, mine, after, own, tv_id = self._run(body)
+        self.assertEqual((True, True), both)
+        self.assertEqual(([tv_id], 2), mine)
+        self.assertEqual((True, None, True), after)    # the web's replaced its own, the TV's plays on
+        self.assertEqual(1, own)                       # C only: A is shared with the TV's grid
+
     def test_a_channel_that_does_not_open_refuses_with_its_name(self):
         p = self._provider(limit=8)
         a, b = self._channel(p, "A"), self._channel(p, "B")

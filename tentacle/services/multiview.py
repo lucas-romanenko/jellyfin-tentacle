@@ -1026,9 +1026,10 @@ class _Clock(threading.Thread):
 # ── A session ───────────────────────────────────────────────────────────────
 
 class Session:
-    def __init__(self, user_id: str, tiles: list):
+    def __init__(self, user_id: str, tiles: list, device_id: str = ""):
         self.id = secrets.token_urlsafe(24)
         self.user_id = user_id
+        self.device_id = device_id        # the Jellyfin device it plays on ("" = not told)
         self.tiles = tiles
         self.proc = None
         self.encoder = None
@@ -1393,16 +1394,21 @@ def get(session_id: str) -> Optional[Session]:
     return s if s is not None and not s.closed else None
 
 
-def of_user(user_id: str) -> list:
-    return [s for s in _sessions.values() if s.user_id == user_id and not s.closed]
+def of_user(user_id: str, device_id: Optional[str] = None) -> list:
+    """This person's running multi-views; with `device_id`, only the one on
+    that device (one per device: a new one there replaces it, another
+    device's keeps playing)."""
+    return [s for s in _sessions.values() if s.user_id == user_id and not s.closed
+            and (device_id is None or s.device_id == device_id)]
 
 
-def own_connections(user_id: str, only: Optional[set] = None) -> int:
-    """Connections only this person's multi-view holds (channels nobody else
-    reads): what closing it (or, with `only`, leaving those channels) gives back."""
+def own_connections(user_id: str, only: Optional[set] = None, device_id: Optional[str] = None) -> int:
+    """Connections only this person's multi-view (on `device_id`) holds
+    (channels nobody else reads): what closing it (or, with `only`, leaving
+    those channels) gives back."""
     from routers import livetv as LT
     held = set()
-    for s in of_user(user_id):
+    for s in of_user(user_id, device_id):
         for t in s.tiles:
             if only is not None and t.channel_id not in only:
                 continue
@@ -1412,18 +1418,20 @@ def own_connections(user_id: str, only: Optional[set] = None) -> int:
     return len(held)
 
 
-async def start(user_id: str, picks: list, db_factory) -> Session:
+async def start(user_id: str, picks: list, db_factory, device_id: str = "") -> Session:
     """A new session on `picks` ([(channel_id, name, key, item_id)]),
-    started and producing. It replaces the person's running one (a swap, a
-    removal, a new pick), which is closed only once the new one has its
-    channels, so a channel in both never closes in between."""
+    started and producing. It replaces the person's running one on the same
+    device (a swap, a removal, a new pick), which is closed only once the new
+    one has its channels, so a channel in both never closes in between. Their
+    multi-view on another device plays on (Lucas, 26 Oct: starting one on the
+    web ended the TV's)."""
     db = db_factory()
     try:
         picks = [first_feed(db, p) for p in picks]
     finally:
         db.close()
     tiles = [_Tile(*p) for p in picks]
-    session = Session(user_id, tiles)
+    session = Session(user_id, tiles, device_id)
     session.db_factory = db_factory
     t0 = time.monotonic()
     try:
@@ -1440,8 +1448,8 @@ async def start(user_id: str, picks: list, db_factory) -> Session:
                 f"({', '.join(t.name for t in tiles)}) opened in {opened}s, encoder {session.encoder}")
     async with _get_lock():
         _sessions[session.id] = session
-        old = [s for s in of_user(user_id) if s is not session]
-    for s in old:     # one multi-view per person; the replaced one last, after the new one has its channels
+        old = [s for s in of_user(user_id, device_id) if s is not session]
+    for s in old:     # one multi-view per device; the replaced one last, after the new one has its channels
         await close(s.id)
     _ensure_reaper()
     return session
