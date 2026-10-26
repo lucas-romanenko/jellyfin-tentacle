@@ -4156,6 +4156,7 @@ def _sync_epg_once(provider_data: dict, attempts: int = 3):
                     stop=prog["stop"],
                     category=prog.get("category"),
                     icon_url=prog.get("icon_url"),
+                    previously_shown=prog.get("previously_shown"),
                 ))
                 inserted += 1
                 if len(batch) >= 5000:

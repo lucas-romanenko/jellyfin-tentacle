@@ -30,6 +30,7 @@ class Airing:
     description: str = ""
     category: str = ""
     from_event: bool = False
+    previously_shown: Optional[bool] = None   # the guide's <previously-shown> (True) or <new> (False)
     channel_id: Optional[int] = None     # the LiveChannel it streams now (its provider has the connections)
     provider_id: Optional[int] = None
     next: Optional["Airing"] = field(default=None, repr=False)   # what follows on the same channel
@@ -80,7 +81,7 @@ def airings(db: Session, now: Optional[datetime] = None, hours: int = 14 * 24) -
 
     out = []
 
-    def add(number, title, sub_title, description, start, stop, category, from_event):
+    def add(number, title, sub_title, description, start, stop, category, from_event, previously_shown=None):
         for e in by_number.get(number, ()):
             cid = e.get("channel_id")
             if cid is None and e["key"][:1] == "c" and e["key"][1:].isdigit():
@@ -92,17 +93,18 @@ def airings(db: Session, now: Optional[datetime] = None, hours: int = 14 * 24) -
                                                  (row.group_title if row else "") or "") if x),
                 start=start, stop=stop, title=title or "", sub_title=sub_title or "",
                 description=description or "", category=category or "", from_event=from_event,
-                channel_id=cid, provider_id=row.provider_id if row else None))
+                previously_shown=previously_shown, channel_id=cid, provider_id=row.provider_id if row else None))
 
     if numbers_of_gid:
         q = (db.query(EPGProgram.channel_id, EPGProgram.title, EPGProgram.sub_title, EPGProgram.description,
-                      EPGProgram.start, EPGProgram.stop, EPGProgram.category)
+                      EPGProgram.start, EPGProgram.stop, EPGProgram.category, EPGProgram.previously_shown)
              .filter(EPGProgram.channel_id.in_(list(numbers_of_gid)))
              .filter(EPGProgram.stop > now).filter(EPGProgram.start < until))
         for p in q.yield_per(2000):
             for number in numbers_of_gid.get(p.channel_id, ()):
                 category = p.category or infer_category(p.title, group_of.get(number)) or ""
-                add(number, p.title, p.sub_title, p.description, p.start, p.stop, category, False)
+                add(number, p.title, p.sub_title, p.description, p.start, p.stop, category, False,
+                    p.previously_shown)
     try:
         from services.livetv_catalog import event_programmes
         for p in event_programmes(db, [(ch, n) for ch, n in numbered if str(n) in by_number]):

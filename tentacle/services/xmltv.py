@@ -180,6 +180,10 @@ def _programme_dict(prog_el, channel_id: str) -> Optional[dict]:
     # (file:, data:), which are never art Jellyfin can fetch.
     icon_url = next((src for src in ((i.get("src") or "").strip() for i in prog_el.findall("icon"))
                      if src.lower().startswith(("http://", "https://"))), None)
+    # a rerun or a first showing, when the feed says (recording rules skip reruns)
+    previously_shown = (True if prog_el.find("previously-shown") is not None
+                        else False if prog_el.find("new") is not None or prog_el.find("premiere") is not None
+                        else None)
     return {
         "channel_id": channel_id,
         "title": (title_el.text if title_el is not None else "") or "",
@@ -189,6 +193,7 @@ def _programme_dict(prog_el, channel_id: str) -> Optional[dict]:
         "stop": stop,
         "category": CATEGORY_SEP.join(categories) or None,
         "icon_url": icon_url,
+        "previously_shown": previously_shown,
     }
 
 

@@ -1268,6 +1268,8 @@ class EPGProgram(Base):
 
     category = Column(String, nullable=True)
     icon_url = Column(String, nullable=True)
+    # The feed's <previously-shown> (True) or <new> (False); None: it says neither.
+    previously_shown = Column(Boolean, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("channel_id", "start", name="uq_epg_program"),
