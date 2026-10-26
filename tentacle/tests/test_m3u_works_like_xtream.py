@@ -312,7 +312,8 @@ class LiveSync(unittest.TestCase):
 
 
 class LiveOpen(unittest.TestCase):
-    """One continuous .ts with .m3u8 as the fallback, like Xtream (#700)."""
+    """Like Xtream: HLS re-read from the channel URL, with one continuous
+    .ts as the fallback."""
 
     def setUp(self):
         import routers.livetv as livetv
@@ -320,16 +321,17 @@ class LiveOpen(unittest.TestCase):
         self.db = _session(self)
         self.p = _m3u_provider(self.db)
         self.addCleanup(livetv._ts_refused_channels.clear)
+        self.addCleanup(livetv._hls_failed_channels.clear)
 
     def _open(self, url, cid=1):
         ch = LiveChannel(id=cid, provider_id=self.p.id, name="c", stream_id="abc", stream_url=url)
         return self.livetv._live_open_urls(self.db, self.p, ch)
 
-    def test_m3u8_link_opens_as_ts_first(self):
-        self.assertEqual((f"{S}/live/u/p/7.ts", f"{S}/live/u/p/7.m3u8"), self._open(f"{S}/live/u/p/7.m3u8"))
+    def test_m3u8_link_opens_as_hls_with_ts_behind_it(self):
+        self.assertEqual((f"{S}/live/u/p/7.m3u8", f"{S}/live/u/p/7.ts"), self._open(f"{S}/live/u/p/7.m3u8"))
 
-    def test_ts_link_keeps_its_form_with_m3u8_behind_it(self):
-        self.assertEqual((f"{S}/u/p/7", f"{S}/live/u/p/7.m3u8"), self._open(f"{S}/u/p/7"))
+    def test_ts_link_keeps_its_form_as_the_fallback(self):
+        self.assertEqual((f"{S}/live/u/p/7.m3u8", f"{S}/u/p/7"), self._open(f"{S}/u/p/7"))
 
     def test_a_channel_that_refused_ts_goes_straight_to_m3u8(self):
         self.livetv._ts_refused_channels.add(5)

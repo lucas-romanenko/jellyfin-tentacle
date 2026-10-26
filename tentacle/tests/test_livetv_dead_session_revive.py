@@ -29,6 +29,18 @@ import httpx
 
 import routers.livetv as livetv
 
+
+def setUpModule():
+    # These tests pin the re-resolve machinery on a stream that re-reads the
+    # tokenized address its channel URL redirected to (every HLS stream did,
+    # before the re-read from the channel URL: test_livetv_hls_channel_reread).
+    livetv._HLS_REFRESH_FROM_CHANNEL = False
+
+
+def tearDownModule():
+    livetv._HLS_REFRESH_FROM_CHANNEL = True
+
+
 CHANNEL = "http://p.test/live/u/p/7.m3u8"
 PL = {"content-type": "application/vnd.apple.mpegurl"}
 TS = {"content-type": "video/mp2t"}
