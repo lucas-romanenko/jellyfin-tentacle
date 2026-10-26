@@ -954,12 +954,21 @@ User docs: `docs/features/live-tv.md`.
   (most likely the account's own limit). Headers `X-Tentacle-Reason:
   provider not delivering` / `connection in use`. Recordings keep the
   refusal.
-- Stream format: Xtream channels (and M3U channels whose link is an Xtream panel's) open as continuous MPEG-TS (`.ts`) by
-  default, HLS only when the account's `allowed_output_formats` lacks ts or
-  the channel's ts open is refused outright (then remembered per channel
-  until restart). Chosen at open time (`_live_open_urls`), so no channel sync
-  is needed; `livetv_stream_format` = `m3u8`/`ts` overrides. Why: the comment
-  above `_LIVE_STREAM_FORMATS`.
+- Stream format: Xtream channels (and M3U channels whose link is an Xtream panel's) open as HLS by
+  default (auto), with continuous MPEG-TS (`.ts`) as each channel's fallback: opened as ts when its HLS
+  open is refused outright, switched to ts in the same response when its HLS stalls (no new segment for
+  max(30 s, 3 target durations)) or ends on errors (`hls_to_mpegts`), and opened
+  as ts for 30 min after (`_hls_failed_channels`). An account whose `allowed_output_formats` lacks m3u8
+  opens ts (with HLS behind it), one that lacks ts opens HLS without a fallback. Chosen at open time
+  (`_live_open_urls`), so no channel sync is needed; `livetv_stream_format` = `m3u8`/`ts` overrides
+  (dashboard: Sources → Live TV → More). Why: the comment above `_LIVE_STREAM_FORMATS`.
+- A redirected HLS channel re-reads its playlist from the CHANNEL URL every time (a fresh 302, a fresh
+  token), never from the tokenized address it was redirected to: panels answer 509 to a second read of
+  that (#700's lost channels). Every read renames every segment, so what was sent is known by media
+  sequence and file name (`_hls_window_plan`: continue / gap / an edge server that lags / a restarted
+  numbering), never by URL. A viewer starts on the last segments holding `_HLS_LIVE_START_SECONDS`
+  (12 s; the panel's window is ~60 s); a recording takes the whole window. Reloads every half target
+  duration, at most `_HLS_RELOAD_MAX` (4 s). A late segment is logged ("came Ns after the one before").
 - `discover.json` `TunerCount` is at least the stream ceiling
   (`_hdhr_tuner_count`). Jellyfin 10.11 enforces the count saved with its
   tuner: copied from TunerCount only when it discovers the device on the

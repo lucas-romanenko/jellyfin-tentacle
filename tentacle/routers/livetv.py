@@ -5706,7 +5706,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
     channel in that format: see _live_open_urls); the stream then runs on it.
     When the stream opens as HLS with a continuous .ts fallback that was not
     needed at the open, an HLS that fails while running switches to it in
-    the same response (_hls_switch_to_ts).
+    the same response (hls_to_mpegts).
 
     `nothing_on`, when given, makes the "Nothing on right now" picture
     (bytes, or None): a viewer's raw stream that meets the provider's
@@ -6894,7 +6894,19 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     got_new = True
                     fatal_chunk_skips = 0
                     yielded_any = True
-                    last_new_at = asyncio.get_running_loop().time()
+                    t_new = asyncio.get_running_loop().time()
+                    prev_dur = hls_state.get("prev_dur")
+                    if (last_new_at is not None and prev_dur and yielded_any
+                            and t_new - last_new_at > max(1.5 * prev_dur, prev_dur + 5.0)):
+                        # Late: a viewer at the live edge may have waited for it
+                        # (the reason is in the lines above, or the panel was slow
+                        # to list it: no error at all).
+                        logger.info(f"[LiveTV] Channel {channel_id}: segment {chunk_seq.get(chunk_url, '?')} "
+                                    f"came {t_new - last_new_at:.1f}s after the one before "
+                                    f"({prev_dur:.1f}s long); window {window[0][1] if window else '?'}-"
+                                    f"{window[-1][1] if window else '?'}")
+                    last_new_at = t_new
+                    hls_state["prev_dur"] = chunk_dur.get(chunk_url)
                     hls_state["stalled"] = None
                     reresolve_run, after_reresolve, gone_since, denied_since = 0, False, None, None
                     refused_since = None
