@@ -172,6 +172,17 @@ class MultiViewPicks(unittest.TestCase):
         self.assertIn("MV.sawPlayer = true", body)
         self.assertIn("openGrid()", body)
 
+    def test_only_the_browsers_pagehide_ends_it(self):
+        # Jellyfin Web's own view 'pagehide' (opening the player) ended the session (26 Oct)
+        body = JS[JS.index("window.addEventListener('pagehide'"):JS.index("function onGridKey(")]
+        self.assertIn("if (e.target !== window && e.target !== document) return;", body)
+
+    def test_tentacles_own_pictures_are_no_stray_players(self):
+        # back from Jellyfin's player the grid went black: the stray-player guard took
+        # its MSE <video> (blob:) for a live player left running
+        body = JS[JS.index("function strayVideos("):JS.index("function checkStrayPlayer(")]
+        self.assertIn("v.__livePicture", body)
+
     def test_no_header_bar_over_the_grid(self):
         self.assertIn("body.tentacle-multiview-active .moonfin-navbar", CSS)
 
