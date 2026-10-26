@@ -150,6 +150,26 @@ class MultiViewPicks(unittest.TestCase):
         # leaving the page gives the connections back at once
         self.assertIn("keepalive: true", JS)
 
+    def test_a_channel_fills_the_screen_inside_the_grid(self):
+        # Lucas (26 Oct): full screen from a tile in Jellyfin's player loaded, showed a second,
+        # loaded again (the provider cuts each of 4 open channels every 10-15 s; the grid holds
+        # frames through it, a player of the channel stalls). The tile is zoomed instead.
+        body = JS[JS.index("function zoomTile("):JS.index("function unzoom(")]
+        self.assertIn("'scale(' + (W / t.width)", body)
+        self.assertIn("hear(i)", body)
+        dbl = JS[JS.index("el.addEventListener('dblclick'"):JS.index("onMenuGesture(el, '.mv-tile'")]
+        self.assertIn("zoomTile(", dbl)
+        self.assertNotIn("fullScreenTile(", dbl)
+
+    def test_a_click_marks_tiles_in_place(self):
+        # rebuilding the tiles on the first click swallowed the double click
+        body = JS[JS.index("function hear(i)"):JS.index("function onGridClick(")]
+        self.assertIn("markTiles()", body)
+        self.assertNotIn("renderTiles()", body)
+
+    def test_no_header_bar_over_the_grid(self):
+        self.assertIn("body.tentacle-multiview-active .moonfin-navbar", CSS)
+
 
 @unittest.skipUnless(HAVE_NODE, "node is not installed")
 class FirstPageLoad(unittest.TestCase):
