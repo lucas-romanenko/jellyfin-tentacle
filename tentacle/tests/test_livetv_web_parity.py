@@ -167,6 +167,11 @@ class MultiViewPicks(unittest.TestCase):
         self.assertIn("markTiles()", body)
         self.assertNotIn("renderTiles()", body)
 
+    def test_back_from_the_player_brings_the_grid_back(self):
+        body = JS[JS.index("function watchPlayerPage("):JS.index("window.addEventListener('popstate', watchPlayerPage)")]
+        self.assertIn("MV.sawPlayer = true", body)
+        self.assertIn("openGrid()", body)
+
     def test_no_header_bar_over_the_grid(self):
         self.assertIn("body.tentacle-multiview-active .moonfin-navbar", CSS)
 

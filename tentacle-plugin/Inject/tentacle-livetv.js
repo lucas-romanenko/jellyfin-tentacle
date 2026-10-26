@@ -2126,6 +2126,8 @@
     var id = itemOf(i);
     if (!id) return;
     MV.fullScreen = true;
+    MV.fullAt = Date.now();
+    MV.sawPlayer = false;
     MV.heard = i;
     stopGridPlayers();
     hideGrid();
@@ -2861,6 +2863,12 @@
       closeRecents();
     }
     wasOnPlayerPage = on;
+    // a multi-view channel in Jellyfin's player: Back (or a player that never
+    // opened) brings the grid back, whatever route events Jellyfin sent
+    if (MV.session && MV.fullScreen) {
+      if (on) MV.sawPlayer = true;
+      else if (isGuidePage() && (MV.sawPlayer || Date.now() - MV.fullAt > 8000)) openGrid();
+    }
     if (leftPlayerAt && !strayTimer && (e && e.type === 'playing' || Date.now() - leftPlayerAt < 120000)) {
       strayTimer = setTimeout(checkStrayPlayer, 250);
     }
