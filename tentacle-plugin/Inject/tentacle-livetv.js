@@ -1612,7 +1612,7 @@
     if (!G.active || MENU.el || e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey) return;
     var t = e.target;
     if (t && t.closest && (t.closest('input, textarea, select') || t.closest('.tg-top, .tg-days, .tg-pickbar'))) return;
-    if (MV.view) return;   // the multi-view grid has its own keys
+    if (MV.view && MV.view.style.display !== 'none') return;   // the multi-view grid has its own keys
     var k = e.key, menuKey = k === 'ContextMenu' || (k === 'F10' && e.shiftKey);
     if (k === 'ArrowDown') moveCursor(1, 0);
     else if (k === 'ArrowUp') moveCursor(-1, 0);
@@ -1944,14 +1944,15 @@
       },
     });
     MV.spare = player;
-    video.muted = false;
+    video.muted = true;   // heard once it takes over: never two sounds at once
     player.start(api().getUrl('TentacleDiscover/MultiView/' + s.id + '/Web', { audio: MV.heard })).then(function () {
       if (MV.spare !== player) { player.stop(); return; }
       MV.spare = null;
       var old = MV.player;
       MV.player = player;
-      video.classList.add('on');
       if (old) { old.video.classList.remove('on'); old.stop(); }
+      video.classList.add('on');
+      video.muted = false;
       setState('');
     }, function (err) {
       if (MV.spare === player) MV.spare = null;
@@ -2660,6 +2661,7 @@
   function playChannel(channelId) {
     G.lastId = channelId;
     rememberTune(channelId);
+    PL.item = { Id: channelId, Type: 'TvChannel' };   // the player's buttons at once; the session confirms
     var p = localPlayer();
     if (p) {
       p.play({ ids: [channelId] }).catch(function (err) {

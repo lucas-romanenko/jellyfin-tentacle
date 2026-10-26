@@ -49,6 +49,7 @@ ALLOW = {
     ("GET", "/api/youtube/ping"): "liveness",
     ("HEAD", "/api/live/stream/{channel_id}"): "tuner probe",
     ("GET", "/api/live/multiview/{session_id}/stream.ts"): "multi-view picture for a player; the session id is the secret",
+    ("GET", "/api/live/multiview/{session_id}/web.mp4"): "the same picture for a browser (fMP4); the session id is the secret",
     ("GET", "/api/vod/{kind}/{token_file}"): ".strm playback; signed token (services.vod_tokens)",
     ("HEAD", "/api/vod/{kind}/{token_file}"): ".strm probe; signed token",
     ("HEAD", "/api/youtube/v/{video_id}/master.m3u8"): ".strm probe",

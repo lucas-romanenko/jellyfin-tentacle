@@ -141,7 +141,11 @@
         apiGet('LiveTv/Timers', { IsActive: false }).catch(function () { return null; }),
       ]).then(function (r) { return renderSchedule(r[0], r[1], r[2]); })
       : apiGet('LiveTv/Recordings', { UserId: uid, Fields: 'Overview,DateCreated,PremiereDate,CanDelete', EnableUserData: true, EnableImageTypes: 'Primary,Thumb', ImageTypeLimit: 1, Limit: 300 })
-        .then(renderRecordings, function () { return '<div class="tr-none">Recordings couldn’t be read from Jellyfin.</div>'; });
+        .then(function (r) {
+          R.items = {};
+          ((r && r.Items) || []).forEach(function (i) { R.items[i.Id] = i; });
+          return renderRecordings(r);
+        }, function () { return '<div class="tr-none">Recordings couldn’t be read from Jellyfin.</div>'; });
     p.then(function (html) {
       if (seq !== R.seq || !R.active || R.tab !== tab) return;
       var body = R.container.querySelector('.tr-body');
@@ -214,8 +218,6 @@
 
   function renderRecordings(r) {
     var items = (r && r.Items) || [];
-    R.items = {};
-    items.forEach(function (i) { R.items[i.Id] = i; });
     if (!items.length) return '<div class="tr-none">No recordings yet. Record from the guide, or follow a team in Tentacle.</div>';
     // finished recordings have no StartDate: DateCreated (asked for in Fields) is when it recorded; no date → no time
     var whenOf = function (i) { return Date.parse(i.StartDate || i.DateCreated || i.PremiereDate) || 0; };
