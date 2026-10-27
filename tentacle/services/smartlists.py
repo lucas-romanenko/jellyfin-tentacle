@@ -1475,6 +1475,10 @@ def write_home_config(db: Session, user_id: int = None, dropped_ids: frozenset =
             if existing_config.get("follows_default") is True:
                 config["follows_default"] = True
 
+        # Only Tentacle's own rows besides playlists (services/home_rows.py)
+        from services.home_rows import normalize_rows
+        normalize_rows(config)
+
         # Detect whether the generated config actually differs from what's on disk,
         # so we only bump the live-update version (and notify clients) on real
         # changes. Nightly syncs that produce an identical config won't spam clients,

@@ -31,29 +31,21 @@ from services.smartlists import (
     home_config_lock, write_home_json,
 )
 from services import default_home
+from services.home_rows import SECTION_MAP, TENTACLE_SECTIONS, shape_of
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/smartlists", tags=["smartlists"])
 
 HOME_CONFIG_DIR = "/data/home-configs"
 
-# Built-in Jellyfin home sections that can be added to the home screen
-# Jellyfin's own home sections a row can be. "retired" ones are no longer
-# offered (Lucas, 2026-10-21: My Media duplicates the menu, the TV app can't
-# show books, On Now replaces the old Live TV row) but still draw for anyone
-# whose own layout has them.
-BUILTIN_SECTIONS = [
-    {"section_id": "resumevideo", "display_name": "Continue Watching"},
-    {"section_id": "nextup", "display_name": "Next Up"},
-    {"section_id": "onnow", "display_name": "On Now"},
-    {"section_id": "latestmedia", "display_name": "Recently Added Media"},
-    {"section_id": "activerecordings", "display_name": "Active Recordings"},
-    {"section_id": "resumeaudio", "display_name": "Continue Listening"},
-    {"section_id": "smalllibrarytiles", "display_name": "My Media", "retired": True},
-    {"section_id": "smalllibrarytiles_small", "display_name": "My Media (small)", "retired": True},
-    {"section_id": "resumebook", "display_name": "Continue Reading", "retired": True},
-    {"section_id": "livetv", "display_name": "Live TV", "retired": True},
-]
+# The rows a home can have besides playlists: Tentacle's own Continue Watching,
+# On Now and Recordings (services/home_rows.py). Jellyfin's home sections are
+# no longer offered or drawn (Lucas, 2026-10-26).
+BUILTIN_SECTIONS = TENTACLE_SECTIONS
+# Jellyfin's own home section ids, for recognising a home that is still the
+# starter Tentacle used to give everyone (services/default_home.is_untouched_seed)
+JELLYFIN_SECTION_IDS = {"resumevideo", "nextup", "onnow", "latestmedia", "activerecordings", "resumeaudio",
+                        "smalllibrarytiles", "smalllibrarytiles_small", "resumebook", "livetv"}
 BUILTIN_MAP = {s["section_id"]: s for s in BUILTIN_SECTIONS}
 
 # Jellyfin homesection values → Tentacle builtin section ids (identity if absent)
@@ -758,19 +750,18 @@ def add_row(req: AddRowRequest, db: Session = Depends(get_db), user: TentacleUse
 
         if req.section_id:
             # Adding a built-in Jellyfin section
-            builtin = BUILTIN_MAP.get(req.section_id)
-            if not builtin or builtin.get("retired"):
-                return {"success": False, "message": "Unknown built-in section"}
+            builtin = SECTION_MAP.get(req.section_id)
+            if not builtin:
+                return {"success": False, "message": "Unknown row"}
             if any(r.get("type") == "builtin" and r.get("section_id") == req.section_id for r in config["rows"]):
                 return {"success": False, "message": "Already in home screen"}
             for r in config["rows"]:
                 r["order"] = r.get("order", 0) + 1
-            config["rows"].insert(0, {
-                "type": "builtin",
-                "section_id": req.section_id,
-                "display_name": builtin["display_name"],
-                "order": 1,
-            })
+            row = {"type": "builtin", "section_id": req.section_id,
+                   "display_name": builtin["display_name"], "order": 1}
+            if builtin["shapes"]:
+                row["shape"] = builtin["default_shape"]
+            config["rows"].insert(0, row)
         elif req.playlist_id:
             # Adding a Tentacle playlist (per-user)
             all_playlists = home.playlists()
@@ -846,8 +837,8 @@ def list_builtin_sections(db: Session = Depends(get_db), user: TentacleUser = De
     home = _home_for(db, user, scope)
     config = home.read()
     current_ids = {r.get("section_id") for r in config.get("rows", []) if r.get("type") == "builtin"}
-    available = [{"section_id": s["section_id"], "display_name": s["display_name"]} for s in BUILTIN_SECTIONS
-                 if s["section_id"] not in current_ids and not s.get("retired")]
+    available = [{"section_id": s["section_id"], "display_name": s["display_name"]} for s in TENTACLE_SECTIONS
+                 if s["section_id"] not in current_ids]
     return {"sections": available}
 
 
@@ -876,10 +867,9 @@ class MergeContinueRequest(BaseModel):
 @router.post("/merge-continue-watching")
 def set_merge_continue_watching(req: MergeContinueRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request),
         scope: Optional[str] = None):
-    """Toggle combining Continue Watching + Next Up into a single home row.
-
-    Per-user; honored by both the Jellyfin web home (tentacle-home.js) and the
-    Android TV app (builtin section rendering)."""
+    """Continue Watching's "Include next episodes" switch: the next episodes
+    of shows you're watching join the row. Per-user; the plugin works the row
+    out once for the web home and the Android TV app."""
     home = _home_for(db, user, scope)
     with home_config_lock:
         config = home.read()
@@ -976,6 +966,8 @@ def set_row_shape(req: RowShapeRequest, db: Session = Depends(get_db), user: Ten
         for row in config["rows"]:
             if ((req.row_key and _row_key(row) == req.row_key)
                     or (req.playlist_id and row.get("playlist_id") == req.playlist_id)):
+                if row.get("type") == "builtin" and not shape_of(row):
+                    return {"success": False, "message": "This row has its own cards"}
                 row["shape"] = shape
                 break
         else:
@@ -1229,10 +1221,12 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
 
     # ── Built-in playlists ──
     from datetime import datetime, timedelta
+    from models.database import recently_added_cutoff
     recently_added_days = get_recently_added_days(db)
-    cutoff = datetime.utcnow() - timedelta(days=recently_added_days)
-    recent_movies = db.query(func.count(Movie.id)).filter(Movie.date_added >= cutoff).scalar() or 0
-    recent_series = db.query(func.count(Series.id)).filter(Series.date_added >= cutoff).scalar() or 0
+    recent_movies = db.query(func.count(Movie.id)).filter(
+        Movie.date_added >= recently_added_cutoff(db, Movie)).scalar() or 0
+    recent_series = db.query(func.count(Series.id)).filter(
+        Series.date_added >= recently_added_cutoff(db, Series)).scalar() or 0
     dl_movies = db.query(func.count(Movie.id)).filter(Movie.source == "radarr").scalar() or 0
     dl_series = db.query(func.count(Series.id)).filter(Series.source == "sonarr").scalar() or 0
 

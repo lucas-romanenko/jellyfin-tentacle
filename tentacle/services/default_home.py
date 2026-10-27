@@ -20,7 +20,6 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime, timedelta
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -61,9 +60,14 @@ def follows_default(config: dict) -> bool:
 
 
 def _builtin_row(section_id: str) -> dict:
-    from routers.smartlists import BUILTIN_MAP
-    return {"type": "builtin", "section_id": section_id,
-            "display_name": BUILTIN_MAP[section_id]["display_name"]}
+    """One of Tentacle's own rows (Continue Watching, On Now, Recordings) at
+    its starting shape."""
+    from services.home_rows import SECTION_MAP
+    s = SECTION_MAP[section_id]
+    row = {"type": "builtin", "section_id": section_id, "display_name": s["display_name"]}
+    if s["shapes"]:
+        row["shape"] = s["default_shape"]
+    return row
 
 
 def _playlist_row(entry: dict) -> dict:
@@ -87,24 +91,22 @@ def shareable_playlists(db: Session) -> list:
 
 
 def suggested_default(db: Session) -> dict:
-    """Tentacle's own default (Lucas, 2026-10-21, Sections.md): Continue
-    Watching with Next Up merged in, On Now (favourite channels), recently
-    added movies and shows, then the biggest IPTV sources; the spotlight on
-    recently added movies. Empty playlists are left out (a fresh install's
-    library rows fall back to Jellyfin's Recently Added)."""
-    from models.database import Movie, Series, get_recently_added_days
+    """Tentacle's own default (Lucas, 2026-10-21, Sections.md; 2026-10-26: no
+    Jellyfin rows at all): Continue Watching with next episodes, On Now
+    (favourite channels), recently added movies and shows, then the biggest
+    IPTV sources; the spotlight on recently added movies. The recently added
+    rows reach further back when little is new (services/smartlists.py), so
+    they are there whenever the library has anything at all."""
+    from models.database import Movie, Series
     entries = {e["key"]: e for e in shareable_playlists(db)}
-    cutoff = datetime.utcnow() - timedelta(days=get_recently_added_days(db))
-    recent_movies = db.query(func.count(Movie.id)).filter(Movie.date_added >= cutoff).scalar() or 0
-    recent_tv = db.query(func.count(Series.id)).filter(Series.date_added >= cutoff).scalar() or 0
+    recent_movies = db.query(func.count(Movie.id)).scalar() or 0
+    recent_tv = db.query(func.count(Series.id)).scalar() or 0
 
     rows = [_builtin_row("resumevideo"), _builtin_row("onnow")]
     if recent_movies:
         rows.append(_playlist_row(entries["builtin:recently_added_movies"]))
     if recent_tv:
         rows.append(_playlist_row(entries["builtin:recently_added_tv"]))
-    if not recent_movies and not recent_tv:
-        rows.append(_builtin_row("latestmedia"))
     sources = sorted((e for e in entries.values() if e["category"] == "source" and e["item_count"]),
                      key=lambda e: (-e["item_count"], e["name"].lower()))
     rows += [_playlist_row(e) for e in sources[:SUGGESTED_SOURCE_ROWS]]
@@ -129,7 +131,10 @@ def saved_default(db: Session) -> dict:
 
 def get_default(db: Session) -> dict:
     """The default home (the admin's, else Tentacle's suggestion)."""
-    return saved_default(db) or suggested_default(db)
+    from services.home_rows import normalize_rows
+    default = saved_default(db) or suggested_default(db)
+    normalize_rows(default)
+    return default
 
 
 def save_default(db: Session, config: dict) -> dict:
@@ -140,6 +145,8 @@ def save_default(db: Session, config: dict) -> dict:
     for i, r in enumerate(cfg["rows"], 1):
         r["order"] = i
         r.pop("unresolved_since", None)
+    from services.home_rows import normalize_rows
+    normalize_rows(cfg)
     if cfg["hero"].get("playlist_id") and not is_shareable_key(cfg["hero"]["playlist_id"]):
         cfg["hero"] = dict(DEFAULT_HERO_OFF)
     set_setting(db, SETTING_KEY, json.dumps(cfg))
@@ -251,7 +258,7 @@ def apply_default(db: Session, user: TentacleUser, build: bool = True, default: 
     rows = []
     for r in sorted(default.get("rows") or [], key=lambda r: r.get("order", 0)):
         if r.get("type") == "builtin":
-            rows.append({k: v for k, v in r.items() if k in ("type", "section_id", "display_name")})
+            rows.append({k: v for k, v in r.items() if k in ("type", "section_id", "display_name", "shape", "max_items")})
             continue
         pid, name = resolve(r.get("playlist_id"))
         if pid:
@@ -447,11 +454,11 @@ def is_untouched_seed(config: dict) -> bool:
         return True
     snap = config.get("jellyfin_sections_snapshot") or {}
     if snap:
-        from routers.smartlists import BUILTIN_MAP, JELLYFIN_SECTION_TO_BUILTIN
+        from routers.smartlists import JELLYFIN_SECTION_IDS, JELLYFIN_SECTION_TO_BUILTIN
         seeded = []
         for i in range(10):
             sid = JELLYFIN_SECTION_TO_BUILTIN.get(snap.get(f"homesection{i}", ""), snap.get(f"homesection{i}", ""))
-            if sid and sid != "none" and sid in BUILTIN_MAP and sid not in seeded:
+            if sid and sid != "none" and sid in JELLYFIN_SECTION_IDS and sid not in seeded:
                 seeded.append(sid)
         return ids == seeded
     return False
