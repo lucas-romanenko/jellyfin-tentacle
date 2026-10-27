@@ -277,6 +277,19 @@ def _run_scheduled_sync():
             _rollback(db)
             logger.error(f"Provider content discovery failed: {e}")
 
+        # Live TV channels, as the Live TV page's channel sync reads them: an
+        # event channel is named for the day's game, and the lineup carries
+        # only today's events. After the group refresh, before the guide.
+        live_channels_synced = []
+        logger.info("Refreshing Live TV channels")
+        try:
+            from services.discovery import refresh_live_channels
+            pause()
+            live_channels_synced = refresh_live_channels(db, gentle=True)
+        except Exception as e:
+            _rollback(db)
+            logger.error(f"Live TV channel refresh failed: {e}")
+
         # Sweep orphaned downloads (radarr/sonarr records no longer in Jellyfin).
         # Deliberately BEFORE the EPG sync: that ends by starting Jellyfin's guide
         # refresh, and reading the whole library while Jellyfin rewrites its
@@ -319,7 +332,7 @@ def _run_scheduled_sync():
         try:
             from models.database import LiveChannel
             from routers.livetv import (_epg_provider_data, _run_epg_sync_background,
-                                         live_tv_providers, start_jellyfin_guide_refresh)
+                                         live_tv_providers, refresh_jellyfin_guide_after_sync)
             from services.provider_activity import wait_for_recordings, EPG_WAIT_FOR_RECORDING_SECONDS
             epg_may_download = True
             live_providers = live_tv_providers(db)
@@ -349,9 +362,11 @@ def _run_scheduled_sync():
                 if _run_epg_sync_background(provider_data):
                     epg_synced = True
 
-            # Trigger Jellyfin guide refresh so it picks up new EPG data
-            if epg_synced:
-                start_jellyfin_guide_refresh(db)
+            # Jellyfin reads the new guide and the channels' new names, takes
+            # in the lineup's new channels and tells the open clients: what
+            # the Live TV page does after a channel sync.
+            if epg_synced or live_channels_synced:
+                refresh_jellyfin_guide_after_sync(db)
         except Exception as e:
             _rollback(db)
             logger.error(f"EPG sync failed: {e}")

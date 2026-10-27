@@ -3103,8 +3103,10 @@ def _sync_groups_from_xtream(provider_data: dict, db: Session, gap: float = 0.0)
         client.close()
 
 
-def _sync_channels_from_xtream(provider_data: dict, db: Session) -> dict:
-    """Phase 2: Fetch channels only for enabled groups from Xtream."""
+def _sync_channels_from_xtream(provider_data: dict, db: Session, gap: float = 0.0) -> dict:
+    """Phase 2: Fetch channels only for enabled groups from Xtream.
+    `gap`: at least this many seconds between its requests (the nightly
+    job's, services/discovery.CHANNEL_GAP_SECONDS)."""
     from services.xtream_client import XtreamClient
 
     provider_id = provider_data["id"]
@@ -3116,6 +3118,9 @@ def _sync_channels_from_xtream(provider_data: dict, db: Session) -> dict:
         password=provider_data["password"],
         user_agent=provider_data["user_agent"],
     )
+    guard = getattr(client, "guard", None)
+    if gap and guard is not None:
+        guard.gap = max(guard.gap, gap)
 
     all_failed = False
     try:
@@ -3137,11 +3142,14 @@ def _sync_channels_from_xtream(provider_data: dict, db: Session) -> dict:
         # Fetch per-category (only enabled ones)
         all_streams = []
         failed_groups = 0
+        answered = set()        # groups that listed at least one channel
         last_error = None
         for i, cat_id in enumerate(category_ids):
             try:
                 streams = client.get_live_streams(category_id=cat_id)
                 all_streams.extend(streams)
+                if streams:
+                    answered.add(cat_map[cat_id])
             except ProviderRefusedError:
                 raise   # the provider refuses this server: no more groups, no lineup to save (#149)
             except Exception as e:
@@ -3180,6 +3188,8 @@ def _sync_channels_from_xtream(provider_data: dict, db: Session) -> dict:
             logger.debug(f"[LiveTV] {provider_name}: could not read account info: {e}")
         stats = _upsert_channels(provider_id, all_streams, cat_map, client, db,
                                  extension=_live_extension(db, provider_id))
+        if not failed_groups:
+            stats.update(_mark_gone_channels(db, provider_id, provider_name, all_streams, answered))
 
         # Update provider timestamp
         provider = db.query(Provider).filter(Provider.id == provider_id).first()
@@ -3187,7 +3197,9 @@ def _sync_channels_from_xtream(provider_data: dict, db: Session) -> dict:
             provider.last_live_sync = datetime.utcnow()
         db.commit()
 
-        log_activity(db, "livetv_sync", f"Live TV channel sync for {provider_name}: {stats['new']} new, {stats['updated']} updated, {stats['total']} total")
+        gone_note = f", {stats['gone']} no longer listed" if stats.get("gone") else ""
+        log_activity(db, "livetv_sync", f"Live TV channel sync for {provider_name}: {stats['new']} new, "
+                                        f"{stats['updated']} updated, {stats['total']} total{gone_note}")
         if category_ids:
             # At least one group read: the provider answers this server (#652)
             provider_health.note(db, provider_id, True, "api")
@@ -3390,7 +3402,8 @@ def _shown_channels(db: Session) -> list:
             .filter(LiveChannel.enabled == True)  # noqa: E712
             .order_by(LiveChannel.sort_order, LiveChannel.channel_number, LiveChannel.name)
             .all())
-    return [ch for ch in rows if not _is_separator(ch.guide_name)]
+    now = datetime.utcnow()
+    return [ch for ch in rows if not _is_separator(ch.guide_name) and not _gone(ch, now)]
 
 
 def _hidden_separators(db: Session) -> list:
@@ -3452,6 +3465,7 @@ def _upsert_channels(
         if sid in existing:
             ch = existing[sid]
             ch.name = name
+            ch.provider_missing_since = None
             ch.stream_url = url
             ch.logo_url = stream.get("stream_icon") or ch.logo_url
             ch.group_title = group or ch.group_title
@@ -3473,6 +3487,52 @@ def _upsert_channels(
 
     db.flush()
     return {"new": new_count, "updated": updated_count, "total": len(seen_ids)}
+
+
+# An Xtream channel the provider no longer lists: never deleted (the row
+# holds the admin's number, name and switch, and Jellyfin keys its
+# favourites and timers on the stream id), but marked, and left out of the
+# lineup once it has been missing GONE_DAYS: one that comes back is the same
+# channel again. Judged only after a complete read (every enabled group
+# answered), only in groups that listed channels (an empty answer may be a
+# blip), and never more than GONE_MAX_FRACTION of them at once (at least
+# GONE_FLOOR): a provider answering with half its lineup is an outage.
+GONE_DAYS = 3
+GONE_MAX_FRACTION = 0.2
+GONE_FLOOR = 25
+
+
+def _mark_gone_channels(db: Session, provider_id: int, provider_name: str, streams: list,
+                        answered: set) -> dict:
+    """Mark the channels of the groups in `answered` that `streams` (the
+    complete read) no longer lists. Returns {"gone": newly marked} or
+    {"gone_refused": n}. Doesn't commit."""
+    listed = {str(s.get("stream_id", "")) for s in streams}
+    judged = [ch for ch in db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id).all()
+              if ch.group_title in answered]
+    newly = [ch for ch in judged if ch.stream_id not in listed and ch.provider_missing_since is None]
+    if not newly:
+        return {}
+    if len(newly) > max(GONE_FLOOR, int(len(judged) * GONE_MAX_FRACTION)):
+        msg = (f"Live TV channel sync for {provider_name}: {len(newly)} of {len(judged)} channels missing "
+               f"from the provider's list — looks like an incomplete answer, none marked as gone")
+        logger.warning(f"[LiveTV] {msg}")
+        log_activity(db, "livetv_sync", msg)
+        return {"gone_refused": len(newly)}
+    now = datetime.utcnow()
+    for ch in newly:
+        ch.provider_missing_since = now
+    logger.info(f"[LiveTV] {provider_name}: {len(newly)} channel(s) no longer listed by the provider "
+                f"(kept; out of the lineup after {GONE_DAYS} days): "
+                f"{', '.join(ch.guide_name for ch in newly[:5])}")
+    db.flush()
+    return {"gone": len(newly)}
+
+
+def _gone(ch, now: "datetime | None" = None) -> bool:
+    """Missing from the provider's list for GONE_DAYS or more."""
+    since = getattr(ch, "provider_missing_since", None)
+    return isinstance(since, datetime) and since <= (now or datetime.utcnow()) - timedelta(days=GONE_DAYS)
 
 
 def _xtream_login(provider) -> tuple:
@@ -4489,6 +4549,27 @@ def start_jellyfin_guide_refresh(db: Session) -> None:
         logger.error(f"Jellyfin guide refresh failed: {e}")
 
 
+def refresh_jellyfin_guide_after_sync(db: Session) -> bool:
+    """What the Live TV page does once a channel sync and its guide are done
+    (POST /api/live/refresh-guide): re-create Tentacle's guide source in
+    Jellyfin, so channels new to the lineup get their programmes, run its
+    Refresh Guide, then tag the channels it made and tell the open clients
+    (services/livetv_tuners.py). The nightly job's, after its channel and
+    guide sync. False when Jellyfin isn't set up or couldn't be asked."""
+    jf_url = get_setting(db, "jellyfin_url")
+    jf_key = get_setting(db, "jellyfin_api_key")
+    if not (jf_url and jf_key):
+        return False
+    try:
+        from services.jellyfin_guide import refresh_jellyfin_guide
+        refresh_jellyfin_guide(jf_url, jf_key, then_tag=True)
+        logger.info("Jellyfin guide refresh triggered after the channel and EPG sync")
+        return True
+    except Exception as e:
+        logger.error(f"Jellyfin guide refresh failed: {e}")
+        return False
+
+
 # When the nightly job's own guide step last finished (main._run_scheduled_sync):
 # after it, the rest of the nightly job asks no provider anything, so a failed
 # nightly download is retried while it still runs.
@@ -4632,6 +4713,8 @@ def list_channels(
                 "has_epg_data": ch.guide_epg_id in epg_ids_with_programs if ch.guide_epg_id else False,
                 "enabled": ch.enabled,
                 "sort_order": ch.sort_order,
+                "provider_missing_since": (ch.provider_missing_since.isoformat() + "Z"
+                                           if ch.provider_missing_since else None),
             }
             for ch in channels
         ],

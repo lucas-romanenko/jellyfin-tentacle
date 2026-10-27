@@ -249,7 +249,7 @@ class GentleSyncRun(NightlyHarness):
 
 
 class GentleDiscovery(unittest.TestCase):
-    def _run(self, existing, gentle=True):
+    def _run(self, existing, gentle=True, counts_due=False):
         from services import discovery
         cats = ([{"category_id": "1", "category_name": "Films"}],
                 [{"category_id": "2", "category_name": "Shows"}])
@@ -271,9 +271,13 @@ class GentleDiscovery(unittest.TestCase):
         with mock.patch("routers.providers.fetch_provider_categories", fetch_cats), \
                 mock.patch("routers.providers.fetch_category_counts", fetch_counts), \
                 mock.patch("services.provider_new.note_created"), \
+                mock.patch("models.database.set_setting"), \
+                mock.patch.object(discovery, "_vod_counts_due", lambda db, p: counts_due), \
                 mock.patch("services.xtream_client.pause") as slept:
             new = discovery._refresh_vod_categories(db, provider, gentle)
-        added = {c.args[0].category_id: c.args[0].title_count for c in db.add.call_args_list}
+        added = {c.args[0].category_id: c.args[0].title_count for c in db.add.call_args_list
+                 if hasattr(c.args[0], "category_id")}
+        self.rows = rows
         return new, calls, added, slept
 
     def test_no_new_category_no_whole_catalogue_listings(self):
@@ -288,6 +292,11 @@ class GentleDiscovery(unittest.TestCase):
         self.assertEqual(calls, [("categories", False, discovery_gap()), ("counts", discovery_gap())])
         self.assertEqual(added, {"2": 22})
         slept.assert_called_once_with(discovery_gap())
+
+    def test_once_a_week_the_counts_are_read_anyway(self):
+        new, calls, added, slept = self._run([("1", "movie"), ("2", "series")], counts_due=True)
+        self.assertEqual(calls, [("categories", False, discovery_gap()), ("counts", discovery_gap())])
+        self.assertEqual([11, 22], [r.title_count for r in self.rows])
 
     def test_not_gently_as_before(self):
         new, calls, added, slept = self._run([("1", "movie")], gentle=False)
