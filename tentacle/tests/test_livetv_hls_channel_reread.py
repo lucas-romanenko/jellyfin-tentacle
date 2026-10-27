@@ -210,6 +210,26 @@ class TheChannelUrlEveryTime(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(ended)
         self.assertTrue(_consecutive(got), f"a lagging edge put segments out twice or out of order: {got}")
 
+    async def test_regions_minutes_apart_put_nothing_out_twice(self):
+        """Every other read lands on a region 36 segments behind: ignored,
+        and read again soon; nothing is sent twice or out of order."""
+        panel = Bears(reads_per_segment=1, lag={n: 36 for n in range(52, 120, 2)})
+        panel.reads = 50
+        panel.start = 4900
+        got, ended = await _stream(panel, items=14)
+        self.assertFalse(ended)
+        self.assertTrue(_consecutive(got), got)
+
+    async def test_a_numbering_that_stays_behind_is_a_restart(self):
+        panel = Bears(reads_per_segment=1, lag={n: 30 for n in range(56, 400)})
+        panel.reads = 50
+        panel.start = 4900
+        with patch.object(livetv, "_HLS_BEHIND_RESTART", 0.05):
+            got, ended = await _stream(panel, items=30)
+        self.assertFalse(ended, got)
+        self.assertTrue(any(b > a for a, b in zip(got, got[1:])), got)
+        self.assertLess(min(got[5:]), max(got[:5]), f"never went on with the numbering that stayed: {got}")
+
     async def test_a_restarted_numbering_goes_on_from_its_live_edge(self):
         panel = Bears(reads_per_segment=1, renumber_at=14)
         panel.reads = 8
@@ -348,6 +368,12 @@ class WindowPlan(unittest.TestCase):
         self.assertEqual((6, "behind", 0), livetv._hls_window_plan(seqs, names, 257, "x_257.ts"))
         self.assertEqual((6, "behind", 0), livetv._hls_window_plan(
             seqs, names, 260, "x_260.ts", sent_names=["x_255.ts", "x_256.ts"]))
+
+    def test_a_region_minutes_behind_is_still_a_lagging_edge(self):
+        # A&E, 27 Oct: us4 six minutes (36 segments) behind us6 on one numbering
+        seqs = list(range(4944, 4950))
+        self.assertEqual((6, "behind", 0), livetv._hls_window_plan(
+            seqs, [f"325830_{n}.ts" for n in seqs], 4985, "325830_4985.ts"))
 
     def test_numbering_from_scratch_is_a_restart(self):
         self.assertEqual((0, "restart", 0), livetv._hls_window_plan(

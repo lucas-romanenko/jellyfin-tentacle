@@ -771,6 +771,14 @@ _HLS_REFRESH_FROM_CHANNEL = True
 # switched to the continuous stream when there is one.
 _HLS_STALL_SECONDS = 30.0
 _HLS_STALL_TARGETS = 3
+# A window behind what was sent is a lagging edge server (read again soon,
+# _HLS_BEHIND_REREAD s, at most _HLS_BEHIND_QUICK times in a row), unless
+# its numbering dropped by more than _HLS_RENUMBERED segments, or every read
+# for _HLS_BEHIND_RESTART s was behind: then the numbering started again.
+_HLS_RENUMBERED = 200
+_HLS_BEHIND_RESTART = 20.0
+_HLS_BEHIND_REREAD = 0.5
+_HLS_BEHIND_QUICK = 4
 
 
 def _hls_poll(target_duration) -> float:
@@ -836,8 +844,14 @@ def _hls_window_plan(seqs, names, last_seq, last_name, same_disc: bool = True, s
       "gap":      the window moved past the last one sent: lost ones
                   counted, everything in it is new;
       "behind":   an edge server that lags (its window ends before the last
-                  one sent): nothing new, read again;
-      "restart":  the numbering started again: start as on a first read.
+                  one sent): nothing new, read again. IPTV Bears' regions
+                  are minutes apart on one numbering (A&E, 27 Oct: us4 6 min
+                  behind us6, us5 1 min), so a window far behind is still a
+                  lagging edge -- the caller takes it for a restart only if
+                  it stays behind (_HLS_BEHIND_RESTART);
+      "restart":  the numbering started again (it dropped by more than
+                  _HLS_RENUMBERED: seen 295 -> 0, 3933 -> 0): start as on a
+                  first read.
     Where the numbers line up, a file name found within two places of
     where the number puts it wins (a server whose counter moved by one
     would otherwise repeat or lose a segment); names never overrule
@@ -858,9 +872,9 @@ def _hls_window_plan(seqs, names, last_seq, last_name, same_disc: bool = True, s
         return after_name, "continue", 0
     if lo > last_seq + 1:
         return 0, "gap", (min(lo - last_seq - 1, len(seqs)) if same_disc else 0)
-    if last_seq - hi <= 2 or (usable and names and names[-1] in set(sent_names)):
-        return len(seqs), "behind", 0
-    return 0, "restart", 0
+    if last_seq - hi > _HLS_RENUMBERED and not (usable and names and names[-1] in set(sent_names)):
+        return 0, "restart", 0
+    return len(seqs), "behind", 0
 
 
 def _segment_name(url: str) -> str:
@@ -6356,6 +6370,9 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         newest_listed = None
         next_due = None
         prev_read_at = None
+        behind_since = None    # first read of the current run of lagging-edge windows
+        behind_quick = 0       # quick re-reads after them in a row
+        reread_soon = False
         current_playlist = playlist_text
         current_base = playlist_base
         ua_headers = {"User-Agent": user_agent}
@@ -6902,7 +6919,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                             _hls_poll(target_duration)) / 2
                         next_due = appeared + (window[-1][3] or target_duration)
                         newest_listed = window[-1][1]
-                    elif window[-1][1] < newest_listed - max(len(window), 3):
+                    elif window[-1][1] < newest_listed - _HLS_RENUMBERED:
                         newest_listed = window[-1][1]       # a restarted numbering
                 prev_read_at = playlist_loaded_at
 
@@ -6930,11 +6947,23 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     viewer = not (is_recording is not None and is_recording())
                     have_numbers = window[0][1] is not None
                     verdict = "first" if not started else None
+                    reread_soon = False
                     if started and have_numbers and last_seq is not None:
                         idx, verdict, lost = _hls_window_plan(
                             [w[1] for w in window], [w[2] for w in window], last_seq, last_name,
                             same_disc=(last_disc is None or disc_seq is None or last_disc == disc_seq),
                             sent_names=sent_names)
+                        if verdict == "behind":
+                            if behind_since is None:
+                                behind_since = playlist_loaded_at
+                            if playlist_loaded_at - behind_since >= _HLS_BEHIND_RESTART:
+                                verdict, idx = "restart", 0
+                            elif behind_quick < _HLS_BEHIND_QUICK:
+                                # The next segment is out there on a fresher edge.
+                                behind_quick += 1
+                                reread_soon = True
+                        if verdict != "behind":
+                            behind_since, behind_quick = None, 0
                         if verdict == "gap":
                             if lost:
                                 health["segments_skipped"] += lost
@@ -6947,6 +6976,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             window_new = {w[0] for w in window[idx:]}
                     if verdict in ("first", "restart"):
                         started = True
+                        if verdict == "restart":
+                            newest_listed, next_due = window[-1][1], None
                         start = _hls_start_index([w[3] for w in window], hls_start_seconds) if viewer else 0
                         if start:
                             logger.info(f"[LiveTV] Channel {channel_id}: starting {len(window) - start} of "
@@ -7146,8 +7177,9 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 # target duration late is one the viewer may wait for, so the
                 # read is timed to when the next one is due (_hls_next_read).
                 if refresh_from_channel:
-                    reload_after = _hls_next_read(playlist_loaded_at, next_due, target_duration,
-                                                  chunk_pending) - playlist_loaded_at
+                    reload_after = (_HLS_BEHIND_REREAD if reread_soon and not got_new else
+                                    _hls_next_read(playlist_loaded_at, next_due, target_duration,
+                                                   chunk_pending) - playlist_loaded_at)
                 else:
                     reload_after = target_duration if (got_new and not chunk_pending) else target_duration / 2
                 now = asyncio.get_running_loop().time()
