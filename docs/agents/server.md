@@ -1060,6 +1060,13 @@ User docs: `docs/features/live-tv.md`.
   closing every connection each 15 s, a recording, 3 viewers and a client
   reading at a quarter of the rate stayed on 1 connection (one rejoin per
   cut), no viewer gap over 1.3 s, the recording one file.
+  Every subscription is given back however its response ends, also when
+  it never ran (`_SubscriberResponse`, and `_PreviewResponse` for the web
+  guide's preview): a browser that dropped the preview while the channel
+  opened left a "ghost" pulling the one provider connection for 25 min
+  (27 Oct 2026). The net under that: a client with bytes waiting and none
+  taken for 60 s (`_IDLE_SUBSCRIBER_SECONDS`) is let go and logged, and
+  the pull closes when it was the last.
 - The HLS worker (`hls_to_mpegts()`) classifies statuses with the same
   `_raw_retryable()`: a 5xx on a playlist, a re-resolve or a segment is
   waited out (a 5xx segment is fetched again, not skipped). An expired token

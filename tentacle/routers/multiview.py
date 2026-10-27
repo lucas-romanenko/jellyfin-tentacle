@@ -252,11 +252,38 @@ async def preview_stream(item_id: str, user: TentacleUser = Depends(get_user_fro
         await _leave(resp)
         raise HTTPException(503, f"{name} isn't coming through right now")
 
-    async def done():
-        await _leave(resp)
+    return _PreviewResponse(WS.fmp4(body, WS.preview_args(ffmpeg)), resp)
 
-    return StreamingResponse(WS.fmp4(body, WS.preview_args(ffmpeg), done),
-                             media_type="video/mp4", headers=_MP4_HEADERS)
+
+class _PreviewResponse(StreamingResponse):
+    """A preview that ALWAYS gives its channel back, however it ends.
+
+    Giving it back from the fMP4 generator's end was not enough: a browser
+    that dropped the request while the channel was opening (the next channel
+    focused, the guide closed, Play pressed) is gone when the response
+    starts, Starlette cancels it before the generator ever runs, and a
+    generator that never started never runs its `finally`. The subscription
+    stayed, and the provider connection with it, for as long as the channel
+    played (27 Oct 2026: Cartoon Network for 25 minutes on a one-connection
+    account). Same shape as livetv._SubscriberResponse."""
+
+    def __init__(self, body, joined):
+        super().__init__(body, media_type="video/mp4", headers=_MP4_HEADERS)
+        self._joined = joined
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # A generator that did start closes ffmpeg in its own finally;
+            # one that never did has nothing running.
+            close = getattr(self.body_iterator, "aclose", None)
+            if close is not None:
+                try:
+                    await close()
+                except BaseException:
+                    pass
+            await _leave(self._joined)
 
 
 async def _leave(resp) -> None:
