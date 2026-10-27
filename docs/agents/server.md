@@ -868,8 +868,10 @@ User docs: `docs/features/live-tv.md`.
   More): people's favourites are theirs, never on the admin's pages. The
   Household channels count is the pool without `no_event` slots, = the
   lineup (`L.lineup()`), = Jellyfin's channels.
-- Stream checker (`services/livetv_checker.py`, always on, started in
-  main.py's lifespan): opens one channel at a time over all providers and
+- Stream checker (`services/livetv_checker.py`, on by default, started in
+  main.py's lifespan; an admin pauses it on Live TV > More, setting
+  `livetv_checker_enabled` = "false", read every round, so paused = no
+  opens at all; stored results stay): opens one channel at a time over all providers and
   judges its first bytes (MPEG-TS sync, or an HLS playlist's first segment;
   the whole check within 5 s, nothing by then = a failure),
   stored on `LiveChannel.check_*` ("broken" only after 2 failures in a row);
@@ -883,7 +885,8 @@ User docs: `docs/features/live-tv.md`.
   `preempt()`, which cancels the check in flight and waits for its
   connection to close. 401/403/407/429/458/509/551 or no connection: no
   verdict, the provider is backed off 5 min doubling to 6 h; a provider the
-  health check calls failing is skipped. Status: `/api/live/checker/status`.
+  health check calls failing is skipped. Status: `/api/live/checker/status`
+  (`paused_by_admin`, state "off"); switch: PUT `/api/live/checker/enabled`.
 - **Catalog** (`services/livetv_catalog.py`, `livetv_names.py`, `livetv_events.py`,
   `routers/livetv_catalog.py`): channels that are one network in several
   places, qualities or time zone feeds (`livetv_names.fold_key`: prefixes,

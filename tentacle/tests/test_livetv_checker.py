@@ -236,6 +236,45 @@ class Loop(Base, unittest.IsolatedAsyncioTestCase):
     async def test_preempt_with_nothing_in_flight(self):
         self.assertFalse(await C.preempt())
 
+    async def test_paused_by_admin_opens_nothing_and_keeps_results(self):
+        self.set_checked("B", 30, state="broken", fails=2)
+        self.assertFalse(C.summary(self.db)["paused_by_admin"])   # on unless an admin paused it
+        mdb.set_setting(self.db, C.ENABLED_KEY, "false")
+        for _ in range(3):
+            self.assertEqual(C.BUSY_POLL_SECONDS, await C.step(self.ok_check))
+        self.assertEqual([], self.calls)
+        self.assertEqual(("off", "paused by admin"), (C.status["state"], C.status["paused_reason"]))
+        s = C.summary(self.db)
+        self.assertEqual((True, "off", "paused by admin"), (s["paused_by_admin"], s["state"], s["paused_reason"]))
+        self.db.expire_all()
+        self.assertEqual("broken", self.db.get(mdb.LiveChannel, self.ch["B"]).check_state)   # results stay
+        await C.set_enabled(True)
+        await C.step(self.ok_check)
+        self.assertEqual([self.ch["A"]], self.calls)
+        self.assertFalse(C.summary(self.db)["paused_by_admin"])
+
+    async def test_pausing_stops_the_check_in_flight(self):
+        started, closed = asyncio.Event(), asyncio.Event()
+
+        async def slow_check(cid):
+            started.set()
+            try:
+                await asyncio.sleep(30)
+            finally:
+                closed.set()
+            return "works", 200, "", self.p.id
+
+        step = asyncio.create_task(C.step(slow_check))
+        await asyncio.wait_for(started.wait(), 2)
+        await C.set_enabled(False)
+        self.assertTrue(closed.is_set())                           # its connection is closed
+        self.assertEqual(C.BUSY_POLL_SECONDS, await asyncio.wait_for(step, 2))
+        self.db.expire_all()
+        self.assertIsNone(self.db.get(mdb.LiveChannel, self.ch["A"]).check_at)   # no verdict
+        self.assertEqual("false", mdb.get_setting(self.db, C.ENABLED_KEY))
+        self.assertEqual(C.BUSY_POLL_SECONDS, await C.step(self.ok_check))
+        self.assertEqual([], self.calls)
+
     async def test_busy_provider_backs_off_and_doubles(self):
         async def busy(cid):
             return "busy", 509, "refused (509)", self.p.id

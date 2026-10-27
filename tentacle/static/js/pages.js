@@ -6043,12 +6043,59 @@ function showLiveTab(name) {
   if (name === 'channels') page.querySelector('[data-livetab="more"]')?.classList.add('active');
 }
 
-// More: Jellyfin's setup, the region, pictures for recordings.
+// More: Jellyfin's setup, the region, the channel checker, pictures for recordings.
 function loadLiveMore() {
   loadLiveSetup();
   _poolLoadRegion();
+  checkerLoad();
   if (typeof recArtLoad === 'function') recArtLoad();
 }
+
+// Channel checker (GET /api/live/checker/status, PUT /api/live/checker/enabled)
+function _checkerText(d) {
+  if (d.paused_by_admin) return 'Paused by admin. No channel is opened; the last results stay.';
+  const p = d.pool || {};
+  const counts = p.total ? ` ${p.works || 0} of ${p.total} channels work, ${p.broken || 0} don’t.` : '';
+  if (d.state === 'checking' && d.current) return `On. Checking ${d.current.name} now.` + counts;
+  if (d.state === 'paused' && d.paused_reason) return `On, waiting: ${d.paused_reason}.` + counts;
+  return 'On.' + counts;
+}
+
+async function checkerLoad() {
+  const btn = document.getElementById('checker-toggle');
+  const el = document.getElementById('checker-status');
+  if (!btn || !el) return;
+  try {
+    const d = await api('/api/live/checker/status');
+    _setLiveToggle(btn, !d.paused_by_admin);
+    el.textContent = _checkerText(d);
+  } catch (e) {
+    el.textContent = 'Couldn’t read this: ' + (e.message || e);
+  }
+}
+
+async function checkerToggle() {
+  const btn = document.getElementById('checker-toggle');
+  const el = document.getElementById('checker-status');
+  if (!btn || btn.disabled) return;
+  const on = !btn.classList.contains('on');
+  btn.disabled = true;
+  _setLiveToggle(btn, on);
+  try {
+    const d = await api('/api/live/checker/enabled', { method: 'PUT', body: JSON.stringify({ enabled: on }) });
+    _setLiveToggle(btn, !d.paused_by_admin);
+    el.textContent = _checkerText(d);
+  } catch (e) {
+    _setLiveToggle(btn, !on);
+    el.textContent = 'Not saved: ' + (e.message || e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('checker-toggle')?.addEventListener('click', checkerToggle);
+});
 
 // ── Groups ────────────────────────────────────────────────────────────────
 
