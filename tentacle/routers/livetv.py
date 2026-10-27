@@ -202,7 +202,32 @@ def _segment_read_limit(target_duration) -> float:
     return max(_HLS_SEGMENT_READ_MIN, seconds)
 
 
-async def _aread_within(resp, seconds: float, stretch=None) -> bytes:
+# An HLS segment is handed on in pieces of this size (whole 188-byte MPEG-TS
+# packets, like the raw path's): a 10 s segment is 5-8 MB, and reading each
+# one into a single bytes object let glibc's heap fragment until the
+# process grew without bound (8 channels: +80 MB a minute while the live
+# Python objects stayed at ~150 MB).
+_HLS_PIECE = 188 * 1394
+
+
+async def _aread_pieces(resp) -> list:
+    """The body as pieces of at most _HLS_PIECE bytes (whole packets; the
+    last one takes the rest)."""
+    pieces, held, size = [], [], 0
+    async for chunk in resp.aiter_bytes():
+        held.append(chunk)
+        size += len(chunk)
+        if size >= _HLS_PIECE:
+            joined = b"".join(held)
+            cut = len(joined) - len(joined) % _HLS_PIECE
+            pieces.extend(joined[i:i + _HLS_PIECE] for i in range(0, cut, _HLS_PIECE))
+            held, size = ([joined[cut:]], len(joined) - cut) if cut < len(joined) else ([], 0)
+    if size:
+        pieces.append(b"".join(held))
+    return pieces
+
+
+async def _aread_within(resp, seconds: float, stretch=None, pieces: bool = False):
     """resp.aread() with a bound on the whole body. httpx's read timeout is
     per read: a body that trickles a byte at a time never reaches it, and a
     running recording would wait on it for as long as the provider likes.
@@ -217,12 +242,14 @@ async def _aread_within(resp, seconds: float, stretch=None) -> bytes:
 
     asyncio.timeout(), not wait_for(): on Python 3.11 wait_for() can swallow
     a cancellation that arrives as the read completes, and the stream would
-    go on pulling from the provider after its client left."""
+    go on pulling from the provider after its client left.
+
+    pieces: the body as a list of _HLS_PIECE-sized pieces (_aread_pieces)."""
     factor = stretch["x"] if stretch else 1.0
     t0 = asyncio.get_running_loop().time()
     try:
         async with asyncio.timeout(seconds * factor):
-            body = await resp.aread()
+            body = await (_aread_pieces(resp) if pieces else resp.aread())
     except TimeoutError:        # asyncio.timeout's own: httpx raises only its own exceptions
         if stretch is not None:
             stretch["x"] = min(factor * 2, _HLS_READ_STRETCH_MAX)
@@ -6995,7 +7022,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             try:
                                 chunk_resp.raise_for_status()
                                 payload = await _aread_within(chunk_resp, _segment_read_limit(target_duration),
-                                                              segment_stretch)
+                                                              segment_stretch, pieces=True)
                             finally:
                                 await chunk_resp.aclose()
                             break
@@ -7084,7 +7111,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         last_seq, last_disc = chunk_seq[chunk_url], disc_seq
                         last_name = _segment_name(chunk_url)
                     sent_names.append(_segment_name(chunk_url))
-                    yield payload
+                    for piece in payload:
+                        yield piece
                     _note_success(real_data=True)
 
                 if restart:

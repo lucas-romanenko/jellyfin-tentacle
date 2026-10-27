@@ -445,6 +445,27 @@ class StartSetting(unittest.TestCase):
                 self.assertEqual(want, livetv._hls_start_seconds(SimpleNamespace()), raw)
 
 
+class SegmentPieces(unittest.IsolatedAsyncioTestCase):
+    """A segment is handed on in packet-aligned pieces, never one 5-8 MB
+    bytes object (those fragmented glibc's heap until the process grew
+    without bound)."""
+
+    async def test_whole_packets_in_pieces_and_nothing_lost(self):
+        body = bytes(range(256)) * (188 * 3000 // 256 + 1)
+        body = body[:188 * 3000 + 100]          # a ragged end, as a provider may send
+
+        class Stream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                for i in range(0, len(body), 65536 + 7):     # odd network chunks
+                    yield body[i:i + 65536 + 7]
+        r = httpx.Response(200, stream=Stream(), request=httpx.Request("GET", "http://e.test/1.ts"))
+        pieces = await livetv._aread_within(r, 10.0, None, pieces=True)
+        self.assertEqual(body, b"".join(pieces))
+        self.assertTrue(all(len(p) == livetv._HLS_PIECE for p in pieces[:-1]))
+        self.assertLessEqual(len(pieces[-1]), livetv._HLS_PIECE)
+        self.assertEqual(0, livetv._HLS_PIECE % 188)
+
+
 class StartIndex(unittest.TestCase):
     def test_the_last_segments_that_hold_the_start(self):
         self.assertEqual(4, livetv._hls_start_index([10.0] * 6, 12.0))
