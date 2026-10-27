@@ -44,6 +44,18 @@ def _ip_is_blocked(ip: str) -> bool:
     return not addr.is_global
 
 
+# How a refusal reads when the name did not resolve at all: a DNS outage or a
+# resolver that rate-limits (a home's AdGuard allows 20 queries a second per
+# /24), not a host found to be private. Callers that retry use unresolved().
+UNRESOLVED = "could not be resolved"
+
+
+def unresolved(why: str) -> bool:
+    """True when a guard's reason says the host did not resolve (nothing was
+    fetched; trying again later may work), not that it is private."""
+    return UNRESOLVED in (why or "")
+
+
 def host_verdict(hostname: str) -> Tuple[bool, str]:
     """(public?, why not) from one lookup: True only if every resolved IP is
     public. The reason names what the name resolved to, or the resolver's
@@ -55,7 +67,7 @@ def host_verdict(hostname: str) -> Tuple[bool, str]:
     try:
         infos = socket.getaddrinfo(hostname, None)
     except (socket.gaierror, UnicodeError, OSError) as e:
-        return False, f"{hostname} could not be resolved ({e})"
+        return False, f"{hostname} {UNRESOLVED} ({e})"
     ips = {info[4][0] for info in infos}
     if not ips:
         return False, f"{hostname} resolved to no address"
@@ -200,7 +212,7 @@ def lan_origin_guard(server_url: str):
         if _origin(url or "") == origin:
             resolved, err = _resolve_explained(origin[1])
             if not resolved:
-                return False, (f"{origin[1]} could not be resolved ({err})" if err
+                return False, (f"{origin[1]} {UNRESOLVED} ({err})" if err
                                else f"{origin[1]} resolved to no address")
             not_lan = sorted(ip for ip in resolved if not _ip_is_lan(ip))
             if not_lan:

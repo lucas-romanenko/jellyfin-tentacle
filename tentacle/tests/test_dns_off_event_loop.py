@@ -176,11 +176,12 @@ class LiveTvRedirect(unittest.TestCase):
     def test_a_redirect_target_that_hangs_does_not_stall_the_loop(self):
         import routers.livetv as livetv
         client = _Client(lambda u: _redirect(u, "http://cdn.example/live/1.ts"))
-        with mock.patch.object(ssrf.socket, "getaddrinfo", _gai_hanging("cdn.example")), \
-                self.assertLogs("routers.livetv", level="WARNING"):
+        with mock.patch.object(ssrf.socket, "getaddrinfo", _gai_hanging("cdn.example")):
             result, stall = asyncio.run(_longest_stall(
                 lambda: livetv._send_checked(client, "http://provider.test/live/u/p/1.ts", {})))
-        self.assertEqual(502, getattr(result, "status_code", None))
+        # A name that did not resolve is not a private host: nothing fetched,
+        # and the caller retries it like a dropped connection (not a 502).
+        self.assertIsInstance(result, httpx.ConnectError)
         self.assertEqual(["http://provider.test/live/u/p/1.ts"], client.requested)
         self.assertLess(stall, MAX_STALL, "the event loop was blocked while the resolver hung")
 

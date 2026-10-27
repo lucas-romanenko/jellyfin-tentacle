@@ -332,6 +332,43 @@ class WindowPlan(unittest.TestCase):
             [0, 1, 2, 3], ["x_255.ts", "x_256.ts", "x_257.ts", "x_258.ts"], 257, "x_256.ts"))
 
 
+class NextRead(unittest.TestCase):
+    def test_just_after_the_next_segment_is_due(self):
+        # read at 100, the newest turned up ~98 and lasts 10 s: due 108
+        self.assertEqual(108.5, livetv._hls_next_read(100.0, 108.0, 11))
+
+    def test_then_every_quarter_target_until_it_is_listed(self):
+        self.assertEqual(102.0, livetv._hls_next_read(100.0, 99.0, 11), "due already: poll in 2 s")
+        self.assertEqual(101.0, livetv._hls_next_read(100.0, 99.0, 2), "short segments: at least 1 s")
+        self.assertEqual(102.0, livetv._hls_next_read(100.0, None, 11), "nothing known yet")
+
+    def test_a_segment_still_owed_is_asked_for_soon(self):
+        self.assertEqual(102.0, livetv._hls_next_read(100.0, 108.0, 11, owed=True))
+
+    def test_never_later_than_a_target_duration(self):
+        self.assertEqual(111.0, livetv._hls_next_read(100.0, 130.0, 11))
+
+    def test_few_reads_per_segment_on_a_steady_panel(self):
+        """A panel that lists a 10 s segment every 10 s (at t = 3, 13, 23 ...):
+        about 1.5 reads per segment, each segment seen within ~2.5 s."""
+        t, newest_listed, prev, due, reads, late = 0.0, None, None, None, 0, []
+        appeared_at = {}
+        while t < 600:
+            reads += 1
+            newest = int((t - 3) // 10) if t >= 3 else -1
+            if newest >= 0 and (newest_listed is None or newest > newest_listed):
+                appeared = t if prev is None or newest_listed is None else t - min(t - prev, livetv._hls_poll(11)) / 2
+                due = appeared + 10.0
+                for n in range((newest_listed if newest_listed is not None else newest - 1) + 1, newest + 1):
+                    appeared_at[n] = t
+                    late.append(t - (3 + 10 * n))
+                newest_listed = newest
+            prev = t
+            t = livetv._hls_next_read(t, due, 11)
+        self.assertLessEqual(reads / len(appeared_at), 1.8, f"{reads} reads for {len(appeared_at)} segments")
+        self.assertLessEqual(max(late[3:]), 2.6, f"seen late: {late}")
+
+
 class StartSetting(unittest.TestCase):
     def test_the_setting_or_the_default(self):
         from types import SimpleNamespace
