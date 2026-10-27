@@ -281,7 +281,14 @@ fifth of a group's channels at once, at least 25, or none: an outage), and
 again, it is back with its number, name and switch. The manual sync does
 the same. An event channel is named for the day's
 game and the lineup carries only today's events, so without it the names
-went stale until someone pressed the button (26 Oct 2026). M3U playlists are
+went stale until someone pressed the button (26 Oct 2026). The provider
+renames them after the night's run (27 Oct: after 04:11, before 07:43), so
+`main.run_morning_channel_refresh()` runs the same channel sync and
+`refresh_jellyfin_guide_after_sync()` again at 08:00
+(`MORNING_CHANNEL_REFRESH`; same stand-aside rules, and 15 minutes later
+while the nightly job is still before its guide step). Each run logs
+"Live TV channel refresh <run>: N names changed" in Activity, so the hour
+of the renames shows. M3U playlists are
 read whole by the group step already; 8. `sweep_orphaned_downloads()`,
 then the guide download after a quiet spell, then, when the guide or the
 channels were synced, `refresh_jellyfin_guide_after_sync()`: what the Live

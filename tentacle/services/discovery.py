@@ -291,13 +291,16 @@ def _refresh_live_groups(db, provider, gap: float = 0.0) -> list:
 CHANNEL_GAP_SECONDS = 5.0
 
 
-def refresh_live_channels(db, gentle: bool = False) -> list:
+def refresh_live_channels(db, gentle: bool = False, run: str = "nightly") -> list:
     """The channel sync of every Xtream Live TV provider with an enabled
     group: names, links, logos, guide ids and the provider's new channels
     (in an enabled group, switched on, as a manual sync makes them). A
     channel's enabled flag, number and own name stay. Stands aside like the
     manual sync: for a provider whose sync runs, and while a recording runs
-    under recording protection. Returns the ids of the providers synced."""
+    under recording protection. Activity says how many names changed
+    ("Live TV channel refresh 08:00: 312 names changed"), so the hour the
+    provider renames its event channels shows. `run` names the run there
+    ("nightly", "08:00"). Returns the ids of the providers synced."""
     from models.database import LiveChannelGroup as Group
     from routers.livetv import (_get_sync_status, _set_sync_status, _snapshot_provider,
                                 _sync_channels_from_xtream, live_tv_providers)
@@ -306,6 +309,7 @@ def refresh_live_channels(db, gentle: bool = False) -> list:
 
     gap = CHANNEL_GAP_SECONDS if gentle else 0.0
     synced = []
+    renamed = 0
     for p in live_tv_providers(db):
         if (p.provider_type or "xtream") != "xtream":
             continue
@@ -329,12 +333,18 @@ def refresh_live_channels(db, gentle: bool = False) -> list:
             # It has no _run_channel_sync_background to end its status: left
             # "running", every later sync would answer "already in progress".
             _set_sync_status(pid, {"phase": "error", "progress": 0, "message": redact(str(e))})
-            log_activity(db, "livetv_sync", f"Nightly Live TV channel sync for {name} failed: {redact(str(e))}")
+            what = "Nightly Live TV channel sync" if run == "nightly" else f"Live TV channel refresh {run}"
+            log_activity(db, "livetv_sync", f"{what} for {name} failed: {redact(str(e))}")
             continue
         _set_sync_status(pid, {"phase": "complete", "progress": 100, **stats,
                                "message": f"Done: {stats.get('new', 0)} new, {stats.get('updated', 0)} updated, "
                                           f"{stats.get('total', 0)} total"})
         synced.append(pid)
+        renamed += stats.get("renamed", 0)
+    if synced:
+        msg = f"Live TV channel refresh {run}: {renamed} name{'' if renamed == 1 else 's'} changed"
+        logger.info(f"[Discovery] {msg}")
+        log_activity(db, "livetv_sync", msg)
     return synced
 
 
