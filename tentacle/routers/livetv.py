@@ -27,6 +27,7 @@ import hashlib
 import logging
 import re
 import threading
+import time
 from array import array
 from collections import deque
 
@@ -1955,6 +1956,14 @@ _PENDING_OPEN_WAIT = 45.0
 # sends on every re-dial). Dropping it then cut that much out of a recording.
 _SUBSCRIBER_QUEUE_MAX = 32
 _SUBSCRIBER_QUEUE_BYTES = 64 * 1024 * 1024
+# A client that has had bytes waiting this long and taken none of them is not
+# slow, it is gone: nothing reads its queue any more (a request whose response
+# never ran, 27 Oct 2026). It is let go, and the upstream closes when it was the
+# last, so a ghost can't hold the provider connection (one, on many accounts)
+# while every real channel fights it. Every real reader takes something within
+# seconds: Jellyfin copies the stream to its buffer file as it comes, a
+# multi-view tile and a preview's ffmpeg read continuously.
+_IDLE_SUBSCRIBER_SECONDS = 60.0
 # A viewer joining a running MPEG-TS upstream starts inside its last bytes
 # (services/ts_start finds a keyframe with sound in them) instead of waiting
 # for the next ones: on a channel whose audio runs ~9 s ahead that wait is 9 s
@@ -1964,20 +1973,25 @@ _BACKLOG_SECONDS = 15.0
 
 
 class _ClientQueue(asyncio.Queue):
-    """An unbounded queue that knows how many bytes it holds; the slack above
-    is enforced by _SharedUpstream._publish."""
+    """An unbounded queue that knows how many bytes it holds and since when
+    something has been waiting in it untaken; the slack above and the idle
+    limit are enforced by _SharedUpstream._publish."""
 
     def _init(self, maxsize):
         super()._init(maxsize)
         self.nbytes = 0
+        self.waiting_since = None   # monotonic time: bytes waiting, none taken since
 
     def _put(self, item):
+        if not self._queue:
+            self.waiting_since = time.monotonic()
         super()._put(item)
         self.nbytes += len(item) if item else 0
 
     def _get(self):
         item = super()._get()
         self.nbytes -= len(item) if item else 0
+        self.waiting_since = time.monotonic() if self._queue else None
         return item
 
 # How soon a pump that outlived its cancel() is cancelled again (see _cancel_pump).
@@ -2357,7 +2371,11 @@ class _SharedUpstream:
     def _publish(self, item):
         if item:
             self._keep(item)
+        now = time.monotonic()
         for q in list(self.subscribers):
+            if q.waiting_since is not None and now - q.waiting_since > _IDLE_SUBSCRIBER_SECONDS:
+                self._let_go(q, now - q.waiting_since)
+                continue
             q.put_nowait(item)
             # Past its slack, drop this client's oldest piece rather than
             # stalling the upstream (and therefore every other client on the
@@ -2370,6 +2388,21 @@ class _SharedUpstream:
                 logger.warning(
                     f"[LiveTV] Client on channel {self.channel_id} is behind — "
                     f"dropped a segment for it")
+
+    def _let_go(self, q, idle: float) -> None:
+        """A subscriber that took nothing for _IDLE_SUBSCRIBER_SECONDS: drop
+        it (and what it never read), end its stream in case something still
+        listens, and close the upstream when it was the last."""
+        self.subscribers.discard(q)
+        while not q.empty():
+            q.get_nowait()
+        q.put_nowait(None)
+        left = len(self.subscribers)
+        logger.warning(f"[LiveTV] Channel {self.channel_id}: a client took nothing for {idle:.0f}s — "
+                       f"let go of it (nothing reads its stream any more); "
+                       f"{left} client(s) left" + ("" if left else ", closing the upstream"))
+        if not left:
+            _spawn(self.unsubscribe(q))
 
     async def _pump(self, body_iterator):
         self._pump_started = True
