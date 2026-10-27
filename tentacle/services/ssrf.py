@@ -11,6 +11,7 @@ IP at connect time); for the internal-home-server threat model this is an
 acceptable, large reduction in attack surface and matches the audit recommendation.
 """
 
+import asyncio
 import inspect
 import ipaddress
 import logging
@@ -19,6 +20,18 @@ from typing import Iterable, Optional, Tuple
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+
+class LookupFailed(str):
+    """A refusal reason that says the name did not resolve at all (the
+    resolver failed or gave no address), not that it resolved to a
+    non-public one. Still a plain str for anything that only logs it."""
+
+
+# How long check_url() waits before asking a failed lookup again. An IPTV
+# provider redirects every open to a fresh random subdomain, and with several
+# opens at once a lookup now and then fails and works a moment later.
+LOOKUP_RETRY_WAITS = (0.5, 1.5)
 
 
 def _ip_is_blocked(ip: str) -> bool:
@@ -55,10 +68,10 @@ def host_verdict(hostname: str) -> Tuple[bool, str]:
     try:
         infos = socket.getaddrinfo(hostname, None)
     except (socket.gaierror, UnicodeError, OSError) as e:
-        return False, f"{hostname} could not be resolved ({e})"
+        return False, LookupFailed(f"{hostname} could not be resolved ({e})")
     ips = {info[4][0] for info in infos}
     if not ips:
-        return False, f"{hostname} resolved to no address"
+        return False, LookupFailed(f"{hostname} resolved to no address")
     blocked = sorted(ip for ip in ips if _ip_is_blocked(ip))
     if blocked:
         return False, f"{hostname} resolves to {', '.join(sorted(ips))}; not public: {', '.join(blocked)}"
@@ -131,6 +144,31 @@ def explain_url(guard, url: str) -> Tuple[bool, str]:
     return explain(url)
 
 
+async def check_url(guard, url: str, waits=None) -> Tuple[bool, str]:
+    """explain_url(guard, url) off the event loop (getaddrinfo blocks, #464).
+
+    A refusal because the name did not resolve (LookupFailed) is asked again
+    after each of `waits` (LOOKUP_RETRY_WAITS): a DNS blip is not an SSRF block. Anything that did
+    resolve is judged at once, so a private, loopback or CGNAT answer is
+    refused on the first lookup exactly as before, with no retry."""
+    allowed, why = await asyncio.to_thread(explain_url, guard, url)
+    for wait in (LOOKUP_RETRY_WAITS if waits is None else waits):
+        if allowed or not isinstance(why, LookupFailed):
+            break
+        logger.info(f"[SSRF] {why}; asking again in {wait:g}s")
+        await asyncio.sleep(wait)
+        allowed, why = await asyncio.to_thread(explain_url, guard, url)
+    return allowed, why
+
+
+def refusal_text(why: str, what: str = "Stream URL") -> str:
+    """What the caller of a refused stream is told: a name that did not
+    resolve is a lookup failure, not a non-public address."""
+    if isinstance(why, LookupFailed):
+        return "Couldn't look up the provider's server (DNS lookup failed)"
+    return f"{what} points to a non-public host"
+
+
 # Where a self-hosted re-streamer can legitimately live: RFC 1918, IPv6 ULA
 # and RFC 6598 CGNAT (Tailscale/Headscale). Listed explicitly rather than via
 # ipaddress.is_private, which also covers documentation, benchmarking and
@@ -200,8 +238,8 @@ def lan_origin_guard(server_url: str):
         if _origin(url or "") == origin:
             resolved, err = _resolve_explained(origin[1])
             if not resolved:
-                return False, (f"{origin[1]} could not be resolved ({err})" if err
-                               else f"{origin[1]} resolved to no address")
+                return False, LookupFailed(f"{origin[1]} could not be resolved ({err})" if err
+                                           else f"{origin[1]} resolved to no address")
             not_lan = sorted(ip for ip in resolved if not _ip_is_lan(ip))
             if not_lan:
                 return False, (f"{origin[1]} resolves to {', '.join(sorted(resolved))}; "

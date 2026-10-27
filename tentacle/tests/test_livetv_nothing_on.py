@@ -32,6 +32,10 @@ from test_livetv_open_single_fetch import PANEL, TOKENIZED, FakeClient, _redirec
 from test_livetv_raw_reconnect import TS, _Body
 from tmp_dirs import temp_dir
 
+
+async def _allowed(guard, url):
+    return True, ""
+
 TORONTO = timezone(timedelta(hours=-4))
 NOW = datetime(2026, 10, 21, 23, 52, tzinfo=timezone.utc)      # Wed 19:52 in Toronto
 SLATE = b"G" + b"\x00" * 187
@@ -131,7 +135,7 @@ class _Db(unittest.IsolatedAsyncioTestCase):
                   patch.object(livetv, "_record_activity_for_placeholder", lambda *a: None),
                   patch.object(S, "picture", self.fake_picture),
                   patch("routers.livetv.is_safe_url", lambda *a, **k: True),
-                  patch.object(livetv, "explain_url", lambda guard, url: (True, None))):
+                  patch.object(livetv, "check_url", _allowed)):
             p.start()
             self.addCleanup(p.stop)
         self.pictures = []

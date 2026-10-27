@@ -55,7 +55,11 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   `is_safe_url`, `lan_origin_guard` and the guards it returns) resolve DNS
   with a blocking `getaddrinfo`, so async code calls them through
   `asyncio.to_thread` (#371, #464); `url_host_allowed` is the allowlist
-  half, no lookup.
+  half, no lookup. Stream paths use `await check_url(guard, url)`: off the
+  loop, with the reason, and a name that did not resolve (`LookupFailed`)
+  asked again after 0.5 s and 1.5 s (providers redirect each open to a new
+  random subdomain; a resolver blip is not an SSRF block). A non-public
+  answer is refused at once. `refusal_text(why)` is what the caller is told.
 - Dashboard dialogs (`.modal-overlay`) open and close only through
   `showModal()`/`closeModal()` (`static/js/app.js`, "Modals"), never by
   setting `style.display`: they move the focus in, keep Tab inside, give

@@ -48,7 +48,7 @@ from sqlalchemy.orm import Session
 
 from models.database import Provider, get_db, get_setting
 from services import vod_index_cache, vod_tokens
-from services.ssrf import is_safe_url, lan_origin_guard
+from services.ssrf import check_url, is_safe_url, lan_origin_guard, refusal_text
 from services.xtream_client import quote_cred
 from routers import livetv
 
@@ -687,9 +687,11 @@ async def _open(client: httpx.AsyncClient, method: str, url: str, headers: dict,
         current = urljoin(current, location)
         # The guard resolves DNS with a blocking getaddrinfo: off the event
         # loop, so a resolver that hangs doesn't freeze every stream (#464).
-        if not await asyncio.to_thread(guard, current):
-            logger.warning(f"[VOD] Blocked redirect to non-public host: {current}")
-            raise HTTPException(502, "Stream redirect points to a non-public host")
+        # A name that didn't resolve is asked again before giving up.
+        allowed, why = await check_url(guard, current)
+        if not allowed:
+            logger.warning(f"[VOD] Blocked redirect ({why or 'non-public host'}): {current}")
+            raise HTTPException(502, refusal_text(why, "Stream redirect"))
     raise HTTPException(502, "Too many redirects")
 
 
@@ -755,10 +757,20 @@ def _resolve(db, kind: str, token_file: str):
     url = f"{provider.server_url.rstrip('/')}/{path}/{login}/{parsed['stream_id']}.{parsed['container']}"
     from services.m3u_source import guard_origin
     guard = lan_origin_guard(guard_origin(provider))
-    if not guard(url):
-        raise HTTPException(502, "Stream URL points to a non-public host")
     owner = f"vod:{kind}:{provider.id}:{parsed['stream_id']}"
     return url, guard, (provider.user_agent or _UA_DEFAULT), owner
+
+
+async def _resolve_checked(db, kind: str, token_file: str):
+    """_resolve() off the event loop, then the SSRF check of the provider's
+    URL (_resolve itself doesn't check it). A name that did not resolve is
+    asked again (check_url) before the play is refused."""
+    url, guard, ua, owner = await asyncio.to_thread(_resolve, db, kind, token_file)
+    allowed, why = await check_url(guard, url)
+    if not allowed:
+        logger.warning(f"[VOD] Blocked stream URL ({why or 'non-public host'})")
+        raise HTTPException(502, refusal_text(why))
+    return url, guard, ua, owner
 
 
 @router.head("/api/vod/{kind}/{token_file}")
@@ -768,7 +780,7 @@ async def vod_head(kind: str, token_file: str, request: Request, db: Session = D
     recording runs, like a play would be. During a playback of the title
     from the same client it is answered from what the playback already
     knows: a second connection is what makes the provider cut the first."""
-    url, guard, ua, owner = await asyncio.to_thread(_resolve, db, kind, token_file)
+    url, guard, ua, owner = await _resolve_checked(db, kind, token_file)
     who = request.client.host if request is not None and request.client else "unknown"
     pb = _shared_playback(f"{kind}/{token_file}", f"{kind}/{token_file}@{who}")
     if pb is not None and pb.size is not None:
@@ -919,7 +931,7 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
     (so seeking works), resumed from where it stopped if the upstream drops
     or ends short, counted and ranked against live TV and recordings, and
     one provider connection per playback however many requests share it."""
-    url, guard, ua, owner = await asyncio.to_thread(_resolve, db, kind, token_file)
+    url, guard, ua, owner = await _resolve_checked(db, kind, token_file)
     # One playback per title per PERSON: two TVs on the same film are two
     # playbacks (two provider connections, two slots), not one that they
     # keep taking from each other; a second client of a title only one

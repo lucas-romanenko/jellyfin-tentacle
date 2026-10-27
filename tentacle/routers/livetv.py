@@ -58,7 +58,7 @@ from models.database import (
     log_activity,
 )
 from routers.auth import get_user_from_request, require_admin, require_internal_or_admin
-from services.ssrf import explain_url, is_safe_url, lan_origin_guard
+from services.ssrf import LookupFailed, check_url, is_safe_url, lan_origin_guard, refusal_text
 from urllib.parse import urljoin, urlsplit
 
 logger = logging.getLogger(__name__)
@@ -126,9 +126,12 @@ async def _send_checked(client, url: str, headers: dict, guard=None):
         current = urljoin(current, location)
         # The guard resolves DNS with a blocking getaddrinfo: off the event
         # loop, so a resolver that hangs doesn't freeze every stream (#464).
-        if not await asyncio.to_thread(guard, current):
-            logger.warning(f"[LiveTV] Blocked redirect to non-public host: {current}")
-            raise HTTPException(502, "Stream redirect points to a non-public host")
+        # A name that didn't resolve is asked again before giving up: the
+        # provider sends every open to a fresh random subdomain.
+        allowed, why = await check_url(guard, current)
+        if not allowed:
+            logger.warning(f"[LiveTV] Blocked redirect ({why or 'non-public host'}): {current}")
+            raise HTTPException(502, refusal_text(why, "Stream redirect"))
     raise HTTPException(502, "Too many redirects")
 
 
@@ -5577,11 +5580,11 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
         # or that it didn't resolve: a DNS outage is not an SSRF refusal.
         from services.m3u_source import guard_origin
         guard = (await asyncio.to_thread(lan_origin_guard, guard_origin(provider))) if provider else is_safe_url
-        allowed, why = await asyncio.to_thread(explain_url, guard, stream_url)
+        allowed, why = await check_url(guard, stream_url)
         if not allowed:
             logger.warning(f"[LiveTV] Blocked stream URL for channel {channel_id} "
                            f"({why or 'non-public host'}): {stream_url}")
-            raise HTTPException(502, "Stream URL points to a non-public host")
+            raise HTTPException(502, refusal_text(why))
 
         upstream = await _stream_proxy_inner(channel_id, user_agent, stream_url,
                                              _release_sem, guard,
@@ -5847,7 +5850,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             # the worker reads it on its usual retry terms.
             for _hop in range(_MAX_VARIANT_HOPS):
                 variant = _select_hls_variant(playlist_text, playlist_base)
-                if not variant or not await asyncio.to_thread(guard, variant):
+                if not variant or not (await check_url(guard, variant))[0]:
                     break
                 v_resp = None
                 try:
@@ -6188,9 +6191,16 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 p = _urlparse(url)
                 key = (p.scheme, (p.hostname or "").lower(), p.port)
             except ValueError:
-                return await asyncio.to_thread(guard, url)
+                return (await check_url(guard, url))[0]
             if key not in _origin_verdicts:
-                _origin_verdicts[key] = await asyncio.to_thread(guard, url)
+                allowed, why = await check_url(guard, url)
+                if not allowed and isinstance(why, LookupFailed):
+                    # Not kept: a lookup that failed even after its retries
+                    # is asked again for the next line, or one DNS blip
+                    # would skip that origin's chunks for the whole stream.
+                    logger.warning(f"[LiveTV] {why} (channel {channel_id})")
+                    return False
+                _origin_verdicts[key] = allowed
             return _origin_verdicts[key]
         # When the playlist now in hand was read; reloads are timed from here.
         playlist_loaded_at = asyncio.get_running_loop().time()
