@@ -59,6 +59,9 @@ class _Client:
     def live_stream_url(self, sid, extension="m3u8"):
         return f"http://192.0.2.10/live/u/p/{sid}.{extension}"
 
+    def authenticate(self):
+        return {"user_info": {"allowed_output_formats": ["m3u8", "ts"]}}
+
     def close(self):
         pass
 
@@ -135,6 +138,15 @@ class RefreshLiveChannels(_Base):
         discovery.refresh_live_channels(self.db)
         self.assertTrue(self.channel("503").enabled)
 
+    def test_logos_guide_ids_and_the_accounts_formats_follow_the_provider(self):
+        STREAMS["10"][0].update(stream_icon="http://192.0.2.10/espn.png", epg_channel_id="espnplus7.us")
+        self.addCleanup(lambda: [STREAMS["10"][0].pop(k) for k in ("stream_icon", "epg_channel_id")])
+        discovery.refresh_live_channels(self.db)
+        ch = self.channel("501")
+        self.assertEqual("http://192.0.2.10/espn.png", ch.logo_url)
+        self.assertEqual("espnplus7.us", ch.epg_channel_id)
+        self.assertEqual(["m3u8", "ts"], livetv._remembered_output_formats(self.db, self.pid))
+
     def test_a_failure_is_said_and_never_left_running(self):
         _Client.fail = True
         self.assertEqual([], discovery.refresh_live_channels(self.db))
@@ -165,6 +177,172 @@ class RefreshLiveChannels(_Base):
         self.db.commit()
         self.assertEqual([], discovery.refresh_live_channels(self.db))
         self.assertEqual([], _Client.asked)
+
+
+class ChannelsTheProviderDropped(_Base):
+    """An Xtream channel the provider no longer lists is kept and marked;
+    after GONE_DAYS it leaves the lineup; listed again, it is back as it was."""
+
+    def drop_502(self):
+        saved = list(STREAMS["10"])
+        STREAMS["10"][:] = [s for s in saved if s["stream_id"] != 502]
+        self.addCleanup(STREAMS["10"].__setitem__, slice(None), saved)
+
+    def enable_both(self):
+        self.db.query(LiveChannel).update({"enabled": True})
+        self.db.commit()
+
+    def test_marked_kept_and_out_of_the_lineup_after_the_grace_days(self):
+        from datetime import datetime, timedelta
+        self.enable_both()
+        self.drop_502()
+        discovery.refresh_live_channels(self.db)
+        ch = self.channel("502")
+        self.assertIsNotNone(ch.provider_missing_since)
+        self.assertEqual(("Game 8", 8, True), (ch.custom_name, ch.channel_number, ch.enabled))
+        self.assertIsNone(self.channel("501").provider_missing_since)
+        self.assertIn(ch.id, [c.id for c in livetv._shown_channels(self.db)], "within the grace days")
+        msgs = [a.message for a in self.db.query(ActivityLog)]
+        self.assertTrue(any(m.endswith("1 no longer listed") for m in msgs), msgs)
+        # A later night: still missing, the date it went stays
+        first = ch.provider_missing_since
+        discovery.refresh_live_channels(self.db)
+        self.assertEqual(first, self.channel("502").provider_missing_since)
+        ch = self.channel("502")
+        ch.provider_missing_since = datetime.utcnow() - timedelta(days=livetv.GONE_DAYS, minutes=1)
+        self.db.commit()
+        self.assertNotIn(ch.id, [c.id for c in livetv._shown_channels(self.db)])
+        self.assertIn(self.channel("501").id, [c.id for c in livetv._shown_channels(self.db)])
+
+    def test_listed_again_it_is_back_as_it_was(self):
+        from datetime import datetime, timedelta
+        self.enable_both()
+        ch = self.channel("502")
+        ch.provider_missing_since = datetime.utcnow() - timedelta(days=10)
+        self.db.commit()
+        discovery.refresh_live_channels(self.db)
+        ch = self.channel("502")
+        self.assertIsNone(ch.provider_missing_since)
+        self.assertEqual(("Game 8", 8, True), (ch.custom_name, ch.channel_number, ch.enabled))
+        self.assertIn(ch.id, [c.id for c in livetv._shown_channels(self.db)])
+
+    def test_never_after_an_incomplete_read(self):
+        self.db.query(LiveChannelGroup).filter_by(name="NEWS").update({"enabled": True})
+        self.db.commit()
+        self.drop_502()
+        real = _Client.get_live_streams
+
+        def news_fails(client, category_id=None):
+            if str(category_id) == "20":
+                raise RuntimeError("timeout")
+            return real(client, category_id)
+        with mock.patch.object(_Client, "get_live_streams", news_fails):
+            discovery.refresh_live_channels(self.db)
+        self.assertIsNone(self.channel("502").provider_missing_since)
+
+    def test_never_in_a_group_that_answered_empty(self):
+        saved = list(STREAMS["10"])
+        STREAMS["10"][:] = []
+        self.addCleanup(STREAMS["10"].__setitem__, slice(None), saved)
+        discovery.refresh_live_channels(self.db)
+        self.assertIsNone(self.channel("501").provider_missing_since)
+        self.assertIsNone(self.channel("502").provider_missing_since)
+
+    def test_never_in_a_group_that_was_not_read(self):
+        self.db.add(LiveChannel(provider_id=self.pid, name="NEWS TWO", stream_id="602", group_title="NEWS",
+                                stream_url="http://192.0.2.10/live/u/p/602.m3u8", enabled=True))
+        self.db.commit()
+        discovery.refresh_live_channels(self.db)
+        self.assertIsNone(self.channel("602").provider_missing_since)
+
+    def test_too_many_at_once_is_an_outage_not_a_change(self):
+        for i in range(40):
+            self.db.add(LiveChannel(provider_id=self.pid, name=f"ESPN+ X{i}", stream_id=str(700 + i),
+                                    group_title="ESPN+", stream_url=f"http://192.0.2.10/live/u/p/{700 + i}.m3u8"))
+        self.db.commit()
+        discovery.refresh_live_channels(self.db)
+        self.assertEqual(0, self.db.query(LiveChannel).filter(LiveChannel.provider_missing_since.isnot(None)).count())
+        self.assertTrue(any("none marked as gone" in a.message for a in self.db.query(ActivityLog)))
+
+
+class VodCategoriesNightly(unittest.TestCase):
+    """The nightly discovery refreshes existing VOD categories as Sources'
+    "Fetch categories" does: names and counts; the admin's choices stay."""
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+        self.addCleanup(logging.disable, logging.NOTSET)
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
+        mdb.Base.metadata.create_all(engine)
+        self.addCleanup(engine.dispose)
+        self.db = sessionmaker(bind=engine)()
+        self.addCleanup(self.db.close)
+        self.p = Provider(name="P", provider_type="xtream", server_url="http://192.0.2.10",
+                          username="u", password="p", active=True)
+        self.db.add(self.p)
+        self.db.commit()
+        self.db.add_all([
+            mdb.ProviderCategory(provider_id=self.p.id, category_id="1", category_name="NETFLIX OLD",
+                                 type="movie", whitelisted=True, source_tag="Netflix", title_count=100),
+            mdb.ProviderCategory(provider_id=self.p.id, category_id="2", category_name="KIDS",
+                                 type="series", whitelisted=False, source_tag="My Tag", title_count=5),
+        ])
+        self.db.commit()
+        self.answer = ([{"category_id": "1", "category_name": "NETFLIX MOVIES"}],
+                       [{"category_id": "2", "category_name": "KIDS SHOWS"}])
+        self.counts = ({"1": 120}, {"2": 7})
+        self.entries = 50
+
+    def run_it(self, gentle=True, due=True):
+        def fetch_cats(provider, read=None, counts=True, gap=0.0):
+            if read is not None:
+                read["entries"] = self.entries
+            return (*self.answer, *(self.counts if counts else ({}, {})))
+        with mock.patch("routers.providers.fetch_provider_categories", fetch_cats), \
+                mock.patch("routers.providers.fetch_category_counts", lambda p, session=None, gap=0.0: self.counts), \
+                mock.patch.object(discovery, "_vod_counts_due", lambda db, p: due):
+            new = discovery._refresh_vod_categories(self.db, self.p, gentle)
+        self.db.expire_all()
+        return new
+
+    def cats(self):
+        return {c.category_id: (c.category_name, c.whitelisted, c.source_tag, c.title_count)
+                for c in self.db.query(mdb.ProviderCategory)}
+
+    def test_names_and_counts_follow_and_choices_stay(self):
+        self.assertEqual([], self.run_it())
+        self.assertEqual({"1": ("NETFLIX MOVIES", True, "Netflix", 120),
+                          "2": ("KIDS SHOWS", False, "My Tag", 7)}, self.cats())
+
+    def test_between_weekly_counts_only_the_names(self):
+        self.run_it(due=False)
+        self.assertEqual({"1": ("NETFLIX MOVIES", True, "Netflix", 100),
+                          "2": ("KIDS SHOWS", False, "My Tag", 5)}, self.cats())
+
+    def test_an_answer_without_a_single_title_keeps_the_counts(self):
+        self.counts = ({}, {})
+        self.run_it()
+        self.assertEqual((100, 5), (self.cats()["1"][3], self.cats()["2"][3]))
+
+    def test_an_m3u_playlist_drops_the_unchosen_groups_it_no_longer_lists(self):
+        self.p.provider_type = "m3u_url"
+        self.db.commit()
+        self.answer = ([], [])
+        self.run_it()
+        self.assertEqual(["1"], sorted(self.cats()), "the chosen one stays")
+
+    def test_an_empty_or_truncated_playlist_drops_nothing(self):
+        self.p.provider_type = "m3u_url"
+        for i in range(30):
+            self.db.add(mdb.ProviderCategory(provider_id=self.p.id, category_id=f"g{i}", category_name=f"G{i}",
+                                             type="movie", whitelisted=False))
+        self.db.commit()
+        self.answer = ([], [])
+        self.run_it()
+        self.assertEqual(32, len(self.cats()))
+        self.entries = 0
+        self.run_it()
+        self.assertEqual(32, len(self.cats()))
 
 
 class GuideRefreshAfterSync(_Base):

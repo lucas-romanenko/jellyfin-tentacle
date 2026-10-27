@@ -955,6 +955,12 @@ class LiveChannel(Base):
     check_fails = Column(Integer, nullable=True)
     check_detail = Column(String, nullable=True)
 
+    # Xtream: since when (UTC) a complete channel sync no longer found it in
+    # its group (routers/livetv._mark_gone_channels); NULL = listed. The row
+    # stays, with its number, names and switch, for when it comes back; after
+    # GONE_DAYS it leaves the lineup.
+    provider_missing_since = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -263,13 +263,23 @@ the job started is skipped, #517); 3. Radarr
 scan; 4. Sonarr scan (and Following state for every series); 5. recently
 added tags; 6. Jellyfin pipeline (scan, push tags, refresh playlists);
 7. clean the TMDB cache, then discovery of new categories and Live TV
-groups (gently, see "Gentle on the provider"), then the Live TV channel sync
+groups (gently, see "Gentle on the provider"; existing VOD categories get
+the provider's name every night and its counts on a night a category is new
+or every `VOD_COUNTS_EVERY_DAYS` (7), as Sources' "Fetch categories" does:
+chosen state and source tag stay, an M3U playlist's unchosen categories it
+no longer lists go unless that is over a fifth of them), then the Live TV channel sync
 of every Xtream Live TV provider with an enabled group
 (`discovery.refresh_live_channels()`: the Live TV page's channel sync, one
 listing per enabled group `CHANNEL_GAP_SECONDS` (5 s) apart; names, links,
 logos, guide ids and new channels; enabled flags, numbers and own names
 stay; skipped for a provider whose sync runs and while a protected recording
-runs; ends its sync status itself). An event channel is named for the day's
+runs; ends its sync status itself). A channel the provider no longer lists
+is never deleted: after a complete read (every enabled group answered), in a
+group that listed channels, it gets `provider_missing_since` (at most a
+fifth of a group's channels at once, at least 25, or none: an outage), and
+`_shown_channels()` leaves it out of the lineup after `GONE_DAYS` (3); listed
+again, it is back with its number, name and switch. The manual sync does
+the same. An event channel is named for the day's
 game and the lineup carries only today's events, so without it the names
 went stale until someone pressed the button (26 Oct 2026). M3U playlists are
 read whole by the group step already; 8. `sweep_orphaned_downloads()`,
