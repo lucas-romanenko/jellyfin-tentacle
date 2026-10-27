@@ -203,11 +203,12 @@ def _segment_read_limit(target_duration) -> float:
 
 
 # An HLS segment is handed on in pieces of this size (whole 188-byte MPEG-TS
-# packets, like the raw path's): a 10 s segment is 5-8 MB, and reading each
-# one into a single bytes object let glibc's heap fragment until the
-# process grew without bound (8 channels: +80 MB a minute while the live
-# Python objects stayed at ~150 MB).
-_HLS_PIECE = 188 * 1394
+# packets, ~64 KB, below glibc's mmap threshold): a 10 s segment is 5-8 MB,
+# and reading each one into a single bytes object let glibc's heap fragment
+# until the process grew without bound (8 channels: +80 MB a minute while
+# the live Python objects stayed at ~150 MB; 256 KB pieces still grew ~15 MB
+# a minute; 64 KB pieces: flat at ~225 MB).
+_HLS_PIECE = 188 * 348
 
 
 async def _aread_pieces(resp) -> list:
