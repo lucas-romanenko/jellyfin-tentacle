@@ -971,7 +971,8 @@ User docs: `docs/features/live-tv.md`.
   the next segment is due (`_hls_next_read`: the newest one's arrival + its duration, then every 1-2 s; ~1.5
   reads a segment). Each read lands on a new one-time host, so each is a lookup at the home's resolver
   (AdGuard's default limit is 20 a second per /24): `hls_guard` resolves each host once per stream (its
-  segments cost none), and a name that does not resolve is retried, never taken for a private host
+  segments cost none; the HLS client connects to the address the guard approved, `ssrf.approved_ips`, without a
+  second lookup), and a name that does not resolve is retried, never taken for a private host
   (`ssrf.unresolved`; `_send_checked` raises ConnectError). A late segment is logged ("came Ns after the one before").
 - `discover.json` `TunerCount` is at least the stream ceiling
   (`_hdhr_tuner_count`). Jellyfin 10.11 enforces the count saved with its
