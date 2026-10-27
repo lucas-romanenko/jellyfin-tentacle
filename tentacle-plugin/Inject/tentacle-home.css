@@ -681,7 +681,8 @@ html {
 }
 
 /* On Now's own card (no poster/wide choice, the same on the TV app): a square
-   tile with the channel logo whole on a calm panel, never cropped or stretched */
+   tile filled by the channel logo, whole (never cropped or stretched); a logo
+   that isn't square sits on a calm panel */
 .mh-card-onnow {
   width: 176px;
 }
@@ -691,8 +692,6 @@ html {
 }
 .mh-card .mh-onnow-logo img {
   object-fit: contain;
-  padding: 20%;
-  box-sizing: border-box;
 }
 .mh-onnow-name {
   display: none;
