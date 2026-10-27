@@ -355,10 +355,24 @@ user_id)` computes them every time from source tags, list subscriptions
           "sort_order": "Descending", "require_logo": true, "require_trailer": false,
           "trailer_audio": false, "item_count": 10},
  "rows": [{"type": "playlist", "playlist_id": "…", "display_name": "…", "order": 1, "max_items": 20},
-          {"type": "builtin", "section_id": "resumevideo", "display_name": "Continue Watching", "order": 2}]}
+          {"type": "builtin", "section_id": "resumevideo", "display_name": "Continue Watching", "order": 2,
+           "shape": "wide", "max_items": 20}],
+ "merge_continue_watching": true}
 ```
 
 - Row keys: `playlist:<guid>` or `builtin:<section_id>` (reorder/remove).
+- **No Jellyfin home sections** (Lucas, 2026-10-26). The `builtin` rows are
+  Tentacle's own (`services/home_rows.py`): Continue Watching
+  (`resumevideo`: resume + next episodes when `merge_continue_watching`, its
+  "Next episodes" switch; poster/wide, default wide), On Now (`onnow`: its
+  own square channel card, no shape) and Recordings (`recordings`: the
+  latest recordings, poster/wide, default poster; picker only). The plugin
+  works out Continue Watching and Recordings once
+  (`/TentacleHome/ContinueWatching`, `/Recordings`) for the web and the TV
+  app, and its `Sections` sends no other section. `normalize_rows()` keeps
+  every config that way (`write_home_config`, the default); once per install
+  (`home_rows_tentacle_only`) every saved home loses Jellyfin's sections (a
+  lone Next Up becomes Continue Watching with next episodes on).
 - The hero has its own sort; `require_logo` (default on) keeps only items
   with a backdrop and a logo; `require_trailer` only items with a trailer.
   The plugin applies both when rendering. `trailer_audio` is off when
@@ -375,8 +389,11 @@ user_id)` computes them every time from source tags, list subscriptions
   without their own, stored in the `default_home` setting with playlist rows
   keyed by ready-made playlist (`builtin:recently_added_movies`,
   `source:<name>:movies`, `youtube:<id>`), since each person's playlist ids
-  differ. Unset = `suggested_default()` (Continue Watching, Next Up, recently
-  added movies/TV, the biggest sources; spotlight on recently added movies).
+  differ. Unset = `suggested_default()` (Continue Watching with next
+  episodes, On Now, recently added movies/TV, the biggest sources; spotlight
+  on recently added movies). Recently added reaches back past the window when
+  fewer than 20 titles are in it (`recently_added_cutoff`), so a new or quiet
+  server's rows are never empty.
   A person's file carries `follows_default: true` while it is the default;
   `apply_default()` writes it with their own playlist ids (switching on the
   ready-made playlists it needs). Any change on their own Home Screen drops
