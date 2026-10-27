@@ -31,8 +31,13 @@ other variants of folded networks), unchecked first, then oldest result.
 Paced so the pool cycles in about a day: one check every
 max(MIN_GAP, CYCLE / pool size) seconds.
 
-No setting: it is always on (started from main.py's lifespan, never in
-tests). `status` is what GET /api/live/checker/status shows.
+On by default (started from main.py's lifespan, never in tests). An admin
+can pause it (Live TV > More, PUT /api/live/checker/enabled; the setting
+ENABLED_KEY): every round reads the setting first, so a paused checker opens
+nothing at all, and pausing stops a check in flight. Results already stored
+stay as they are (the pickers keep showing the last one). `status` is what
+GET /api/live/checker/status shows (state "off", "paused_by_admin": true
+when paused).
 """
 import asyncio
 import logging
@@ -81,9 +86,12 @@ DEFAULT_UA = "TiviMate/4.7.0 (Linux; Android 12)"
 
 WORKS, BROKEN, UNCHECKED = "works", "broken", "unchecked"
 
+ENABLED_KEY = "livetv_checker_enabled"   # "false" = paused by an admin; anything else = on
+PAUSED_BY_ADMIN = "paused by admin"
+
 status = {
     "running": False,
-    "state": "stopped",          # stopped | starting | checking | paused | waiting | idle | backoff
+    "state": "stopped",          # stopped | starting | checking | paused | waiting | idle | backoff | off
     "paused_reason": None,
     "current": None,             # {"channel_id", "name", "since"}
     "last": None,                # {"channel_id", "name", "result", "detail", "at"}
@@ -106,6 +114,40 @@ def _now() -> datetime:
 
 def _iso(dt: Optional[datetime]) -> Optional[str]:
     return dt.isoformat() + "Z" if dt else None
+
+
+# ── On / off (admin) ──────────────────────────────────────────────────────
+
+def is_enabled(db) -> bool:
+    from models.database import get_setting
+    return (get_setting(db, ENABLED_KEY, "true") or "true").strip().lower() != "false"
+
+
+async def set_enabled(on: bool) -> None:
+    """The admin's switch. Off: stored first (the next round opens nothing),
+    then a check in flight is stopped and its connection closed."""
+    from models.database import set_setting
+
+    def store():
+        db = SessionLocal()
+        try:
+            set_setting(db, ENABLED_KEY, "true" if on else "false")
+        finally:
+            db.close()
+    await asyncio.to_thread(store)
+    logger.info(f"[LiveTV check] {'Switched on' if on else 'Paused'} by an admin")
+    if on:
+        if status["state"] == "off":
+            status["state"], status["paused_reason"] = "waiting", None
+        return
+    status["state"], status["paused_reason"] = "off", PAUSED_BY_ADMIN
+    task = _inflight
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await asyncio.wait({task}, timeout=2.0)
+        except Exception:
+            pass
 
 
 # ── Results ───────────────────────────────────────────────────────────────
@@ -486,6 +528,8 @@ async def step(check=None) -> float:
     def look():
         db = SessionLocal()
         try:
+            if not is_enabled(db):
+                return PAUSED_BY_ADMIN, None, None, 0
             why = busy_reason(db)
             if why:
                 return why, None, None, 0
@@ -495,6 +539,9 @@ async def step(check=None) -> float:
             db.close()
 
     why, cid, name, pool_size = await asyncio.to_thread(look)
+    if why == PAUSED_BY_ADMIN:
+        status["state"], status["paused_reason"] = "off", why
+        return BUSY_POLL_SECONDS
     if why:
         status["state"], status["paused_reason"] = "paused", why
         return BUSY_POLL_SECONDS
@@ -523,7 +570,7 @@ async def step(check=None) -> float:
     except asyncio.CancelledError:
         if asyncio.current_task().cancelling():
             raise                               # shutting down
-        return BUSY_POLL_SECONDS                # pre-empted: no verdict
+        return BUSY_POLL_SECONDS                # pre-empted or paused: no verdict
     except asyncio.TimeoutError:
         verdict, code, detail, pid = "fail", None, f"no video within {CHECK_SECONDS:.0f} s", None
     except Exception as e:
@@ -606,8 +653,16 @@ def summary(db) -> dict:
         return t
 
     last_at = max((at for _, _, at in rows if at is not None), default=None)
+    enabled = is_enabled(db)
+    st = dict(status)
+    if not enabled:
+        # The setting is the truth, also before the loop's next round
+        st.update(state="off", paused_reason=PAUSED_BY_ADMIN, next_at=None)
+    elif st["state"] == "off":
+        st.update(state="waiting", paused_reason=None)
     return {
-        **{k: v for k, v in status.items()},
+        **st,
+        "paused_by_admin": not enabled,
         "pool": tally([r for r in rows if r[0] in pool_ids]),
         "enabled": tally(rows),
         "last_checked_at": _iso(last_at),

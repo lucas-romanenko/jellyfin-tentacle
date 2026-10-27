@@ -3199,6 +3199,15 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                 <div class="live-more-hint">People follow their teams and set recording rules on <a href="#" onclick="showPage('recordings');return false" style="color: var(--accent-text)">Recordings</a>, and record single programmes in Jellyfin (Guide &rarr; Record); recordings are the household&rsquo;s, like a family recorder. How many channels can play or record at once is <strong>Streams at once</strong> on the provider&rsquo;s card; problems with a recording are on <a href="#" onclick="showPage('health');return false" style="color: var(--accent-text)">Health</a>.</div>
               </div>
             </div>
+            <!-- Channel checker (services/livetv_checker; pages.js checker*) -->
+            <div class="live-more-row" id="checker-row">
+              <div>
+                <div class="live-more-title">Channel checker</div>
+                <div class="live-more-hint">While nobody watches, Tentacle opens one channel at a time for a few seconds to see whether it plays, and the channel lists show the result. Switch it off if your provider minds the extra connections; the last results stay.</div>
+                <div id="checker-status" class="mych-setup-status" aria-live="polite"></div>
+              </div>
+              <button type="button" class="live-toggle" id="checker-toggle" aria-label="Channel checker" aria-pressed="false" style="flex-shrink:0"></button>
+            </div>
             <!-- Pictures for recordings (services/recording_art; recordings.js recArt*) -->
             <div class="live-more-row" id="rec-art-row">
               <div>

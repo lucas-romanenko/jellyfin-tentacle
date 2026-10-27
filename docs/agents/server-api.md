@@ -149,7 +149,8 @@ Declared on the app in `main.py` (no router, all **none**; listed in
 | POST | `/api/lists/{list_id}/playlist-toggle` | user | lists.py:toggle_list_playlist |
 | GET | `/api/live/capacity` | admin | livetv.py:live_capacity |
 | GET | `/api/live/preview` | signed in | livetv.py:live_preview (may a guide play a muted preview now: `previews` when `free` >= 2 after recordings starting within 10 min; `?previewing=true` when the caller's own preview runs, then >= 1; `free` null = no limit; Jellyfin's timers read at most every 30 s) |
-| GET | `/api/live/checker/status` | admin | livetv_checker.py:checker_status (background stream checker: state, paused reason, progress) |
+| GET | `/api/live/checker/status` | admin | livetv_checker.py:checker_status (background stream checker: state, paused reason, progress, paused_by_admin) |
+| PUT | `/api/live/checker/enabled` | admin | livetv_checker.py:checker_enabled (admin switch {enabled}; off = the checker opens no channel, results kept) |
 | GET | `/api/live/catalog/types` | admin | livetv_catalog.py:catalog_types (the channel types) |
 | GET | `/api/live/catalog/pool` | admin | livetv_catalog.py:catalog_pool (the folded pool, with "no event" channels) |
 | GET | `/api/live/catalog/networks` | admin | livetv_catalog.py:catalog_networks (folded networks with their variants; `?include_empty=1`) |
