@@ -369,6 +369,59 @@ class NextRead(unittest.TestCase):
         self.assertLessEqual(max(late[3:]), 2.6, f"seen late: {late}")
 
 
+class ConnectsToTheApprovedAddress(unittest.IsolatedAsyncioTestCase):
+    """The HLS client connects to the address the guard approved for a host
+    (no second lookup: each one-time host is a query at the home's resolver).
+    The suite has no DNS at all, so a fetch that works proves it."""
+
+    async def test_an_approved_host_is_reached_without_a_lookup(self):
+        from services import ssrf
+
+        async def handle(reader, writer):
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            await writer.drain()
+            writer.close()
+        server = await asyncio.start_server(handle, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        self.addAsyncCleanup(server.wait_closed)
+        self.addCleanup(server.close)
+        ssrf._approve("edge-one-time.example", ["127.0.0.1"])
+        self.addCleanup(ssrf._approved.pop, "edge-one-time.example", None)
+        async with httpx.AsyncClient(transport=livetv._approved_address_transport()) as client:
+            r = await client.get(f"http://edge-one-time.example:{port}/x")
+        self.assertEqual(b"ok", r.content)
+
+    async def test_without_an_approval_the_name_is_looked_up_as_ever(self):
+        async with httpx.AsyncClient(transport=livetv._approved_address_transport()) as client:
+            with self.assertRaises(httpx.ConnectError):
+                await client.get("http://never-approved.example:9/x")
+
+    def test_an_approval_is_kept_briefly(self):
+        from services import ssrf
+        ssrf._approve("Brief.example", ["93.184.216.34"])
+        self.addCleanup(ssrf._approved.pop, "brief.example", None)
+        self.assertEqual(["93.184.216.34"], ssrf.approved_ips("brief.example"))
+        ssrf._approved["brief.example"] = (["93.184.216.34"], 0.0)
+        self.assertIsNone(ssrf.approved_ips("brief.example"))
+
+    def test_a_public_verdict_is_what_gets_approved(self):
+        import socket
+        from unittest.mock import patch as p
+        from services import ssrf
+        self.addCleanup(ssrf._approved.pop, "cdn.example", None)
+        self.addCleanup(ssrf._approved.pop, "inside.example", None)
+        answers = {"cdn.example": "93.184.216.34", "inside.example": "10.0.0.5"}
+
+        def gai(host, *a, **k):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (answers[host], 0))]
+        with p.object(ssrf.socket, "getaddrinfo", gai):
+            self.assertTrue(ssrf.is_safe_url("http://cdn.example/x"))
+            self.assertFalse(ssrf.is_safe_url("http://inside.example/x"))
+        self.assertEqual(["93.184.216.34"], ssrf.approved_ips("cdn.example"))
+        self.assertIsNone(ssrf.approved_ips("inside.example"))
+
+
 class StartSetting(unittest.TestCase):
     def test_the_setting_or_the_default(self):
         from types import SimpleNamespace

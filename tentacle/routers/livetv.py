@@ -138,6 +138,50 @@ async def _send_checked(client, url: str, headers: dict, guard=None):
     raise HTTPException(502, "Too many redirects")
 
 
+def _approved_address_transport():
+    """An httpx transport that connects to the address the SSRF guard just
+    approved for a host (ssrf.approved_ips), instead of looking the name up
+    again: an HLS stream re-read from the channel URL meets a new one-time
+    host on every read, and each lookup counts against the home's resolver
+    (AdGuard: 20 a second per /24, shared with every device). TLS still
+    verifies the host's name (httpcore takes SNI from the URL, not from the
+    address). A proxy from the environment keeps httpx's own transport."""
+    import httpcore
+    from services import ssrf
+
+    class _Backend(httpcore.AsyncNetworkBackend):
+        def __init__(self):
+            self._inner = httpcore.AnyIOBackend()
+
+        async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+            ips = ssrf.approved_ips(host)
+            last = None
+            for ip in (ips or [host])[:3]:
+                try:
+                    return await self._inner.connect_tcp(ip, port, timeout=timeout, local_address=local_address,
+                                                         socket_options=socket_options)
+                except (httpcore.ConnectError, httpcore.ConnectTimeout) as e:
+                    last = e
+            raise last
+
+        async def connect_unix_socket(self, path, timeout=None, socket_options=None):
+            return await self._inner.connect_unix_socket(path, timeout=timeout, socket_options=socket_options)
+
+        async def sleep(self, seconds):
+            await self._inner.sleep(seconds)
+
+    transport = httpx.AsyncHTTPTransport()
+    pool = getattr(transport, "_pool", None)
+    if type(pool) is httpcore.AsyncConnectionPool:
+        transport._pool = httpcore.AsyncConnectionPool(
+            ssl_context=pool._ssl_context, max_connections=pool._max_connections,
+            max_keepalive_connections=pool._max_keepalive_connections,
+            keepalive_expiry=pool._keepalive_expiry, http1=pool._http1, http2=pool._http2,
+            retries=pool._retries, local_address=pool._local_address, uds=pool._uds,
+            socket_options=pool._socket_options, network_backend=_Backend())
+    return transport
+
+
 # A running HLS stream's playlist reads: headers in, body within this long.
 _HLS_PLAYLIST_READ = 10.0
 # Its segment reads: this many times the segment's own duration (at least
@@ -6432,6 +6476,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         async with httpx.AsyncClient(
             follow_redirects=False,
             timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
+            transport=_approved_address_transport(),
         ) as hls_client:
             placeholder_noted = False
 

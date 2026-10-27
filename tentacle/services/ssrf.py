@@ -15,6 +15,7 @@ import inspect
 import ipaddress
 import logging
 import socket
+import time
 from typing import Iterable, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -50,6 +51,32 @@ def _ip_is_blocked(ip: str) -> bool:
 UNRESOLVED = "could not be resolved"
 
 
+# The addresses a host was approved at, for a client that connects to exactly
+# those (approved_ips): no second lookup, and no other address than the one
+# checked (a name that re-resolves elsewhere in between). Kept briefly.
+_APPROVED_FOR = 30.0
+_approved: dict = {}
+
+
+def _approve(hostname: str, ips) -> None:
+    now = time.monotonic()
+    if len(_approved) > 1024:
+        for h in [h for h, (_, until) in _approved.items() if until <= now]:
+            _approved.pop(h, None)
+        if len(_approved) > 1024:
+            _approved.clear()
+    _approved[hostname.lower()] = (sorted(ips), now + _APPROVED_FOR)
+
+
+def approved_ips(hostname: str):
+    """The addresses `hostname` was found public (or on the provider's LAN
+    origin) at within the last _APPROVED_FOR s, else None."""
+    hit = _approved.get((hostname or "").lower())
+    if hit is None or hit[1] <= time.monotonic():
+        return None
+    return hit[0]
+
+
 def unresolved(why: str) -> bool:
     """True when a guard's reason says the host did not resolve (nothing was
     fetched; trying again later may work), not that it is private."""
@@ -74,6 +101,7 @@ def host_verdict(hostname: str) -> Tuple[bool, str]:
     blocked = sorted(ip for ip in ips if _ip_is_blocked(ip))
     if blocked:
         return False, f"{hostname} resolves to {', '.join(sorted(ips))}; not public: {', '.join(blocked)}"
+    _approve(hostname, ips)
     return True, ""
 
 
@@ -218,6 +246,7 @@ def lan_origin_guard(server_url: str):
             if not_lan:
                 return False, (f"{origin[1]} resolves to {', '.join(sorted(resolved))}; "
                                f"not on the LAN: {', '.join(not_lan)}")
+            _approve(origin[1], resolved)
             return True, ""
         return explain_url(is_safe_url, url)
 
