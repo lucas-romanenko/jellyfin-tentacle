@@ -83,7 +83,7 @@ class TestVodHeadErrorText(unittest.IsolatedAsyncioTestCase):
             raise httpx.ConnectError(f"connection failed for url '{url}'")
 
         # No DB here: recording protection (read by vod_head) is off.
-        with patch.object(vod, "_resolve", lambda db, kind, tf: (url, None, "UA", "vod:movie:1:42")), \
+        with patch.object(vod, "_resolve", lambda db, kind, tf: (url, lambda u: True, "UA", "vod:movie:1:42")), \
                 patch.object(vod.livetv, "_protect_recordings", lambda db: False), \
                 patch.object(vod, "_open", fail):
             with self.assertRaises(HTTPException) as ctx:

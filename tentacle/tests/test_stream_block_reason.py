@@ -14,6 +14,7 @@ every decision with a frozen copy of the previous implementation.
 """
 import asyncio
 import ipaddress
+import itertools
 import logging
 import os
 import random
@@ -53,9 +54,10 @@ class _StreamRoute(unittest.TestCase):
         import models.database as mdb
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
-        p = mock.patch.object(ssrf.socket, "getaddrinfo", _gai)
-        p.start()
-        self.addCleanup(p.stop)
+        for p in (mock.patch.object(ssrf.socket, "getaddrinfo", _gai),
+                  mock.patch.object(ssrf, "LOOKUP_RETRY_WAITS", (0, 0))):
+            p.start()
+            self.addCleanup(p.stop)
         engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
@@ -101,8 +103,8 @@ class BlockedStreamSaysWhy(_StreamRoute):
         self.assertIn("cdn.example could not be resolved", line)
         self.assertIn("Temporary failure in name resolution", line)
         self.assertNotIn("non-public", line)
-        # What the client gets is unchanged.
-        self.assertEqual("Stream URL points to a non-public host", result.detail)
+        # The client is told it was a lookup, not a non-public address.
+        self.assertEqual("Couldn't look up the provider's server (DNS lookup failed)", result.detail)
 
     def test_a_non_public_answer_names_the_address(self):
         cid = self._channel("http://provider.example", "http://cdn.example/live/u/p/28.ts")
@@ -117,7 +119,7 @@ class BlockedStreamSaysWhy(_StreamRoute):
     def test_a_lan_provider_whose_name_stops_resolving_says_so(self):
         cid = self._channel("http://tuliprox.lan:8890", "http://tuliprox.lan:8890/live/u/p/1.ts")
         # Resolves when the guard is built, fails when the stream URL is checked.
-        answers = iter([["192.168.2.52"], EAI_AGAIN])
+        answers = itertools.chain([["192.168.2.52"]], itertools.repeat(EAI_AGAIN))
         with mock.patch.dict(DNS, {}), \
                 mock.patch.object(ssrf.socket, "getaddrinfo",
                                   lambda h, *a, **k: _gai_once(next(answers))):
