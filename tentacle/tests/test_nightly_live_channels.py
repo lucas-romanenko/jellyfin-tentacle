@@ -236,6 +236,9 @@ class TheNightlyJob(_Base):
             p.start()
             self.addCleanup(p.stop)
         main.run_scheduled_sync()
+        self.db.expire_all()
+        self.assertNotIn("sync", [a.event for a in self.db.query(ActivityLog)],
+                         [a.message for a in self.db.query(ActivityLog)])
         return steps
 
     def test_groups_then_channels_then_the_guide_then_jellyfin(self):
