@@ -1419,6 +1419,8 @@ def recently_added_cutoff(db, model):
     titles are in it."""
     from datetime import datetime, timedelta
     cutoff = datetime.utcnow() - timedelta(days=get_recently_added_days(db))
+    if RECENTLY_ADDED_MIN <= 0:
+        return cutoff
     nth = (db.query(model.date_added).filter(model.date_added.isnot(None))
            .order_by(model.date_added.desc()).offset(RECENTLY_ADDED_MIN - 1).limit(1).scalar())
     if nth is None:

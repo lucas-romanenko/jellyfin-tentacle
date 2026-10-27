@@ -24,9 +24,12 @@ def _function(name):
 
 class AsksForThePath(unittest.TestCase):
     def test_the_rows_ask_for_path_and_date_created(self):
-        fields = re.search(r"var commonFields = '([^']*)'", SRC).group(1).split(",")
-        self.assertIn("Path", fields)
-        self.assertIn("DateCreated", fields)
+        """Continue Watching and Recordings come from the plugin (RowDtoOptions)."""
+        cs = (INJECT.parent / "Api" / "HomeScreenController.cs").read_text(encoding="utf-8")
+        opts = cs[cs.index("private static DtoOptions RowDtoOptions()"):]
+        opts = opts[:opts.index("};")]
+        self.assertIn("ItemFields.Path", opts)
+        self.assertIn("ItemFields.DateCreated", opts)
 
 
 @unittest.skipUnless(HAVE_NODE, "node is not installed")

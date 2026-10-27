@@ -30,6 +30,11 @@ from tmp_dirs import temp_dir
 
 class _Base(unittest.TestCase):
     def setUp(self):
+        # The window alone: these few titles would otherwise all count as
+        # recent (a row reaches back to RECENTLY_ADDED_MIN titles)
+        _p = mock.patch.object(mdb, "RECENTLY_ADDED_MIN", 0)
+        _p.start()
+        self.addCleanup(_p.stop)
         self.tmp = Path(temp_dir(self))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         engine = create_engine(f"sqlite:///{self.tmp}/t.db", connect_args={"check_same_thread": False})
