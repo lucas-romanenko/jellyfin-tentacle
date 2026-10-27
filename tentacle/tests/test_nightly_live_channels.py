@@ -196,6 +196,8 @@ class TheNightlyJob(_Base):
         import services.sonarr as sonarr
         import services.tagger as tagger
 
+        # Caches go to the test's own dir, not /data
+        mdb.set_setting(self.db, "data_dir", str(self.tmp))
         steps = []
         real_refresh = discovery.refresh_live_channels
 
