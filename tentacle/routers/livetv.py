@@ -6379,11 +6379,18 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             hit = _origin_verdicts.get(key)
             if hit is not None:
                 return hit
+            from services import ssrf
+            if key[0] in ("http", "https") and ssrf.approved_ips(key[1]):
+                # Found public a moment ago (the redirect that led here): no
+                # second lookup. A public host is allowed under every guard.
+                verdict = (True, "")
+                _origin_verdicts[key] = verdict
+                return verdict
             if guard(url):
                 verdict = (True, "")
             else:
                 allowed, why = explain_url(guard, url)
-                verdict = (False, why if not allowed else "could not be resolved (resolved on a second try)")
+                verdict = (False, why if not allowed else f"{key[1]} could not be resolved at first")
             if verdict[0] or not unresolved(verdict[1]):
                 if len(_origin_verdicts) > 512:
                     _origin_verdicts.clear()

@@ -405,6 +405,19 @@ class ConnectsToTheApprovedAddress(unittest.IsolatedAsyncioTestCase):
         ssrf._approved["brief.example"] = (["93.184.216.34"], 0.0)
         self.assertIsNone(ssrf.approved_ips("brief.example"))
 
+    def test_a_lan_providers_origin_is_never_remembered(self):
+        import socket
+        from unittest.mock import patch as p
+        from services import ssrf
+        self.addCleanup(ssrf._approved.pop, "tuliprox.lan", None)
+
+        def gai(host, *a, **k):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.1.20", 0))]
+        with p.object(ssrf.socket, "getaddrinfo", gai):
+            guard = ssrf.lan_origin_guard("http://tuliprox.lan:8901")
+            self.assertTrue(guard("http://tuliprox.lan:8901/live/u/p/1.m3u8"))
+        self.assertIsNone(ssrf.approved_ips("tuliprox.lan"))
+
     def test_a_public_verdict_is_what_gets_approved(self):
         import socket
         from unittest.mock import patch as p

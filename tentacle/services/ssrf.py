@@ -51,9 +51,12 @@ def _ip_is_blocked(ip: str) -> bool:
 UNRESOLVED = "could not be resolved"
 
 
-# The addresses a host was approved at, for a client that connects to exactly
-# those (approved_ips): no second lookup, and no other address than the one
-# checked (a name that re-resolves elsewhere in between). Kept briefly.
+# The public addresses a host was found at (host_verdict), for a client that
+# connects to exactly those (approved_ips): no second lookup, and no other
+# address than the one checked (a name that re-resolves elsewhere in
+# between). Kept briefly. Only public verdicts: a LAN provider's own origin
+# (lan_origin_guard) is never remembered, so a remembered host is allowed
+# under every guard.
 _APPROVED_FOR = 30.0
 _approved: dict = {}
 
@@ -69,8 +72,8 @@ def _approve(hostname: str, ips) -> None:
 
 
 def approved_ips(hostname: str):
-    """The addresses `hostname` was found public (or on the provider's LAN
-    origin) at within the last _APPROVED_FOR s, else None."""
+    """The addresses `hostname` was found public at within the last
+    _APPROVED_FOR s, else None."""
     hit = _approved.get((hostname or "").lower())
     if hit is None or hit[1] <= time.monotonic():
         return None
@@ -246,7 +249,6 @@ def lan_origin_guard(server_url: str):
             if not_lan:
                 return False, (f"{origin[1]} resolves to {', '.join(sorted(resolved))}; "
                                f"not on the LAN: {', '.join(not_lan)}")
-            _approve(origin[1], resolved)
             return True, ""
         return explain_url(is_safe_url, url)
 
