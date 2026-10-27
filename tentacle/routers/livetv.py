@@ -6679,11 +6679,16 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         st = e.response.status_code
                         if st in (401, 403, 407):
                             backoff_cap = _REFUSAL_BACKOFF_CAP
-                        if st == 407 and is_recording is not None and is_recording():
+                        if st == 407 and (refresh_from_channel
+                                          or (is_recording is not None and is_recording())):
                             # The channel URL itself answered 407: an ended
                             # session while the token is renewed, not a refused
-                            # login. Not counted for a recording; waited out on
-                            # the refusal cap, as the raw path does (#298).
+                            # login. Not counted for a recording -- nor for a
+                            # viewer re-read from the channel URL, where every
+                            # read is such a renewal (seen: 407 for ~20 s while
+                            # the panel restarted channels at night); waited
+                            # out on the refusal cap within the viewer's
+                            # budget, as the raw path does (#298).
                             reresolve_run -= 1
                             await _backoff_sleep()
                             return False

@@ -224,12 +224,38 @@ class TheChannelUrlEveryTime(unittest.IsolatedAsyncioTestCase):
         # a viewer goes on from the new numbering's live edge, not its top
         self.assertEqual(livetv._hls_start_index([10.0] * 6), renumbered[0], got)
 
-    async def test_a_viewer_whose_channel_url_keeps_refusing_still_ends(self):
-        panel = Bears(reads_per_segment=1, channel_status_after=(8, 407))
+    async def test_a_viewer_whose_channel_url_refuses_its_login_still_ends(self):
+        panel = Bears(reads_per_segment=1, channel_status_after=(8, 403))
         panel.reads = 2
         got, ended = await _stream(panel, items=200)
         self.assertTrue(ended)
         self.assertLessEqual(panel.log.count(CHANNEL) - panel.issued, 2 + livetv._MAX_RERESOLVE)
+
+    async def test_a_407_from_the_channel_url_is_waited_out_for_a_viewer(self):
+        """Seen at night: the panel ended sessions (407) for ~20 s while it
+        restarted channels. The raw path waits that out; so does HLS read
+        from the channel URL (not three quick tries and the end)."""
+        panel = Bears(reads_per_segment=1)
+        panel.reads = 2
+        orig, refused = panel.route, {"n": 0}
+
+        def route(url):
+            if url == CHANNEL and panel.reads >= 8 and refused["n"] < 8:
+                refused["n"] += 1
+                panel.log.append(url)
+                return _r(407, url)
+            return orig(url)
+        panel.route = route
+        got, ended = await _stream(panel, items=14)
+        self.assertFalse(ended, f"ended on a 407 spell: {got}")
+        self.assertEqual(8, refused["n"])
+        self.assertTrue(_consecutive([g for g in got if isinstance(g, int)]), got)
+
+    async def test_a_407_that_never_ends_still_ends_a_viewer_within_its_budget(self):
+        panel = Bears(reads_per_segment=1, channel_status_after=(8, 407))
+        panel.reads = 2
+        got, ended = await _stream(panel, items=200, budget=0.3, timeout=5.0)
+        self.assertTrue(ended)
 
     async def test_a_redirect_free_channel_is_read_as_before(self):
         """No redirect: the playlist URL is the channel URL; nothing changes."""
