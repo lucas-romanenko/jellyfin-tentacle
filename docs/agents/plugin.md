@@ -28,7 +28,8 @@ Services/                               LibraryDeleteHandler (Jellyfin ItemRemov
                                         VodNoVideoCopyFilter (Tentacle VOD as HLS: re-encode the video, never copy it),
                                         PublicUsersFilter (/Users/Public is empty outside Jellyfin's local network),
                                         SimilarItemsFilter (/Items/{id}/Similar: TMDB + library score instead of 10.11's random sample, #292),
-                                        OneLiveStreamPerDeviceFilter (a device opening a channel closes its previous live stream first)
+                                        OneLiveStreamPerDeviceFilter (a device opening a channel closes its previous live stream first),
+                                        LiveAacMainAudioFilter (a browser gets a live channel's AAC Main audio re-encoded, video still copied)
 Inject/                                 the injected tentacle-*.js/.css and the logo (embedded resources)
 Web/                                    per-user settings page
 Assets/                                 rating source icons (served by AssetsController, file names sanitized)
@@ -201,6 +202,19 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   page's look is `tentacle-login.css/js` (scoped to
   `#loginPage.tentacle-login`; words and decoration only, signing in stays
   Jellyfin's; same per-name colours as the dashboard's `LOGIN_COLORS`).
+- **A browser gets live AAC Main audio re-encoded** (`LiveAacMainAudioFilter`,
+  a global MVC action filter): after `POST /Items/{id}/PlaybackInfo` or
+  `/LiveStreams/Open` answered for Jellyfin Web (client claim
+  `Jellyfin-Client`), each infinite media source with an AAC Main audio
+  stream gets `AllowAudioStreamCopy=false` in its TranscodingUrl. Jellyfin
+  labels AAC Main `mp4a.40.2` and copies it; Chrome on a Mac cannot decode
+  it, and Jellyfin Web's error path (hls.js recovery twice, then
+  PlaybackInfo again without video copy, then without audio copy) made the
+  picture flash for ~10 s with three ffmpeg starts and ended up re-encoding
+  the video. With the flag: one ffmpeg, video copied, audio encoded to LC.
+  AAC LC/HE channels, the TV app (plays AAC Main itself), URLs that already
+  set audio copy and users without audio transcoding permission are left
+  alone.
 - **Tentacle VOD as HLS re-encodes the video** (`VodNoVideoCopyFilter`,
   a global MVC action filter, `Configure<MvcOptions>` in the registrator):
   on `POST /Items/{id}/PlaybackInfo` and the HLS video requests

@@ -59,6 +59,11 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<OneLiveStreamPerDeviceFilter>();
         serviceCollection.Configure<MvcOptions>(options => options.Filters.AddService<OneLiveStreamPerDeviceFilter>());
 
+        // A browser gets a live channel's AAC Main audio re-encoded from the
+        // start (it cannot decode it; Jellyfin Web's retries flash for ~10 s)
+        serviceCollection.AddSingleton<LiveAacMainAudioFilter>();
+        serviceCollection.Configure<MvcOptions>(options => options.Filters.AddService<LiveAacMainAudioFilter>());
+
         // Names on the login screen only at home (Jellyfin's /Users/Public)
         serviceCollection.AddSingleton<PublicUsersFilter>();
         serviceCollection.Configure<MvcOptions>(options => options.Filters.AddService<PublicUsersFilter>());
