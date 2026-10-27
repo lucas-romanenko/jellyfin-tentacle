@@ -205,6 +205,64 @@ def _refresh_live_groups(db, provider, gap: float = 0.0) -> list:
     return sorted(after - before)
 
 
+# The nightly job reads the channels of every Xtream Live TV provider's
+# enabled groups again, as the Live TV page's channel sync does (one listing
+# per group). Without it a channel's name changed only on a manual sync, and
+# an event channel's name is the day's game ("NHL 03: Leafs at Bruins Oct 26
+# 7:00PM ET"): the names went stale, last week's events stayed in the
+# lineup's past and today's never came in (26 Oct 2026). An M3U provider's
+# playlist is already read whole by _refresh_live_groups. Gently: listings
+# CHANNEL_GAP_SECONDS apart, as the VOD sync's (services/sync.py).
+CHANNEL_GAP_SECONDS = 5.0
+
+
+def refresh_live_channels(db, gentle: bool = False) -> list:
+    """The channel sync of every Xtream Live TV provider with an enabled
+    group: names, links, logos, guide ids and the provider's new channels
+    (in an enabled group, switched on, as a manual sync makes them). A
+    channel's enabled flag, number and own name stay. Stands aside like the
+    manual sync: for a provider whose sync runs, and while a recording runs
+    under recording protection. Returns the ids of the providers synced."""
+    from models.database import LiveChannelGroup as Group
+    from routers.livetv import (_get_sync_status, _set_sync_status, _snapshot_provider,
+                                _sync_channels_from_xtream, live_tv_providers)
+    from services.log_redaction import redact
+    from services.provider_activity import recording_protected
+
+    gap = CHANNEL_GAP_SECONDS if gentle else 0.0
+    synced = []
+    for p in live_tv_providers(db):
+        if (p.provider_type or "xtream") != "xtream":
+            continue
+        pid, name = p.id, p.name
+        if not db.query(Group.id).filter(Group.provider_id == pid, Group.enabled == True).first():  # noqa: E712
+            continue
+        if _get_sync_status(pid).get("phase") in ("starting", "running"):
+            logger.info(f"[Discovery] Live TV channels of '{name}' not read: a sync of it is running")
+            continue
+        if recording_protected(db):
+            logger.info("[Discovery] Live TV channels not read: a recording is running and recording "
+                        "protection is on")
+            break
+        _set_sync_status(pid, {"phase": "starting", "progress": 0, "message": "Starting channel sync..."})
+        try:
+            xtream_client.pause(gap)
+            stats = _sync_channels_from_xtream(_snapshot_provider(p, "xtream"), db, gap=gap)
+        except Exception as e:
+            _rollback(db)
+            logger.warning(f"[Discovery] Live TV channel sync failed for '{name}': {e}")
+            # It has no _run_channel_sync_background to end its status: left
+            # "running", every later sync would answer "already in progress".
+            _set_sync_status(pid, {"phase": "error", "progress": 0, "message": redact(str(e))})
+            log_activity(db, "livetv_sync", f"Nightly Live TV channel sync for {name} failed: {redact(str(e))}")
+            continue
+        _set_sync_status(pid, {"phase": "complete", "progress": 100, **stats,
+                               "message": f"Done: {stats.get('new', 0)} new, {stats.get('updated', 0)} updated, "
+                                          f"{stats.get('total', 0)} total"})
+        synced.append(pid)
+    return synced
+
+
 def _record_activity(db, vod_new: list, live_new: list):
     """Activity events for what appeared (the review itself is
     services/provider_new.py)."""

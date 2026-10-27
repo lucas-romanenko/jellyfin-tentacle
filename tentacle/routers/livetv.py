@@ -3103,8 +3103,10 @@ def _sync_groups_from_xtream(provider_data: dict, db: Session, gap: float = 0.0)
         client.close()
 
 
-def _sync_channels_from_xtream(provider_data: dict, db: Session) -> dict:
-    """Phase 2: Fetch channels only for enabled groups from Xtream."""
+def _sync_channels_from_xtream(provider_data: dict, db: Session, gap: float = 0.0) -> dict:
+    """Phase 2: Fetch channels only for enabled groups from Xtream.
+    `gap`: at least this many seconds between its requests (the nightly
+    job's, services/discovery.CHANNEL_GAP_SECONDS)."""
     from services.xtream_client import XtreamClient
 
     provider_id = provider_data["id"]
@@ -3116,6 +3118,9 @@ def _sync_channels_from_xtream(provider_data: dict, db: Session) -> dict:
         password=provider_data["password"],
         user_agent=provider_data["user_agent"],
     )
+    guard = getattr(client, "guard", None)
+    if gap and guard is not None:
+        guard.gap = max(guard.gap, gap)
 
     all_failed = False
     try:
@@ -4487,6 +4492,27 @@ def start_jellyfin_guide_refresh(db: Session) -> None:
             logger.info("Jellyfin guide refresh triggered after EPG sync")
     except Exception as e:
         logger.error(f"Jellyfin guide refresh failed: {e}")
+
+
+def refresh_jellyfin_guide_after_sync(db: Session) -> bool:
+    """What the Live TV page does once a channel sync and its guide are done
+    (POST /api/live/refresh-guide): re-create Tentacle's guide source in
+    Jellyfin, so channels new to the lineup get their programmes, run its
+    Refresh Guide, then tag the channels it made and tell the open clients
+    (services/livetv_tuners.py). The nightly job's, after its channel and
+    guide sync. False when Jellyfin isn't set up or couldn't be asked."""
+    jf_url = get_setting(db, "jellyfin_url")
+    jf_key = get_setting(db, "jellyfin_api_key")
+    if not (jf_url and jf_key):
+        return False
+    try:
+        from services.jellyfin_guide import refresh_jellyfin_guide
+        refresh_jellyfin_guide(jf_url, jf_key, then_tag=True)
+        logger.info("Jellyfin guide refresh triggered after the channel and EPG sync")
+        return True
+    except Exception as e:
+        logger.error(f"Jellyfin guide refresh failed: {e}")
+        return False
 
 
 # When the nightly job's own guide step last finished (main._run_scheduled_sync):

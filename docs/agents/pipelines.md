@@ -263,8 +263,21 @@ the job started is skipped, #517); 3. Radarr
 scan; 4. Sonarr scan (and Following state for every series); 5. recently
 added tags; 6. Jellyfin pipeline (scan, push tags, refresh playlists);
 7. clean the TMDB cache, then discovery of new categories and Live TV
-groups (gently, see "Gentle on the provider"); 8. `sweep_orphaned_downloads()`,
-then the guide download after a quiet spell; 9. forget people
+groups (gently, see "Gentle on the provider"), then the Live TV channel sync
+of every Xtream Live TV provider with an enabled group
+(`discovery.refresh_live_channels()`: the Live TV page's channel sync, one
+listing per enabled group `CHANNEL_GAP_SECONDS` (5 s) apart; names, links,
+logos, guide ids and new channels; enabled flags, numbers and own names
+stay; skipped for a provider whose sync runs and while a protected recording
+runs; ends its sync status itself). An event channel is named for the day's
+game and the lineup carries only today's events, so without it the names
+went stale until someone pressed the button (26 Oct 2026). M3U playlists are
+read whole by the group step already; 8. `sweep_orphaned_downloads()`,
+then the guide download after a quiet spell, then, when the guide or the
+channels were synced, `refresh_jellyfin_guide_after_sync()`: what the Live
+TV page does after a channel sync (POST /api/live/refresh-guide: re-create
+the guide source, Refresh Guide, tag the new channels and
+`livetv_tuners.tell_clients()`); 9. forget people
 no longer in Jellyfin (`gone_people.forget_gone`), then per user:
 `migrate_global_smartlists_to_user()` (one-time), `sync_smartlists()`,
 `write_home_config()`; 10. playlist artwork; 11. `POST /Tentacle/Refresh` to

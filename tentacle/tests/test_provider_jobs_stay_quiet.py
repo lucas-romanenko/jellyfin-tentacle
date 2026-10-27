@@ -191,7 +191,8 @@ class SyncPausesOnlyBetweenCategories(unittest.TestCase):
         self.assertIn("client.job_pause = pause if pause is not None else JobPause(", src)
         main_src = Path(main.__file__).read_text(encoding="utf-8")
         self.assertIn("pause = JobPause(db, \"the scheduled provider sync\")", main_src)
-        self.assertEqual(1, main_src.count("pause()"), "before discovery; the sync waits inside sync_provider")
+        self.assertEqual(2, main_src.count("pause()"),
+                         "before discovery and before the Live TV channel sync; the sync waits inside sync_provider")
         self.assertIn("pause=pause)", main_src)
         self.assertIn("client.job_pause.cancel_check = cancel_check", src, "cancel works while waiting")
         self.assertEqual(3, src.count("_pause_between_categories(client, db, progress_callback"),
