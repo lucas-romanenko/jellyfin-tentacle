@@ -98,6 +98,9 @@ class _Base(unittest.TestCase):
         xc.XtreamClient = _Client
         self.addCleanup(setattr, xc, "XtreamClient", orig)
         _Client.made, _Client.asked, _Client.fail = [], [], False
+        # A module that calls _sync_channels_from_xtream bare leaves its
+        # provider's status "running" (only the background wrapper ends it)
+        livetv._sync_status.clear()
         self.addCleanup(livetv._sync_status.clear)
         p = mock.patch("services.provider_activity.recording_protected", lambda db: False)
         p.start()
