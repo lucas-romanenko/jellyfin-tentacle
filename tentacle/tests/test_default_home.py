@@ -130,17 +130,31 @@ class SuggestedDefault(Base):
         self.assertNotIn("smalllibrarytiles", [r.get("section_id") for r in d["rows"]],
                          "the stock Jellyfin 'My Media' tiles are not part of a Tentacle home")
 
-    def test_an_empty_library_still_has_rows(self):
+    def test_an_empty_library_has_only_tentacles_own_rows(self):
+        """No Jellyfin Recently Added Media fallback (Lucas, 2026-10-26: "Yea drop it")."""
         self.db.query(mdb.Movie).delete()
         self.db.query(mdb.Series).delete()
         self.db.commit()
         d = dh.suggested_default(self.db)
-        self.assertEqual([r.get("section_id") for r in d["rows"]], ["resumevideo", "onnow", "latestmedia"])
+        self.assertEqual([r.get("section_id") for r in d["rows"]], ["resumevideo", "onnow"])
+        self.assertEqual("wide", d["rows"][0]["shape"], "Continue Watching starts wide, as the web drew it")
+        self.assertNotIn("shape", d["rows"][1], "On Now has its own card")
         self.assertFalse(d["hero"]["enabled"])
 
+    def test_old_titles_still_fill_the_recently_added_rows(self):
+        """Nothing new in the window (a quiet or brand-new server): the rows
+        are still there, and reach back to the newest titles."""
+        old = datetime.utcnow() - timedelta(days=400)
+        self.db.query(mdb.Movie).update({"date_added": old})
+        self.db.query(mdb.Series).update({"date_added": old})
+        self.db.commit()
+        names = [r.get("display_name") for r in dh.suggested_default(self.db)["rows"]]
+        self.assertIn("Recently Added Movies", names)
+        self.assertIn("Recently Added TV", names)
+
     def test_the_admins_saved_default_wins(self):
-        dh.save_default(self.db, {"rows": [{"type": "builtin", "section_id": "nextup", "display_name": "Next Up"}]})
-        self.assertEqual([r["section_id"] for r in dh.get_default(self.db)["rows"]], ["nextup"])
+        dh.save_default(self.db, {"rows": [{"type": "builtin", "section_id": "onnow", "display_name": "On Now"}]})
+        self.assertEqual([r["section_id"] for r in dh.get_default(self.db)["rows"]], ["onnow"])
         dh.clear_default(self.db)
         self.assertEqual(len(dh.get_default(self.db)["rows"]), 6)
 
@@ -362,21 +376,27 @@ if __name__ == "__main__":
 
 
 class Picker(Base):
-    def test_retired_jellyfin_sections_are_not_offered_and_on_now_is(self):
+    def test_no_jellyfin_section_is_offered_only_tentacles_rows(self):
+        """Lucas, 2026-10-26: "no Jellyfin built-in rows at all"."""
         rsl.read_home(db=self.db, user=self.user(2))
         offered = [x["section_id"] for x in rsl.list_builtin_sections(db=self.db, user=self.user(2))["sections"]]
-        for gone in ("smalllibrarytiles", "smalllibrarytiles_small", "resumebook", "livetv"):
-            self.assertNotIn(gone, offered)
-        self.assertIn("nextup", offered)
-        r = rsl.add_row(rsl.AddRowRequest(section_id="smalllibrarytiles"), db=self.db, user=self.user(2))
-        self.assertFalse(r["success"])
+        self.assertEqual(["recordings"], offered, "Continue Watching and On Now are already on the default home")
+        for gone in ("nextup", "latestmedia", "activerecordings", "resumeaudio", "smalllibrarytiles", "livetv"):
+            r = rsl.add_row(rsl.AddRowRequest(section_id=gone), db=self.db, user=self.user(2))
+            self.assertFalse(r["success"], gone)
+        r = rsl.add_row(rsl.AddRowRequest(section_id="recordings"), db=self.db, user=self.user(2))
+        self.assertTrue(r["success"])
+        rec = next(r for r in self.cfg(2)["rows"] if r.get("section_id") == "recordings")
+        self.assertEqual(("Recordings", "poster"), (rec["display_name"], rec["shape"]))
 
-    def test_a_retired_row_in_someones_own_layout_stays(self):
-        self.write(3, {"hero": {"enabled": False}, "rows": [
-            {"type": "builtin", "section_id": "smalllibrarytiles", "display_name": "My Media", "order": 1},
-            {"type": "builtin", "section_id": "livetv", "display_name": "Live TV", "order": 2}]})
-        sl.write_home_config(self.db, user_id=3)
-        self.assertEqual(self.names(3), ["My Media", "Live TV"])
+    def test_on_now_has_no_shape_to_pick(self):
+        rsl.read_home(db=self.db, user=self.user(2))
+        r = rsl.set_row_shape(rsl.RowShapeRequest(row_key="builtin:onnow", shape="wide"), db=self.db, user=self.user(2))
+        self.assertFalse(r["success"])
+        r = rsl.set_row_shape(rsl.RowShapeRequest(row_key="builtin:resumevideo", shape="poster"), db=self.db, user=self.user(2))
+        self.assertTrue(r["success"])
+        cw = next(r for r in self.cfg(2)["rows"] if r.get("section_id") == "resumevideo")
+        self.assertEqual("poster", cw["shape"])
 
 
 class BackgroundApply(unittest.TestCase):

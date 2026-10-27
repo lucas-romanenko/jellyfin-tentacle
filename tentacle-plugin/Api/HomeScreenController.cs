@@ -4,7 +4,12 @@ using Jellyfin.Plugin.Tentacle.HomeScreen;
 using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.TV;
+using Jellyfin.Data.Enums;
+using Jellyfin.Database.Implementations.Enums;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.LiveTv;
+using MediaBrowser.Controller.TV;
+using MediaBrowser.Model.LiveTv;
 using MediaBrowser.Controller.Net;
 using MediaBrowser.Controller.Playlists;
 using MediaBrowser.Model.Dto;
@@ -29,6 +34,9 @@ public class TentacleHomeController : ControllerBase
     private readonly IUserManager _userManager;
     private readonly IDtoService _dtoService;
     private readonly IAuthorizationContext _authContext;
+    private readonly IUserDataManager _userDataManager;
+    private readonly ITVSeriesManager _tvSeriesManager;
+    private readonly ILiveTvManager _liveTvManager;
     private readonly ILogger<TentacleHomeController> _logger;
 
     // Which titles a home row shows, per (playlist + its last save, user, limit, sort).
@@ -80,8 +88,14 @@ public class TentacleHomeController : ControllerBase
         IUserManager userManager,
         IDtoService dtoService,
         IAuthorizationContext authContext,
+        IUserDataManager userDataManager,
+        ITVSeriesManager tvSeriesManager,
+        ILiveTvManager liveTvManager,
         ILogger<TentacleHomeController> logger)
     {
+        _userDataManager = userDataManager;
+        _tvSeriesManager = tvSeriesManager;
+        _liveTvManager = liveTvManager;
         _homeScreenManager = homeScreenManager;
         _libraryManager = libraryManager;
         _userManager = userManager;
@@ -182,13 +196,29 @@ public class TentacleHomeController : ControllerBase
             {
                 if (row.IsBuiltin)
                 {
+                    // Only Tentacle's own rows: Continue Watching, On Now, Recordings.
+                    // Jellyfin's other home sections are drawn by no client any more
+                    // (Lucas, 2026-10-26); a layout the server hasn't cleaned up yet
+                    // simply doesn't show them.
+                    var tentacleRow = TentacleRows.Find(row.SectionId);
+                    if (tentacleRow is null)
+                    {
+                        continue;
+                    }
+
                     sections.Add(new
                     {
-                        id = $"tentacle_builtin_{row.SectionId}",
+                        id = $"tentacle_builtin_{tentacleRow.SectionId}",
                         type = "builtin",
-                        sectionId = row.SectionId,
-                        displayText = row.DisplayName,
+                        sectionId = tentacleRow.SectionId,
+                        displayText = tentacleRow.DisplayName,
                         playlistId = (string?)null,
+                        // The row's cards, the same on the web and the TV app: "poster",
+                        // "wide", or "onnow" (On Now's own squarer card, no choice).
+                        shape = TentacleRows.ShapeOf(row),
+                        maxItems = TentacleRows.Limit(row),
+                        // Continue Watching: the next episodes of shows being watched join it
+                        includeNextUp = tentacleRow.SectionId == TentacleRows.ContinueWatching && config.MergeContinueWatching,
                     });
                 }
                 else
@@ -227,6 +257,152 @@ public class TentacleHomeController : ControllerBase
             homeVersion = home.Version,
         });
     }
+
+    /// <summary>
+    /// Continue Watching, Tentacle's own row: what the person stopped part-way and, when the
+    /// row's "Include next episodes" is on, the next episode of each show they're watching, in
+    /// one order (most recently watched first, Jellyfin's watch progress). The web home and the
+    /// TV app both draw exactly this list, so the two can't drift apart again.
+    /// </summary>
+    [HttpGet("ContinueWatching")]
+    [Authorize]
+    public async Task<ActionResult> GetContinueWatching([FromQuery] Guid userId)
+    {
+        var caller = await CallerIdentity.ResolveAsync(_authContext, HttpContext, userId).ConfigureAwait(false);
+        if (!caller.Allowed)
+        {
+            return Forbid();
+        }
+
+        var user = _userManager.GetUserById(caller.UserId);
+        if (user == null)
+        {
+            return NotFound("User not found");
+        }
+
+        var config = await _homeScreenManager.GetHomeConfigAsync(caller.UserId, GetApiKey(), HttpContext.RequestAborted).ConfigureAwait(false);
+        var row = config?.Rows?.FirstOrDefault(r => r.IsBuiltin && TentacleRows.Find(r.SectionId)?.SectionId == TentacleRows.ContinueWatching);
+        var limit = row is null ? TentacleRows.DefaultLimit : TentacleRows.Limit(row);
+        var includeNextUp = config?.MergeContinueWatching ?? true;
+        var dtoOptions = RowDtoOptions();
+
+        var resume = _libraryManager.GetItemList(new InternalItemsQuery(user)
+        {
+            OrderBy = new[] { (ItemSortBy.DatePlayed, SortOrder.Descending) },
+            IsResumable = true,
+            MediaTypes = new[] { MediaType.Video },
+            Recursive = true,
+            IsVirtualItem = false,
+            Limit = limit,
+            DtoOptions = dtoOptions,
+        });
+
+        var entries = resume
+            .Select(i => (Item: i, Played: _userDataManager.GetUserData(user, i)?.LastPlayedDate ?? DateTime.MinValue))
+            .ToList();
+
+        if (includeNextUp)
+        {
+            var nextUp = _tvSeriesManager.GetNextUp(
+                new NextUpQuery { User = user, Limit = limit, EnableResumable = false, EnableTotalRecordCount = false },
+                dtoOptions).Items;
+            if (nextUp.Count > 0)
+            {
+                // When each show was last watched: its most recently played episode
+                var lastPlayed = new Dictionary<Guid, DateTime>();
+                foreach (var ep in _libraryManager.GetItemList(new InternalItemsQuery(user)
+                {
+                    IncludeItemTypes = new[] { BaseItemKind.Episode },
+                    IsPlayed = true,
+                    OrderBy = new[] { (ItemSortBy.DatePlayed, SortOrder.Descending) },
+                    Recursive = true,
+                    Limit = 300,
+                    DtoOptions = new DtoOptions(false),
+                }).OfType<Episode>())
+                {
+                    if (ep.SeriesId != Guid.Empty && !lastPlayed.ContainsKey(ep.SeriesId))
+                    {
+                        lastPlayed[ep.SeriesId] = _userDataManager.GetUserData(user, ep)?.LastPlayedDate ?? DateTime.MinValue;
+                    }
+                }
+
+                entries.AddRange(nextUp.Select(i => (Item: i,
+                    Played: i is Episode ep && lastPlayed.TryGetValue(ep.SeriesId, out var d) ? d : DateTime.MinValue)));
+            }
+        }
+
+        var items = TentacleRows.ContinueWatchingOrder(
+            entries.Select(e => (e.Item.Id, e.Item is Episode ep ? ep.SeriesId : Guid.Empty, e.Played)).ToList(),
+            limit);
+        var byId = entries.GroupBy(e => e.Item.Id).ToDictionary(g => g.Key, g => g.First().Item);
+        var dtos = _dtoService.GetBaseItemDtos(items.Select(id => byId[id]).ToList(), dtoOptions, user);
+        return Ok(new QueryResult<BaseItemDto>(dtos));
+    }
+
+    /// <summary>
+    /// Recordings, Tentacle's own row: the household's latest finished Live TV recordings,
+    /// newest first, as the person may see them. Drawn with the recording cards ("Recording ·
+    /// Fri 23 Oct") on the web and the TV app.
+    /// </summary>
+    [HttpGet("Recordings")]
+    [Authorize]
+    public async Task<ActionResult> GetRecordingsRow([FromQuery] Guid userId)
+    {
+        var caller = await CallerIdentity.ResolveAsync(_authContext, HttpContext, userId).ConfigureAwait(false);
+        if (!caller.Allowed)
+        {
+            return Forbid();
+        }
+
+        var user = _userManager.GetUserById(caller.UserId);
+        if (user == null)
+        {
+            return NotFound("User not found");
+        }
+
+        var config = await _homeScreenManager.GetHomeConfigAsync(caller.UserId, GetApiKey(), HttpContext.RequestAborted).ConfigureAwait(false);
+        var row = config?.Rows?.FirstOrDefault(r => r.IsBuiltin && TentacleRows.Find(r.SectionId)?.SectionId == TentacleRows.Recordings);
+        var limit = row is null ? TentacleRows.DefaultLimit : TentacleRows.Limit(row);
+        try
+        {
+            var result = await _liveTvManager.GetRecordingsAsync(
+                new RecordingQuery { UserId = user.Id, IsInProgress = false, Limit = 100, EnableTotalRecordCount = false },
+                RowDtoOptions()).ConfigureAwait(false);
+            var newest = result.Items
+                .OrderByDescending(d => d.DateCreated ?? DateTime.MinValue)
+                .Take(limit)
+                .ToList();
+            return Ok(new QueryResult<BaseItemDto>(newest));
+        }
+        catch (Exception ex)
+        {
+            // No Live TV set up, or no access: no row
+            _logger.LogDebug("[Tentacle Home] Recordings row not read: {Error}", ex.Message);
+            return Ok(new QueryResult<BaseItemDto>(Array.Empty<BaseItemDto>()));
+        }
+    }
+
+    /// <summary>The fields and pictures a home row's cards need (as for playlist rows).</summary>
+    private static DtoOptions RowDtoOptions() => new()
+    {
+        Fields = new[]
+        {
+            ItemFields.PrimaryImageAspectRatio,
+            ItemFields.MediaSourceCount,
+            ItemFields.Overview,
+            ItemFields.Genres,
+            ItemFields.Path,
+            ItemFields.DateCreated,
+        },
+        ImageTypes = new[]
+        {
+            ImageType.Primary,
+            ImageType.Backdrop,
+            ImageType.Thumb,
+        },
+        ImageTypeLimit = 1,
+        EnableUserData = true,
+    };
 
     /// <summary>
     /// Returns items for a specific section/playlist.

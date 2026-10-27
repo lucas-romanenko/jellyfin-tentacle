@@ -132,7 +132,7 @@ class TestWriteHomeConfigRowPreservation(unittest.TestCase):
         old = (datetime.utcnow() - timedelta(days=UNRESOLVED_ROW_GRACE_DAYS + 1)).isoformat()
         rows = [
             {"type": "builtin", "section_id": "resumevideo", "order": 1},
-            {"type": "builtin", "section_id": "nextup", "order": 2},
+            {"type": "builtin", "section_id": "onnow", "order": 2},
             {"type": "playlist", "playlist_id": "a", "display_name": "Keep", "order": 3},
             {"type": "playlist", "playlist_id": "b", "display_name": "Lost1", "order": 4,
              "unresolved_since": old},

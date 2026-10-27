@@ -1407,6 +1407,28 @@ def get_recently_added_days(db) -> int:
     return int(NON_EMPTY_DEFAULTS["recently_added_days"]) if days is None else days
 
 
+# A "Recently added" row never has fewer titles than this while the library
+# has them: when the window holds fewer (a new or quiet server), it reaches
+# back to the newest titles whatever their date (Lucas, 2026-10-26).
+RECENTLY_ADDED_MIN = 20
+
+
+def recently_added_cutoff(db, model):
+    """The date from which a Movie or Series counts as recently added: the
+    "Recently added" window, or further back so at least RECENTLY_ADDED_MIN
+    titles are in it."""
+    from datetime import datetime, timedelta
+    cutoff = datetime.utcnow() - timedelta(days=get_recently_added_days(db))
+    if RECENTLY_ADDED_MIN <= 0:
+        return cutoff
+    nth = (db.query(model.date_added).filter(model.date_added.isnot(None))
+           .order_by(model.date_added.desc()).offset(RECENTLY_ADDED_MIN - 1).limit(1).scalar())
+    if nth is None:
+        # Fewer titles than that in all: every one of them
+        return datetime.min if db.query(model.id).filter(model.date_added.isnot(None)).first() else cutoff
+    return min(cutoff, nth)
+
+
 def set_setting(db, key: str, value: str):
     """Set a single setting value"""
     s = db.query(Setting).filter(Setting.key == key).first()

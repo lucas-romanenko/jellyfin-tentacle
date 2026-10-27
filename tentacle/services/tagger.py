@@ -665,8 +665,8 @@ def refresh_recently_added_tags(db: Session):
       stops tagging titles it no longer covers.
     Rows (and NFOs) are only written when their tags change.
     """
-    days = get_recently_added_days(db)
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    from models.database import recently_added_cutoff
+    cutoffs = {Movie: recently_added_cutoff(db, Movie), Series: recently_added_cutoff(db, Series)}
 
     dynamic = dynamic_tags(db)
     paused = paused_tags(db)
@@ -676,6 +676,7 @@ def refresh_recently_added_tags(db: Session):
     changed = {"movie": 0, "series": 0}
 
     for media_type, model, type_label in (("movie", Movie, "Movies"), ("series", Series, "TV")):
+        cutoff = cutoffs[model]
         for row in db.query(model).all():
             before = list(row.tags or [])
             is_recent = bool(row.date_added and row.date_added >= cutoff)

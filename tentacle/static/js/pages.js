@@ -3648,13 +3648,8 @@ async function loadHomeScreen() {
       trailerAudioCheckbox.checked = config.hero.trailer_audio === true;
     }
 
-    // Merge Continue Watching + Next Up toggle
-    const mergeCheckbox = document.getElementById('merge-continue-checkbox');
-    if (mergeCheckbox) {
-      const mergeOn = config.merge_continue_watching === true;
-      mergeCheckbox.checked = mergeOn;
-      updateMergeContinueSlider(mergeOn);
-    }
+    // Continue Watching's "Next episodes" switch (shown on its row)
+    homeIncludeNextUp = config.merge_continue_watching !== false;
 
     // Card focus previews: all / local_only / off (absent = local_only, androidtv#47)
 
@@ -3842,11 +3837,17 @@ function renderHomeRows() {
   listEl.innerHTML = homeRows.map((row, i) => {
     const key = rowKey(row);
     const isBuiltin = row.type === 'builtin';
-    // On Now is Tentacle's own row (favourite channels), not one of Jellyfin's
-    const badge = isBuiltin && row.section_id !== 'onnow'
-      ? '<span style="font-size:9px;padding:2px 6px;border-radius:3px;background:#2563eb;color:#fff;white-space:nowrap">Jellyfin</span>'
-      : '<span style="font-size:9px;padding:2px 6px;border-radius:3px;background:var(--purple);color:#fff;white-space:nowrap">Tentacle</span>';
-    const maxItemsInput = isBuiltin ? '' : `
+    // Every row is Tentacle's (no Jellyfin home sections since 2026-10-26).
+    // On Now draws its own square channel cards: no shape or limit to pick.
+    const ownCards = isBuiltin && row.section_id === 'onnow';
+    const shape = row.shape || (row.section_id === 'resumevideo' ? 'wide' : 'poster');
+    const nextUpToggle = isBuiltin && row.section_id === 'resumevideo' ? `
+      <label onclick="event.stopPropagation()" onmousedown="event.stopPropagation()"
+        style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--text2);cursor:pointer;white-space:nowrap"
+        title="The next episode of shows you're watching joins this row">
+        <input type="checkbox" ${homeIncludeNextUp ? 'checked' : ''} onchange="saveMergeContinueWatching(this.checked)"
+          aria-label="Include next episodes" style="margin:0;accent-color:var(--accent)">Next episodes</label>` : '';
+    const maxItemsInput = ownCards ? '' : `
       <input type="number" min="5" max="30" value="${Math.min(row.max_items || 20, 30)}"
         onclick="event.stopPropagation()" onmousedown="event.stopPropagation()"
         onchange="saveRowMaxItemsByKey('${escapeJS(key)}', this.value)"
@@ -3854,13 +3855,13 @@ function renderHomeRows() {
         title="Max items in this row">`;
     // Card shape. Some content has no portrait artwork — a YouTube thumbnail
     // in a poster slot is cropped to a strip of its middle — so each row picks.
-    const shapeSelect = isBuiltin ? '' : `
+    const shapeSelect = ownCards ? '' : `
       <select onclick="event.stopPropagation()" onmousedown="event.stopPropagation()"
         onchange="saveRowShapeByKey('${escapeJS(key)}', this.value)"
         style="padding:3px 4px;font-size:11px;background:var(--bg1);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:pointer"
         title="Card shape for this row">
-        <option value="poster" ${row.shape !== 'wide' ? 'selected' : ''}>Poster</option>
-        <option value="wide" ${row.shape === 'wide' ? 'selected' : ''}>Wide</option>
+        <option value="poster" ${shape !== 'wide' ? 'selected' : ''}>Poster</option>
+        <option value="wide" ${shape === 'wide' ? 'selected' : ''}>Wide</option>
       </select>`;
     return `
     <div class="home-row-item" data-idx="${i}">
@@ -3868,9 +3869,9 @@ function renderHomeRows() {
       <span class="row-grip" aria-label="Drag to reorder" title="Drag to reorder">&#x2630;</span>
       <span class="row-name">${escapeAttr(row.display_name)}</span>
       <div class="row-controls">
+        ${nextUpToggle}
         ${shapeSelect}
         ${maxItemsInput}
-        ${badge}
         <button onclick="event.stopPropagation();removeHomeRowByKey('${escapeJS(key)}')"
           style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;padding:6px 8px;border-radius:4px"
           onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text3)'"
@@ -4025,7 +4026,7 @@ async function showAddHomeRow() {
 
     select.innerHTML = '<option value="">Select a row to add...</option>';
     if (builtins.length) {
-      select.innerHTML += '<optgroup label="Jellyfin Sections">';
+      select.innerHTML += '<optgroup label="Tentacle rows">';
       for (const s of builtins) {
         select.innerHTML += `<option value="builtin:${s.section_id}">${escapeAttr(s.display_name)}</option>`;
       }
@@ -6488,24 +6489,18 @@ async function toggleNotificationsFromCheckbox(checked) {
   try { await api('/api/notifications/toggle', { method: 'POST' }); } catch {}
 }
 
-// ── Merge Continue Watching + Next Up toggle ──
-function updateMergeContinueSlider(enabled) {
-  const slider = document.getElementById('merge-continue-slider');
-  const track = slider?.previousElementSibling;
-  if (slider) slider.style.transform = enabled ? 'translateX(18px)' : 'translateX(0)';
-  if (track) track.style.background = enabled ? 'var(--accent)' : 'var(--bg3)';
-}
+// ── Continue Watching: "Next episodes" ──
+let homeIncludeNextUp = true;
 
 async function saveMergeContinueWatching(checked) {
-  updateMergeContinueSlider(checked);
+  homeIncludeNextUp = checked;
   try {
     await api(homeUrl('/api/smartlists/merge-continue-watching'), { method: 'POST', body: { enabled: checked } });
     homeChangedByMe();
-    toast(checked ? 'Continue Watching & Next Up combined' : 'Continue Watching & Next Up separated', 'success');
+    toast(checked ? 'Next episodes show in Continue Watching' : 'Continue Watching shows only what you started', 'success');
   } catch (e) {
-    updateMergeContinueSlider(!checked);
-    const cb = document.getElementById('merge-continue-checkbox');
-    if (cb) cb.checked = !checked;
+    homeIncludeNextUp = !checked;
+    renderHomeRows();
     toast('Failed to save setting', 'error');
   }
 }

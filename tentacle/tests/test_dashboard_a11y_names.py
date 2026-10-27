@@ -60,8 +60,8 @@ class DashboardNames(unittest.TestCase):
         self.assertEqual([], _unnamed(self.html))
 
     def test_the_merge_switch_and_service_pickers_say_what_they_set(self):
-        for ident, name in (("merge-continue-checkbox", "Combine Continue Watching and Next Up"),
-                            ("radarr_quality_profile_id", "Radarr default quality profile"),
+        self.assertIn('aria-label="Include next episodes"', self.pages)
+        for ident, name in (("radarr_quality_profile_id", "Radarr default quality profile"),
                             ("sonarr_root_folder", "Sonarr root folder"),
                             ("navidrome_password", "Navidrome password")):
             with self.subTest(ident=ident):
@@ -75,8 +75,6 @@ class DashboardNames(unittest.TestCase):
         bg1 = self.tokens["bg1"]
         self.assertGreaterEqual(_contrast(self.tokens["accent-text"], bg1), 4.5)
         self.assertRegex(self.html, r"\.live-tab\.activity-tab\.active \{\s*color: var\(--accent-text\)")
-        badge = re.search(r'background:(#[0-9a-f]{6});color:#fff;white-space:nowrap">Jellyfin<', self.pages).group(1)
-        self.assertGreaterEqual(_contrast("#ffffff", badge), 4.5)
         count = re.search(r"\.mych-count \{([^}]*)\}", self.html).group(1)
         self.assertNotIn("opacity", count)
 

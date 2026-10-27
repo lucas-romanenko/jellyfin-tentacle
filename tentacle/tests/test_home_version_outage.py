@@ -78,33 +78,22 @@ class TestVersionEndpointOutage(unittest.TestCase):
                       "with nothing ever cached the endpoint must still answer 0")
 
 
-class TestRebuildKeepsTheMergeSetting(unittest.TestCase):
+class TestRebuildDrawsTentaclesRowsLikeTheFirstRender(unittest.TestCase):
+    """Next episodes are part of Continue Watching's list from the plugin now
+    (2026-10-26): no merge rule left in the page to forget on a rebuild."""
+
     def setUp(self):
         self.js = HOME_JS.read_text()
         self.refresh = js_function(self.js, "refreshPlaylistRows")
 
-    def test_every_builtin_render_passes_the_merge_flag(self):
-        calls = re.findall(r"loadBuiltinSection\(([^)]*)\)", self.js)
-        self.assertTrue(calls, "loadBuiltinSection is never called")
-        for call in calls:
-            self.assertEqual(
-                len(call.split(",")), 3,
-                f"loadBuiltinSection({call}) drops the renderMerged argument that "
-                "the function declares, silently disabling the merge setting",
-            )
+    def test_every_builtin_render_is_the_same_call(self):
+        calls = re.findall(r"(?<!function )loadBuiltinSection\(([^)]*)\)", self.js)
+        self.assertEqual(2, len(calls), "the first render and the rebuild")
+        self.assertEqual({"rowsContainer, section"}, set(calls))
 
-    def test_the_rebuild_recomputes_the_merge_rule(self):
-        self.assertIn("mergeContinueWatching", self.refresh,
-                      "the rebuild never re-reads the merge setting")
-        self.assertIn("hasResumeRow", self.refresh,
-                      "the rebuild never recomputes whether a resume row exists")
-
-    def test_the_rebuild_skips_a_folded_nextup_row_like_the_first_render(self):
-        self.assertRegex(
-            self.refresh.replace("\n", " "),
-            r"mergeCW\s*&&\s*section\.sectionId === 'nextup'\s*&&\s*hasResumeRow.*return",
-            "a merged Next Up row is rendered on top of the resume row",
-        )
+    def test_no_merge_rule_is_left_in_the_page(self):
+        for gone in ("mergeContinueWatching", "hasResumeRow", "renderMerged"):
+            self.assertNotIn(gone, self.js)
 
 
 if __name__ == "__main__":

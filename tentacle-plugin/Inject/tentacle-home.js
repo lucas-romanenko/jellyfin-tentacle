@@ -220,22 +220,9 @@
           loadHero(heroContainer);
         }
 
-        // Combine Continue Watching + Next Up when the dashboard setting is on:
-        // the resume row renders the merged set and the nextup row is skipped
-        // (if the user only has a nextup row, the merge renders there instead).
-        var mergeCW = !!data.mergeContinueWatching;
-        var hasResumeRow = contentSections.some(function (s) {
-          return s.type === 'builtin' && (s.sectionId === 'resumevideo' || s.sectionId === 'resume');
-        });
-
         contentSections.forEach(function (section) {
           if (section.type === 'builtin') {
-            if (mergeCW && section.sectionId === 'nextup' && hasResumeRow) return; // folded into resume row
-            var renderMerged = mergeCW && (
-              section.sectionId === 'resumevideo' || section.sectionId === 'resume' ||
-              (section.sectionId === 'nextup' && !hasResumeRow)
-            );
-            loadBuiltinSection(rowsContainer, section, renderMerged);
+            loadBuiltinSection(rowsContainer, section);
           } else {
             loadRow(rowsContainer, section);
           }
@@ -243,7 +230,6 @@
 
         // Store sections for live-update polling and start it
         MH.activeSections = contentSections;
-        MH.activeMerge = mergeCW;
         startVersionPolling(gen);
       })
       .catch(function (err) {
@@ -448,12 +434,20 @@
   }
 
   // ── Built-in Jellyfin Sections ──────────────────────────────────────
-  function loadBuiltinSection(container, section, renderMerged) {
-    var sectionId = section.sectionId;
-    console.log('[Tentacle] Loading builtin section:', sectionId, section.displayText, renderMerged ? '(merged CW+NextUp)' : '');
+  // Tentacle's own rows that aren't playlists (the plugin sends no other):
+  // Continue Watching and Recordings come from the plugin, one list the TV app
+  // draws too, in the shape chosen in Tentacle; On Now draws its own cards.
+  var TENTACLE_ROW_PATHS = {
+    resumevideo: 'TentacleHome/ContinueWatching',
+    recordings: 'TentacleHome/Recordings',
+  };
 
+  function loadBuiltinSection(container, section) {
+    var sectionId = section.sectionId;
     var row = document.createElement('div');
     row.className = 'mh-row';
+    row.setAttribute('data-section-id', sectionId);
+    if (section.shape) row.setAttribute('data-shape', section.shape);
 
     row.innerHTML =
       '<div class="mh-row-header">' +
@@ -481,127 +475,51 @@
       };
     }
 
-    // "My Media" sections use library tiles instead of standard cards
-    if (sectionId === 'smalllibrarytiles' || sectionId === 'smalllibrarytiles_small') {
-      loadLibraryTiles(row, sectionId === 'smalllibrarytiles_small');
-      return;
-    }
-
-    // Combined Continue Watching + Next Up (dashboard "merge" setting):
-    // fetch both, drop Next Up entries whose series already has an in-progress
-    // episode in resume, render resume first (most recent) then next-up.
-    if (renderMerged) {
-      Promise.all([
-        apiGet(getBuiltinApiPath('resumevideo')).catch(function () { return {}; }),
-        apiGet(getBuiltinApiPath('nextup')).catch(function () { return {}; }),
-      ])
-        .then(function (results) {
-          var itemsEl = row.querySelector('.mh-row-items');
-          itemsEl.classList.remove('mh-loading-row');
-
-          var resumeItems = (results[0] && results[0].Items) || [];
-          var nextupItems = (results[1] && results[1].Items) || [];
-          var seen = {};
-          resumeItems.forEach(function (it) {
-            seen[it.Id] = true;
-            if (it.SeriesId) seen['s:' + it.SeriesId] = true;
-          });
-          var nextupFiltered = nextupItems.filter(function (it) {
-            return !seen[it.Id] && !(it.SeriesId && seen['s:' + it.SeriesId]);
-          });
-
-          if (!resumeItems.length && !nextupFiltered.length) {
-            row.classList.add('mh-row-hidden');
-            return;
-          }
-
-          itemsEl.innerHTML = '';
-          var total = 0;
-          resumeItems.forEach(function (item) {
-            if (total++ < 24) itemsEl.appendChild(createWideCard(item));
-          });
-          nextupFiltered.forEach(function (item) {
-            if (total++ < 24) itemsEl.appendChild(createNextUpCard(item));
-          });
-        })
-        .catch(function (err) {
-          console.error('[Tentacle] Failed to load merged continue watching row:', err);
-          row.classList.add('mh-row-hidden');
-        });
-      return;
-    }
-
     if (sectionId === 'onnow') {
       loadOnNow(row);
       return;
     }
-
-    var apiPath = getBuiltinApiPath(sectionId);
-    if (!apiPath) {
-      console.warn('[Tentacle] No API path for builtin section:', sectionId);
+    if (!TENTACLE_ROW_PATHS[sectionId]) {
       row.classList.add('mh-row-hidden');
       return;
     }
+    fillTentacleRow(row, section, true);
+  }
 
-    apiGet(apiPath)
+  // Fill (or refresh in place) Continue Watching or Recordings. `first`: the
+  // row was just drawn with its spinner; else only a change redraws it.
+  function fillTentacleRow(row, section, first) {
+    var gen = MH.generation;
+    apiGet(TENTACLE_ROW_PATHS[section.sectionId] + '?userId=' + MH.userId)
       .then(function (data) {
+        if (gen !== MH.generation) return;
         var itemsEl = row.querySelector('.mh-row-items');
+        if (!itemsEl) return;
         itemsEl.classList.remove('mh-loading-row');
-
-        // /Items/Latest returns a bare array; others return {Items: [...]}
-        var items = Array.isArray(data) ? data : (data.Items || data.items || []);
-        console.log('[Tentacle] Builtin section "' + sectionId + '" returned ' + items.length + ' items');
-
+        var items = (data && data.Items) || [];
+        var wide = section.shape === 'wide';
+        // What the cards show: the items, their saved place and the shape
+        var key = (wide ? 'w|' : 'p|') + items.map(function (i) {
+          return i.Id + ':' + ((i.UserData && i.UserData.PlaybackPositionTicks) || 0);
+        }).join(',');
+        if (!first && key === row._tentacleKey) return;
+        row._tentacleKey = key;
         if (!items.length) {
           row.classList.add('mh-row-hidden');
+          itemsEl.innerHTML = '';
           return;
         }
-
+        row.classList.remove('mh-row-hidden');
         itemsEl.innerHTML = '';
-        // Pick the right card type for this section
-        var useWideCards = (sectionId === 'resumevideo' || sectionId === 'resumeaudio' || sectionId === 'resumebook');
-        var isLiveTv = (sectionId === 'livetv' || sectionId === 'activerecordings');
-        var isNextUp = (sectionId === 'nextup');
         items.forEach(function (item) {
-          if (useWideCards) {
-            itemsEl.appendChild(createWideCard(item));
-          } else if (isLiveTv) {
-            itemsEl.appendChild(createChannelCard(item));
-          } else if (isNextUp) {
-            itemsEl.appendChild(createNextUpCard(item));
-          } else {
-            itemsEl.appendChild(createCard(item));
-          }
+          itemsEl.appendChild(section.sectionId === 'resumevideo'
+            ? createContinueCard(item, wide) : createCard(item, wide));
         });
       })
       .catch(function (err) {
-        console.error('[Tentacle] Failed to load builtin section "' + sectionId + '":', err);
-        row.classList.add('mh-row-hidden');
+        console.warn('[Tentacle] ' + section.displayText + ' unavailable:', err);
+        if (first) row.classList.add('mh-row-hidden');
       });
-  }
-
-  function getBuiltinApiPath(sectionId) {
-    var base = 'Users/' + MH.userId;
-    // Path and DateCreated: a Live TV recording's card says "Recording · Fri 23 Oct" (recordingMeta)
-    var commonFields = 'PrimaryImageAspectRatio,MediaSourceCount,Overview,Genres,CommunityRating,OfficialRating,RunTimeTicks,ProductionYear,UserData,ProviderIds,Path,DateCreated';
-    switch (sectionId) {
-      case 'resumevideo':
-        return base + '/Items/Resume?Limit=12&Recursive=true&Fields=' + commonFields + '&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop,Thumb&MediaTypes=Video';
-      case 'resumeaudio':
-        return base + '/Items/Resume?Limit=12&Recursive=true&Fields=' + commonFields + '&ImageTypeLimit=1&EnableImageTypes=Primary&MediaTypes=Audio';
-      case 'resumebook':
-        return base + '/Items/Resume?Limit=12&Recursive=true&Fields=' + commonFields + '&ImageTypeLimit=1&EnableImageTypes=Primary&MediaTypes=Book';
-      case 'nextup':
-        return 'Shows/NextUp?UserId=' + MH.userId + '&Limit=24&Fields=' + commonFields + '&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop,Thumb';
-      case 'latestmedia':
-        return base + '/Items/Latest?Limit=16&Fields=' + commonFields + '&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop,Thumb';
-      case 'livetv':
-        return 'LiveTv/Channels?UserId=' + MH.userId + '&Limit=12&Fields=PrimaryImageAspectRatio&ImageTypeLimit=1&EnableImageTypes=Primary';
-      case 'activerecordings':
-        return 'LiveTv/Recordings?UserId=' + MH.userId + '&IsInProgress=true&Fields=PrimaryImageAspectRatio&ImageTypeLimit=1&EnableImageTypes=Primary';
-      default:
-        return null;
-    }
   }
 
   // ── On Now: what's on right now on your favourite channels ──────────
@@ -658,16 +576,19 @@
       });
   }
 
+  // On Now's own card (no poster/wide choice): a square tile with the channel's
+  // logo whole on a dark panel and how far the programme is, the programme and
+  // "channel · time left" under it. The TV app draws the same card.
   function createOnNowCard(channel, now) {
     var p = channel.CurrentProgram;
     var card = document.createElement('div');
-    card.className = 'mh-card mh-card-wide mh-card-onnow';
+    card.className = 'mh-card mh-card-onnow';
     card.setAttribute('data-item-id', channel.Id);
     card.onclick = function () { playLive(channel.Id); };
 
-    // The channel's logo, whole (contained), never stretched into a poster.
-    // No tag in the URL (Live TV images 500 with one), and no token: see createChannelCard.
-    var logo = MH.apiClient.getUrl('Items/' + channel.Id + '/Images/Primary', { maxWidth: 400, quality: 90 });
+    // No tag in the URL (Live TV images 500 with one), and no token in an <img src>
+    // (ApiClient.getUrl; Jellyfin's image endpoints don't need it).
+    var logo = MH.apiClient.getUrl('Items/' + channel.Id + '/Images/Primary', { maxWidth: 300, quality: 90 });
     var start = p.StartDate ? Date.parse(p.StartDate) : now;
     var end = Date.parse(p.EndDate);
     var pct = end > start ? Math.max(2, Math.min(100, Math.round((now - start) * 100 / (end - start)))) : 0;
@@ -675,15 +596,17 @@
     var leftText = left >= 60 ? Math.floor(left / 60) + 'h ' + (left % 60) + 'm left' : left + 'm left';
 
     card.innerHTML =
-      '<div class="mh-card-poster mh-card-poster-wide mh-onnow-logo">' +
-        '<img src="' + logo + '" alt="" loading="lazy" onerror="this.outerHTML=\'<div class=mh-card-no-poster>📺</div>\'">' +
+      '<div class="mh-card-poster mh-onnow-logo">' +
+        '<div class="mh-onnow-name">' + escapeHtml(channel.Name || '') + '</div>' +
+        // No logo: the channel's name instead (the picture's parent keeps the overlay, #173)
+        '<img src="' + logo + '" alt="" loading="lazy" onerror="this.parentNode.classList.add(\'mh-onnow-nologo\');this.remove()">' +
         '<div class="mh-card-progress"><div class="mh-card-progress-bar" style="width:' + pct + '%"></div></div>' +
         '<div class="mh-card-play-overlay"><div class="mh-card-play-icon">▶</div></div>' +
       '</div>' +
       '<div class="mh-card-info">' +
         '<div class="mh-card-title" title="' + escapeAttr(p.Name || '') + '">' + escapeHtml(p.Name || channel.Name) + '</div>' +
-        '<div class="mh-card-subtitle" title="' + escapeAttr(channel.Name) + '">' + escapeHtml(channel.Name) + '</div>' +
-        '<span class="mh-card-remaining">' + leftText + '</span>' +
+        '<div class="mh-card-subtitle" title="' + escapeAttr(channel.Name) + '">' +
+          escapeHtml(channel.Name) + ' · ' + leftText + '</div>' +
       '</div>';
     return card;
   }
@@ -699,113 +622,56 @@
     window.location.hash = '#/details?id=' + channelId;
   }
 
-  function loadLibraryTiles(row, small) {
-    apiGet('Users/' + MH.userId + '/Views')
-      .then(function (data) {
-        var itemsEl = row.querySelector('.mh-row-items');
-        itemsEl.classList.remove('mh-loading-row');
-
-        if (!data.Items || !data.Items.length) {
-          row.classList.add('mh-row-hidden');
-          return;
-        }
-
-        itemsEl.innerHTML = '';
-        data.Items.forEach(function (item) {
-          var tile = document.createElement('div');
-          tile.className = small ? 'mh-lib-tile mh-lib-tile-sm' : 'mh-lib-tile';
-          tile.onclick = function () {
-            var ct = (item.CollectionType || '').toLowerCase();
-            var route = ct === 'movies' ? 'movies' :
-                        ct === 'tvshows' ? 'tv' :
-                        ct === 'music' ? 'music' :
-                        ct === 'livetv' ? 'livetv' : null;
-            var sid = item.ServerId || MH.apiClient.serverId();
-            if (ct === 'playlists') {
-              window.location.hash = '#/list?parentId=' + item.Id + '&serverId=' + sid;
-            } else if (route) {
-              window.location.hash = '#/' + route + '?topParentId=' + item.Id + '&collectionType=' + ct;
-            } else {
-              window.location.hash = '#/list?parentId=' + item.Id + '&serverId=' + sid;
-            }
-          };
-
-          var posterTag = item.ImageTags && item.ImageTags.Primary ? item.ImageTags.Primary : '';
-          var posterUrl = posterTag ? getImageUrl(item.Id, 'Primary', posterTag, 300) : '';
-
-          tile.innerHTML =
-            '<div class="mh-lib-tile-img">' +
-              (posterUrl ? '<img src="' + posterUrl + '" alt="" loading="lazy">' : '') +
-            '</div>' +
-            '<div class="mh-lib-tile-name">' + escapeHtml(item.Name) + '</div>';
-          itemsEl.appendChild(tile);
-        });
-      })
-      .catch(function () {
-        row.classList.add('mh-row-hidden');
-      });
-  }
-
-  function createWideCard(item) {
+  // A Continue Watching card: something stopped part-way (its progress and the
+  // time left) or the next episode of a show being watched. Wide shows the
+  // episode's still or the title's backdrop; poster the show's (or film's) poster.
+  function createContinueCard(item, wide) {
     var card = document.createElement('div');
-    card.className = 'mh-card mh-card-wide';
+    card.className = wide ? 'mh-card mh-card-wide' : 'mh-card';
     card.setAttribute('data-item-id', item.Id);
     card.onclick = function () {
       if (window.TentacleDetails) { window.TentacleDetails.show(item.Id); return; }
       window.location.hash = '#/details?id=' + item.Id;
     };
 
-    // Prefer backdrop/thumb for wide cards
-    var imgTag = '';
-    var imgType = 'Primary';
-    if (item.BackdropImageTags && item.BackdropImageTags.length) {
-      imgTag = item.BackdropImageTags[0];
-      imgType = 'Backdrop';
-    } else if (item.ImageTags && item.ImageTags.Thumb) {
-      imgTag = item.ImageTags.Thumb;
-      imgType = 'Thumb';
-    } else if (item.ImageTags && item.ImageTags.Primary) {
-      imgTag = item.ImageTags.Primary;
-      imgType = 'Primary';
+    var imgUrl = '';
+    if (wide) {
+      if (item.ImageTags && item.ImageTags.Thumb) imgUrl = getImageUrl(item.Id, 'Thumb', item.ImageTags.Thumb, 500);
+      else if (item.Type === 'Episode' && item.ImageTags && item.ImageTags.Primary) imgUrl = getImageUrl(item.Id, 'Primary', item.ImageTags.Primary, 500);
+      else if (item.BackdropImageTags && item.BackdropImageTags.length) imgUrl = getImageUrl(item.Id, 'Backdrop', item.BackdropImageTags[0], 500);
+      else if (item.ParentBackdropItemId && item.ParentBackdropImageTags && item.ParentBackdropImageTags.length) imgUrl = getImageUrl(item.ParentBackdropItemId, 'Backdrop', item.ParentBackdropImageTags[0], 500);
+    } else if (item.SeriesId && item.SeriesPrimaryImageTag) {
+      imgUrl = getImageUrl(item.SeriesId, 'Primary', item.SeriesPrimaryImageTag, 300);
     }
-    var imgUrl = imgTag ? getImageUrl(item.Id, imgType, imgTag, 500) : '';
+    if (!imgUrl && item.ImageTags && item.ImageTags.Primary) imgUrl = getImageUrl(item.Id, 'Primary', item.ImageTags.Primary, wide ? 500 : 300);
 
-    // Progress bar for resume items
+    var ud = item.UserData || {};
     var progressHtml = '';
-    if (item.UserData && item.UserData.PlayedPercentage) {
-      var pct = Math.round(item.UserData.PlayedPercentage);
+    if (ud.PlaybackPositionTicks > 0 && ud.PlayedPercentage) {
       progressHtml =
         '<div class="mh-card-progress">' +
-          '<div class="mh-card-progress-bar" style="width:' + pct + '%"></div>' +
-        '</div>' +
-        '<div class="mh-card-progress-text">' + pct + '%</div>';
+          '<div class="mh-card-progress-bar" style="width:' + Math.round(ud.PlayedPercentage) + '%"></div>' +
+        '</div>';
     }
 
-    // Build display name with episode info
-    var titleLine = '';
+    var titleLine = item.SeriesName || item.Name || '';
     var subtitleLine = '';
     if (item.SeriesName) {
-      titleLine = item.SeriesName;
-      var epLabel = '';
-      if (item.ParentIndexNumber != null && item.IndexNumber != null) {
-        epLabel = 'S' + item.ParentIndexNumber + ':E' + item.IndexNumber + ' · ';
-      }
+      var epLabel = (item.ParentIndexNumber != null && item.IndexNumber != null)
+        ? 'S' + item.ParentIndexNumber + ':E' + item.IndexNumber + ' · ' : '';
       subtitleLine = epLabel + (item.Name || '');
-    } else {
-      titleLine = item.Name || '';
     }
 
-    // Remaining time
     var remainingHtml = '';
-    if (item.RunTimeTicks && item.UserData && item.UserData.PlaybackPositionTicks) {
-      var remainMins = Math.round((item.RunTimeTicks - item.UserData.PlaybackPositionTicks) / 600000000);
-      if (remainMins > 0) {
-        remainingHtml = '<span class="mh-card-remaining">' + remainMins + 'm left</span>';
-      }
+    if (item.RunTimeTicks && ud.PlaybackPositionTicks) {
+      var remainMins = Math.round((item.RunTimeTicks - ud.PlaybackPositionTicks) / 600000000);
+      if (remainMins > 0) remainingHtml = '<span class="mh-card-remaining">' + remainMins + 'm left</span>';
+    } else if (item.SeriesName) {
+      remainingHtml = '<span class="mh-card-remaining">Next episode</span>';
     }
 
     card.innerHTML =
-      '<div class="mh-card-poster mh-card-poster-wide">' +
+      '<div class="' + (wide ? 'mh-card-poster mh-card-poster-wide' : 'mh-card-poster') + '">' +
         (imgUrl
           ? '<img src="' + imgUrl + '" alt="" loading="lazy">'
           : '<div class="mh-card-no-poster">🎬</div>') +
@@ -820,54 +686,6 @@
           ? '<div class="mh-card-subtitle" title="' + escapeAttr(subtitleLine) + '">' + escapeHtml(subtitleLine) + '</div>'
           : '') +
         remainingHtml +
-      '</div>';
-
-    return card;
-  }
-
-  function createNextUpCard(item) {
-    var card = document.createElement('div');
-    card.className = 'mh-card mh-card-wide';
-    card.setAttribute('data-item-id', item.Id);
-    card.onclick = function () {
-      if (window.TentacleDetails) { window.TentacleDetails.show(item.Id); return; }
-      window.location.hash = '#/details?id=' + item.Id;
-    };
-
-    // Prefer backdrop/thumb for wide Next Up cards
-    var imgTag = '';
-    var imgType = 'Primary';
-    if (item.BackdropImageTags && item.BackdropImageTags.length) {
-      imgTag = item.BackdropImageTags[0];
-      imgType = 'Backdrop';
-    } else if (item.ImageTags && item.ImageTags.Thumb) {
-      imgTag = item.ImageTags.Thumb;
-      imgType = 'Thumb';
-    } else if (item.ImageTags && item.ImageTags.Primary) {
-      imgTag = item.ImageTags.Primary;
-      imgType = 'Primary';
-    }
-    var imgUrl = imgTag ? getImageUrl(item.Id, imgType, imgTag, 500) : '';
-
-    // Episode label badge
-    var epBadge = '';
-    if (item.ParentIndexNumber != null && item.IndexNumber != null) {
-      epBadge = '<div class="mh-card-ep-badge">S' + item.ParentIndexNumber + ':E' + item.IndexNumber + '</div>';
-    }
-
-    card.innerHTML =
-      '<div class="mh-card-poster mh-card-poster-wide">' +
-        (imgUrl
-          ? '<img src="' + imgUrl + '" alt="" loading="lazy">'
-          : '<div class="mh-card-no-poster">🎬</div>') +
-        epBadge +
-        '<div class="mh-card-play-overlay">' +
-          '<div class="mh-card-play-icon">▶</div>' +
-        '</div>' +
-      '</div>' +
-      '<div class="mh-card-info">' +
-        '<div class="mh-card-title" title="' + escapeAttr(item.SeriesName || item.Name) + '">' + escapeHtml(item.SeriesName || item.Name) + '</div>' +
-        '<div class="mh-card-subtitle" title="' + escapeAttr(item.Name) + '">' + escapeHtml(item.Name || '') + '</div>' +
       '</div>';
 
     return card;
@@ -931,44 +749,6 @@
         // Hide failed rows
         row.classList.add('mh-row-hidden');
       });
-  }
-
-  function createChannelCard(item) {
-    var card = document.createElement('div');
-    card.className = 'mh-card';
-    card.setAttribute('data-item-id', item.Id);
-    card.onclick = function () {
-      if (window.TentacleDetails) { window.TentacleDetails.show(item.Id); return; }
-      window.location.hash = '#/details?id=' + item.Id;
-    };
-
-    // Live TV channels: request the image without a tag to avoid 500 errors.
-    // Build it through ApiClient.getUrl — putting api_key=<access token> in an <img
-    // src> writes the caller's Jellyfin session token into the DOM, where any other
-    // injected script, browser extension or copied link carries it away. Jellyfin's
-    // image endpoints do not need it.
-    var imgUrl = MH.apiClient.getUrl('Items/' + item.Id + '/Images/Primary', {
-      maxWidth: 300,
-      quality: 90,
-    });
-
-    var channelNumber = item.ChannelNumber ? item.ChannelNumber + ' · ' : '';
-    var meta = channelNumber + (item.CurrentProgram ? item.CurrentProgram.Name || '' : '');
-
-    card.innerHTML =
-      '<div class="mh-card-poster">' +
-        // A failed image replaces only itself: its parent also holds the play overlay (#173).
-        '<img src="' + imgUrl + '" alt="" loading="lazy" onerror="this.outerHTML=\'<div class=mh-card-no-poster>📺</div>\'">' +
-        '<div class="mh-card-play-overlay">' +
-          '<div class="mh-card-play-icon">▶</div>' +
-        '</div>' +
-      '</div>' +
-      '<div class="mh-card-info">' +
-        '<div class="mh-card-title" title="' + escapeAttr(item.Name) + '">' + escapeHtml(item.Name) + '</div>' +
-        (meta ? '<div class="mh-card-meta">' + escapeHtml(meta) + '</div>' : '') +
-      '</div>';
-
-    return card;
   }
 
   // A Live TV recording is a Movie to Jellyfin, with the year it was recorded: its card
@@ -1166,24 +946,19 @@
         if (!data || data.enabled !== true || !Array.isArray(data.sections)) return;
 
         var newSections = data.sections.filter(function (s) { return s.type === 'row' || s.type === 'builtin'; });
-        var mergeCW = !!data.mergeContinueWatching;
-        var hasResumeRow = newSections.some(function (s) {
-          return s.type === 'builtin' && (s.sectionId === 'resumevideo' || s.sectionId === 'resume');
-        });
         // The key includes each row's shape: a poster/wide change is a change
         // to the row's structure, not to its items, and comparing IDs alone
         // left it invisible until a full page reload — unlike a reorder, which
         // the same backend push made appear at once.
-        // The title and the "merge Continue Watching" flag are structure too:
-        // neither changes any row's items, so leaving them out of the key kept
-        // a renamed row's old title, and a merge toggle, until the next
-        // navigation to Home.
+        // The title is structure too (it changes no items), and so are
+        // Continue Watching's "Include next episodes" and item limit.
         var keyOf = function (s) {
           return ((s.type === 'row' ? s.playlistId : s.sectionId) || '') + ':' + (s.shape || '') +
-            ':' + (s.displayText || '');
+            ':' + (s.displayText || '') +
+            (s.type === 'builtin' ? ':' + !!s.includeNextUp + ':' + (s.maxItems || '') : '');
         };
-        var oldKeys = MH.activeSections.map(keyOf).join(',') + '|merge:' + !!MH.activeMerge;
-        var newKeys = newSections.map(keyOf).join(',') + '|merge:' + mergeCW;
+        var oldKeys = MH.activeSections.map(keyOf).join(',');
+        var newKeys = newSections.map(keyOf).join(',');
 
         if (oldKeys !== newKeys) {
           // Structure changed — rebuild rows container
@@ -1193,20 +968,12 @@
           rowsContainer.innerHTML = '';
           newSections.forEach(function (section) {
             if (section.type === 'builtin') {
-              // Same merge rules as the first render — dropping them here turned the
-              // "merge Continue Watching" setting off until the next full navigation.
-              if (mergeCW && section.sectionId === 'nextup' && hasResumeRow) return;
-              var renderMerged = mergeCW && (
-                section.sectionId === 'resumevideo' || section.sectionId === 'resume' ||
-                (section.sectionId === 'nextup' && !hasResumeRow)
-              );
-              loadBuiltinSection(rowsContainer, section, renderMerged);
+              loadBuiltinSection(rowsContainer, section);
             } else {
               loadRow(rowsContainer, section);
             }
           });
           MH.activeSections = newSections;
-          MH.activeMerge = mergeCW;
           return;
         }
 
@@ -1214,6 +981,11 @@
         // Use the fresh sections, not the remembered ones: a row's shape can
         // change with nothing else about it changing.
         MH.activeSections = newSections;
+        newSections.forEach(function (section) {
+          if (section.type !== 'builtin' || !TENTACLE_ROW_PATHS[section.sectionId]) return;
+          var row = document.querySelector('.mh-row[data-section-id="' + section.sectionId + '"]');
+          if (row) fillTentacleRow(row, section, false);
+        });
         var sections = newSections.filter(function (s) { return s.type === 'row' && s.playlistId; });
         sections.forEach(function (section) {
           apiGet('TentacleHome/Section/' + section.playlistId + '?userId=' + MH.userId)

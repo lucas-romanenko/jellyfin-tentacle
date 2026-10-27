@@ -950,6 +950,14 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Default home migration failed: {e}")
 
+        # Once: Jellyfin's home sections leave every home; Continue Watching,
+        # On Now and Recordings are Tentacle's own rows (2026-10-26)
+        try:
+            from services import home_rows
+            home_rows.migrate_homes(db)
+        except Exception as e:
+            logger.warning(f"Home rows migration failed: {e}")
+
         # Everyone but admins locks after a few wrong passwords (Jellyfin's
         # default never does), once Jellyfin answers
         if get_setting(db, "jellyfin_url"):

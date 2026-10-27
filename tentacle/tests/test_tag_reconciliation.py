@@ -14,6 +14,7 @@ Run from the tentacle/ directory:  python -m unittest discover -s tests
 import logging
 import shutil
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -41,6 +42,11 @@ OLD = datetime.utcnow() - timedelta(days=400)
 
 class _Db(unittest.TestCase):
     def setUp(self):
+        # The window alone: these few titles would otherwise all count as
+        # recent (a row reaches back to RECENTLY_ADDED_MIN titles)
+        _p = mock.patch.object(mdb, "RECENTLY_ADDED_MIN", 0)
+        _p.start()
+        self.addCleanup(_p.stop)
         self.tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, self.tmp, True)
         engine = create_engine(f"sqlite:///{self.tmp}/t.db")

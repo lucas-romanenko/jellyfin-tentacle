@@ -176,10 +176,12 @@ Gotchas:
 | GET | `/TentacleDiscover/Streaming` | user | GetNewOnStreaming | yes |
 | GET | `/TentacleDiscover/VodEpisodes/{tmdbId}` | user | GetVodEpisodes | yes |
 | POST | `/TentacleDiscover/WrongMatch/movie/{tmdbId}` | user | ReportWrongMatch | yes |
+| GET | `/TentacleHome/ContinueWatching` | user | GetContinueWatching | yes |
 | GET | `/TentacleHome/Hero` | user | GetHeroItems | yes |
 | POST | `/TentacleHome/Hero` | user | SetHero | yes |
 | GET | `/TentacleHome/HeroConfig` | user | GetHeroConfig | yes |
 | GET | `/TentacleHome/Playlists` | user | GetPlaylists | yes |
+| GET | `/TentacleHome/Recordings` | user | GetRecordingsRow | yes |
 | POST | `/TentacleHome/Reorder` | user | ReorderSections | yes |
 | GET | `/TentacleHome/Section/{playlistId}` | user | GetSectionItems | yes |
 | GET | `/TentacleHome/Sections` | user | GetSections | yes |

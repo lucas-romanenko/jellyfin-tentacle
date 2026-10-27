@@ -244,13 +244,13 @@ class TestWebHomeLiveUpdates(unittest.TestCase):
         nxt = re.search(r"\n  function ", self.home[start + 1:])
         return self.home[start: start + 1 + nxt.start()] if nxt else self.home[start:]
 
-    def test_the_structure_key_covers_the_title_and_the_merge_flag(self):
+    def test_the_structure_key_covers_the_title_and_continue_watchings_settings(self):
         body = self._fn("refreshPlaylistRows")
         key = body[body.index("var keyOf"): body.index("if (oldKeys !== newKeys)")]
         self.assertIn("displayText", key)
-        self.assertIn("merge", key)
-        self.assertIn("MH.activeMerge = mergeCW", body)
-        self.assertIn("MH.activeMerge = mergeCW", self._fn("renderHomePage"))
+        self.assertIn("s.shape", key)
+        self.assertIn("includeNextUp", key)
+        self.assertIn("maxItems", key)
 
     def test_a_version_change_refreshes_toolbar_and_hero(self):
         chrome = self._fn("refreshChrome")
