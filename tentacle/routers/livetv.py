@@ -23,10 +23,10 @@ Channel management:
 """
 
 import asyncio
-import hashlib
 import logging
 import re
 import threading
+import time
 from array import array
 from collections import deque
 
@@ -57,7 +57,7 @@ from models.database import (
     log_activity,
 )
 from routers.auth import get_user_from_request, require_admin, require_internal_or_admin
-from services.ssrf import explain_url, is_safe_url, lan_origin_guard
+from services.ssrf import explain_url, is_safe_url, lan_origin_guard, unresolved
 from urllib.parse import urljoin, urlsplit
 
 logger = logging.getLogger(__name__)
@@ -126,9 +126,60 @@ async def _send_checked(client, url: str, headers: dict, guard=None):
         # The guard resolves DNS with a blocking getaddrinfo: off the event
         # loop, so a resolver that hangs doesn't freeze every stream (#464).
         if not await asyncio.to_thread(guard, current):
+            allowed, why = await asyncio.to_thread(explain_url, guard, current)
+            if allowed or unresolved(why):
+                # Not found to be private: the name did not resolve (a DNS
+                # outage, or a resolver rate-limiting the one-time hosts a
+                # panel redirects to). Nothing fetched; retried like a
+                # dropped connection, never the end of the stream.
+                raise httpx.ConnectError(f"the redirect target did not resolve: {why or 'try again'}")
             logger.warning(f"[LiveTV] Blocked redirect to non-public host: {current}")
             raise HTTPException(502, "Stream redirect points to a non-public host")
     raise HTTPException(502, "Too many redirects")
+
+
+def _approved_address_transport():
+    """An httpx transport that connects to the address the SSRF guard just
+    approved for a host (ssrf.approved_ips), instead of looking the name up
+    again: an HLS stream re-read from the channel URL meets a new one-time
+    host on every read, and each lookup counts against the home's resolver
+    (AdGuard: 20 a second per /24, shared with every device). TLS still
+    verifies the host's name (httpcore takes SNI from the URL, not from the
+    address). A proxy from the environment keeps httpx's own transport."""
+    import httpcore
+    from services import ssrf
+
+    class _Backend(httpcore.AsyncNetworkBackend):
+        def __init__(self):
+            self._inner = httpcore.AnyIOBackend()
+
+        async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+            ips = ssrf.approved_ips(host)
+            last = None
+            for ip in (ips or [host])[:3]:
+                try:
+                    return await self._inner.connect_tcp(ip, port, timeout=timeout, local_address=local_address,
+                                                         socket_options=socket_options)
+                except (httpcore.ConnectError, httpcore.ConnectTimeout) as e:
+                    last = e
+            raise last
+
+        async def connect_unix_socket(self, path, timeout=None, socket_options=None):
+            return await self._inner.connect_unix_socket(path, timeout=timeout, socket_options=socket_options)
+
+        async def sleep(self, seconds):
+            await self._inner.sleep(seconds)
+
+    transport = httpx.AsyncHTTPTransport()
+    pool = getattr(transport, "_pool", None)
+    if type(pool) is httpcore.AsyncConnectionPool:
+        transport._pool = httpcore.AsyncConnectionPool(
+            ssl_context=pool._ssl_context, max_connections=pool._max_connections,
+            max_keepalive_connections=pool._max_keepalive_connections,
+            keepalive_expiry=pool._keepalive_expiry, http1=pool._http1, http2=pool._http2,
+            retries=pool._retries, local_address=pool._local_address, uds=pool._uds,
+            socket_options=pool._socket_options, network_backend=_Backend())
+    return transport
 
 
 # A running HLS stream's playlist reads: headers in, body within this long.
@@ -151,7 +202,33 @@ def _segment_read_limit(target_duration) -> float:
     return max(_HLS_SEGMENT_READ_MIN, seconds)
 
 
-async def _aread_within(resp, seconds: float, stretch=None) -> bytes:
+# An HLS segment is handed on in pieces of this size (whole 188-byte MPEG-TS
+# packets, ~64 KB, below glibc's mmap threshold): a 10 s segment is 5-8 MB,
+# and reading each one into a single bytes object let glibc's heap fragment
+# until the process grew without bound (8 channels: +80 MB a minute while
+# the live Python objects stayed at ~150 MB; 256 KB pieces still grew ~15 MB
+# a minute; 64 KB pieces: flat at ~225 MB).
+_HLS_PIECE = 188 * 348
+
+
+async def _aread_pieces(resp) -> list:
+    """The body as pieces of at most _HLS_PIECE bytes (whole packets; the
+    last one takes the rest)."""
+    pieces, held, size = [], [], 0
+    async for chunk in resp.aiter_bytes():
+        held.append(chunk)
+        size += len(chunk)
+        if size >= _HLS_PIECE:
+            joined = b"".join(held)
+            cut = len(joined) - len(joined) % _HLS_PIECE
+            pieces.extend(joined[i:i + _HLS_PIECE] for i in range(0, cut, _HLS_PIECE))
+            held, size = ([joined[cut:]], len(joined) - cut) if cut < len(joined) else ([], 0)
+    if size:
+        pieces.append(b"".join(held))
+    return pieces
+
+
+async def _aread_within(resp, seconds: float, stretch=None, pieces: bool = False):
     """resp.aread() with a bound on the whole body. httpx's read timeout is
     per read: a body that trickles a byte at a time never reaches it, and a
     running recording would wait on it for as long as the provider likes.
@@ -166,12 +243,14 @@ async def _aread_within(resp, seconds: float, stretch=None) -> bytes:
 
     asyncio.timeout(), not wait_for(): on Python 3.11 wait_for() can swallow
     a cancellation that arrives as the read completes, and the stream would
-    go on pulling from the provider after its client left."""
+    go on pulling from the provider after its client left.
+
+    pieces: the body as a list of _HLS_PIECE-sized pieces (_aread_pieces)."""
     factor = stretch["x"] if stretch else 1.0
     t0 = asyncio.get_running_loop().time()
     try:
         async with asyncio.timeout(seconds * factor):
-            body = await resp.aread()
+            body = await (_aread_pieces(resp) if pieces else resp.aread())
     except TimeoutError:        # asyncio.timeout's own: httpx raises only its own exceptions
         if stretch is not None:
             stretch["x"] = min(factor * 2, _HLS_READ_STRETCH_MAX)
@@ -672,6 +751,149 @@ async def _nothing_on_response(channel_id: int, lines: tuple,
         "Cache-Control": "no-cache, no-store",
         "X-Tentacle-Reason": reason,
     })
+
+
+# Where a viewer's live HLS stream starts: the last segments of the window
+# that hold at least this many seconds (one segment at least), not the
+# window's first. A panel's window is long (IPTV Bears: six 10 s segments),
+# and starting at its top put the picture a minute behind live. A recording
+# takes the whole window: more of the programme, and nobody waits on it.
+_HLS_LIVE_START_SECONDS = 12.0
+# A live playlist re-read from the channel URL is read again no sooner than
+# this (_hls_next_read times it).
+_HLS_RELOAD_MIN = 1.0
+# Re-read a redirected channel's playlist from the channel URL (see
+# _LIVE_STREAM_FORMATS). False re-reads the address it redirected to, as
+# every HLS stream did before; the re-resolve machinery's tests pin that path.
+_HLS_REFRESH_FROM_CHANNEL = True
+# A live playlist that answers but brings no new segment for this long
+# (at least _HLS_STALL_TARGETS target durations) is a stalled HLS feed:
+# switched to the continuous stream when there is one.
+_HLS_STALL_SECONDS = 30.0
+_HLS_STALL_TARGETS = 3
+# A window behind what was sent is a lagging edge server (read again soon,
+# _HLS_BEHIND_REREAD s, at most _HLS_BEHIND_QUICK times in a row), unless
+# its numbering dropped by more than _HLS_RENUMBERED segments, or every read
+# for _HLS_BEHIND_RESTART s was behind: then the numbering started again.
+_HLS_RENUMBERED = 200
+_HLS_BEHIND_RESTART = 20.0
+_HLS_BEHIND_REREAD = 0.5
+_HLS_BEHIND_QUICK = 4
+
+
+def _hls_poll(target_duration) -> float:
+    """How often a live playlist is read while its next segment is due."""
+    try:
+        target = max(float(target_duration), 1.0)
+    except (TypeError, ValueError):
+        target = 6.0
+    return max(_HLS_RELOAD_MIN, min(target / 4, 2.0))
+
+
+def _hls_next_read(read_at: float, next_due, target_duration, owed: bool = False) -> float:
+    """When to read a live playlist again that is re-read from the channel
+    URL: just after its next segment is due (when the newest one turned up
+    plus its duration), then every quarter target duration (1-2 s) until it
+    is listed -- about 1.5 reads a segment, a segment seen ~1 s after it is
+    listed. Reading every half target duration took ~3 reads a 10 s segment,
+    each a new one-time host for the home's resolver, and found segments up
+    to 4 s late. Never sooner than _HLS_RELOAD_MIN, never later than one
+    target duration (RFC 8216 6.3.4)."""
+    try:
+        target = max(float(target_duration), 1.0)
+    except (TypeError, ValueError):
+        target = 6.0
+    at = read_at + _hls_poll(target)
+    if next_due is not None and not owed:
+        at = max(at, next_due + 0.5)
+    return min(at, read_at + max(target, _HLS_RELOAD_MIN))
+
+
+def _hls_start_seconds(db) -> float:
+    """livetv_hls_start_seconds, else _HLS_LIVE_START_SECONDS: how much of
+    the window a viewer's HLS stream starts with (0 = one segment)."""
+    raw = (get_setting(db, "livetv_hls_start_seconds", "") or "").strip()
+    try:
+        return max(0.0, float(raw)) if raw else _HLS_LIVE_START_SECONDS
+    except ValueError:
+        return _HLS_LIVE_START_SECONDS
+
+
+def _hls_start_index(durations, seconds: float = None) -> int:
+    """Index of the first segment a viewer gets: the last ones that hold at
+    least `seconds` (at least one segment)."""
+    seconds = _HLS_LIVE_START_SECONDS if seconds is None else seconds
+    total = 0.0
+    for i in range(len(durations) - 1, -1, -1):
+        total += durations[i] or 0.0
+        if total >= seconds:
+            return i
+    return 0
+
+
+def _hls_window_plan(seqs, names, last_seq, last_name, same_disc: bool = True, sent_names=()):
+    """Which segments of a freshly read live playlist are new, by media
+    sequence. `seqs` are the window's numbers (consecutive), `names` their
+    file names; last_seq/last_name what was sent last, `sent_names` the
+    names of the last few sent. Re-read from the channel URL, every read is
+    a fresh token and every segment URL a new one, so URLs can't say what
+    was sent; numbers and names can. Answer (index of the first new
+    segment, verdict, segments lost):
+      "continue": the window holds what follows the last one sent
+                  (index == len(seqs): nothing new yet);
+      "gap":      the window moved past the last one sent: lost ones
+                  counted, everything in it is new;
+      "behind":   an edge server that lags (its window ends before the last
+                  one sent): nothing new, read again. IPTV Bears' regions
+                  are minutes apart on one numbering (A&E, 27 Oct: us4 6 min
+                  behind us6, us5 1 min), so a window far behind is still a
+                  lagging edge -- the caller takes it for a restart only if
+                  it stays behind (_HLS_BEHIND_RESTART);
+      "restart":  the numbering started again (it dropped by more than
+                  _HLS_RENUMBERED: seen 295 -> 0, 3933 -> 0): start as on a
+                  first read.
+    Where the numbers line up, a file name found within two places of
+    where the number puts it wins (a server whose counter moved by one
+    would otherwise repeat or lose a segment); names never overrule
+    numbers that line up further away (servers that reuse names in a
+    ring). Where the numbers don't line up (a renumbered window, a counter
+    that jumped), the last name sent says where to go on."""
+    if not seqs:
+        return 0, "continue", 0
+    usable = len(set(names)) == len(names)
+    after_name = names.index(last_name) + 1 if usable and last_name and last_name in names else None
+    lo, hi = seqs[0], seqs[-1]
+    if lo <= last_seq + 1 <= hi + 1:
+        i = last_seq + 1 - lo
+        if after_name is not None and abs(after_name - i) <= 2:
+            i = after_name
+        return i, "continue", 0
+    if after_name is not None:
+        return after_name, "continue", 0
+    if lo > last_seq + 1:
+        return 0, "gap", (min(lo - last_seq - 1, len(seqs)) if same_disc else 0)
+    if last_seq - hi > _HLS_RENUMBERED and not (usable and names and names[-1] in set(sent_names)):
+        return 0, "restart", 0
+    return len(seqs), "behind", 0
+
+
+def _segment_name(url: str) -> str:
+    """A segment's file name, without the query (its token)."""
+    from urllib.parse import urlparse
+    try:
+        return urlparse(url).path.rsplit("/", 1)[-1]
+    except ValueError:
+        return url
+
+
+def _is_hls_url(url) -> bool:
+    """A channel URL that asks for HLS (.m3u8); a panel's other forms
+    (.ts, or no extension) are its continuous MPEG-TS."""
+    from urllib.parse import urlparse
+    try:
+        return urlparse(url or "").path.lower().endswith((".m3u8", ".m3u"))
+    except ValueError:
+        return False
 
 
 def _media_segments(playlist_text: str, base_url: str) -> list:
@@ -1271,23 +1493,28 @@ def _reconnect_budget(db) -> float:
 
 # Which stream an Xtream channel URL asks the provider for.
 #
-# "m3u8" is HLS: the pump reloads the playlist every few seconds and fetches
-# every segment -- about 3,600 short requests over a three-hour game -- and
-# on a connection-limited account every one of them is a chance for the
-# provider to answer 509 because something else opened a connection
-# meanwhile (seen live: two of three concurrent HLS channels on a
-# 1-connection account died on playlist refreshes within 30 s). "ts" is the
-# continuous MPEG-TS stream Xtream panels serve at /live/.../<id>.ts: ONE
-# connection for the whole programme, taken through the raw-TS path (#103)
-# with its re-dial; many concurrent streams on such an account run for
-# hours (#87, #184). "auto" (the default) takes ts unless the account says
-# it cannot serve it (user_info.allowed_output_formats, remembered at sync
-# time); and since a panel that does not advertise its formats almost
-# always serves ts anyway, a channel whose ts open is refused outright is
-# opened as m3u8 instead (_live_open_urls). "m3u8" and "ts" are overrides.
-# The format is applied when a channel is opened, so a change (or this
-# default) takes effect at once, without a channel sync; a sync writes it
-# into the stored URLs too.
+# "m3u8" is HLS: the pump re-reads the playlist every few seconds and fetches
+# each segment once. "ts" is the continuous MPEG-TS stream Xtream panels
+# serve at /live/.../<id>.ts: one connection for the whole programme, taken
+# through the raw-TS path (#103) with its re-dial.
+#
+# #700 made ts the default: HLS lost two of three channels within 30 s on a
+# connection-limited account. The cause was how the playlist was re-read,
+# not HLS (26 Oct 2026, one IPTV Bears account): the panel redirects the
+# channel URL to a one-time tokenized address, and every re-read of THAT
+# address answers 509 from the second read on. Re-read from the channel URL
+# each time (a fresh redirect, a fresh token), 20 different channels ran on
+# the one account with no 509 and no stop, where continuous ts holds 3-4 and
+# ends channels from 5 (the panel cuts every ts connection ~5 times a
+# minute). So "auto" (the default) is HLS, re-read from the channel URL, with
+# continuous ts as each channel's fallback: opened as ts when its HLS open is
+# refused outright, and switched to ts inside the same response when its HLS
+# fails while running (_hls_failed_channels remembers it for a while). An
+# account that says it cannot serve HLS (user_info.allowed_output_formats,
+# remembered at sync time) is opened as ts, with HLS as the fallback.
+# "m3u8" and "ts" are overrides, without a fallback. The format is applied
+# when a channel is opened, so a change (or this default) takes effect at
+# once, without a channel sync; a sync writes it into the stored URLs too.
 _LIVE_STREAM_FORMATS = ("auto", "m3u8", "ts")
 _DEFAULT_LIVE_STREAM_FORMAT = "auto"
 
@@ -1331,19 +1558,54 @@ def _remember_output_formats(db, provider_id: int, info: dict) -> None:
 
 
 def _live_extension(db, provider_id: int) -> str:
-    """The extension channel URLs ask for, per the setting above: auto is ts
-    unless the account advertises formats without it."""
+    """The extension channel URLs ask for, per the setting above: auto is
+    m3u8 unless the account advertises formats without it (and with ts)."""
     fmt = _live_stream_format(db)
     if fmt in ("m3u8", "ts"):
         return fmt
     formats = _remembered_output_formats(db, provider_id)
-    return "m3u8" if formats and "ts" not in formats else "ts"
+    return "ts" if formats and "m3u8" not in formats and "ts" in formats else "m3u8"
 
 
 # Channels whose ts open was refused outright while m3u8 then opened: their
 # panel does not serve ts for them, so later opens go straight to m3u8.
 # In memory only: a restart tries ts again, at the cost of one refusal.
 _ts_refused_channels: "set[int]" = set()
+# Channels whose HLS failed under auto (refused outright at the open, or
+# ended / stalled while running): opened as continuous ts until this loop
+# time, then HLS is tried again. In memory only.
+_hls_failed_channels: "dict[int, float]" = {}
+_HLS_FAILED_FOR = 1800.0
+
+
+def _hls_failed(channel_id) -> bool:
+    until = _hls_failed_channels.get(channel_id)
+    if until is None:
+        return False
+    if time.monotonic() >= until:
+        _hls_failed_channels.pop(channel_id, None)
+        return False
+    return True
+
+
+def _note_hls_failed(channel_id) -> None:
+    _hls_failed_channels[channel_id] = time.monotonic() + _HLS_FAILED_FOR
+
+
+def _auto_pair(db, provider_id, channel_id, as_ts: str, as_m3u8: str) -> "tuple[str, str | None]":
+    """Under auto: the format to open with and the other one as its
+    fallback, minus one the account says it cannot serve or this channel
+    refused (ts) or failed on lately (HLS: then ts goes first)."""
+    formats = _remembered_output_formats(db, provider_id)
+    ts_ok = (not formats or "ts" in formats) and channel_id not in _ts_refused_channels
+    hls_ok = not formats or "m3u8" in formats or not ts_ok
+    if not ts_ok:
+        return as_m3u8, None
+    if not hls_ok:
+        return as_ts, None
+    if _hls_failed(channel_id):
+        return as_ts, as_m3u8
+    return as_m3u8, as_ts
 
 
 def _live_open_urls(db, provider, channel) -> "tuple[str, str | None]":
@@ -1362,33 +1624,25 @@ def _live_open_urls(db, provider, channel) -> "tuple[str, str | None]":
     if not m:
         return url, None
     base = url[:m.start(1)]
-    ext = _live_extension(db, provider.id)
-    if ext == "ts" and _live_stream_format(db) == "auto":
-        if channel.id in _ts_refused_channels:
-            return base + "m3u8", None
-        return base + "ts", base + "m3u8"
-    return base + ext, None
+    if _live_stream_format(db) == "auto":
+        return _auto_pair(db, provider.id, channel.id, base + "ts", base + "m3u8")
+    return base + _live_extension(db, provider.id), None
 
 
 def _m3u_open_urls(db, provider, channel, url: str) -> "tuple[str, str | None]":
     """An M3U channel whose link is an Xtream panel's (/live/u/p/123.m3u8,
-    /u/p/123 ...: most provider playlists) opens like an Xtream channel: as
-    one continuous .ts, with .m3u8 as the fallback, per the same setting.
-    That is what lets one connection carry several channels (#700): an HLS
-    pull asks the panel again for every segment. Any other link is opened
-    as listed."""
+    /u/p/123 ...: most provider playlists) opens like an Xtream channel, per
+    the same setting: under auto as HLS with continuous .ts as the fallback
+    (see _LIVE_STREAM_FORMATS). Any other link is opened as listed."""
     from services.m3u_parser import panel_link
     link = panel_link(url)
     if link is None or link.kind != "live":
         return url, None
     as_ts = url if link.ext == "ts" else link.live_url("ts")
     as_m3u8 = url if link.ext == "m3u8" else link.live_url("m3u8")
-    ext = _live_extension(db, provider.id)
-    if ext == "ts" and _live_stream_format(db) == "auto":
-        if channel.id in _ts_refused_channels:
-            return as_m3u8, None
-        return as_ts, as_m3u8
-    return (as_ts if ext == "ts" else as_m3u8), None
+    if _live_stream_format(db) == "auto":
+        return _auto_pair(db, provider.id, channel.id, as_ts, as_m3u8)
+    return (as_ts if _live_extension(db, provider.id) == "ts" else as_m3u8), None
 
 
 # Which channels are being RECORDED right now. Jellyfin opens the same tuner
@@ -2055,7 +2309,9 @@ def _stream_ended(channel_id: int, entry: dict, recording: bool, hls: bool = Fal
                "ended_on_error": bool(h.get("ended_on_error")),
                "revives": h.get("revives", 0),
                "replays_joined": h.get("replays_joined", 0),
-               "replay_bytes_skipped": h.get("replay_bytes_skipped", 0)}
+               "replay_bytes_skipped": h.get("replay_bytes_skipped", 0),
+               "switched_to_ts": bool(h.get("switched_to_ts")),
+               "hls": bool(hls)}
     _recent_streams.append(summary)
     del _recent_streams[:-_RECENT_STREAMS_MAX]
     if h.get("ended_on_error") and h.get("_refused") in (401, 403):
@@ -2070,7 +2326,7 @@ def _stream_ended(channel_id: int, entry: dict, recording: bool, hls: bool = Fal
     joined = h.get("replays_joined", 0)
     uncovered = h["reconnecting_seconds"] - h.get("_covered_seconds", 0.0)
     damaged = ((h["reconnects"] > joined and not hls) or h["segments_skipped"]
-               or uncovered >= 1.0 or h.get("ended_on_error"))
+               or uncovered >= 1.0 or h.get("ended_on_error") or h.get("switched_to_ts"))
     what = "recording" if recording else "stream"
     text = (f"{h['reconnects']} interruption(s) recovered, {h['reconnecting_seconds']:.0f}s waiting "
             f"on the provider, {h['segments_skipped']} segment(s) skipped, "
@@ -2083,6 +2339,8 @@ def _stream_ended(channel_id: int, entry: dict, recording: bool, hls: bool = Fal
     if h.get("ended_on_error"):
         failing = (f" ({h['reconnecting_seconds']:.0f}s)" if h["reconnecting_seconds"] >= 1.0 else "")
         text = f"ended while the provider was still failing{failing} — " + text
+    elif h.get("switched_to_ts"):
+        text = "HLS failed and the stream went on as continuous TS — " + text
     if not damaged:
         if h["reconnects"] or h["errors"]:
             logger.info(f"[LiveTV] Channel {channel_id}: {what} ran {seconds:.0f}s — {text} "
@@ -5474,7 +5732,8 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
                                              rival_delivering=lambda: _rival_delivering(lease),
                                              refresh_recordings=_refresh_recordings_bounded,
                                              fallback_url=fallback_url,
-                                             nothing_on=lambda: _placeholder_picture(ch))
+                                             nothing_on=lambda: _placeholder_picture(ch),
+                                             hls_start_seconds=_hls_start_seconds(db))
         if lease.preempted:
             # A recording took this slot while the open was still in flight
             # (there was no pump yet to stop). Going on would run one more
@@ -5547,7 +5806,7 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
 async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str, _release_sem,
                               guard=None, failure_budget: float = _DEFAULT_RECONNECT_BUDGET,
                               is_recording=None, rival_delivering=None, refresh_recordings=None,
-                              fallback_url=None, nothing_on=None):
+                              fallback_url=None, nothing_on=None, hls_start_seconds=None):
     """Inner stream proxy logic. `_release_sem()` is called when the concurrency
     slot can be freed: immediately on early-exit paths, or by the streaming
     generator's `finally` once the long-lived stream ends.
@@ -5573,7 +5832,13 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
 
     `fallback_url`, when given, is opened instead if `stream_url` is refused
     with a status that will not fix itself (a panel that does not serve the
-    channel as .ts: see _live_open_urls); the stream then runs on it.
+    channel in that format: see _live_open_urls); the stream then runs on it.
+    When the stream opens as HLS with a continuous .ts fallback that was not
+    needed at the open, an HLS that fails while running switches to it in
+    the same response (hls_to_mpegts).
+
+    `hls_start_seconds`: how much of an HLS window a viewer starts with
+    (_hls_start_seconds; None = _HLS_LIVE_START_SECONDS).
 
     `nothing_on`, when given, makes the "Nothing on right now" picture
     (bytes, or None): a viewer's raw stream that meets the provider's
@@ -5620,6 +5885,9 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         open_reresolved = False
         refused_token_url = None
         fell_back = False
+        primary_url = stream_url
+        ts_switch_url = fallback_url if (fallback_url and not _is_hls_url(fallback_url)
+                                         and _is_hls_url(stream_url)) else None
         while True:
             resp = None
             if refused_token_url is not None:
@@ -5673,9 +5941,11 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 if (fallback_url is not None and not retryable
                         and isinstance(e, httpx.HTTPStatusError)):
                     logger.warning(f"[LiveTV] Opening channel {channel_id}: the provider answered "
-                                   f"{e.response.status_code} for the continuous stream; opening it as HLS")
+                                   f"{e.response.status_code} for the "
+                                   f"{'HLS playlist' if _is_hls_url(primary_url) else 'continuous stream'}; "
+                                   f"opening it as {'continuous TS' if _is_hls_url(primary_url) else 'HLS'}")
                     stream_url = open_url = fallback_url
-                    fallback_url = None
+                    fallback_url = ts_switch_url = None
                     fell_back = True
                     continue
                 if not retryable or waited + open_backoff > _OPEN_RETRY_BUDGET:
@@ -5712,7 +5982,10 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 open_backoff = min(open_backoff * 2, 5.0)
 
         if fell_back:
-            _ts_refused_channels.add(channel_id)
+            if _is_hls_url(primary_url):
+                _note_hls_failed(channel_id)
+            else:
+                _ts_refused_channels.add(channel_id)
         tokenized_url = str(resp.url)
         logger.info(f"[LiveTV] Resolved tokenized URL for channel {channel_id}: {tokenized_url}")
 
@@ -6011,16 +6284,62 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
 
     health = _new_health()
 
+    # Re-read every playlist from the channel URL, not from the address it
+    # redirected to: a panel hands out a one-time tokenized address, and
+    # asking it again answers 509 from the second read on (#700's lost
+    # channels). A channel URL that did not redirect is re-read as before.
+    refresh_from_channel = _HLS_REFRESH_FROM_CHANNEL and tokenized_url != stream_url
+    hls_state = {"stalled": None}
+
     async def hls_to_mpegts():
-        """Wrapper that releases the concurrency slot once the stream ends."""
+        """Wrapper that releases the concurrency slot once the stream ends.
+        An HLS stream that fails while running continues on the channel's
+        continuous stream (ts_switch_url) in the same response: the viewer's
+        player or the recording sees a jump, not an end."""
         status_entry = _status_open(channel_id, health)
+        ended_logged = False
         try:
             async for chunk in _hls_worker():
                 yield chunk
+            why = hls_state["stalled"] or ("it ended on an error" if health.get("ended_on_error") else None)
+            if ts_switch_url and why:
+                _note_hls_failed(channel_id)
+                health.pop("ended_on_error", None)
+                health.pop("_failing_since", None)
+                health["switched_to_ts"] = True
+                _stream_ended(channel_id, status_entry,
+                              bool(is_recording is not None and is_recording()), hls=True)
+                _status_clear(channel_id, status_entry)
+                ended_logged = True
+                logger.warning(f"[LiveTV] Channel {channel_id}: HLS failed ({why}); continuing on the "
+                               f"continuous stream (TS) in the same response")
+                try:
+                    ts = await _stream_proxy_inner(channel_id, user_agent, ts_switch_url, lambda: None, guard,
+                                                   failure_budget=failure_budget, is_recording=is_recording,
+                                                   rival_delivering=rival_delivering,
+                                                   refresh_recordings=refresh_recordings,
+                                                   hls_start_seconds=hls_start_seconds)
+                except BaseException as e:
+                    if not isinstance(e, Exception):
+                        raise
+                    logger.error(f"[LiveTV] Channel {channel_id}: the continuous stream did not open "
+                                 f"either, ending: {getattr(e, 'detail', None) or e}")
+                    return
+                body = getattr(ts, "body_iterator", None)
+                if body is None:
+                    return
+                try:
+                    async for chunk in body:
+                        yield chunk
+                finally:
+                    aclose = getattr(body, "aclose", None)
+                    if aclose is not None:
+                        await aclose()
         finally:
-            _stream_ended(channel_id, status_entry,
-                          bool(is_recording is not None and is_recording()), hls=True)
-            _status_clear(channel_id, status_entry)
+            if not ended_logged:
+                _stream_ended(channel_id, status_entry,
+                              bool(is_recording is not None and is_recording()), hls=True)
+                _status_clear(channel_id, status_entry)
             _release_sem()
             logger.info(f"[LiveTV] Stream ended for channel {channel_id}")
 
@@ -6028,11 +6347,32 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         """Continuously fetch the HLS playlist and pipe chunk data as raw MPEG-TS."""
         import asyncio
         import random
-        seen_chunks: set[str] = set()
+        seen_chunks: set[str] = set()   # without media sequence numbers: what was sent
+        seen_order: deque = deque()     # the same, oldest first (bounded)
+
+        def _seen_add(key):
+            if key in seen_chunks:
+                return
+            seen_chunks.add(key)
+            seen_order.append(key)
+            if len(seen_order) > 2048:
+                seen_chunks.discard(seen_order.popleft())
         yielded_any = False
         last_seq = None     # media sequence number of the last segment sent
         last_disc = None    # and the discontinuity sequence it was sent under
-        last_payload_hash = None   # sha1 of the last segment sent (re-resolve dedupe)
+        last_name = None    # and its file name
+        sent_names: deque = deque(maxlen=16)   # the last few names sent
+        started = False     # the first media playlist has been placed (live edge)
+        last_new_at = None  # loop time a new segment last turned up
+        # Reload timing re-read from the channel URL (_hls_next_read): the
+        # newest number listed so far, when it most likely turned up, and
+        # when the read before the last one was made.
+        newest_listed = None
+        next_due = None
+        prev_read_at = None
+        behind_since = None    # first read of the current run of lagging-edge windows
+        behind_quick = 0       # quick re-reads after them in a row
+        reread_soon = False
         current_playlist = playlist_text
         current_base = playlist_base
         ua_headers = {"User-Agent": user_agent}
@@ -6062,20 +6402,57 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         # guard() resolves the host with a blocking getaddrinfo. Called for
         # every playlist line on every reload it would put N lookups on every
         # stream every few seconds. The answer depends only on the origin, so
-        # resolve each origin once for the life of this stream, in a worker
-        # thread: a resolver that hangs must not freeze every stream (#464).
+        # each origin is resolved once for this stream (hls_guard: the
+        # redirects and every line share it), in a worker thread: a resolver
+        # that hangs must not freeze every stream (#464). Re-read from the
+        # channel URL, every read lands on a new one-time host, and each name
+        # is a lookup at the home's resolver (AdGuard allows 20 a second per
+        # /24): its segments then cost none. A name that did not resolve is
+        # not remembered: it is tried again on the next read.
         from urllib.parse import urlparse as _urlparse
         _origin_verdicts: dict = {}
 
-        async def line_guard(url: str) -> bool:
+        def _origin_key(url: str):
+            p = _urlparse(url)
+            return (p.scheme, (p.hostname or "").lower(), p.port)
+
+        def hls_explain(url: str):
             try:
-                p = _urlparse(url)
-                key = (p.scheme, (p.hostname or "").lower(), p.port)
+                key = _origin_key(url)
             except ValueError:
-                return await asyncio.to_thread(guard, url)
-            if key not in _origin_verdicts:
-                _origin_verdicts[key] = await asyncio.to_thread(guard, url)
-            return _origin_verdicts[key]
+                return explain_url(guard, url)
+            hit = _origin_verdicts.get(key)
+            if hit is not None:
+                return hit
+            from services import ssrf
+            if key[0] in ("http", "https") and ssrf.approved_ips(key[1]):
+                # Found public a moment ago (the redirect that led here): no
+                # second lookup. A public host is allowed under every guard.
+                verdict = (True, "")
+                _origin_verdicts[key] = verdict
+                return verdict
+            if guard(url):
+                verdict = (True, "")
+            else:
+                allowed, why = explain_url(guard, url)
+                verdict = (False, why if not allowed else f"{key[1]} could not be resolved at first")
+            if verdict[0] or not unresolved(verdict[1]):
+                if len(_origin_verdicts) > 512:
+                    _origin_verdicts.clear()
+                _origin_verdicts[key] = verdict
+            return verdict
+
+        def hls_guard(url: str) -> bool:
+            return hls_explain(url)[0]
+        hls_guard.explain = hls_explain
+
+        async def line_guard(url: str):
+            """(allowed, the name did not resolve: try again later)"""
+            allowed, why = await asyncio.to_thread(hls_explain, url)
+            if not allowed and unresolved(why):
+                logger.info(f"[LiveTV] Channel {channel_id}: {why}; read again on the next playlist")
+                return False, True
+            return allowed, False
         # When the playlist now in hand was read; reloads are timed from here.
         playlist_loaded_at = asyncio.get_running_loop().time()
 
@@ -6151,6 +6528,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         async with httpx.AsyncClient(
             follow_redirects=False,
             timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
+            transport=_approved_address_transport(),
         ) as hls_client:
             placeholder_noted = False
 
@@ -6188,7 +6566,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 URL). Raises what the request raised, _ProviderPlaceholder,
                 or _NotAPlaylist for a continuous stream -- never read as a
                 playlist: it has no end."""
-                r = await _send_checked(hls_client, stream_url, ua_headers, guard)
+                r = await _send_checked(hls_client, stream_url, ua_headers, hls_guard)
                 _refusal_heard(health, getattr(r, "status_code", None))
                 try:
                     r.raise_for_status()
@@ -6267,12 +6645,13 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             f"continuing the same stream")
                 return "ok"
 
-            async def _reresolve(what: str, exc) -> bool:
+            async def _reresolve(what: str, exc, answered: bool = False) -> bool:
                 """The tokenized URL expired: resolve the channel URL again,
                 exactly as the open did, and carry on in the SAME response.
                 Counted as an interruption, inside the viewer's budget (for
                 a recording: for as long as it stays attached). True means
-                stop."""
+                stop. answered: `exc` already IS the channel URL's answer (a
+                playlist re-read from it), so it is not asked again."""
                 nonlocal reresolve_run, after_reresolve, current_playlist
                 nonlocal current_base, playlist_loaded_at, backoff_cap, stream_answer_since
                 loop_now = asyncio.get_running_loop().time
@@ -6298,6 +6677,9 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 if reresolve_run > 1 or not counted:
                     await _backoff_sleep()
                 try:
+                    if answered:
+                        answered = False
+                        raise exc
                     text, final = await _resolve_channel_playlist()
                 except _ProviderPlaceholder as e:
                     # Not an answer about the token: does not count toward
@@ -6314,11 +6696,16 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         st = e.response.status_code
                         if st in (401, 403, 407):
                             backoff_cap = _REFUSAL_BACKOFF_CAP
-                        if st == 407 and is_recording is not None and is_recording():
+                        if st == 407 and (refresh_from_channel
+                                          or (is_recording is not None and is_recording())):
                             # The channel URL itself answered 407: an ended
                             # session while the token is renewed, not a refused
-                            # login. Not counted for a recording; waited out on
-                            # the refusal cap, as the raw path does (#298).
+                            # login. Not counted for a recording -- nor for a
+                            # viewer re-read from the channel URL, where every
+                            # read is such a renewal (seen: 407 for ~20 s while
+                            # the panel restarted channels at night); waited
+                            # out on the refusal cap within the viewer's
+                            # budget, as the raw path does (#298).
                             reresolve_run -= 1
                             await _backoff_sleep()
                             return False
@@ -6414,14 +6801,22 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     if hop == _MAX_VARIANT_HOPS:
                         logger.error(f"[LiveTV] Too many HLS variant hops for channel {channel_id}")
                         return
-                    if not await line_guard(variant):
+                    ok, later = await line_guard(variant)
+                    if later:
+                        if _note_failure(httpx.ConnectError("the variant's host did not resolve"),
+                                         "Variant playlist fetch"):
+                            return
+                        await _backoff_sleep()
+                        variant_retry = True
+                        break
+                    if not ok:
                         logger.warning(
                             f"[LiveTV] Blocked HLS variant on non-public host for "
                             f"channel {channel_id}: {variant}")
                         return
                     logger.info(f"[LiveTV] Master playlist for channel {channel_id} — following variant")
                     try:
-                        v_resp = await _send_checked(hls_client, variant, ua_headers, guard)
+                        v_resp = await _send_checked(hls_client, variant, ua_headers, hls_guard)
                         try:
                             v_resp.raise_for_status()
                             variant_text = (await _aread_within(v_resp, _HLS_PLAYLIST_READ, playlist_stretch)).decode(
@@ -6465,11 +6860,14 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 lines = current_playlist.splitlines()
                 chunk_urls = []
                 chunk_seq: dict = {}         # chunk URL -> media sequence number
+                chunk_dur: dict = {}         # chunk URL -> its #EXTINF duration
                 media_seq = None             # #EXT-X-MEDIA-SEQUENCE, when the playlist has one
                 disc_seq = None              # #EXT-X-DISCONTINUITY-SEQUENCE, when it has one
                 uri_index = 0
                 target_duration = 5  # default segment length
                 is_live = "#EXT-X-ENDLIST" not in current_playlist
+                window = []                  # (url, number, name, duration) of every segment listed
+                extinf = None
 
                 for line in lines:
                     stripped = line.strip()
@@ -6488,22 +6886,123 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             disc_seq = int(stripped.split(":")[1])
                         except (ValueError, IndexError):
                             pass
+                    elif stripped.startswith("#EXTINF:"):
+                        try:
+                            extinf = float(stripped[8:].split(",")[0])
+                        except ValueError:
+                            extinf = None
                     elif stripped and not stripped.startswith("#"):
                         chunk_url = urljoin(current_base, stripped)
-                        if media_seq is not None:
-                            chunk_seq[chunk_url] = media_seq + uri_index
+                        n = media_seq + uri_index if media_seq is not None else None
+                        if n is not None:
+                            chunk_seq[chunk_url] = n
+                        chunk_dur[chunk_url] = extinf if extinf is not None else float(target_duration)
+                        window.append((chunk_url, n, _segment_name(chunk_url), chunk_dur[chunk_url]))
+                        extinf = None
                         uri_index += 1
-                        if not await line_guard(chunk_url):
-                            logger.warning(f"[LiveTV] Skipping HLS chunk on non-public host for channel {channel_id}: {chunk_url}")
+                        ok, later = await line_guard(chunk_url)
+                        if not ok:
+                            if not later:
+                                logger.warning(f"[LiveTV] Skipping HLS chunk on non-public host for channel "
+                                               f"{channel_id}: {chunk_url}")
                             continue
                         chunk_urls.append(chunk_url)
+
+                if is_live and window and window[-1][1] is not None:
+                    if newest_listed is None or window[-1][1] > newest_listed:
+                        # It turned up since the read before: most likely within
+                        # the last poll interval (reads come every 1-2 s once it
+                        # is due), so half of that before this read.
+                        appeared = playlist_loaded_at
+                        if prev_read_at is not None and newest_listed is not None:
+                            appeared -= min(playlist_loaded_at - prev_read_at,
+                                            _hls_poll(target_duration)) / 2
+                        next_due = appeared + (window[-1][3] or target_duration)
+                        newest_listed = window[-1][1]
+                    elif window[-1][1] < newest_listed - _HLS_RENUMBERED:
+                        newest_listed = window[-1][1]       # a restarted numbering
+                prev_read_at = playlist_loaded_at
+
+                def _key(u):
+                    # Without numbers, what was sent is known by URL -- or, re-read
+                    # from the channel URL (a fresh token in every path), by name.
+                    return _segment_name(u) if refresh_from_channel else u
+
+                def _mark_sent_up_to(index):
+                    """Count the window's segments before `index` as sent (a
+                    viewer's live-edge start, a restarted numbering)."""
+                    nonlocal last_seq, last_disc, last_name
+                    if index <= 0:
+                        return
+                    u, n, name, _d = window[index - 1]
+                    if n is not None:
+                        last_seq, last_disc, last_name = n, disc_seq, name
+                    for u2, _n, _name, _d2 in window[:index]:
+                        _seen_add(_key(u2))
+
+                # What is new in this window. With media sequence numbers, by
+                # number (_hls_window_plan); else by URL / name, as always.
+                window_new: "set[str] | None" = None
+                if is_live and window and not _select_hls_variant(current_playlist, current_base):
+                    viewer = not (is_recording is not None and is_recording())
+                    have_numbers = window[0][1] is not None
+                    verdict = "first" if not started else None
+                    reread_soon = False
+                    if started and have_numbers and last_seq is not None:
+                        idx, verdict, lost = _hls_window_plan(
+                            [w[1] for w in window], [w[2] for w in window], last_seq, last_name,
+                            same_disc=(last_disc is None or disc_seq is None or last_disc == disc_seq),
+                            sent_names=sent_names)
+                        if verdict == "behind":
+                            if behind_since is None:
+                                behind_since = playlist_loaded_at
+                            if playlist_loaded_at - behind_since >= _HLS_BEHIND_RESTART:
+                                verdict, idx = "restart", 0
+                            elif behind_quick < _HLS_BEHIND_QUICK:
+                                # The next segment is out there on a fresher edge.
+                                behind_quick += 1
+                                reread_soon = True
+                        if verdict != "behind":
+                            behind_since, behind_quick = None, 0
+                        if verdict == "gap":
+                            if lost:
+                                health["segments_skipped"] += lost
+                                logger.warning(f"[LiveTV] Channel {channel_id}: the playlist moved past "
+                                               f"{lost} segment(s) before they were fetched")
+                        elif verdict == "restart":
+                            logger.info(f"[LiveTV] Channel {channel_id}: the playlist's numbering started "
+                                        f"again (last sent {last_seq}, now {window[0][1]}-{window[-1][1]})")
+                        if verdict != "restart":
+                            window_new = {w[0] for w in window[idx:]}
+                    if verdict in ("first", "restart"):
+                        started = True
+                        if verdict == "restart":
+                            newest_listed, next_due = window[-1][1], None
+                        start = _hls_start_index([w[3] for w in window], hls_start_seconds) if viewer else 0
+                        if start:
+                            logger.info(f"[LiveTV] Channel {channel_id}: starting {len(window) - start} of "
+                                        f"{len(window)} segments from the live edge "
+                                        f"({sum(w[3] for w in window[start:]):.0f}s)")
+                        if verdict == "restart":
+                            seen_chunks.clear()
+                            seen_order.clear()
+                        _mark_sent_up_to(start)
+                        window_new = {w[0] for w in window[start:]} if have_numbers else None
+                    if window_new is not None:
+                        # Fetched by number: a URL seen before means nothing
+                        # (and one never seen may be a segment already sent).
+                        chunk_urls = [u for u in chunk_urls if u in window_new]
+                if window_new is None:
+                    chunk_urls = [u for u in chunk_urls if _key(u) not in seen_chunks]
 
                 # Placeholder segments are never fetched. A playlist of nothing
                 # else means the channel is unavailable right now (#140).
                 placeholder_segments = [u for u in chunk_urls if _placeholder_name(u)]
+                if not chunk_urls and window:
+                    placeholder_segments = [w[0] for w in window if _placeholder_name(w[0])]
                 if placeholder_segments:
                     chunk_urls = [u for u in chunk_urls if not _placeholder_name(u)]
-                    if not any(u not in seen_chunks for u in chunk_urls):
+                    if not chunk_urls:
                         segment = _placeholder_name(placeholder_segments[0])
                         if not in_placeholder:
                             in_placeholder = True
@@ -6535,52 +7034,9 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             return
                         await _backoff_sleep()
 
-                if after_reresolve and last_seq is not None and chunk_seq:
-                    # A fresh token renames every segment URL, so segments
-                    # already sent come back as "new". Skip them by media
-                    # sequence -- only when the new window straddles the last
-                    # segment sent, i.e. the numbering really continues. A
-                    # restarted numbering (a window that does not reach the
-                    # last one sent, or a changed discontinuity sequence) is
-                    # left alone: better a repeat than a hole.
-                    lo, hi = min(chunk_seq.values()), max(chunk_seq.values())
-                    same_disc = last_disc is None or disc_seq is None or last_disc == disc_seq
-                    if same_disc and lo <= last_seq + 1 <= hi + 1:
-                        # The numbers line up -- but a server whose counter
-                        # moved by one would lose a real segment per re-resolve
-                        # to a skip by number. Where the new window holds a
-                        # segment numbered like the last one sent, fetch it and
-                        # skip only if it IS that segment (same bytes).
-                        probe = next((u for u, n in chunk_seq.items() if n == last_seq), None)
-                        same = probe is None   # nothing to compare: nothing <= last_seq either
-                        if probe is not None and last_payload_hash is not None:
-                            try:
-                                pr = await _send_checked(hls_client, probe, ua_headers, guard)
-                                try:
-                                    pr.raise_for_status()
-                                    body = await _aread_within(pr, _segment_read_limit(target_duration),
-                                                               segment_stretch)
-                                    same = hashlib.sha1(body).digest() == last_payload_hash
-                                finally:
-                                    await pr.aclose()
-                            except Exception as e:
-                                logger.debug(f"[LiveTV] Could not compare the segment after a re-resolve "
-                                             f"for channel {channel_id}: {e}")
-                        if same:
-                            for u, n in chunk_seq.items():
-                                if n <= last_seq:
-                                    seen_chunks.add(u)
-                        else:
-                            logger.info(f"[LiveTV] Channel {channel_id}: the fresh playlist's numbering does "
-                                        f"not continue the old one; sending its window again rather than "
-                                        f"risking a hole")
-                    elif (last_disc is not None and disc_seq is not None and last_disc == disc_seq
-                          and lo > last_seq + 1):
-                        # The window moved on while the URL was re-resolved:
-                        # those segments are gone for good. Say so -- only when
-                        # the discontinuity sequence proves it is one numbering,
-                        # and never more than a window.
-                        health["segments_skipped"] += min(lo - last_seq - 1, len(chunk_seq))
+                if after_reresolve:
+                    # A fresh token renamed every segment URL: what was sent
+                    # is known by number (above), or by name.
                     after_reresolve = False
                 restart = False
 
@@ -6588,7 +7044,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 got_new = False
                 chunk_pending = False
                 for chunk_url in chunk_urls:
-                    if chunk_url in seen_chunks:
+                    if window_new is None and _key(chunk_url) in seen_chunks:
                         continue
                     # A live playlist is a short sliding window. Going back to it
                     # after a refused chunk costs the backoff, what is left of the
@@ -6599,11 +7055,11 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     payload = None
                     for attempt in range(CHUNK_RETRIES_IN_PLACE + 1):
                         try:
-                            chunk_resp = await _send_checked(hls_client, chunk_url, ua_headers, guard)
+                            chunk_resp = await _send_checked(hls_client, chunk_url, ua_headers, hls_guard)
                             try:
                                 chunk_resp.raise_for_status()
                                 payload = await _aread_within(chunk_resp, _segment_read_limit(target_duration),
-                                                              segment_stretch)
+                                                              segment_stretch, pieces=True)
                             finally:
                                 await chunk_resp.aclose()
                             break
@@ -6637,7 +7093,10 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         if not _is_retryable(chunk_error):
                             fatal_chunk_skips += 1
                             health["segments_skipped"] += 1
-                            seen_chunks.add(chunk_url)
+                            _seen_add(_key(chunk_url))
+                            if chunk_url in chunk_seq:
+                                last_seq, last_disc = chunk_seq[chunk_url], disc_seq
+                                last_name = _segment_name(chunk_url)
                             if fatal_chunk_skips > MAX_FATAL_CHUNK_SKIPS:
                                 logger.error(f"[LiveTV] {fatal_chunk_skips} segments in a row are gone for "
                                              f"channel {channel_id}, stopping: {chunk_error}")
@@ -6656,10 +7115,24 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         await _backoff_sleep()
                         chunk_pending = True
                         break
-                    seen_chunks.add(chunk_url)
+                    _seen_add(_key(chunk_url))
                     got_new = True
                     fatal_chunk_skips = 0
                     yielded_any = True
+                    t_new = asyncio.get_running_loop().time()
+                    prev_dur = hls_state.get("prev_dur")
+                    if (last_new_at is not None and prev_dur and yielded_any
+                            and t_new - last_new_at > max(1.5 * prev_dur, prev_dur + 5.0)):
+                        # Late: a viewer at the live edge may have waited for it
+                        # (the reason is in the lines above, or the panel was slow
+                        # to list it: no error at all).
+                        logger.info(f"[LiveTV] Channel {channel_id}: segment {chunk_seq.get(chunk_url, '?')} "
+                                    f"came {t_new - last_new_at:.1f}s after the one before "
+                                    f"({prev_dur:.1f}s long); window {window[0][1] if window else '?'}-"
+                                    f"{window[-1][1] if window else '?'}")
+                    last_new_at = t_new
+                    hls_state["prev_dur"] = chunk_dur.get(chunk_url)
+                    hls_state["stalled"] = None
                     reresolve_run, after_reresolve, gone_since, denied_since = 0, False, None, None
                     refused_since = None
                     # The cooldown resets only after _REVIVE_RESET_AFTER of
@@ -6671,10 +7144,12 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     if (revive["last"] is not None
                             and t_now - revive["flow_since"] >= _REVIVE_RESET_AFTER):
                         revive.update(last=None, gap=_REVIVE_COOLDOWN)
-                    last_payload_hash = hashlib.sha1(payload).digest()
                     if chunk_url in chunk_seq:
                         last_seq, last_disc = chunk_seq[chunk_url], disc_seq
-                    yield payload
+                        last_name = _segment_name(chunk_url)
+                    sent_names.append(_segment_name(chunk_url))
+                    for piece in payload:
+                        yield piece
                     _note_success(real_data=True)
 
                 if restart:
@@ -6696,18 +7171,47 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 # The wait is timed from when the playlist was READ, so time
                 # spent downloading chunks or backing off is not added on top
                 # and a slow pass cannot let segments roll out of the window.
-                reload_after = target_duration if (got_new and not chunk_pending) else target_duration / 2
+                #
+                # Re-read from the channel URL, the stream sits near the live
+                # edge (_HLS_LIVE_START_SECONDS): a segment found a whole
+                # target duration late is one the viewer may wait for, so the
+                # read is timed to when the next one is due (_hls_next_read).
+                if refresh_from_channel:
+                    reload_after = (_HLS_BEHIND_REREAD if reread_soon and not got_new else
+                                    _hls_next_read(playlist_loaded_at, next_due, target_duration,
+                                                   chunk_pending) - playlist_loaded_at)
+                else:
+                    reload_after = target_duration if (got_new and not chunk_pending) else target_duration / 2
+                now = asyncio.get_running_loop().time()
+                if last_new_at is None:
+                    last_new_at = now
+                quiet = now - last_new_at
+                if (not got_new and not in_placeholder and failing_since is None
+                        and quiet >= max(_HLS_STALL_SECONDS, _HLS_STALL_TARGETS * target_duration)):
+                    # The playlist answers, but nothing new comes: a stalled
+                    # feed (seen: one segment, then the same window for good).
+                    if ts_switch_url:
+                        hls_state["stalled"] = f"no new segment for {quiet:.0f}s"
+                        return
+                    if not hls_state.get("stall_logged"):
+                        hls_state["stall_logged"] = True
+                        logger.warning(f"[LiveTV] Channel {channel_id}: no new HLS segment for "
+                                       f"{quiet:.0f}s; still reading its playlist")
                 remaining = playlist_loaded_at + reload_after - asyncio.get_running_loop().time()
                 if remaining > 0:
                     await asyncio.sleep(remaining)
                 try:
-                    pl_resp = await _send_checked(hls_client, current_base, ua_headers, guard)
-                    try:
-                        pl_resp.raise_for_status()
-                        refreshed = (await _aread_within(pl_resp, _HLS_PLAYLIST_READ, playlist_stretch)).decode(
-                            "utf-8", errors="replace")
-                    finally:
-                        await pl_resp.aclose()
+                    if refresh_from_channel:
+                        refreshed, refreshed_base = await _resolve_channel_playlist()
+                    else:
+                        pl_resp = await _send_checked(hls_client, current_base, ua_headers, hls_guard)
+                        try:
+                            pl_resp.raise_for_status()
+                            refreshed = (await _aread_within(pl_resp, _HLS_PLAYLIST_READ, playlist_stretch)).decode(
+                                "utf-8", errors="replace")
+                        finally:
+                            await pl_resp.aclose()
+                        refreshed_base = current_base
                 except _ProviderPlaceholder as e:
                     # The playlist URL now redirects to a stand-in clip: not a
                     # playlist (#624). Keep the one in hand and ask again;
@@ -6725,7 +7229,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 except Exception as e:
                     if _token_expired(e):
                         refused_since = None
-                        if await _reresolve("Playlist refresh", e):
+                        if await _reresolve("Playlist refresh", e, answered=refresh_from_channel):
                             return
                         continue
                     if _note_failure(e, "Playlist refresh"):
@@ -6742,9 +7246,11 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         refused_since = None
                     await _backoff_sleep()
                     continue
-                current_playlist = refreshed
+                current_playlist, current_base = refreshed, refreshed_base
                 playlist_loaded_at = asyncio.get_running_loop().time()
                 refused_since = None
+                if got_new:
+                    hls_state.pop("stall_logged", None)
                 _note_success()
 
     response = StreamingResponse(

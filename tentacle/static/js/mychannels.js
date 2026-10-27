@@ -718,6 +718,27 @@ async function _poolLoadRegion() {
   } catch (e) { /* stays empty */ }
 }
 
+async function _liveLoadStreamFormat() {
+  const sel = document.getElementById('live-stream-format');
+  if (!sel || sel.dataset.loaded) return;
+  try {
+    const s = await api('/api/settings/raw');
+    const v = (s.livetv_stream_format || 'auto').trim().toLowerCase();
+    sel.value = ['auto', 'ts', 'm3u8'].includes(v) ? v : 'auto';
+    sel.dataset.loaded = '1';
+  } catch (e) { /* stays on Automatic */ }
+}
+
+async function liveSaveStreamFormat(sel) {
+  const note = document.getElementById('live-stream-format-note');
+  try {
+    await api('/api/settings', { method: 'POST', body: { settings: { livetv_stream_format: sel.value } } });
+    if (note) note.textContent = 'Saved. Channels opened from now on use it.';
+  } catch (e) {
+    if (!e.sessionExpired) toast(e.message, 'error');
+  }
+}
+
 async function poolSaveRegion() {
   const input = document.getElementById('pool-region');
   const note = document.getElementById('pool-region-note');

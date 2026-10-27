@@ -1,18 +1,17 @@
 """Which stream an Xtream channel URL asks the provider for: auto (the
-default: continuous MPEG-TS unless the account says it cannot serve it, with
-HLS as a per-channel fallback), or the overrides .m3u8 (HLS) and .ts.
+default: HLS re-read from the channel URL unless the account says it cannot
+serve it, with continuous MPEG-TS as a per-channel fallback), or the
+overrides .m3u8 (HLS) and .ts.
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 
-HLS is a playlist reload every few seconds plus one request per segment --
-about 3,600 requests over a three-hour game. On a connection-limited
-account each one is a chance for the provider to answer 509 because
-something else opened a connection meanwhile (seen live 2026-09-23: every
-509 that split an NHL recording landed on a playlist refresh). The
-continuous .ts stream is ONE connection for the whole programme, served
-through the raw-TS path with its re-dial (#103). Seen live 2026-10-18 on a
-1-connection account: three HLS channels at once, two died on playlist
-refreshes (509) within 30 s.
+#700 (2026-10-18) made ts the default: on a 1-connection account three HLS
+channels at once lost two to 509s on playlist refreshes within 30 s. The
+refreshes re-read the one-time tokenized address the channel URL had
+redirected to; re-read from the channel URL itself (a fresh redirect each
+time), 20 different channels ran on one account without a 509, where
+continuous ts ends channels from 5 (2026-10-26). So auto is HLS again, read
+that way (test_livetv_hls_channel_reread), with ts as the fallback.
 """
 import asyncio
 import unittest
@@ -42,10 +41,10 @@ class _Base(unittest.TestCase):
 
 
 class FormatSetting(_Base):
-    def test_default_is_auto_which_is_ts_for_an_account_that_says_nothing(self):
+    def test_default_is_auto_which_is_hls_for_an_account_that_says_nothing(self):
         from routers import livetv
         self.assertEqual("auto", livetv._live_stream_format(self.db))
-        self.assertEqual("ts", livetv._live_extension(self.db, 1))
+        self.assertEqual("m3u8", livetv._live_extension(self.db, 1))
 
     def test_ts_and_auto_are_accepted_and_garbage_keeps_the_default(self):
         from routers import livetv
@@ -62,22 +61,22 @@ class FormatSetting(_Base):
 
 
 class AutoUsesWhatTheAccountAdvertises(_Base):
-    def test_auto_without_any_record_takes_ts(self):
-        """Xtream panels almost always serve /live/.../<id>.ts; a channel
-        whose ts open is refused falls back to HLS (OpenFallsBackToHls)."""
+    def test_auto_without_any_record_takes_hls(self):
+        """A channel whose HLS open is refused falls back to continuous ts
+        (OpenFallsBack)."""
         from routers import livetv
         self._set("livetv_stream_format", "auto")
-        self.assertEqual("ts", livetv._live_extension(self.db, 1))
+        self.assertEqual("m3u8", livetv._live_extension(self.db, 1))
 
-    def test_auto_takes_ts_when_the_account_allows_it(self):
+    def test_auto_takes_hls_when_the_account_allows_it_and_ts_when_only_that(self):
         from routers import livetv
         self._set("livetv_stream_format", "auto")
         livetv._remember_output_formats(self.db, 1, {"user_info": {"allowed_output_formats": ["m3u8", "ts", "rtmp"]}})
         self.db.commit()
         self.assertEqual(["m3u8", "ts", "rtmp"], livetv._remembered_output_formats(self.db, 1))
-        self.assertEqual("ts", livetv._live_extension(self.db, 1))
-        livetv._remember_output_formats(self.db, 2, {"user_info": {"allowed_output_formats": ["m3u8"]}})
-        self.assertEqual("m3u8", livetv._live_extension(self.db, 2), "per provider")
+        self.assertEqual("m3u8", livetv._live_extension(self.db, 1))
+        livetv._remember_output_formats(self.db, 2, {"user_info": {"allowed_output_formats": ["ts"]}})
+        self.assertEqual("ts", livetv._live_extension(self.db, 2), "per provider")
 
     def test_auto_stays_hls_when_the_account_does_not_allow_ts(self):
         from routers import livetv
@@ -150,18 +149,36 @@ def _provider(ptype="xtream"):
 
 class OpenUsesTheFormatNow(_Base):
     """The format is applied when a channel is opened: an install whose
-    channels were synced as .m3u8 streams ts right after the upgrade, with
+    channels were synced as .ts streams HLS right after the upgrade, with
     no channel sync."""
 
     def setUp(self):
         super().setUp()
         from routers import livetv
         livetv._ts_refused_channels.clear()
+        livetv._hls_failed_channels.clear()
         self.addCleanup(livetv._ts_refused_channels.clear)
+        self.addCleanup(livetv._hls_failed_channels.clear)
 
-    def test_a_channel_synced_as_hls_opens_as_ts_with_hls_as_fallback(self):
+    def test_a_channel_synced_as_ts_opens_as_hls_with_ts_as_fallback(self):
         from routers import livetv
+        self.assertEqual((PANEL + ".m3u8", PANEL + ".ts"),
+                         livetv._live_open_urls(self.db, _provider(), _channel(PANEL + ".ts")))
+
+    def test_a_channel_whose_hls_failed_opens_as_ts_for_a_while(self):
+        from routers import livetv
+        livetv._note_hls_failed(7)
         self.assertEqual((PANEL + ".ts", PANEL + ".m3u8"),
+                         livetv._live_open_urls(self.db, _provider(), _channel(PANEL + ".m3u8")))
+        livetv._hls_failed_channels[7] = 0.0     # its time is up: HLS again
+        self.assertEqual((PANEL + ".m3u8", PANEL + ".ts"),
+                         livetv._live_open_urls(self.db, _provider(), _channel(PANEL + ".m3u8")))
+        self.assertNotIn(7, livetv._hls_failed_channels)
+
+    def test_an_account_that_serves_only_ts_opens_ts_without_a_fallback(self):
+        from routers import livetv
+        livetv._remember_output_formats(self.db, 1, {"user_info": {"allowed_output_formats": ["ts"]}})
+        self.assertEqual((PANEL + ".ts", None),
                          livetv._live_open_urls(self.db, _provider(), _channel(PANEL + ".m3u8")))
 
     def test_an_override_is_used_as_is_with_no_fallback(self):
@@ -173,7 +190,7 @@ class OpenUsesTheFormatNow(_Base):
         self.assertEqual((PANEL + ".ts", None),
                          livetv._live_open_urls(self.db, _provider(), _channel(PANEL + ".m3u8")))
 
-    def test_an_account_without_ts_opens_hls(self):
+    def test_an_account_without_ts_opens_hls_without_a_fallback(self):
         from routers import livetv
         livetv._remember_output_formats(self.db, 1, {"user_info": {"allowed_output_formats": ["m3u8"]}})
         self.assertEqual((PANEL + ".m3u8", None),
@@ -193,9 +210,9 @@ class OpenUsesTheFormatNow(_Base):
             self.assertEqual((url, None), livetv._live_open_urls(self.db, prov, _channel(url)))
 
     def test_an_m3u_of_a_panels_links_opens_like_xtream(self):
-        # a get.php playlist: the same panel links, ts first (#700)
+        # a get.php playlist: the same panel links, HLS first, ts behind it
         from routers import livetv
-        self.assertEqual((PANEL + ".ts", PANEL + ".m3u8"),
+        self.assertEqual((PANEL + ".m3u8", PANEL + ".ts"),
                          livetv._live_open_urls(self.db, _provider("m3u_url"), _channel(PANEL + ".m3u8")))
 
 

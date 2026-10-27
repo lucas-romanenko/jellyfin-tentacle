@@ -122,7 +122,7 @@ There is no separate Live TV provider. Go to **Sources → IPTV providers**, cli
 When you save it, Tentacle tests the connection. If the account has live channels, Live TV is switched on for that provider and its channel groups are fetched automatically. The provider's card (Sources → IPTV providers) then holds them under **Channel groups**, and a **Live TV** tab appears under Sources. Until a provider is used for Live TV, that tab says no provider is used for Live TV.
 
 !!! info "Playlist (M3U) providers"
-    A playlist link or file works like an Xtream login. Its live channels (not its films and episodes) become the channel groups; the guide comes from the link the playlist names (`url-tvg` / `x-tvg-url`), or from the optional **Guide link** on the provider. When its links are an Xtream panel's, each channel is opened as one continuous `.ts` stream (`.m3u8` as the fallback) and viewers of the same channel share it, so several people can watch on an account with few connections. Other links are opened as listed. The playlist is read again every night (new groups, changed links). Backup addresses are for Xtream logins only.
+    A playlist link or file works like an Xtream login. Its live channels (not its films and episodes) become the channel groups; the guide comes from the link the playlist names (`url-tvg` / `x-tvg-url`), or from the optional **Guide link** on the provider. When its links are an Xtream panel's, each channel is opened like an Xtream channel (HLS, with one continuous `.ts` stream as the fallback) and viewers of the same channel share it. Other links are opened as listed. The playlist is read again every night (new groups, changed links). Backup addresses are for Xtream logins only.
 
 ### Several providers
 
@@ -242,7 +242,7 @@ Tentacle proxies live streams between Jellyfin and your provider. This handles:
 - **HLS to MPEG-TS conversion** — Converts HLS streams to MPEG-TS format for Jellyfin compatibility
 - **User-Agent forwarding** — Uses the configured User-Agent when connecting to the provider
 
-Xtream channels are pulled as one continuous MPEG-TS stream each, which is what lets several channels run at once on an account with a connection limit. If your provider does not serve a channel that way, Tentacle opens it as HLS instead, automatically.
+Xtream channels are pulled as HLS: Tentacle reads each channel's playlist again from the channel's own address every few seconds (never from the one-time address the provider redirects to, which providers refuse after the first read) and fetches each piece once. Read that way, one account carries many different channels at once. A viewer starts near the live edge; a recording gets everything the provider still lists. A channel whose HLS fails goes on as one continuous MPEG-TS stream in the same playback, and opens that way for the next half hour. **Sources → Live TV → More → How channels are streamed** switches this: Automatic (the above), Continuous only (TS: one connection per channel, closest to live, but most accounts then carry only a few channels at once) or HLS only.
 
 When a provider drops a raw MPEG-TS stream, Tentacle reconnects. Many providers start the new connection with the last 20 seconds or so again; Tentacle recognises those seconds and skips them, so the recording goes on where it stopped, without repeated seconds. An interruption covered that way is not counted as damage.
 

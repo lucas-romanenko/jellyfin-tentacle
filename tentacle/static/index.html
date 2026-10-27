@@ -3200,6 +3200,20 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
             </div>
             <div class="live-more-row">
               <div>
+                <div class="live-more-title">How channels are streamed</div>
+                <div class="live-more-hint">Automatic streams each channel as HLS, read the way that lets one provider account carry many channels at once; a channel whose HLS fails goes on as one continuous stream (TS). Continuous only (TS) is the older way: quicker to reach live, but most accounts then carry only a few channels at once. Takes effect at the next channel change.</div>
+                <div class="pool-region">
+                  <select class="form-input" id="live-stream-format" aria-label="How channels are streamed" onchange="liveSaveStreamFormat(this)">
+                    <option value="auto">Automatic (HLS, continuous as the fallback)</option>
+                    <option value="ts">Continuous only (TS)</option>
+                    <option value="m3u8">HLS only</option>
+                  </select>
+                  <span id="live-stream-format-note" aria-live="polite"></span>
+                </div>
+              </div>
+            </div>
+            <div class="live-more-row">
+              <div>
                 <div class="live-more-title">Every channel the provider lists</div>
                 <div class="live-more-hint">The provider&rsquo;s own list, before Tentacle folds it: switch single channels on or off and rename them. YouTube channels on Live TV are here too.</div>
               </div>
@@ -4952,9 +4966,9 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="/static/js/app.js?v=47"></script>
 <script src="/static/js/sources.js?v=46"></script>
-<script src="/static/js/pages.js?v=52"></script>
+<script src="/static/js/pages.js?v=53"></script>
 <script src="/static/js/music.js?v=45"></script>
-<script src="/static/js/mychannels.js?v=50"></script>
+<script src="/static/js/mychannels.js?v=51"></script>
 <script src="/static/js/newgroups.js?v=45"></script>
 <script src="/static/js/family.js?v=47"></script>
 <script src="/static/js/welcome.js?v=50"></script>

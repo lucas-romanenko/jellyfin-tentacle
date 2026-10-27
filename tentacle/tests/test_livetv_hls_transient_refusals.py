@@ -30,6 +30,17 @@ import routers.livetv as livetv
 from test_livetv_token_expiry import CHANNEL, Panel, _r, _stream
 
 
+def setUpModule():
+    # These tests pin the re-resolve machinery on a stream that re-reads the
+    # tokenized address its channel URL redirected to (every HLS stream did,
+    # before the re-read from the channel URL: test_livetv_hls_channel_reread).
+    livetv._HLS_REFRESH_FROM_CHANNEL = False
+
+
+def tearDownModule():
+    livetv._HLS_REFRESH_FROM_CHANNEL = True
+
+
 def _faulty(panel, faults):
     """faults: list of dicts {target: channel|playlist|chunk, status, count, after}.
     `after` matching requests pass before the fault answers `count` of them.
