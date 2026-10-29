@@ -292,14 +292,22 @@ class TestActivityEndpoint(_Base):
 
     def test_a_downloading_show_known_only_by_tvdb_leaves_searching(self):
         tvdb_only = dict(SHOW_B, tmdbId=0)
-        queue = [{"id": 79, "size": 100, "sizeleft": 50, "status": "downloading",
-                  "trackedDownloadStatus": "ok", "trackedDownloadState": "downloading",
-                  "series": tvdb_only, "episode": {"seasonNumber": 1, "episodeNumber": 1}}]
+
+        def grab(number):
+            return {"id": 78 + number, "size": 100, "sizeleft": 50, "status": "downloading",
+                    "trackedDownloadStatus": "ok", "trackedDownloadState": "downloading",
+                    "series": tvdb_only, "episode": {"seasonNumber": 1, "episodeNumber": number}}
         missing = {"records": [dict(r, series=tvdb_only) if r["series"] is SHOW_B else r
                                for r in SONARR_MISSING["records"]]}
         with mock.patch.dict(SONARR_MISSING, missing):
-            out = self.activity(sonarr_queue=queue)
-        self.assertEqual([("series", 0, 1001)], [(d["media_type"], d["tmdb_id"], d.get("tvdb_id")) for d in out["downloads"]])
+            out = self.activity(sonarr_queue=[grab(1)])
+            self.assertEqual([("series", 0, 1001)],
+                             [(d["media_type"], d["tmdb_id"], d.get("tvdb_id")) for d in out["downloads"]])
+            # One of its three episodes is downloading: that one leaves the
+            # card (matched by TVDB), the other two are still searching.
+            card = next(x for x in out["searching"] if x["title"] == "Show B")
+            self.assertEqual(["S01E02", "S01E03"], card["missing_labels"])
+            out = self.activity(sonarr_queue=[grab(1), grab(2), grab(3)])
         self.assertNotIn("Show B", [x["title"] for x in out["searching"]],
                          "the show is downloading; it must not also be listed as searching")
 
