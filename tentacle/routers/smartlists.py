@@ -31,7 +31,7 @@ from services.smartlists import (
     home_config_lock, write_home_json,
 )
 from services import default_home
-from services.home_rows import SECTION_MAP, TENTACLE_SECTIONS, shape_of
+from services.home_rows import SECTION_MAP, TENTACLE_SECTIONS, merges_next_up, shape_of
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/smartlists", tags=["smartlists"])
@@ -755,6 +755,12 @@ def add_row(req: AddRowRequest, db: Session = Depends(get_db), user: TentacleUse
                 return {"success": False, "message": "Unknown row"}
             if any(r.get("type") == "builtin" and r.get("section_id") == req.section_id for r in config["rows"]):
                 return {"success": False, "message": "Already in home screen"}
+            if req.section_id == "nextup" and merges_next_up(config):
+                return {"success": False, "message": "Continue Watching shows the next episodes; turn its Next episodes off first"}
+            if req.section_id == "resumevideo" and any(
+                    r.get("type") == "builtin" and r.get("section_id") == "nextup" for r in config["rows"]):
+                # The next episodes have their own row: Continue Watching keeps to what was started
+                config["merge_continue_watching"] = False
             for r in config["rows"]:
                 r["order"] = r.get("order", 0) + 1
             row = {"type": "builtin", "section_id": req.section_id,
@@ -833,12 +839,14 @@ def remove_row(req: RemoveRowRequest, db: Session = Depends(get_db), user: Tenta
 @router.get("/builtin-sections")
 def list_builtin_sections(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request),
         scope: Optional[str] = None):
-    """Return available built-in Jellyfin sections not yet in the home config."""
+    """Tentacle's own rows not yet on the home. Next Up only while Continue
+    Watching doesn't show the next episodes itself."""
     home = _home_for(db, user, scope)
-    config = home.read()
+    config = home.read() or {}
     current_ids = {r.get("section_id") for r in config.get("rows", []) if r.get("type") == "builtin"}
     available = [{"section_id": s["section_id"], "display_name": s["display_name"]} for s in TENTACLE_SECTIONS
-                 if s["section_id"] not in current_ids]
+                 if s["section_id"] not in current_ids
+                 and not (s["section_id"] == "nextup" and merges_next_up(config))]
     return {"sections": available}
 
 
@@ -869,17 +877,27 @@ def set_merge_continue_watching(req: MergeContinueRequest, db: Session = Depends
         scope: Optional[str] = None):
     """Continue Watching's "Include next episodes" switch: the next episodes
     of shows you're watching join the row. Per-user; the plugin works the row
-    out once for the web home and the Android TV app."""
+    out once for the web home and the Android TV app. Switched on, a Next Up
+    row leaves (its cards would show twice)."""
     home = _home_for(db, user, scope)
+    removed_next_up = False
     with home_config_lock:
         config = home.read()
         if not config:
             config = {"hero": {"enabled": False, "playlist_id": "", "display_name": ""}, "rows": []}
         config["merge_continue_watching"] = bool(req.enabled)
+        if merges_next_up(config):
+            rows = config.get("rows") or []
+            kept = [r for r in rows if not (r.get("type") == "builtin" and r.get("section_id") == "nextup")]
+            if len(kept) != len(rows):
+                removed_next_up = True
+                for i, r in enumerate(sorted(kept, key=lambda r: r.get("order", 0)), 1):
+                    r["order"] = i
+                config["rows"] = kept
         home.write(config)
     bump_playlist_version()
     home.notify()
-    return {"success": True, "merge_continue_watching": bool(req.enabled)}
+    return {"success": True, "merge_continue_watching": bool(req.enabled), "removed_next_up": removed_next_up}
 
 
 # What a client may play as a "preview" when a card is merely focused: the

@@ -11,7 +11,7 @@ Go to **My Home Screen** in the Tentacle dashboard.
 
 ## The default home
 
-Everyone starts on the **default home**, so a fresh install looks right with no setup: Continue Watching, Next Up, Recently Added Movies, Recently Added TV and your biggest sources, with recently added movies in the spotlight.
+Everyone starts on the **default home**, so a fresh install looks right with no setup: Continue Watching (with the next episodes of your shows), On Now, Recently Added Movies, Recently Added TV and your biggest sources, with recently added movies in the spotlight.
 
 - **Admins** change it with **My Home Screen → Default for everyone**: the same rows, order, poster or wide cards and spotlight as your own home, or **Copy my home here** to make your own layout the default (your personal lists are left out; nobody else has them). Everyone on the default sees a change within seconds.
 - **Everyone else** keeps the default until they change something on their own Home Screen; from then on the layout is theirs and later changes to the default leave it alone. **Reset to default** goes back.
@@ -37,7 +37,7 @@ The hero sort order is independent from the playlist's own sort — you can have
 
 ## Playlist Rows
 
-Below the hero, your home screen consists of rows. Each row is either a Tentacle playlist or a native Jellyfin section.
+Below the hero, your home screen consists of rows. Each row is either a Tentacle playlist or one of Tentacle's own rows.
 
 ### Adding Rows
 
@@ -48,12 +48,14 @@ Click the dropdown to add a row. Available options include:
 - Any auto playlist you've enabled (Netflix Movies, Recently Added, etc.)
 - Any custom playlist you've created
 
-**Native Jellyfin sections:**
+**Tentacle rows:**
 
-- Continue Watching
-- Next Up
-- Latest Media
-- *(other built-in Jellyfin sections)*
+- **Continue Watching**: what you stopped part-way. Its **Next episodes** switch adds the next episode of each show you're watching to the same row.
+- **Next Up**: the next episodes on a row of their own. It is in the list only while Continue Watching's **Next episodes** is off; switching Next episodes back on takes the Next Up row away, so nothing shows twice.
+- **On Now**: what's on now on your favourite channels.
+- **Recordings**: your latest Live TV recordings.
+
+Next episodes come most recently watched first. A show you had caught up on whose new season (or new episode) arrives later jumps to the front from the day it arrived, instead of waiting behind every show you watched since.
 
 ### Reordering Rows
 

@@ -2,7 +2,7 @@ namespace Jellyfin.Plugin.Tentacle.HomeScreen;
 
 /// <summary>
 /// Tentacle's own home rows that aren't playlists (the server's services/home_rows.py):
-/// Continue Watching, On Now and Recordings. No Jellyfin home section is drawn any more
+/// Continue Watching, Next Up, On Now and Recordings. No Jellyfin home section is drawn any more
 /// (Lucas, 2026-10-26); each of these is configured in Tentacle like any row and looks the
 /// same on the web and the TV app.
 /// </summary>
@@ -10,6 +10,12 @@ public static class TentacleRows
 {
     /// <summary>Continue Watching's section id.</summary>
     public const string ContinueWatching = "resumevideo";
+
+    /// <summary>
+    /// Next Up's section id: the next episodes of shows being watched, as a row of their own.
+    /// Offered only while Continue Watching's "Next episodes" is off (Lucas, 2026-10-30).
+    /// </summary>
+    public const string NextUp = "nextup";
 
     /// <summary>On Now's section id.</summary>
     public const string OnNow = "onnow";
@@ -28,6 +34,7 @@ public static class TentacleRows
     private static readonly Row[] All =
     {
         new(ContinueWatching, "Continue Watching", "wide"),
+        new(NextUp, "Next Up", "wide"),
         new(OnNow, "On Now", null),
         new(Recordings, "Recordings", "poster"),
     };
@@ -60,6 +67,39 @@ public static class TentacleRows
 
     /// <summary>The row's item limit (at most 30, as for playlist rows).</summary>
     public static int Limit(RowConfig row) => Math.Min(row.MaxItems is > 0 ? row.MaxItems.Value : DefaultLimit, MaxLimit);
+
+    /// <summary>
+    /// How long after the last watched episode the next one must have arrived to count as new
+    /// (a new season or a new episode downloaded later), not as part of the same download or a
+    /// library re-scan that dated every file again (18 Oct 2026 on Lucas's server).
+    /// </summary>
+    public static readonly TimeSpan NewEpisodeGap = TimeSpan.FromHours(6);
+
+    /// <summary>
+    /// When a show counts as last watched in the next-episodes order: when its last episode was
+    /// played, or, when its next episode arrived after that (a new season of a show the person
+    /// had caught up on), when the next episode arrived, so it comes to the front instead of
+    /// sinking behind every show watched since.
+    /// </summary>
+    /// <param name="lastPlayed">When the show's most recently played episode was played (MinValue: never).</param>
+    /// <param name="lastWatchedAdded">When that episode was added to the library (null: unknown).</param>
+    /// <param name="nextAdded">When the next episode was added to the library (null: unknown).</param>
+    public static DateTime NextUpDate(DateTime lastPlayed, DateTime? lastWatchedAdded, DateTime? nextAdded)
+    {
+        if (lastPlayed == DateTime.MinValue || nextAdded is not { } added || added <= lastPlayed)
+        {
+            return lastPlayed;
+        }
+
+        // Added after the last play, but with the episode before it (or the whole library
+        // dated again by a re-scan): not new
+        if (lastWatchedAdded is { } before && added - before < NewEpisodeGap)
+        {
+            return lastPlayed;
+        }
+
+        return added;
+    }
 
     /// <summary>
     /// Continue Watching's order: most recently watched first, one card per show (an

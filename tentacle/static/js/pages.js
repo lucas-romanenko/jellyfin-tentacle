@@ -3848,7 +3848,7 @@ function renderHomeRows() {
     const nextUpToggle = isBuiltin && row.section_id === 'resumevideo' ? `
       <label onclick="event.stopPropagation()" onmousedown="event.stopPropagation()"
         style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--text2);cursor:pointer;white-space:nowrap"
-        title="The next episode of shows you're watching joins this row">
+        title="The next episode of shows you're watching joins this row. Off: Next Up can be added as a row of its own">
         <input type="checkbox" ${homeIncludeNextUp ? 'checked' : ''} onchange="saveMergeContinueWatching(this.checked)"
           aria-label="Include next episodes" style="margin:0;accent-color:var(--accent)">Next episodes</label>` : '';
     const maxItemsInput = ownCards ? '' : `
@@ -6746,9 +6746,13 @@ let homeIncludeNextUp = true;
 async function saveMergeContinueWatching(checked) {
   homeIncludeNextUp = checked;
   try {
-    await api(homeUrl('/api/smartlists/merge-continue-watching'), { method: 'POST', body: { enabled: checked } });
+    const r = await api(homeUrl('/api/smartlists/merge-continue-watching'), { method: 'POST', body: { enabled: checked } });
     homeChangedByMe();
-    toast(checked ? 'Next episodes show in Continue Watching' : 'Continue Watching shows only what you started', 'success');
+    // Switched on, the Next Up row leaves: its episodes are in Continue Watching now
+    if (r && r.removed_next_up) loadHomeScreen();
+    toast(checked
+      ? (r && r.removed_next_up ? 'Next episodes show in Continue Watching (the Next Up row is gone)' : 'Next episodes show in Continue Watching')
+      : 'Continue Watching shows only what you started · Next Up can be added as a row', 'success');
   } catch (e) {
     homeIncludeNextUp = !checked;
     renderHomeRows();

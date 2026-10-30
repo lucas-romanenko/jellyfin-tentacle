@@ -1,6 +1,6 @@
 """Every home row comes from Tentacle (Lucas, 2026-10-26: "no Jellyfin
-built-in rows at all"). Continue Watching (with next episodes), On Now and
-Recordings are Tentacle's own rows, configured like any row and drawn the
+built-in rows at all"). Continue Watching (with next episodes), Next Up, On Now
+and Recordings are Tentacle's own rows, configured like any row and drawn the
 same on the web and the TV app; Jellyfin's home sections leave every layout
 once, and nothing else about a saved layout changes.
 
@@ -55,23 +55,16 @@ class NormalizeRows(unittest.TestCase):
         self.assertTrue(cfg["merge_continue_watching"], "next episodes, as decided on 21 Oct")
         self.assertEqual("wide", hr.shape_of(rows[5]), "Continue Watching is drawn wide, as the web showed it")
 
-    def test_next_up_on_its_own_becomes_continue_watching_with_next_episodes(self):
-        cfg = {"rows": [{"type": "builtin", "section_id": "nextup", "display_name": "Next Up", "order": 1}],
-               "merge_continue_watching": False}
-        hr.normalize_rows(cfg)
-        self.assertEqual([("resumevideo", "Continue Watching")],
-                         [(r["section_id"], r["display_name"]) for r in cfg["rows"]])
-        self.assertTrue(cfg["merge_continue_watching"])
-
-    def test_next_up_beside_continue_watching_folds_into_it(self):
+    def test_next_up_beside_continue_watching_with_next_episodes_leaves(self):
+        """Since 30 Oct "nextup" is Tentacle's own Next Up row: it stays unless
+        Continue Watching shows the next episodes already (no card twice)."""
         cfg = {"rows": [{"type": "builtin", "section_id": "resumevideo", "display_name": "Continue Watching", "order": 1,
                          "shape": "poster"},
                         {"type": "builtin", "section_id": "nextup", "display_name": "Next Up", "order": 2}],
-               "merge_continue_watching": False}
-        hr.normalize_rows(cfg)
-        self.assertEqual(1, len(cfg["rows"]))
+               "merge_continue_watching": True}
+        self.assertTrue(hr.normalize_rows(cfg))
+        self.assertEqual(["resumevideo"], [r["section_id"] for r in cfg["rows"]])
         self.assertEqual("poster", cfg["rows"][0]["shape"], "a chosen shape stays")
-        self.assertTrue(cfg["merge_continue_watching"])
 
     def test_next_episodes_switched_off_stays_off(self):
         cfg = {"rows": [{"type": "builtin", "section_id": "resumevideo", "display_name": "Continue Watching", "order": 1}],
@@ -159,11 +152,12 @@ class PluginAndWebDrawTentaclesRows(unittest.TestCase):
         self.assertIn("shape = TentacleRows.ShapeOf(row)", sections)
         self.assertIn("includeNextUp", sections)
         self.assertIn('new(ContinueWatching, "Continue Watching", "wide")', self.rows)
+        self.assertIn('new(NextUp, "Next Up", "wide")', self.rows)
         self.assertIn('new(OnNow, "On Now", null)', self.rows)
         self.assertIn('new(Recordings, "Recordings", "poster")', self.rows)
 
     def test_continue_watching_and_recordings_are_the_callers_own(self):
-        for route in ("ContinueWatching", "Recordings"):
+        for route in ("ContinueWatching", "NextUp", "Recordings"):
             body = self._action(route)
             self.assertIn("CallerIdentity.ResolveAsync", body, route)
             self.assertIn("return Forbid();", body, route)
@@ -171,9 +165,10 @@ class PluginAndWebDrawTentaclesRows(unittest.TestCase):
     def test_continue_watching_is_one_list_in_one_order(self):
         body = self._action("ContinueWatching")
         self.assertIn("IsResumable = true", body)
-        self.assertIn("GetNextUp", body)
+        self.assertIn("NextEpisodes(user, dtoOptions)", body)
         self.assertIn("MergeContinueWatching", body)
-        self.assertIn("TentacleRows.ContinueWatchingOrder", body)
+        self.assertIn("RowOf(user, entries, limit, dtoOptions)", body)
+        self.assertIn("TentacleRows.ContinueWatchingOrder", self.controller)
         self.assertIn("OrderByDescending(k => k.Played)", self.rows)
 
     def test_the_web_draws_them_from_the_plugin_not_from_jellyfins_sections(self):

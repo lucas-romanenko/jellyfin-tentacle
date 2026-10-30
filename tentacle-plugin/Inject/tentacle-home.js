@@ -435,10 +435,11 @@
 
   // ── Built-in Jellyfin Sections ──────────────────────────────────────
   // Tentacle's own rows that aren't playlists (the plugin sends no other):
-  // Continue Watching and Recordings come from the plugin, one list the TV app
-  // draws too, in the shape chosen in Tentacle; On Now draws its own cards.
+  // Continue Watching, Next Up and Recordings come from the plugin, one list the
+  // TV app draws too, in the shape chosen in Tentacle; On Now draws its own cards.
   var TENTACLE_ROW_PATHS = {
     resumevideo: 'TentacleHome/ContinueWatching',
+    nextup: 'TentacleHome/NextUp',
     recordings: 'TentacleHome/Recordings',
   };
 
@@ -486,7 +487,7 @@
     fillTentacleRow(row, section, true);
   }
 
-  // Fill (or refresh in place) Continue Watching or Recordings. `first`: the
+  // Fill (or refresh in place) Continue Watching, Next Up or Recordings. `first`: the
   // row was just drawn with its spinner; else only a change redraws it.
   function fillTentacleRow(row, section, first) {
     var gen = MH.generation;
@@ -512,7 +513,7 @@
         row.classList.remove('mh-row-hidden');
         itemsEl.innerHTML = '';
         items.forEach(function (item) {
-          itemsEl.appendChild(section.sectionId === 'resumevideo'
+          itemsEl.appendChild(section.sectionId === 'resumevideo' || section.sectionId === 'nextup'
             ? createContinueCard(item, wide) : createCard(item, wide));
         });
       })

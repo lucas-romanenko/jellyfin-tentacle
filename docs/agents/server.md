@@ -383,15 +383,27 @@ user_id)` computes them every time from source tags, list subscriptions
 - **No Jellyfin home sections** (Lucas, 2026-10-26). The `builtin` rows are
   Tentacle's own (`services/home_rows.py`): Continue Watching
   (`resumevideo`: resume + next episodes when `merge_continue_watching`, its
-  "Next episodes" switch; poster/wide, default wide), On Now (`onnow`: its
-  own square channel card, no shape) and Recordings (`recordings`: the
-  latest recordings, poster/wide, default poster; picker only). The plugin
-  works out Continue Watching and Recordings once
-  (`/TentacleHome/ContinueWatching`, `/Recordings`) for the web and the TV
-  app, and its `Sections` sends no other section. `normalize_rows()` keeps
+  "Next episodes" switch; poster/wide, default wide), Next Up (`nextup`: the
+  next episodes as a row of their own, 2026-10-30; offered by
+  `builtin-sections`/`add-row` only while `merges_next_up()` is false, i.e.
+  Continue Watching isn't on the home with its switch on; switching it on
+  removes the Next Up row, and `normalize_rows()` does the same, so no card
+  shows twice; adding Continue Watching next to a Next Up row turns the switch
+  off; poster/wide, default wide), On Now (`onnow`: its own square channel
+  card, no shape) and Recordings (`recordings`: the latest recordings,
+  poster/wide, default poster; picker only). The plugin works out Continue
+  Watching, Next Up and Recordings once (`/TentacleHome/ContinueWatching`,
+  `/NextUp`, `/Recordings`) for the web and the TV app, and its `Sections`
+  sends no other section. In both next-episode lists a show counts as last
+  watched when its next episode arrived, if that was after the last play and
+  at least 6 h after the last watched episode was added (a new season jumps to
+  the front; a library re-scan that re-dates every file doesn't):
+  `TentacleRows.NextUpDate`; the plugin reads up to 200 of Jellyfin's Next Up
+  before ordering, as Jellyfin lists them by last play. `normalize_rows()` keeps
   every config that way (`write_home_config`, the default); once per install
-  (`home_rows_tentacle_only`) every saved home loses Jellyfin's sections (a
-  lone Next Up becomes Continue Watching with next episodes on).
+  (`home_rows_tentacle_only`, 26 Oct) every saved home lost Jellyfin's
+  sections (Jellyfin's lone Next Up became Continue Watching with next
+  episodes on; `nextup` is Tentacle's own row since 30 Oct).
 - The hero has its own sort; `require_logo` (default on) keeps only items
   with a backdrop and a logo; `require_trailer` only items with a trailer.
   The plugin applies both when rendering. `trailer_audio` is off when
