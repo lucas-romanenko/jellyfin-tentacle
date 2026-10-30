@@ -152,9 +152,9 @@ same tags hide non-kids channels from kids on one lineup.
   with a `UserId` (none: empty). No RunTimeTicks; MediaSources Size as
   first probed; its DateCreated is the recording NFO's `dateadded`, local
   time read as UTC (Toronto: 4 h early). Pictures uploaded to it show on
-  "Recording now" cards. When it finishes, Jellyfin makes the file a new
-  item (Type Movie, another id, DateCreated = the end); the old one and
-  its pictures go. `/Videos/{id}/stream?static=true` ignores `Range` on the
+  "Recording now" cards. When it finishes, the same item (same id) becomes
+  Type Movie with a length and keeps its pictures (production and a
+  throwaway Jellyfin, 30 Oct 2026). `/Videos/{id}/stream?static=true` ignores `Range` on the
   growing file (200 from byte 0, no Content-Length, follows the file);
   `/Items/{id}/File` (admin key) answers 206 with `Content-Range: bytes
   a-b/<size so far>` (10.11.8, 30 Oct 2026).

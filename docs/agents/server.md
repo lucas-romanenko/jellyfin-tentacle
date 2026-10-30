@@ -1628,13 +1628,14 @@ GET/PUT `/api/live/recordings/artwork`; Sources → Live TV → More.
   the file: `frames.written_seconds` (ffprobe of 1 MB at each end, last
   minus first video PTS, wrap at 2^33; fallback the clock since
   DateCreated), and `created` = now - written (booking/guide matching).
-  Finished: Jellyfin makes a new item of the file (Type Movie, another id,
-  DateCreated = the end): `follow_finished` (live pass, when a
-  `while_recording` 1 row's item is no longer in progress) finds it by
-  Path in the library, uploads the kept copy, moves the row to it
-  (`while_recording` None for `KEPT_SOURCES`, 2 for frame/title), drops the
-  copy; no new item after `FOLLOW_CHECKS` (30) passes, or it has pictures
-  of its own: the row goes. `reconcile` never drops a `while_recording` 1
+  Finished (`follow_finished`, live pass, when a `while_recording` 1 row's
+  item is no longer in progress): 10.11.8 keeps the item and its id (Type
+  Recording → Movie, pictures kept): `while_recording` None for
+  `KEPT_SOURCES`, 2 for frame/title. Should a Jellyfin make a new item of
+  the file instead (another id), it is found by Path in the library, the
+  kept copy uploaded and the row moved to it; no item after
+  `FOLLOW_CHECKS` (30) passes, or the new one has pictures of its own: the
+  row goes. `reconcile` never drops a `while_recording` 1
   row. `run_pass`: `while_recording` 2 and `_finished` → `take_over`:
   made again from the finished file (`make_picture`, may `Defer`; after
   `MAX_ATTEMPTS` failures the moved picture stays). The growing file:

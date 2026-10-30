@@ -32,12 +32,12 @@ part written so far), else the title card. A frame or a title card is
 taken again from the growing file every FRAME_EVERY (FRAME_RETRY while no
 frame could be had), while it is still Tentacle's. How much is written
 comes from the file's own timestamps (Jellyfin's DateCreated of one in
-progress is its NFO's local time). When it finishes, Jellyfin makes a new
-item of the file (a Movie, another id): the picture moves to it at once
-(a copy kept on disk while it records, matched by path), the old row
-becomes the new item's. A card, TMDB's or the guide's picture stays; a
-frame or a title card is made again from the finished file by the pass
-above, when it is due (while_recording 2).
+progress is its NFO's local time). When it finishes, Jellyfin (10.11.8)
+keeps the item and its id, now a Movie, with the pictures. A card, TMDB's
+or the guide's picture stays; a frame or a title card is made again from
+the finished file by the pass above, when it is due (while_recording 2).
+Should a Jellyfin make a new item of the file instead, the picture moves
+to it at once (a copy kept on disk while it records, matched by path).
 
 Pictures drawn by an older layout (primary_shape not POSTER: empty = the
 16:9 as both, before posters; "poster" = before the safe area kept the

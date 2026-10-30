@@ -1256,7 +1256,7 @@ class RecordingArtwork(Base):
     failed (no picture could be made or saved; tried again later).
     while_recording: 1 while it records (the live pass's), 2 finished with
     a picture from while it recorded that the finished pass makes again;
-    path: the recording's file (Jellyfin gives the finished one a new item).
+    path: the recording's file (to find the finished item, should it be a new one).
     item_id is Jellyfin's, without dashes."""
     __tablename__ = "recording_artwork"
     id = Column(Integer, primary_key=True, autoincrement=True)
