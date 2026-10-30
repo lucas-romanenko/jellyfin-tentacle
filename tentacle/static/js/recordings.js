@@ -96,6 +96,8 @@ function recRender() {
 
 function _recGB(bytes) {
   const gb = (bytes || 0) / 1e9;
+  if (!gb) return '0 GB';
+  if (gb < 1) return `${Math.max(1, Math.round(gb * 1000))} MB`;   // a short recording: 35 MB, not 0.0 GB
   return gb >= 100 ? `${Math.round(gb)} GB` : gb >= 10 ? `${gb.toFixed(1).replace(/\.0$/, '')} GB` : `${gb.toFixed(1)} GB`;
 }
 
