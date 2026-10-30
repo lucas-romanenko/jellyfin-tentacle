@@ -230,7 +230,9 @@ class PreviewAndPlayer(unittest.TestCase):
 class RecordingsAndHome(unittest.TestCase):
     def test_a_recording_plays_on_click(self):
         self.assertIn("play(item, false)", REC)
-        self.assertIn("window.TentacleLiveTV.playChannel(item.ChannelId)", REC)   # recording now: live
+        # recording now: live through its channel (from its timer when the item has none);
+        # a click asks Watch live / Resume / Play from start first (test_recordings_web_growing)
+        self.assertIn("window.TentacleLiveTV.playChannel(id)", REC)
 
     def test_delete_only_when_jellyfin_allows_and_asked(self):
         body = REC[REC.index("function recordingMenu("):]
