@@ -8,13 +8,19 @@ shows and how it looks, the same on the web and the TV app:
 - Continue Watching (`resumevideo`): what you stopped part-way, plus the next
   episodes of shows you're watching when `merge_continue_watching` is on (the
   "Include next episodes" switch on the row). Poster or wide, default wide.
+- Next Up (`nextup`): the next episodes on a row of their own (Lucas,
+  2026-10-30: "continue watching still has the next up checkbox option, if
+  that is off, Next Up row is an option in the add row list"). Offered only
+  while Continue Watching's next episodes are off; switching them back on takes
+  the Next Up row out, so no card shows twice. Poster or wide, default wide.
+  In both, a show whose next episode arrived after it was last watched (a new
+  season) counts from when it arrived (the plugin's TentacleRows.NextUpDate).
 - On Now (`onnow`): what's on now on your favourite channels. Its own
   squarer card, no shape choice.
 - Recordings (`recordings`): the household's latest Live TV recordings, in
   the picker only. Poster or wide, default poster.
 
-Every other Jellyfin home section (Next Up on its own, My Media, the old Live
-TV row, Recently Added Media, Active Recordings, Continue Listening, Continue
+Every other Jellyfin home section (My Media, the old Live TV row, Recently Added Media, Active Recordings, Continue Listening, Continue
 Reading) is gone: `normalize_rows` takes them out of every layout once.
 """
 import logging
@@ -27,14 +33,16 @@ logger = logging.getLogger(__name__)
 
 TENTACLE_SECTIONS = [
     {"section_id": "resumevideo", "display_name": "Continue Watching", "shapes": True, "default_shape": "wide"},
+    {"section_id": "nextup", "display_name": "Next Up", "shapes": True, "default_shape": "wide"},
     {"section_id": "onnow", "display_name": "On Now", "shapes": False},
     {"section_id": "recordings", "display_name": "Recordings", "shapes": True, "default_shape": "poster"},
 ]
 SECTION_MAP = {s["section_id"]: s for s in TENTACLE_SECTIONS}
 
-# Old ids that still mean one of Tentacle's rows: Jellyfin's "resume" section,
-# and Next Up on its own (it is the next-episodes part of Continue Watching now).
-_ALIASES = {"resume": "resumevideo", "nextup": "resumevideo"}
+# Old ids that still mean one of Tentacle's rows: Jellyfin's "resume" section.
+# (Jellyfin's "nextup" was folded into Continue Watching on 26 Oct; every saved
+# layout was normalized then, so "nextup" is Tentacle's own Next Up row now.)
+_ALIASES = {"resume": "resumevideo"}
 
 MIGRATED_KEY = "home_rows_tentacle_only"
 
@@ -47,11 +55,20 @@ def shape_of(row: dict) -> str:
     return row["shape"] if row.get("shape") in ("poster", "wide") else s["default_shape"]
 
 
+def merges_next_up(config: dict) -> bool:
+    """Whether Continue Watching shows the next episodes: its row is on the
+    home and its "Next episodes" switch is on."""
+    return config.get("merge_continue_watching") is True and any(
+        r.get("type") == "builtin" and _ALIASES.get(r.get("section_id", ""), r.get("section_id")) == "resumevideo"
+        for r in config.get("rows") or [])
+
+
 def normalize_rows(config: dict) -> bool:
     """Bring a home config's non-playlist rows to Tentacle's own: Jellyfin's
-    sections leave, Next Up on its own row becomes Continue Watching with next
-    episodes on, names follow Tentacle's. Changes `config` in place; returns
-    whether anything changed. Playlist rows and their order are untouched."""
+    sections leave, names follow Tentacle's, and Next Up leaves while Continue
+    Watching shows the next episodes (no card twice). Changes `config` in place;
+    returns whether anything changed. Playlist rows and their order are
+    untouched."""
     if not isinstance(config, dict):
         return False
     rows = config.get("rows")
@@ -59,17 +76,22 @@ def normalize_rows(config: dict) -> bool:
         return False
     changed = False
     out, seen = [], set()
+    has_cw = any(r.get("type") == "builtin" and _ALIASES.get(r.get("section_id", ""), r.get("section_id")) == "resumevideo"
+                 for r in rows)
+    # Next episodes on by default since 21 Oct (unless a Next Up row says otherwise)
+    merge = config.get("merge_continue_watching")
+    if merge is None and has_cw:
+        merge = not any(r.get("type") == "builtin" and r.get("section_id") == "nextup" for r in rows)
     for r in sorted(rows, key=lambda r: r.get("order", 0)):
         if r.get("type") != "builtin":
             out.append(r)
             continue
         sid = r.get("section_id", "")
-        if sid == "nextup":
-            # Next episodes belong to Continue Watching now
-            if config.get("merge_continue_watching") is not True:
-                config["merge_continue_watching"] = True
-                changed = True
         new_sid = _ALIASES.get(sid, sid)
+        if new_sid == "nextup" and has_cw and merge is True:
+            # Continue Watching shows these already
+            changed = True
+            continue
         if new_sid not in SECTION_MAP or new_sid in seen:
             changed = True
             continue
@@ -82,8 +104,8 @@ def normalize_rows(config: dict) -> bool:
             changed = True
         out.append(r)
     if "resumevideo" in seen and "merge_continue_watching" not in config:
-        # Next episodes were folded in by default since 21 Oct; say so on the file
-        config["merge_continue_watching"] = True
+        # Say so on the file
+        config["merge_continue_watching"] = merge
         changed = True
     for i, r in enumerate(out, 1):
         if r.get("order") != i:

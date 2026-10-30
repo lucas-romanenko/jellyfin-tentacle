@@ -49,6 +49,9 @@ public class TentacleHomeController : ControllerBase
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime Expiry, List<Guid> Ids)> _sectionCache = new();
     private static readonly TimeSpan SectionCacheDuration = TimeSpan.FromMinutes(5);
 
+    // How many next episodes to read before ordering them (Continue Watching, Next Up)
+    private const int NextUpFetchLimit = 200;
+
     /// <summary>Drops cached home-row contents (called by POST /Tentacle/Refresh).</summary>
     public static void ClearSectionCache() => _sectionCache.Clear();
 
@@ -196,12 +199,20 @@ public class TentacleHomeController : ControllerBase
             {
                 if (row.IsBuiltin)
                 {
-                    // Only Tentacle's own rows: Continue Watching, On Now, Recordings.
+                    // Only Tentacle's own rows: Continue Watching, Next Up, On Now, Recordings.
                     // Jellyfin's other home sections are drawn by no client any more
                     // (Lucas, 2026-10-26); a layout the server hasn't cleaned up yet
                     // simply doesn't show them.
                     var tentacleRow = TentacleRows.Find(row.SectionId);
                     if (tentacleRow is null)
+                    {
+                        continue;
+                    }
+
+                    // Next Up while Continue Watching already shows the next episodes: the
+                    // same cards twice (the server takes the row out; until then, skip it)
+                    if (tentacleRow.SectionId == TentacleRows.NextUp && config.MergeContinueWatching
+                        && config.Rows.Any(r => r.IsBuiltin && TentacleRows.Find(r.SectionId)?.SectionId == TentacleRows.ContinueWatching))
                     {
                         continue;
                     }
@@ -261,8 +272,9 @@ public class TentacleHomeController : ControllerBase
     /// <summary>
     /// Continue Watching, Tentacle's own row: what the person stopped part-way and, when the
     /// row's "Include next episodes" is on, the next episode of each show they're watching, in
-    /// one order (most recently watched first, Jellyfin's watch progress). The web home and the
-    /// TV app both draw exactly this list, so the two can't drift apart again.
+    /// one order (most recently watched first, Jellyfin's watch progress; a new season counts
+    /// from when it arrived). The web home and the TV app both draw exactly this list, so the
+    /// two can't drift apart again.
     /// </summary>
     [HttpGet("ContinueWatching")]
     [Authorize]
@@ -303,34 +315,114 @@ public class TentacleHomeController : ControllerBase
 
         if (includeNextUp)
         {
-            var nextUp = _tvSeriesManager.GetNextUp(
-                new NextUpQuery { User = user, Limit = limit, EnableResumable = false, EnableTotalRecordCount = false },
-                dtoOptions).Items;
-            if (nextUp.Count > 0)
+            entries.AddRange(NextEpisodes(user, dtoOptions));
+        }
+
+        return RowOf(user, entries, limit, dtoOptions);
+    }
+
+    /// <summary>
+    /// Next Up, Tentacle's own row: the next episode of each show the person is watching, most
+    /// recently watched first, a new season counting from when it arrived. Offered only while
+    /// Continue Watching's "Next episodes" is off (then these are in that row instead); drawn
+    /// the same on the web and the TV app.
+    /// </summary>
+    [HttpGet("NextUp")]
+    [Authorize]
+    public async Task<ActionResult> GetNextUpRow([FromQuery] Guid userId)
+    {
+        var caller = await CallerIdentity.ResolveAsync(_authContext, HttpContext, userId).ConfigureAwait(false);
+        if (!caller.Allowed)
+        {
+            return Forbid();
+        }
+
+        var user = _userManager.GetUserById(caller.UserId);
+        if (user == null)
+        {
+            return NotFound("User not found");
+        }
+
+        var config = await _homeScreenManager.GetHomeConfigAsync(caller.UserId, GetApiKey(), HttpContext.RequestAborted).ConfigureAwait(false);
+        var row = config?.Rows?.FirstOrDefault(r => r.IsBuiltin && TentacleRows.Find(r.SectionId)?.SectionId == TentacleRows.NextUp);
+        var limit = row is null ? TentacleRows.DefaultLimit : TentacleRows.Limit(row);
+        var dtoOptions = RowDtoOptions();
+        return RowOf(user, NextEpisodes(user, dtoOptions), limit, dtoOptions);
+    }
+
+    /// <summary>
+    /// The next episode of every show the person is watching (Jellyfin's Next Up), each with
+    /// when its show counts as last watched (TentacleRows.NextUpDate). All of them, not
+    /// Jellyfin's first few: Jellyfin lists them by last watched, so a new season of a show
+    /// finished months ago would be cut before it could be put in front.
+    /// </summary>
+    private List<(BaseItem Item, DateTime Played)> NextEpisodes(Jellyfin.Database.Implementations.Entities.User user, DtoOptions dtoOptions)
+    {
+        var nextUp = _tvSeriesManager.GetNextUp(
+            new NextUpQuery { User = user, Limit = NextUpFetchLimit, EnableResumable = false, EnableTotalRecordCount = false },
+            dtoOptions).Items;
+        if (nextUp.Count == 0)
+        {
+            return new List<(BaseItem, DateTime)>();
+        }
+
+        // Each show's most recently played episode: when, and when it was added
+        var lastWatched = new Dictionary<Guid, (DateTime Played, DateTime Added)>();
+        foreach (var ep in _libraryManager.GetItemList(new InternalItemsQuery(user)
+        {
+            IncludeItemTypes = new[] { BaseItemKind.Episode },
+            IsPlayed = true,
+            OrderBy = new[] { (ItemSortBy.DatePlayed, SortOrder.Descending) },
+            Recursive = true,
+            Limit = 300,
+            DtoOptions = new DtoOptions(false),
+        }).OfType<Episode>())
+        {
+            if (ep.SeriesId != Guid.Empty && !lastWatched.ContainsKey(ep.SeriesId))
             {
-                // When each show was last watched: its most recently played episode
-                var lastPlayed = new Dictionary<Guid, DateTime>();
-                foreach (var ep in _libraryManager.GetItemList(new InternalItemsQuery(user)
+                lastWatched[ep.SeriesId] = (_userDataManager.GetUserData(user, ep)?.LastPlayedDate ?? DateTime.MinValue, ep.DateCreated);
+            }
+        }
+
+        var entries = new List<(BaseItem Item, DateTime Played)>();
+        foreach (var item in nextUp)
+        {
+            if (item is not Episode next)
+            {
+                continue;
+            }
+
+            if (next.SeriesId != Guid.Empty && !lastWatched.ContainsKey(next.SeriesId))
+            {
+                // Watched before the 300 most recent episodes: ask for this show alone
+                var ep = _libraryManager.GetItemList(new InternalItemsQuery(user)
                 {
+                    AncestorIds = new[] { next.SeriesId },
                     IncludeItemTypes = new[] { BaseItemKind.Episode },
                     IsPlayed = true,
                     OrderBy = new[] { (ItemSortBy.DatePlayed, SortOrder.Descending) },
                     Recursive = true,
-                    Limit = 300,
+                    Limit = 1,
                     DtoOptions = new DtoOptions(false),
-                }).OfType<Episode>())
-                {
-                    if (ep.SeriesId != Guid.Empty && !lastPlayed.ContainsKey(ep.SeriesId))
-                    {
-                        lastPlayed[ep.SeriesId] = _userDataManager.GetUserData(user, ep)?.LastPlayedDate ?? DateTime.MinValue;
-                    }
-                }
-
-                entries.AddRange(nextUp.Select(i => (Item: i,
-                    Played: i is Episode ep && lastPlayed.TryGetValue(ep.SeriesId, out var d) ? d : DateTime.MinValue)));
+                }).FirstOrDefault();
+                lastWatched[next.SeriesId] = ep is null
+                    ? (DateTime.MinValue, DateTime.MinValue)
+                    : (_userDataManager.GetUserData(user, ep)?.LastPlayedDate ?? DateTime.MinValue, ep.DateCreated);
             }
+
+            var last = lastWatched.GetValueOrDefault(next.SeriesId);
+            entries.Add((next, TentacleRows.NextUpDate(
+                last.Played,
+                last.Added == DateTime.MinValue ? null : last.Added,
+                next.DateCreated == DateTime.MinValue ? null : next.DateCreated)));
         }
 
+        return entries;
+    }
+
+    /// <summary>A Continue Watching or Next Up row: one card per show, in order, at most <paramref name="limit"/>.</summary>
+    private ActionResult RowOf(Jellyfin.Database.Implementations.Entities.User user, List<(BaseItem Item, DateTime Played)> entries, int limit, DtoOptions dtoOptions)
+    {
         var items = TentacleRows.ContinueWatchingOrder(
             entries.Select(e => (e.Item.Id, e.Item is Episode ep ? ep.SeriesId : Guid.Empty, e.Played)).ToList(),
             limit);

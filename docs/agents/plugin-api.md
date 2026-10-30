@@ -179,6 +179,7 @@ Gotchas:
 | GET | `/TentacleDiscover/VodEpisodes/{tmdbId}` | user | GetVodEpisodes | yes |
 | POST | `/TentacleDiscover/WrongMatch/movie/{tmdbId}` | user | ReportWrongMatch | yes |
 | GET | `/TentacleHome/ContinueWatching` | user | GetContinueWatching | yes |
+| GET | `/TentacleHome/NextUp` | user | GetNextUpRow (Tentacle's Next Up row) | yes |
 | GET | `/TentacleHome/Hero` | user | GetHeroItems | yes |
 | POST | `/TentacleHome/Hero` | user | SetHero | yes |
 | GET | `/TentacleHome/HeroConfig` | user | GetHeroConfig | yes |
