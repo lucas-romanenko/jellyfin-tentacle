@@ -820,6 +820,18 @@ def setup_scheduler(db):
     )
     logger.info("Stream health sweep scheduled: daily at 04:30")
 
+    # The automatic duplicates rule (services/duplicates_auto.py, #872): off
+    # unless the admin turns it on; the job does nothing while it is off.
+    from services import duplicates_auto as _dup_rule
+    scheduler.add_job(
+        _dup_rule.run_scheduled,
+        IntervalTrigger(minutes=_dup_rule.RUN_MINUTES, start_date=datetime.now() + timedelta(seconds=270)),
+        id="duplicates_rule",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
     # Provider health: every hour, one login on each provider's address in
     # use (no test stream, never while anything plays or records); a
     # confirmed failure shows on the dashboard and goes to Pushover

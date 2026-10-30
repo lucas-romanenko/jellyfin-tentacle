@@ -88,6 +88,27 @@ When the two copies are separate items in Jellyfin, each user's watched state on
 !!! info "Sonarr and `.strm` files"
     Sonarr counts `.strm` files as episodes. When Sonarr holds a show in the same folder as its VOD copy, Sonarr lists Tentacle's `.strm` files as downloaded episodes. Tentacle only calls a show a duplicate when Sonarr has at least one episode that is not a `.strm`, and dismisses older duplicates that have none.
 
+### Automatic rule
+
+Instead of resolving each duplicate by hand, Tentacle can resolve them for you. It's **off** until you turn it on, under **Health → Duplicates**. Pick a mode:
+
+- **Download first** (the default when you turn it on): the download stays and the stream's `.strm` goes, the same as **Keep Downloaded**. Your download doesn't depend on the provider.
+- **Stream first**: the stream stays and the download is deleted through Radarr or Sonarr, the same as **Keep VOD**. Set a recycle bin in Radarr/Sonarr (Media Management) so a deleted download can be recovered; the card warns when there isn't one. The download stays when:
+    - the title is on the **Prefer the download** list (switch it on in the title's details; useful for shows whose streams are unreliable),
+    - its stream is on the **Streams that don't play** list,
+    - it came from a **protected indexer** (names as Radarr/Sonarr show them).
+
+  These are left for you to decide:
+
+    - the provider isn't answering, or hasn't been checked yet,
+    - the torrent is still seeding (connect qBittorrent on the card; Tentacle only reads it, and you can limit it to torrents with one tag),
+    - nobody has watched the download yet, so a better copy isn't removed before it's been watched,
+    - the download has episodes the stream doesn't have.
+
+The rule runs every 15 minutes. It never opens a provider stream: whether a stream plays comes from what Tentacle already knows (stream checks and provider status). A show with episodes that exist only as streams never loses them, in either mode.
+
+**Safety cap:** a bulk change in Radarr or Sonarr can turn many titles back into duplicates at once. When one run would change more titles than the cap (10 by default), it changes nothing. It shows the list and waits until you click **Apply** or raise the cap. **Preview** shows what a mode would do right now, without changing anything. Every change goes into the Deletion Log ("Duplicates rule", with the reason), and the duplicate shows as resolved "(rule)".
+
 !!! info "Hybrid series are not duplicates"
     If you use "Download More Episodes" to add missing episodes to a VOD series, that's an intentional hybrid — not a duplicate. Tentacle tracks this via the `sonarr_path` field and won't flag it.
 

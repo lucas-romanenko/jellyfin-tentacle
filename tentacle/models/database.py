@@ -226,6 +226,9 @@ class Movie(Base):
     # sync would otherwise regenerate the .strm every night and, in a merged
     # folder, leave two sources competing.
     strm_disabled = Column(Boolean, default=False)
+    # On the duplicates rule's "prefer download" list (#872): with stream
+    # first, a stream + download pair of this title keeps the download.
+    prefer_download = Column(Boolean, default=False)
 
     # Dates
     date_added = Column(DateTime, default=datetime.utcnow)
@@ -276,6 +279,8 @@ class Series(Base):
 
     # See Movie.strm_disabled — opt this title out of .strm writing/repair.
     strm_disabled = Column(Boolean, default=False)
+    # See Movie.prefer_download (the duplicates rule, #872).
+    prefer_download = Column(Boolean, default=False)
 
     date_added = Column(DateTime, default=datetime.utcnow)
     # When the downloaded copy arrived (Radarr's file import date / Sonarr's
@@ -425,6 +430,10 @@ class Duplicate(Base):
     # Users' watched state saved before a same-folder copy was deleted, waiting
     # for the item Jellyfin creates for the kept copy (services/duplicates.py, #333)
     pending_user_data = Column(JSON(none_as_null=True), nullable=True)
+    # "rule" when the automatic duplicates rule resolved it (services/
+    # duplicates_auto.py, #872), with its reason in plain words; None by hand
+    resolved_by = Column(String, nullable=True)
+    resolved_why = Column(String, nullable=True)
 
 
 # ─── Sync Runs ────────────────────────────────────────────────────────────────

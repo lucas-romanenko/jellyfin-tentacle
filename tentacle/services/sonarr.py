@@ -119,6 +119,19 @@ class SonarrService:
         r.raise_for_status()
         return r.json()
 
+    def get_history(self, series_id: int) -> list:
+        """The series' history (grabs, imports), newest first. Raises on
+        failure: the duplicates rule reads indexers and torrents from it."""
+        r = self.session.get(f"{self.url}/api/v3/history/series", params={"seriesId": series_id}, timeout=15)
+        r.raise_for_status()
+        return r.json()
+
+    def get_recycle_bin(self) -> str:
+        """Sonarr's recycle bin folder ("" = deleted files are gone for good). Raises on failure."""
+        r = self.session.get(f"{self.url}/api/v3/config/mediamanagement", timeout=10)
+        r.raise_for_status()
+        return (r.json() or {}).get("recycleBin") or ""
+
     def delete_episode_files(self, file_ids: list) -> None:
         """Delete these episode files (only the files, not their folders).
         Raises on failure."""

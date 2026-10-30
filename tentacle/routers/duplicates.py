@@ -4,12 +4,12 @@ Tentacle - Duplicates Router
 
 import logging
 import threading
-from typing import Literal
+from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from datetime import datetime, timezone
-from models.database import get_db, get_setting, DownloadRequest, Duplicate, Movie, Series, log_deletion
+from models.database import get_db, get_setting, set_setting, DownloadRequest, Duplicate, Movie, Series, log_deletion
 from routers.auth import require_admin
 from services.duplicates import (
     delete_vod_files, convert_record_to_downloaded, is_downloaded_file, arr_folder_is_vod_folder,
@@ -30,7 +30,7 @@ _resolve_lock = threading.Lock()
 _LABELS = {"keep_radarr": "Kept Downloaded", "keep_vod": "Kept VOD", "keep_both": "Kept Both"}
 
 
-def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
+def _apply_resolution(dup: Duplicate, resolution: str, db: Session, reason: str = "manual", why: str = None):
     """
     Act on the resolution decision:
     keep_radarr = delete VOD .strm + .nfo files, CONVERT the DB row to a
@@ -42,6 +42,8 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
     keep_both   = do nothing
     Before either deletes a copy, every Jellyfin user's played state, resume
     point and favourite on it are merged onto the copy that stays.
+    `reason` and `why` go to the Deletion Log: "manual" from the page, the
+    automatic rule's own (services/duplicates_auto.py) with its reason.
     """
     if resolution == "keep_both":
         return
@@ -81,8 +83,8 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
         if record and record.source != downloaded_source:
             convert_record_to_downloaded(record, dup.media_type)
         log_deletion(db, kind="duplicate-resolve", name=title or f"tmdb:{dup.tmdb_id}",
-                     media_type=dup.media_type, reason="manual",
-                     detail="Kept downloaded copy — VOD .strm/.nfo files deleted")
+                     media_type=dup.media_type, reason=reason,
+                     detail="Kept downloaded copy — VOD .strm/.nfo files deleted" + (f" ({why})" if why else ""))
 
     elif resolution == "keep_vod":
         # Keep VOD deletes the download: without the VOD copy on disk that
@@ -131,8 +133,8 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
             db.delete(radarr_movie)
             logger.info(f"Removed Radarr DB record for tmdb:{dup.tmdb_id}")
         log_deletion(db, kind="duplicate-resolve", name=title or f"tmdb:{dup.tmdb_id}",
-                     media_type=dup.media_type, reason="manual",
-                     detail=f"Kept VOD copy — downloaded files deleted from {arr}")
+                     media_type=dup.media_type, reason=reason,
+                     detail=f"Kept VOD copy — downloaded files deleted from {arr}" + (f" ({why})" if why else ""))
 
     db.commit()
     # Both copies in one folder: the saved watched state goes to the item
@@ -323,7 +325,7 @@ def _pending_twins(dup: Duplicate, db: Session) -> list:
     ).all()
 
 
-def _resolve(dup: Duplicate, resolution: str, db: Session) -> None:
+def _resolve(dup: Duplicate, resolution: str, db: Session, reason: str = "manual", why: str = None) -> None:
     """Resolve a pending duplicate and its pending twins together, under
     _resolve_lock: a twin left pending could later be resolved the other way
     and delete the copy this resolution kept (#504). The twins' sources are
@@ -345,13 +347,15 @@ def _resolve(dup: Duplicate, resolution: str, db: Session) -> None:
     # fail after the arr deleted the download (#506), the duplicate stays
     # pending: a retry of Keep VOD finishes it, or Keep Both dismisses it.
     with resolving(dup.media_type, dup.tmdb_id):
-        _apply_resolution(dup, resolution, db)
+        _apply_resolution(dup, resolution, db, reason=reason, why=why)
 
         # Mark as resolved (keep in DB for stats/history)
         now = datetime.now(timezone.utc)
         for d in (dup, *twins):
             d.resolution = resolution
             d.resolved_at = now
+            d.resolved_by = "rule" if reason != "manual" else None
+            d.resolved_why = why
         db.commit()
 
 
@@ -372,6 +376,8 @@ def get_duplicates(db: Session = Depends(get_db)):
             "resolution": d.resolution,
             "detected_at": d.detected_at,
             "resolved_at": d.resolved_at,
+            "resolved_by": d.resolved_by,
+            "resolved_why": d.resolved_why,
             "title": None,
             "poster_path": None,
         }
@@ -444,3 +450,106 @@ def resolve_all(body: ResolveAllRequest, db: Session = Depends(get_db)):
     db.commit()
 
     return {"success": failed == 0, "count": resolved, "total": total, "failed": failed, "skipped": skipped}
+
+
+# ── The automatic rule (services/duplicates_auto.py, #872) ──────────────────
+
+class RuleSettings(BaseModel):
+    mode: Literal["off", "download", "stream"]
+    cap: int = 10
+    protected_indexers: str = ""
+    qbittorrent_url: str = ""
+    qbittorrent_username: str = ""
+    qbittorrent_password: Optional[str] = None   # None or the masked form: unchanged
+    qbittorrent_tag: str = ""
+
+
+class RuleRun(BaseModel):
+    confirm: Optional[int] = None   # the number of changes the admin was shown (over the cap)
+
+
+class PreferDownload(BaseModel):
+    media_type: Literal["movie", "series"]
+    tmdb_id: int
+    prefer: bool
+
+
+@router.get("/rule")
+def get_rule(db: Session = Depends(get_db)):
+    from services import duplicates_auto as rule
+    from services.secret_mask import mask
+    m = rule.mode(db)
+    return {
+        "mode": m,
+        "cap": rule.cap(db),
+        "protected_indexers": get_setting(db, rule.SETTING_INDEXERS, "") or "",
+        "qbittorrent_url": get_setting(db, "qbittorrent_url", "") or "",
+        "qbittorrent_username": get_setting(db, "qbittorrent_username", "") or "",
+        "qbittorrent_password": mask(get_setting(db, "qbittorrent_password", "") or "", whole=True),
+        "qbittorrent_tag": get_setting(db, rule.SETTING_QBIT_TAG, "") or "",
+        "every_minutes": rule.RUN_MINUTES,
+        "recycle_bins": rule.recycle_bins(db) if m == "stream" else {},
+        "last": rule.last_run(db),
+    }
+
+
+@router.put("/rule")
+def put_rule(body: RuleSettings, db: Session = Depends(get_db)):
+    from services import duplicates_auto as rule
+    from services.secret_mask import is_shown_form
+    if body.cap < 0 or body.cap > 10000:
+        raise HTTPException(400, "The cap is a number of titles from 0 to 10000.")
+    url = body.qbittorrent_url.strip()
+    if url and not url.lower().startswith(("http://", "https://")):
+        raise HTTPException(400, "qBittorrent's address starts with http:// or https://")
+    before = rule.mode(db)
+    for key, value in ((rule.SETTING_MODE, body.mode), (rule.SETTING_CAP, str(body.cap)),
+                       (rule.SETTING_INDEXERS, body.protected_indexers.strip()),
+                       ("qbittorrent_url", url), ("qbittorrent_username", body.qbittorrent_username.strip()),
+                       (rule.SETTING_QBIT_TAG, body.qbittorrent_tag.strip())):
+        set_setting(db, key, value)
+    stored = get_setting(db, "qbittorrent_password", "") or ""
+    if body.qbittorrent_password is not None and not is_shown_form(body.qbittorrent_password, stored):
+        set_setting(db, "qbittorrent_password", body.qbittorrent_password)
+    if before != body.mode:
+        logger.info(f"Duplicates rule: {before} -> {body.mode}")
+    return get_rule(db)
+
+
+@router.get("/rule/preview")
+def preview_rule(mode: Optional[str] = None, db: Session = Depends(get_db)):
+    """What the rule would do now in `mode` (download / stream): read only."""
+    from services import duplicates_auto as rule
+    return rule.preview(db, mode)
+
+
+@router.post("/rule/run")
+def run_rule(body: RuleRun, db: Session = Depends(get_db)):
+    """Run the rule now in its saved mode; `confirm` applies a held run."""
+    from services import duplicates_auto as rule
+    out = rule.run(db, confirm=body.confirm)
+    if out.get("state") == "off":
+        raise HTTPException(409, "The automatic rule is off. Nothing was changed.")
+    if out.get("state") == "busy":
+        raise HTTPException(409, "The rule is running already. Nothing else was changed.")
+    return out
+
+
+@router.get("/prefer-download")
+def list_prefer_download(db: Session = Depends(get_db)):
+    rows = [{"media_type": "movie", "tmdb_id": m.tmdb_id, "title": m.title}
+            for m in db.query(Movie).filter(Movie.prefer_download.is_(True)).all()]
+    rows += [{"media_type": "series", "tmdb_id": s.tmdb_id, "title": s.title}
+             for s in db.query(Series).filter(Series.prefer_download.is_(True)).all()]
+    return sorted(rows, key=lambda r: (r["title"] or "").casefold())
+
+
+@router.put("/prefer-download")
+def set_prefer_download(body: PreferDownload, db: Session = Depends(get_db)):
+    model = Movie if body.media_type == "movie" else Series
+    row = db.query(model).filter(model.tmdb_id == body.tmdb_id).first()
+    if row is None:
+        raise HTTPException(404, "That title isn't in the library.")
+    row.prefer_download = body.prefer
+    db.commit()
+    return {"success": True, "prefer": body.prefer}

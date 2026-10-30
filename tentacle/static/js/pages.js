@@ -1668,6 +1668,10 @@ async function showMediaDetail(tmdbId, mediaType) {
             <input type="checkbox" ${data.strm_managed ? 'checked' : ''} onchange="toggleStrmManaged('${escapeJS(mediaType)}', ${tmdbId}, this.checked)">
             <span class="detail-follow-label">Manage .strm files</span>
           </label>` : ''}
+          ${state.currentUser?.is_admin ? `<label class="detail-follow-toggle" style="margin-top:10px" title="The automatic duplicates rule, stream first: when this title has both a stream and a download, keep the download">
+            <input type="checkbox" ${data.prefer_download ? 'checked' : ''} onchange="setPreferDownload('${escapeJS(mediaType)}', ${tmdbId}, this.checked)">
+            <span class="detail-follow-label">Prefer the download</span>
+          </label>` : ''}
           ${data.source === 'radarr' ? `<div style="margin-top:10px">
             <button class="btn btn-secondary btn-sm" title="Wrong language, burned-in subtitles, broken audio or a fake: delete this file, block its release, find another"
               onclick="replaceCopy('movie', ${tmdbId}, null, null, this)">Bad copy? Get another one</button>
@@ -4606,6 +4610,7 @@ async function loadFollowing() {
 
 // ── DUPLICATES PAGE ───────────────────────────────────────────────────────
 async function loadDuplicates() {
+  loadDupRule();
   try {
     const data = await api('/api/duplicates');
     pages.dup.items = data.duplicates;
@@ -4681,7 +4686,7 @@ function renderDupList() {
         ${poster ? `<img src="${escapeAttr(poster)}" style="width:48px;border-radius:6px;flex-shrink:0" alt="">` : ''}
         <div style="flex:1;min-width:0">
           <div class="dup-header">
-            <span class="badge ${dup.resolution === 'pending' ? 'badge-amber' : 'badge-green'}">${dup.resolution === 'pending' ? 'Pending' : resLabel[dup.resolution] || dup.resolution}</span>
+            <span class="badge ${dup.resolution === 'pending' ? 'badge-amber' : 'badge-green'}"${dup.resolved_why ? ` title="${escapeAttr(dup.resolved_why)}"` : ''}>${dup.resolution === 'pending' ? 'Pending' : (resLabel[dup.resolution] || dup.resolution) + (dup.resolved_by === 'rule' ? ' (rule)' : '')}</span>
             <span class="badge badge-gray">${dup.media_type}</span>
             <span style="font-size:13px;font-weight:500">${escapeAttr(title)}</span>
           </div>
@@ -4698,6 +4703,205 @@ function renderDupList() {
   // After the list is written: added inside the map, the list replaced it (#800)
   if (items.length < total) {
     el.insertAdjacentHTML('beforeend', `<div style="text-align:center;padding:10px"><button class="btn btn-secondary btn-sm" onclick="showAllDuplicates()">Show all ${total}</button></div>`);
+  }
+}
+
+// ── The automatic rule (#872): off / download first / stream first ──
+const _DUP_RULE_SAY = {
+  off: 'Off: every duplicate waits here for you. Preview shows what the rule would do.',
+  download: 'Download first: the download stays and the stream (.strm) goes, as Keep Downloaded. '
+    + 'A show with episodes that exist only as streams is left for you.',
+  stream: 'Stream first: the stream stays and the download is deleted through Radarr/Sonarr '
+    + '(their recycle bin, when one is set), as Keep VOD. The download stays when the title is on the '
+    + 'prefer-download list, its stream is known bad, or it came from a protected indexer. Left for you: '
+    + 'the provider not answering, a torrent still seeding, a download nobody has watched yet, episodes only the download has.',
+};
+const _DUP_ACTION = { keep_download: 'Keep download', keep_stream: 'Keep stream', skip: 'Leave for you' };
+
+async function loadDupRule() {
+  const el = document.getElementById('dup-rule');
+  if (!el) return;
+  try {
+    const [rule, prefer] = await Promise.all([api('/api/duplicates/rule'), api('/api/duplicates/prefer-download')]);
+    pages.dup.rule = rule;
+    pages.dup.ruleMode = rule.mode;
+    pages.dup.prefer = prefer;
+    renderDupRule();
+  } catch (e) {
+    el.innerHTML = '';
+  }
+}
+
+function _dupRuleCounts(r) {
+  const c = r.counts || {};
+  const parts = [];
+  if (c.keep_download) parts.push(`${c.keep_download} keep the download`);
+  if (c.keep_stream) parts.push(`${c.keep_stream} keep the stream`);
+  if (c.skip) parts.push(`${c.skip} left for you`);
+  if (c.failed) parts.push(`${c.failed} failed`);
+  return parts.join(', ') || 'nothing pending';
+}
+
+function renderDupRule() {
+  const el = document.getElementById('dup-rule');
+  const rule = pages.dup.rule;
+  if (!el || !rule) return;
+  const mode = pages.dup.ruleMode;
+  const last = rule.last;
+  const modeBtn = (m, label) => `<button class="filter-btn ${mode === m ? 'active' : ''}" onclick="setDupRuleMode('${escapeJS(m)}')">${label}</button>`;
+  const when = last ? new Date(last.at).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+  const lastLine = !last ? '' : last.state === 'held'
+    ? `<div class="dup-rule-held"><span>&#9888; Waiting since ${escapeAttr(when)}: ${escapeAttr(last.note)}</span>
+         <button class="btn btn-secondary btn-sm" onclick="showDupRulePlan('last')">Review</button>
+         ${rule.mode !== 'off' ? `<button class="btn btn-primary btn-sm" onclick="runDupRule(${last.changes})">Apply ${last.changes} change${last.changes === 1 ? '' : 's'}</button>` : ''}</div>`
+    : `<div class="dup-rule-last">Last run ${escapeAttr(when)} (${last.mode === 'stream' ? 'stream' : 'download'} first): ${escapeAttr(_dupRuleCounts(last))}.
+         ${last.pending ? `<a href="#" onclick="showDupRulePlan('last');return false">Show</a>` : ''}</div>`;
+  const bins = Object.entries(rule.recycle_bins || {}).filter(([, v]) => v === false).map(([k]) => k);
+  const prefer = pages.dup.prefer || [];
+  el.innerHTML = `
+    <div class="dup-rule-row">
+      <div class="form-group">
+        <label class="form-label">Automatic rule</label>
+        <div class="filter-group dup-rule-modes">${modeBtn('off', 'Off')}${modeBtn('download', 'Download first')}${modeBtn('stream', 'Stream first')}</div>
+      </div>
+      <div class="form-group" style="max-width:220px">
+        <label class="form-label" for="dup-rule-cap">Ask me first above</label>
+        <input class="form-input" id="dup-rule-cap" type="number" min="0" max="10000" value="${Number(rule.cap)}" title="When one run would change more titles than this, it changes nothing and waits for you">
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" onclick="saveDupRule(this)">Save</button>
+        <button class="btn btn-secondary btn-sm" onclick="previewDupRule(this)" title="What the selected mode would do now; nothing is changed">Preview</button>
+        ${rule.mode !== 'off' ? `<button class="btn btn-secondary btn-sm" onclick="runDupRule(null, this)">Run now</button>` : ''}
+      </div>
+    </div>
+    <p class="dup-rule-say">${escapeAttr(_DUP_RULE_SAY[mode] || '')}${mode !== 'off' ? ` Runs every ${Number(rule.every_minutes)} minutes; every change is in the Deletion Log.` : ''}</p>
+    ${mode === 'stream' && bins.length ? `<div class="dup-rule-warn">&#9888; ${escapeAttr(bins.join(' and '))} ${bins.length === 1 ? 'has' : 'have'} no recycle bin: downloads the rule deletes can't be recovered. Set one in ${bins.length === 1 ? 'its' : 'their'} Media Management settings.</div>` : ''}
+    ${mode === 'stream' ? `<details class="dup-rule-more" ${rule.protected_indexers || rule.qbittorrent_url ? '' : 'open'}>
+      <summary>Downloads that stay (stream first)</summary>
+      <div class="dup-rule-grid">
+        <div class="form-group"><label class="form-label" for="dup-rule-indexers">Protected indexers</label>
+          <input class="form-input" id="dup-rule-indexers" value="${escapeAttr(rule.protected_indexers || '')}" placeholder="Names, comma separated">
+          <div class="form-hint">As Radarr/Sonarr name them; their downloads always stay</div></div>
+        <div class="form-group"><label class="form-label" for="dup-rule-qb-url">qBittorrent address</label>
+          <input class="form-input" id="dup-rule-qb-url" value="${escapeAttr(rule.qbittorrent_url || '')}" placeholder="http://qbittorrent:8080">
+          <div class="form-hint">Read only: a torrent still in it is still seeding</div></div>
+        <div class="form-group"><label class="form-label" for="dup-rule-qb-user">User</label>
+          <input class="form-input" id="dup-rule-qb-user" value="${escapeAttr(rule.qbittorrent_username || '')}" autocomplete="off"></div>
+        <div class="form-group"><label class="form-label" for="dup-rule-qb-pass">Password</label>
+          <input class="form-input" id="dup-rule-qb-pass" type="password" value="${escapeAttr(rule.qbittorrent_password || '')}" autocomplete="new-password"></div>
+        <div class="form-group"><label class="form-label" for="dup-rule-qb-tag">Only torrents tagged</label>
+          <input class="form-input" id="dup-rule-qb-tag" value="${escapeAttr(rule.qbittorrent_tag || '')}" placeholder="Any torrent">
+          <div class="form-hint">e.g. your private tracker's tag</div></div>
+      </div>
+    </details>` : ''}
+    ${mode === 'stream' || prefer.length ? `<div class="dup-rule-last">Prefer the download${prefer.length ? '' : ': none yet (switch it on in a title&rsquo;s details)'}
+      ${prefer.length ? `<div class="dup-rule-chips">${prefer.map(p => `<span class="badge badge-gray dup-rule-chip">${escapeAttr(p.title || 'tmdb:' + p.tmdb_id)}
+        <button title="Take it off the list" aria-label="Take ${escapeAttr(p.title || '')} off the list" onclick="setPreferDownload('${escapeJS(p.media_type)}', ${Number(p.tmdb_id)}, false)">&times;</button></span>`).join('')}</div>` : ''}</div>` : ''}
+    ${lastLine}
+    <div id="dup-rule-plan" class="dup-rule-plan"></div>`;
+  if (pages.dup.plan) _renderDupRulePlan(pages.dup.plan);
+}
+
+function setDupRuleMode(m) {
+  pages.dup.rule.cap = document.getElementById('dup-rule-cap')?.value ?? pages.dup.rule.cap;
+  pages.dup.ruleMode = m;
+  pages.dup.plan = null;
+  renderDupRule();
+}
+
+async function saveDupRule(btn) {
+  const v = id => document.getElementById(id)?.value;
+  const rule = pages.dup.rule;
+  const body = {
+    mode: pages.dup.ruleMode,
+    cap: parseInt(v('dup-rule-cap'), 10) || 0,
+    protected_indexers: v('dup-rule-indexers') ?? rule.protected_indexers ?? '',
+    qbittorrent_url: v('dup-rule-qb-url') ?? rule.qbittorrent_url ?? '',
+    qbittorrent_username: v('dup-rule-qb-user') ?? rule.qbittorrent_username ?? '',
+    qbittorrent_password: v('dup-rule-qb-pass') ?? null,
+    qbittorrent_tag: v('dup-rule-qb-tag') ?? rule.qbittorrent_tag ?? '',
+  };
+  if (btn) btn.disabled = true;
+  try {
+    pages.dup.rule = await api('/api/duplicates/rule', { method: 'PUT', body });
+    pages.dup.ruleMode = pages.dup.rule.mode;
+    toast(body.mode === 'off' ? 'Automatic rule off' : `Automatic rule on: ${body.mode} first`);
+    renderDupRule();
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function previewDupRule(btn) {
+  const mode = pages.dup.ruleMode === 'off' ? 'download' : pages.dup.ruleMode;
+  const el = document.getElementById('dup-rule-plan');
+  if (btn) btn.disabled = true;
+  if (el) el.innerHTML = '<div class="loading-state" style="padding:8px 0"><div class="spinner"></div></div>';
+  try {
+    pages.dup.plan = await api(`/api/duplicates/rule/preview?mode=${encodeURIComponent(mode)}`);
+    pages.dup.planAll = false;
+    _renderDupRulePlan(pages.dup.plan);
+  } catch (e) {
+    if (el) el.innerHTML = '';
+    toast(e.message, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function showDupRulePlan(which) {
+  pages.dup.planAll = which === 'all';
+  pages.dup.plan = which === 'last' ? pages.dup.rule.last : pages.dup.plan;
+  if (pages.dup.plan) _renderDupRulePlan(pages.dup.plan);
+}
+
+function hideDupRulePlan() {
+  pages.dup.plan = null;
+  const el = document.getElementById('dup-rule-plan');
+  if (el) el.innerHTML = '';
+}
+
+function _renderDupRulePlan(plan) {
+  const el = document.getElementById('dup-rule-plan');
+  if (!el) return;
+  const items = plan.items || [];
+  const head = plan.state === 'dry-run'
+    ? `Preview, ${plan.mode === 'stream' ? 'stream' : 'download'} first (nothing changed): ${_dupRuleCounts(plan)}.`
+    : `${plan.state === 'held' ? 'Waiting' : 'Last run'}: ${_dupRuleCounts(plan)}.`;
+  el.innerHTML = `<div style="display:flex;justify-content:space-between;gap:8px;align-items:center">
+      <strong>${escapeAttr(head)}</strong>
+      <button class="btn btn-secondary btn-sm" onclick="hideDupRulePlan()">Hide</button></div>
+    ${items.length ? `<table>${items.slice(0, pages.dup.planAll ? items.length : 8).map(i => `<tr>
+        <td><span class="badge badge-gray">${i.media_type === 'movie' ? 'movie' : 'show'}</span> ${escapeAttr(i.title)}</td>
+        <td><span class="badge ${i.failed ? 'badge-red' : i.action === 'skip' ? 'badge-gray' : 'badge-green'}">${i.failed ? 'Failed' : _DUP_ACTION[i.action] || i.action}</span>
+          <span style="color:var(--text3)">${escapeAttr(i.why)}</span></td></tr>`).join('')}</table>
+      ${!pages.dup.planAll && items.length > 8 ? `<div style="text-align:center;padding:6px"><button class="btn btn-secondary btn-sm" onclick="showDupRulePlan('all')">Show all ${items.length}</button></div>` : ''}` : ''}`;
+}
+
+async function runDupRule(confirmCount, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api('/api/duplicates/rule/run', { method: 'POST', body: { confirm: confirmCount } });
+    toast(r.state === 'held' ? r.note : `Duplicates rule: ${_dupRuleCounts(r)}`, r.state === 'held' ? 'warning' : undefined);
+    pages.dup.plan = r;
+    loadDuplicates();
+    _updateDupBadges();
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function setPreferDownload(mediaType, tmdbId, prefer) {
+  try {
+    await api('/api/duplicates/prefer-download', { method: 'PUT', body: { media_type: mediaType, tmdb_id: tmdbId, prefer } });
+    toast(prefer ? 'On the prefer-download list' : 'Off the prefer-download list');
+    if (document.getElementById('dup-rule')) loadDupRule();
+  } catch (e) {
+    toast(e.message, 'error');
   }
 }
 
@@ -7223,6 +7427,7 @@ function renderHealthLog() {
     toggleStrmManaged,
     // Duplicates
     setDupFilter, resolveDup, resolveAllKeepRadarr, showAllDuplicates, showMoreHealthLog,
+    setDupRuleMode, saveDupRule, previewDupRule, runDupRule, showDupRulePlan, hideDupRulePlan, setPreferDownload,
     // Log viewer
     clearLogPanel, toggleLogScroll,
     // Radarr / Sonarr

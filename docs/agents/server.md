@@ -300,6 +300,21 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   It then releases the VOD row itself (films `release_vod_download`, #549;
   series `release_vod_series_download`, #617) and deletes the request, so
   it doesn't depend on the webhook coming in time or at all.
+- **Duplicates rule** (#872, `services/duplicates_auto.py`): setting
+  `duplicates_rule` = off (default, also on upgrade) / download / stream;
+  a 15-min job, nothing while off. It decides each pending duplicate
+  (`decide`, read-only: arr titles/files/history, `stream_health`
+  known-bad, `provider_health` state, qBittorrent's torrents via
+  `services/qbittorrent.py`, Jellyfin's played file names) and applies it
+  through `routers/duplicates._resolve` under `_resolve_lock`, so every
+  guard above holds (#800, user data, tombstone); Deletion Log reason
+  `duplicates-rule`, `Duplicate.resolved_by = "rule"` + `resolved_why`.
+  Stream first never contacts a provider: "plays" = not known-bad, provider
+  state ok, .strm on disk. More changes than `duplicates_rule_cap` (10) in
+  one run: nothing changes, summary state "held" until POST
+  `/rule/run {confirm: n}` with n >= the changes. Summary JSON in
+  `duplicates_rule_last`. Prefer-download list = `prefer_download` on
+  movies/series. qBittorrent password is a SENSITIVE/PASSWORD key.
 - **Following** = Sonarr `monitorNewItems="all"` (stricter than
   `monitored`), mirrored in `Series.sonarr_monitored`, synced both ways on
   every Sonarr scan; unfollowing keeps `monitored=true`. Hidden for ended
