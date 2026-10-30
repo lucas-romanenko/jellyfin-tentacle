@@ -88,6 +88,8 @@ Gotchas:
 | GET | `/Tentacle/MdbList/Ratings` | user | GetRatings |  |
 | POST | `/Tentacle/Notify` | admin | Notify |  |
 | GET | `/Tentacle/TimerCancelled/{timerId}` | admin | TimerCancelled (Tentacle confirms a cancel the plugin passed on) |  |
+| POST | `/Tentacle/Recordings/{itemId}/Retime` | admin | RecordingRetimeController.Retime (Tentacle's after-recording clock check, #869; `?dryRun=true` copies and checks only; 409 while it records) |  |
+| POST | `/Tentacle/Recordings/{itemId}/Premiere` | admin | RecordingRetimeController.Premiere (`?date=` UTC; only when PremiereDate is empty) |  |
 | GET | `/Tentacle/Playlists/Ownerless` | admin | GetOwnerlessPlaylists |  |
 | POST | `/Tentacle/Playlists/PruneDead` | admin | PruneDeadPlaylistEntries |  |
 | GET | `/Tentacle/Playlists/PruneDead/{runId}` | admin | GetPruneRun |  |

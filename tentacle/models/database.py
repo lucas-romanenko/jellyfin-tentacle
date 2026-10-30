@@ -1260,6 +1260,29 @@ class RecordingArtwork(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
 
 
+class RecordingCheck(Base):
+    """The after-recording check of a finished Live TV recording
+    (services/recording_check, #869): its clock (a re-dial that came with
+    another clock makes a 3 h game probe as 21 h; the plugin copies it with
+    continuous timestamps) and its PremiereDate. state: ok, retimed,
+    not_fixed (the copy wasn't right: left as it was), failed (tried again
+    later), no_window, no_space, not_a_recording. Seconds as probed by the
+    plugin. item_id is Jellyfin's, without dashes."""
+    __tablename__ = "recording_checks"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    item_id = Column(String, nullable=False, unique=True)
+    name = Column(String, nullable=True)                 # display only
+    state = Column(String, nullable=False, index=True)
+    duration = Column(Float, nullable=True)              # probed before
+    wall = Column(Float, nullable=True)                  # the file's wall-clock window
+    after = Column(Float, nullable=True)                 # probed after the copy
+    detail = Column(String, nullable=True)               # why it failed
+    premiere_set = Column(Integer, nullable=True)        # 1: Tentacle set PremiereDate; 0: Jellyfin had one
+    attempts = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
 class EPGProgram(Base):
     __tablename__ = "epg_programs"
     id = Column(Integer, primary_key=True, autoincrement=True)

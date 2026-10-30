@@ -923,6 +923,13 @@ def setup_scheduler(db):
     scheduler.add_job(_rec_art.run_scheduled, IntervalTrigger(minutes=_rec_art.PASS_MINUTES,
                                                               start_date=datetime.now() + timedelta(seconds=300)),
                       id="recording_art", replace_existing=True, max_instances=1, coalesce=True)
+    # After a Live TV recording (services/recording_check, #869): its clock
+    # (a re-dial with another clock: copied with continuous timestamps) and
+    # its PremiereDate, once per finished recording, through the plugin.
+    from services import recording_check as _rec_check
+    scheduler.add_job(_rec_check.run_scheduled, IntervalTrigger(minutes=_rec_check.PASS_MINUTES,
+                                                                start_date=datetime.now() + timedelta(seconds=360)),
+                      id="recording_check", replace_existing=True, max_instances=1, coalesce=True)
     # Live TV channel logos (services/channel_logos): the fallback chain and
     # the logo cache, a few logos checked per pass.
     from services import channel_logos as _logos

@@ -97,6 +97,19 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   chips; Jellyfin's `LiveTv/Timers` alone when Tentacle can't answer),
   preview matches folded; Recordings = `LiveTv/Recordings` as cards (tap =
   details page to play). Read-only: teams and rules are set in Tentacle.
+- **RecordingRetime** (`Services/RecordingRetime.cs`, `Api/RecordingRetimeController.cs`, #869):
+  Tentacle's `recording_check` asks per finished recording. Only `.ts` files
+  in `IRecordingsManager.GetRecordingFolders()`, never one with
+  `GetActiveRecordingInfo` or written to in the last 10 min. Probed
+  length (Jellyfin's ffprobe) > 1.25 x (last write - DateCreated) + 600 s =
+  a clock jump: Jellyfin's ffmpeg (`-fflags +genpts+discardcorrupt -map 0
+  -c copy -f mpegts`, nice 19, one at a time) writes `.<name>.retime.tmp`
+  beside it; the copy replaces it (one rename, mtime kept) only when its
+  length fits the window, it has 95 % of the bytes and the file didn't
+  change; then a FullRefresh with ReplaceAllMetadata/Images false and the
+  old DateCreated put back. No space (size + 2 GB) or a bad copy: the
+  recording stays. `Premiere` sets PremiereDate (+ ProductionYear) only
+  when empty.
 - **TimerCancelForwarder**: Jellyfin's `TimerCancelled` (only API/user
   cancels, never a guide refresh) is posted to Tentacle's
   `/api/live/recordings/cancelled`; Tentacle confirms it with
