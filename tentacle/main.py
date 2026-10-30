@@ -966,6 +966,12 @@ def setup_scheduler(db):
                       id="channel_logos", replace_existing=True, max_instances=1, coalesce=True)
     # The welcome's "You now have access to N movies, N TV shows and N live TV
     # channels" for everyone it is still due for, kept counted (services/welcome.py).
+    # Backup & restore (services/backup.py, #870): the setup (categories,
+    # channels, home rows, playlists, lists, recording rules) saved daily at
+    # 02:30 in /data/backups, the last 14 kept.
+    from services import backup as _backup
+    scheduler.add_job(_backup.run_scheduled, CronTrigger(hour=2, minute=30), id="setup_backup",
+                      replace_existing=True, max_instances=1, coalesce=True, misfire_grace_time=6 * 3600)
     from services.welcome import warm_everyone_due as _welcome_counts
     scheduler.add_job(_welcome_counts, IntervalTrigger(hours=1, start_date=datetime.now() + timedelta(seconds=180)),
                       id="welcome_counts", replace_existing=True, max_instances=1, coalesce=True)
@@ -1183,6 +1189,8 @@ from routers import updates as updates_router  # noqa: E402
 app.include_router(updates_router.router)
 from routers import about as about_router  # noqa: E402
 app.include_router(about_router.router)
+from routers import backup as backup_router  # noqa: E402
+app.include_router(backup_router.router)
 app.include_router(health_router.router)
 app.include_router(youtube_router.router)
 app.include_router(music_router.router)

@@ -767,6 +767,7 @@ function showSettingsSection(name) {
   if (state.currentPage === 'settings') setRoute('settings', name);
   if (name === 'signin' && typeof famLoadServer === 'function') famLoadServer();
   if (name === 'about') loadAbout();
+  if (name === 'backup' && typeof bkLoad === 'function') bkLoad();
 }
 
 // ── Settings → About: which versions run (GET /api/about) ──────────────────

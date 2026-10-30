@@ -51,6 +51,12 @@ Declared on the app in `main.py` (no router, all **none**; listed in
 | GET | `/api/auth/users` | none | auth.py:get_jellyfin_users |
 | POST | `/api/auth/quick-connect` | none | auth.py:quick_connect_start |
 | GET | `/api/auth/quick-connect/{handle}` | none | auth.py:quick_connect_poll |
+| GET | `/api/backup` | admin | backup.py:overview (Settings → Backup & restore: the parts with this install's counts, providers, people, the saved backups; services/backup.py) |
+| GET | `/api/backup/export` | admin | backup.py:export_file (the setup file to download; `?parts=` ids, `?people=` and `?providers=` names, comma-separated; never a secret) |
+| POST | `/api/backup/preview` | admin | backup.py:preview (what a restore of `backup` (a file's content) or `snapshot` (a name) would do with `parts`, `people`, `providers` {file name: id or null = skip}, `replace`; writes nothing) |
+| POST | `/api/backup/restore` | admin | backup.py:restore (the same body: saves a "before restore" snapshot, then writes) |
+| POST | `/api/backup/snapshots` | admin | backup.py:back_up_now |
+| GET | `/api/backup/snapshots/{name}` | admin | backup.py:download_snapshot |
 | POST | `/api/collections/sync-artwork` | admin | collections.py:sync_artwork |
 | GET | `/api/discover` | user | discover.py:get_discover |
 | GET | `/api/discover/config` | none | discover.py:get_discover_config |
