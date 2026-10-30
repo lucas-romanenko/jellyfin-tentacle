@@ -47,13 +47,17 @@ class RadarrService:
             logger.error(f"Radarr connection failed: {e}")
             return None
 
-    def get_all_movies(self) -> list:
+    def get_all_movies(self, raise_errors: bool = False) -> list:
+        """Every movie in Radarr. With raise_errors=True a failed read raises
+        instead of returning [] (which callers can't tell from "none")."""
         try:
             r = self.session.get(f"{self.url}/api/v3/movie", timeout=30)
             r.raise_for_status()
             return r.json()
         except Exception as e:
             logger.error(f"Failed to fetch Radarr movies: {e}")
+            if raise_errors:
+                raise
             return []
 
     def get_movie_by_tmdb(self, tmdb_id: int) -> Optional[dict]:
@@ -100,6 +104,19 @@ class RadarrService:
         r = self.session.get(f"{self.url}/api/v3/moviefile", params={"movieId": movie_id}, timeout=15)
         r.raise_for_status()
         return r.json()
+
+    def get_history(self, movie_id: int) -> list:
+        """The movie's history (grabs, imports), newest first. Raises on
+        failure: the duplicates rule reads indexers and torrents from it."""
+        r = self.session.get(f"{self.url}/api/v3/history/movie", params={"movieId": movie_id}, timeout=15)
+        r.raise_for_status()
+        return r.json()
+
+    def get_recycle_bin(self) -> str:
+        """Radarr's recycle bin folder ("" = deleted files are gone for good). Raises on failure."""
+        r = self.session.get(f"{self.url}/api/v3/config/mediamanagement", timeout=10)
+        r.raise_for_status()
+        return (r.json() or {}).get("recycleBin") or ""
 
     def delete_movie_file(self, file_id: int) -> None:
         """Delete one movie file (only that file, not its folder). A 404 means

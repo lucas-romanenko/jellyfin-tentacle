@@ -141,7 +141,7 @@ class Sequential(_Base):
         self.addCleanup(other.close)
         elsewhere = []
 
-        def apply(dup, resolution, db):
+        def apply(dup, resolution, db, **kw):
             if not elsewhere:
                 # While Resolve All works on its first duplicate, a stale tab
                 # keeps VOD on the second one. (That request would wait for
@@ -149,7 +149,7 @@ class Sequential(_Base):
                 elsewhere.append(b if dup.id == a else a)
                 with mock.patch.object(duplicates, "_resolve_lock", threading.Lock()):
                     self.resolve(elsewhere[0], "keep_vod", db=other)
-            return real(dup, resolution, db)
+            return real(dup, resolution, db, **kw)
 
         with mock.patch.object(duplicates, "_apply_resolution", side_effect=apply):
             out = self.resolve_all("keep_radarr")

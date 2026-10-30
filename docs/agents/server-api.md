@@ -74,6 +74,12 @@ Declared on the app in `main.py` (no router, all **none**; listed in
 | GET | `/api/duplicates` | admin | duplicates.py:get_duplicates |
 | POST | `/api/duplicates/resolve-all` | admin | duplicates.py:resolve_all |
 | POST | `/api/duplicates/{dup_id}/resolve` | admin | duplicates.py:resolve_duplicate |
+| GET | `/api/duplicates/rule` | admin | duplicates.py:get_rule |
+| PUT | `/api/duplicates/rule` | admin | duplicates.py:put_rule |
+| GET | `/api/duplicates/rule/preview` | admin | duplicates.py:preview_rule |
+| POST | `/api/duplicates/rule/run` | admin | duplicates.py:run_rule |
+| GET | `/api/duplicates/prefer-download` | admin | duplicates.py:list_prefer_download |
+| PUT | `/api/duplicates/prefer-download` | admin | duplicates.py:set_prefer_download |
 | GET | `/api/family/kids-channels` | admin | family.py:kids_channels |
 | PUT | `/api/family/kids-channels` | admin | family.py:save_kids_channels |
 | PUT | `/api/family/addresses` | admin | family.py:save_addresses (Add someone's one question: `{tentacle, jellyfin}` browser addresses; asked once) |

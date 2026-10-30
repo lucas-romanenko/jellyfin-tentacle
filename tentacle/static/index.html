@@ -1156,6 +1156,30 @@ body.modal-open { overflow: hidden; }
 }
 .dup-source-card.winner { border-color: rgba(74,222,128,0.3); background: var(--green-dim); }
 .dup-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+/* The automatic duplicates rule (#872) */
+.dup-rule { padding: 12px 0 14px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.dup-rule-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+.dup-rule-row .form-group { margin-bottom: 0; }
+.dup-rule-modes { display: flex; gap: 6px; flex-wrap: wrap; }
+.dup-rule-say { font-size: 12px; color: var(--text2); line-height: 1.5; margin: 8px 0 0; }
+.dup-rule-last { font-size: 12px; color: var(--text3); margin-top: 10px; }
+.dup-rule-held { margin-top: 10px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--amber-dim, rgba(251,191,36,0.1)); border: 1px solid rgba(251,191,36,0.35); font-size: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.dup-rule-warn { font-size: 12px; color: var(--amber); margin-top: 8px; }
+.dup-rule-more { margin-top: 10px; }
+.dup-rule-more summary { cursor: pointer; font-size: 12px; color: var(--text2); }
+.dup-rule-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-top: 8px; }
+.dup-rule-plan { margin-top: 10px; font-size: 12px; }
+.dup-rule-plan table { width: 100%; border-collapse: collapse; }
+.dup-rule-plan td { padding: 5px 6px; border-top: 1px solid var(--border); vertical-align: top; }
+.dup-rule-plan td:first-child { width: 40%; }
+.dup-rule-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.dup-rule-chip button { background: none; border: none; color: var(--text2); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 0 0 4px; }
+.dup-rule-chip button:hover { color: var(--red); }
+.dup-rule a { color: var(--accent-text); }
+@media (max-width: 600px) {
+  .dup-rule-row { flex-direction: column; align-items: stretch; }
+  .dup-rule-plan td:first-child { width: auto; }
+}
 
 /* ── Auto playlist rows ── */
 .auto-pl-row { display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
@@ -3642,6 +3666,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                 <button class="btn btn-secondary btn-sm" onclick="resolveAllKeepRadarr()">Resolve All → Keep Downloaded</button>
               </div>
             </div>
+            <div id="dup-rule" class="dup-rule"></div>
             <div id="dup-list"></div>
           </div>
         </div><!-- /lib-tab-duplicates -->

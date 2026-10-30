@@ -121,17 +121,35 @@ def vod_only_episodes(sonarr, series_id, dup) -> Optional[list]:
     except Exception as e:
         logger.warning(f"Could not read Sonarr's episode files for series {series_id}: {e}")
         return None
-    downloaded = set()
+    return sorted(_vod_episodes(dup) - downloaded_episodes(files))
+
+
+def downloaded_episodes(files) -> set:
+    """The episodes (SxxEyy) Sonarr's episode files hold a real download of."""
+    keys = set()
     for f in files or []:
         if is_downloaded_file(f.get("path")):
-            downloaded |= _episode_keys(Path(f["path"].replace("\\", "/")).name)
+            keys |= _episode_keys(Path(f["path"].replace("\\", "/")).name)
+    return keys
+
+
+def _vod_episodes(dup) -> set:
+    """The episodes (SxxEyy) the show's VOD folders hold a .strm of."""
     vod = set()
     for s in dup.sources or []:
         path = s.get("path")
         if (s.get("source") or "").startswith("provider_") and path and Path(path).is_dir():
             for strm in Path(path).rglob("*.strm"):
                 vod |= _episode_keys(strm.name)
-    return sorted(vod - downloaded)
+    return vod
+
+
+def episodes_only_in(files, dup) -> tuple:
+    """(only as streams, only downloaded): the episodes, sorted, that one copy
+    of a show duplicate has and the other doesn't. Keep Downloaded would lose
+    the first for good (#800), Keep VOD the second."""
+    downloaded, vod = downloaded_episodes(files), _vod_episodes(dup)
+    return sorted(vod - downloaded), sorted(downloaded - vod)
 
 
 def _folder_name(path: Optional[str]) -> str:

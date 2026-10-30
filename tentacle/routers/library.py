@@ -370,6 +370,8 @@ def get_item_detail(
     # writing/repair (it stays in the catalog; the sync just leaves its files
     # alone). Only meaningful for provider-sourced titles.
     result["strm_managed"] = not bool(item.strm_disabled)
+    # On the duplicates rule's prefer-download list (#872)
+    result["prefer_download"] = bool(item.prefer_download)
     result["is_vod"] = bool(item.source and item.source.startswith("provider_"))
 
     # can_delete: True if downloaded content AND (admin OR user requested it)
