@@ -5,16 +5,19 @@ A finished recording is read through Jellyfin's stream of the item (GET
 mounted, no provider connection), a few MB at each of 30/50/70% of the
 programme's own time (after the pre-padding). One still recording is read
 through GET /Items/{id}/File (Jellyfin's stream of a growing file ignores
-Range), a few MB at each of 20 s to 4 min behind what is written so far
-(live_offsets). ffmpeg decodes the first key frame of each piece at the
-lowest priority, with a timeout, and signalstats says how bright and how
-spread its light is: black and flat frames (a fade, a slate, a blank
-channel) are left out. Of the rest, the most detailed wins, but a frame
-that looks like an ad break comes after any that doesn't (the cheap signals
-of the ad-breaks research): its sound is silent (a break's edge is black +
-silence), or the station's logo the other frames share is missing from it.
-That is a guard, not a detector: a commercial can still win when every
-frame is one, which is why the cards and TMDB come first.
+Range), a few MB at each of LIVE_FRAMES points spread over the last
+LIVE_SPAN of what is written so far (live_offsets: longer than an ad
+break, so the programme's own frames are most of them). ffmpeg decodes the
+first key frame of each piece at the lowest priority, with a timeout, and
+signalstats says how bright and how spread its light is: black and flat
+frames (a fade, a slate, a blank channel) are left out. Of the rest, the
+most detailed wins, but a frame that looks like an ad break comes after
+any that doesn't (the cheap signals of the ad-breaks research): its sound
+is silent (a break's edge is black + silence), or the station's logo most
+frames share is missing from it (logo_missing). That is a guard, not a
+detector: an ad can still win when most frames are ads, and a graphic of
+the programme's own can win over its pictures, which is why the cards and
+TMDB come first.
 
 Only MPEG-TS recordings (Jellyfin's own format) are read this way: a byte
 in the middle of a .ts is a place to start decoding; in an .mkv or .mp4 it
@@ -22,6 +25,7 @@ isn't.
 """
 import io
 import logging
+import math
 import os
 import re
 import subprocess
@@ -31,7 +35,8 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 FRACTIONS = (0.3, 0.5, 0.7)
-LIVE_BACK = (20, 100, 180, 260)     # seconds behind what a growing recording has written
+LIVE_FRAMES = 8                     # candidates from a growing recording
+LIVE_SPAN = 14 * 60                 # spread over at most this much before what it has written
 PTS_BYTES = 1024 * 1024             # read at each end of a growing recording for its timestamps
 PTS_WRAP = 2 ** 33 / 90000          # MPEG-TS timestamps wrap after 26.5 h
 MAX_WRITTEN = 24 * 3600
@@ -43,11 +48,13 @@ BLACK_LUMA = 26                     # mean luma (16 = black in TV range)
 FLAT_SPREAD = 22                    # 90th minus 10th percentile of luma
 MIN_DETAIL = 2.0
 SILENT_DB = -50.0                   # mean volume of a piece: silent (volumedetect)
-LOGO_SIZE = (160, 90)               # the logo check's scale; the top and bottom LOGO_BAND of it
+LOGO_SIZE = (320, 180)              # the logo check's scale; its corners: LOGO_WIDTH x LOGO_BAND
 LOGO_BAND = 0.25
+LOGO_WIDTH = 0.3
 LOGO_EDGE = 40                      # an edge pixel (FIND_EDGES)
-LOGO_MIN = 12                       # pixels the other frames must share to be a logo
-LOGO_SHARE = 0.45                   # of them a frame must have
+LOGO_COMMON = 0.35                  # of the frames (2 at least) an edge pixel is in to be the logo's
+LOGO_MIN = 20                       # logo pixels, else there is no logo to go by
+LOGO_SHARE = 0.4                    # of the share of them the frame with most has
 
 
 class FramesFailed(Exception):
@@ -77,10 +84,13 @@ def offsets(duration: float, pre_padding: float = 0.0, programme: Optional[float
 
 def live_offsets(written: float, pre_padding: float = 0.0) -> list:
     """Seconds into a recording still recording, `written` seconds so far:
-    LIVE_BACK behind its end, inside the programme (30 s past the
-    pre-padding at least)."""
-    lo = max(0.0, pre_padding or 0.0) + 30
-    return [round(written - back, 1) for back in LIVE_BACK if written - back >= lo]
+    LIVE_FRAMES spread evenly over the last LIVE_SPAN of it (20 s from its
+    end), inside the programme (30 s past the pre-padding at least)."""
+    hi = written - 20
+    span = min(hi - (max(0.0, pre_padding or 0.0) + 30), LIVE_SPAN)
+    if span < 0:
+        return []
+    return [round(hi - span * k / (LIVE_FRAMES - 1), 1) for k in range(LIVE_FRAMES)]
 
 
 def pts_of(chunk: bytes, last: bool, timeout: int = FFMPEG_TIMEOUT) -> Optional[float]:
@@ -186,21 +196,25 @@ def judge(jpeg: bytes, stats: dict) -> tuple:
 
 
 def _logo_pixels(jpeg: bytes) -> set:
-    """The edge pixels in the top and bottom bands of a frame, where a
-    station's logo and a score bug sit."""
+    """The edge pixels in the corners of a frame, where a station's logo
+    and a score bug sit."""
     from PIL import Image, ImageFilter
     w, h = LOGO_SIZE
     img = Image.open(io.BytesIO(jpeg)).convert("L").resize(LOGO_SIZE).filter(ImageFilter.FIND_EDGES)
     px = img.load()
-    band = int(h * LOGO_BAND)
-    return {(x, y) for y in list(range(1, band)) + list(range(h - band, h - 1)) for x in range(1, w - 1)
-            if px[x, y] >= LOGO_EDGE}
+    band, side = int(h * LOGO_BAND), int(w * LOGO_WIDTH)
+    return {(x, y) for y in list(range(1, band)) + list(range(h - band, h - 1))
+            for x in list(range(1, side)) + list(range(w - side, w - 1)) if px[x, y] >= LOGO_EDGE}
 
 
 def logo_missing(frames: list) -> list:
     """For each of three or more frames: True when it has few of the edges
-    all but one of the frames share in the top and bottom bands (a logo, a
-    score bug). Fewer than three frames, or nothing shared: all False."""
+    in the corners that LOGO_COMMON of the frames share (a station's logo,
+    a score bug: ads have neither), less than LOGO_SHARE of the share the
+    frame with most of them has. Fewer than three frames, or nothing
+    shared: all False. Measured on 16 frames of a golf recording (30 Oct
+    2026): the frames with the channel's bug had 0.31-0.77 of them, the
+    full-screen ads 0.01-0.15."""
     if len(frames) < 3:
         return [False] * len(frames)
     try:
@@ -211,10 +225,12 @@ def logo_missing(frames: list) -> list:
     for p in pixels:
         for xy in p:
             counts[xy] = counts.get(xy, 0) + 1
-    shared = {xy for xy, n in counts.items() if n >= len(frames) - 1}
+    need = max(2, math.ceil(len(frames) * LOGO_COMMON))
+    shared = {xy for xy, n in counts.items() if n >= need}
     if len(shared) < LOGO_MIN:
         return [False] * len(frames)
-    return [len(shared & mine) < LOGO_SHARE * len(shared) for mine in pixels]
+    share = [len(shared & mine) / len(shared) for mine in pixels]
+    return [s < LOGO_SHARE * max(share) for s in share]
 
 
 def best_frame(read: Callable[[int, int], bytes], size: int, duration: float, at: list,

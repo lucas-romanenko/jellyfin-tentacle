@@ -967,10 +967,10 @@ class WhileRecording(Base):
         self.assertEqual(("set", "frame", 1), (row.state, row.source, row.while_recording))
         self.assertNotEqual(title_tags, self.jf.tags("r1"))
         self.assertEqual((row.primary_tag, row.thumb_tag), (self.jf.tags("r1")["Primary"], self.jf.tags("r1")["Thumb"]))
-        # 20 s to 4 min 20 s behind what is written (6 min = 50 MB); the two timestamp reads first
+        # 8 from 30 s in to 20 s before what is written (6 min = 50 MB); the two timestamp reads first
         starts = [s for _i, s, n in self.jf.file_reads if n == F.READ_BYTES]
-        self.assertEqual(4, len(starts))
-        self.assertTrue(all(50_000_000 * 90 // 360 <= s < 50_000_000 for s in starts), starts)
+        self.assertEqual(8, len(starts))
+        self.assertTrue(all(50_000_000 * 29 // 360 <= s <= 50_000_000 * 340 // 360 for s in starts), starts)
         self.assertEqual([], self.jf.reads)                 # never Jellyfin's stream of a growing file
 
     def test_how_much_is_written_comes_from_the_timestamps(self):
@@ -1243,8 +1243,11 @@ class AdLooking(unittest.TestCase):
     station logo put a frame after any that has neither."""
 
     def test_live_offsets(self):
-        self.assertEqual([580.0, 500.0, 420.0, 340.0], F.live_offsets(600))
-        self.assertEqual([180.0], F.live_offsets(200, pre_padding=120))    # only inside the programme
+        at = F.live_offsets(600)
+        self.assertEqual((8, 580.0, 30.0), (len(at), at[0], at[-1]))
+        at = F.live_offsets(3 * 3600)                      # three hours in: the last 14 minutes
+        self.assertEqual((3 * 3600 - 20, 3 * 3600 - 20 - 14 * 60), (at[0], at[-1]))
+        self.assertTrue(all(x >= 150 for x in F.live_offsets(400, pre_padding=120)))   # inside the programme
         self.assertEqual([], F.live_offsets(40))
 
     def test_a_frame_without_the_logo_the_others_share(self):
