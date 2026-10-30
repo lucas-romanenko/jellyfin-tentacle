@@ -6986,6 +6986,8 @@ const _DELETION_KIND_META = {
 
 const _ACTIVITY_EVENT_META = {
   'livetv_recording_damaged': { label: 'Recording damaged', cls: 'badge-red', problem: true },
+  'livetv_recording_retimed': { label: 'Recording fixed', cls: 'badge-accent' },
+  'livetv_recording_not_fixed': { label: 'Recording clock', cls: 'badge-amber', problem: true },
   'livetv_placeholder':       { label: 'Channel placeholder', cls: 'badge-amber', problem: true },
   'epg_sync_failed':          { label: 'Guide failed', cls: 'badge-red', problem: true },
   'rating_restore_failed':    { label: 'Rating restore', cls: 'badge-red', problem: true },

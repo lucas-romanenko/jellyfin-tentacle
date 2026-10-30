@@ -94,6 +94,15 @@ class Jellyfin:
         r.raise_for_status()
         return r.json() if r.content else None
 
+    def post(self, path: str, timeout: float = 30, **params) -> tuple:
+        """(status, JSON body or {}) of a POST; a refusal is an answer, not an error."""
+        r = requests.post(self.url + path, headers=self.headers, params=params or None, timeout=timeout)
+        try:
+            body = r.json() if r.content else {}
+        except ValueError:
+            body = {}
+        return r.status_code, body if isinstance(body, dict) else {}
+
     def upload(self, item_id: str, kind: str, data: bytes) -> None:
         # Jellyfin takes the picture base64-encoded in the body
         r = requests.post(f"{self.url}/Items/{item_id}/Images/{kind}", data=base64.b64encode(data),
@@ -148,9 +157,11 @@ def _tags(item: dict) -> tuple:
     return tags.get("Primary"), tags.get("Thumb")
 
 
-def recordings_libraries(jf) -> tuple:
+def recordings_libraries(jf, any_library: bool = False) -> tuple:
     """([libraries holding Jellyfin's recordings folder that Tentacle may
-    give pictures], why there are none or some are left out)."""
+    give pictures], why there are none or some are left out). `any_library`:
+    every such library, also one saving pictures next to the media (the
+    after-recording check writes no pictures)."""
     cfg = jf.get("/System/Configuration/livetv") or {}
     paths = [p for p in [cfg.get("RecordingPath"), cfg.get("MovieRecordingPath"), cfg.get("SeriesRecordingPath")]
              + list(cfg.get("MediaLocationsCreated") or []) if p]
@@ -161,16 +172,16 @@ def recordings_libraries(jf) -> tuple:
         if not any(p == loc or p.startswith(loc + "/") or loc.startswith(p + "/") for p in paths for loc in locs
                    if loc):
             continue
-        if (lib.get("LibraryOptions") or {}).get("SaveLocalMetadata"):
-            local.append(lib.get("Name") or "Recordings")
-        else:
-            ok.append({"id": _id(lib.get("ItemId")), "name": lib.get("Name"), "roots": set(locs) | paths})
+        entry = {"id": _id(lib.get("ItemId")), "name": lib.get("Name"), "roots": set(locs) | paths}
+        (local if (lib.get("LibraryOptions") or {}).get("SaveLocalMetadata") else ok).append(entry)
+    if any_library:
+        return ok + local, None
     why = None
     if local:
         # an item in two libraries over one folder may be saved by either:
         # any of them saving next to the media rules the folder out
         ok = []
-        names = ", ".join(f"“{n}”" for n in local)
+        names = ", ".join(f"“{lib['name'] or 'Recordings'}”" for lib in local)
         why = (f"Jellyfin's {names} library saves pictures next to the recordings (“Save artwork into "
                f"media folders”), and Tentacle never writes into the recordings folder. To get pictures, "
                f"turn that off for this library in Jellyfin (Dashboard → Libraries).")

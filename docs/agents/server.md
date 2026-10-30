@@ -1490,6 +1490,33 @@ GET/PUT `/api/live/recordings/artwork`; Sources → Live TV → More.
   picture, or the league card when it is a game; follows the newest while
   still Tentacle's. The key is only ever in the `X-Emby-Token` header.
 
+## After a recording (`services/recording_check.py`, #869)
+
+A re-dial that isn't joined (`_ReplaySplicer`: "sent as it came") puts the
+provider's new clock in a recording: nothing lost, but ffprobe and Jellyfin
+take the length from the first and last timestamps (Rob: 3 h 45 min shown
+as 21.7 h; the Canadiens game, 3 h 39 min as 21 h). Fixed after the
+recording, never on live bytes (Lucas, 30 Oct 2026).
+
+- `recording_check` job every 15 min: each finished recording (items of
+  `recording_art.job.recordings_libraries(any_library=True)`, newest first,
+  6 a pass) once. Not while its timer or booking records or in its first
+  10 min; no check while Jellyfin records anything or a recording starts
+  within 20 min (`_busy`: a copy reads and writes the whole file).
+- The plugin does the file work (`POST /Tentacle/Recordings/{id}/Retime`,
+  plugin.md "RecordingRetime"): the files are Jellyfin's
+  (`/config/data/livetv/recordings` by default), not in Tentacle's
+  container. 409 = still recording: asked next pass. 404 without a state =
+  an older plugin: the pass stops, nothing stored.
+- Then `POST .../Premiere?date=`: PremiereDate = the programme's start
+  (booking, else guide programme as in `context()`, else DateCreated),
+  only when Jellyfin has none.
+- `recording_checks` (plain columns: item id, state ok/retimed/not_fixed/
+  failed/no_window/no_space/not_a_recording, duration/wall/after seconds,
+  premiere_set, attempts). `failed`/`no_space` are tried again after 6 h,
+  3 times. Activity: `livetv_recording_retimed` ("Recording fixed"),
+  `livetv_recording_not_fixed` (a problem).
+
 ## YouTube per person (`services/youtube/follows.py`, `routers/my_youtube.py`, dashboard `static/js/myyoutube.js`)
 
 - `youtube_follows` (channel_fk, jellyfin_user_id without dashes, added_by =
