@@ -20,7 +20,6 @@ namespace Jellyfin.Plugin.Tentacle.Api;
 /// </summary>
 [ApiController]
 [Route("Tentacle/Recordings")]
-[Authorize(Policy = "RequiresElevation")]
 public class RecordingRetimeController : ControllerBase
 {
     private readonly ILibraryManager _libraryManager;
@@ -53,6 +52,7 @@ public class RecordingRetimeController : ControllerBase
     /// <param name="dryRun">Copy and check, but keep the recording as it is.</param>
     /// <param name="cancellationToken">The request's token.</param>
     [HttpPost("{itemId}/Retime")]
+    [Authorize(Policy = "RequiresElevation")]
     public async Task<ActionResult> Retime([FromRoute] Guid itemId, [FromQuery] bool dryRun = false, CancellationToken cancellationToken = default)
     {
         var (item, refusal) = Recording(itemId);
@@ -86,6 +86,7 @@ public class RecordingRetimeController : ControllerBase
     /// <param name="date">The programme's start (UTC).</param>
     /// <param name="cancellationToken">The request's token.</param>
     [HttpPost("{itemId}/Premiere")]
+    [Authorize(Policy = "RequiresElevation")]
     public async Task<ActionResult> Premiere([FromRoute] Guid itemId, [FromQuery] DateTime date, CancellationToken cancellationToken = default)
     {
         var (item, refusal) = Recording(itemId);
