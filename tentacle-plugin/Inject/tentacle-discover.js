@@ -2312,6 +2312,18 @@
     document.body.appendChild(overlay);
     requestAnimationFrame(function () { overlay.classList.add('md-visible'); });
 
+    // Jellyfin's phone apps have no second window for target="_blank": open the
+    // trailer through the app (an in-app browser), as Jellyfin's own links do (#877).
+    var upTrailer = overlay.querySelector('.md-up-trailer-btn');
+    if (upTrailer) upTrailer.addEventListener('click', function (e) {
+      var shell = window.NativeShell;
+      var host = shell && shell.AppHost;
+      if (shell && typeof shell.openUrl === 'function' && host && typeof host.supports === 'function' && host.supports('externallinks')) {
+        e.preventDefault();
+        shell.openUrl(upTrailer.getAttribute('href'));
+      }
+    });
+
     overlay.querySelector('.md-up-close').addEventListener('click', function () {
       overlay.classList.remove('md-visible');
       setTimeout(function () { overlay.remove(); }, 200);

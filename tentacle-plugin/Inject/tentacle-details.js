@@ -2139,6 +2139,11 @@ var Details = {
         });
     },
 
+    // A Jellyfin app (iOS, Android, Media Player) that takes downloads itself.
+    _appCanDownload: function() {
+        return !!(window.NativeShell && typeof window.NativeShell.downloadFile === 'function');
+    },
+
     _isStrm: function(item) {
         var path = item.Path || (item.MediaSources && item.MediaSources[0] && item.MediaSources[0].Path) || '';
         return /\.strm$/i.test(path);
@@ -2175,8 +2180,10 @@ var Details = {
             menuItems.push({ id: 'mediainfo', name: 'Media Info', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M440-280h80v-240h-80v240Zm40-320q17 0 28.5-11.5T520-640q0-17-11.5-28.5T480-680q-17 0-28.5 11.5T440-640q0 17 11.5 28.5T480-600Zm0 520q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Z"/></svg>' });
         }
 
-        // Download — requires EnableContentDownloading permission and CanDownload on item
-        if (policy.EnableContentDownloading && item.CanDownload) {
+        // Download — requires EnableContentDownloading permission and CanDownload on item.
+        // A VOD title's file is its .strm text: a browser would save that, only a
+        // Jellyfin app (its own download queue, transcoded downloads) gets the video.
+        if (policy.EnableContentDownloading && item.CanDownload && (!this._isStrm(item) || this._appCanDownload())) {
             menuItems.push({ id: 'download', name: 'Download', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M480-320 280-520l56-58 104 104v-326h80v326l104-104 56 58-200 200ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z"/></svg>' });
         }
 
@@ -2342,6 +2349,20 @@ var Details = {
 
             case 'download':
                 var downloadUrl = serverUrl + '/Items/' + item.Id + '/Download?api_key=' + api.accessToken();
+                // In Jellyfin's phone apps a link to a file opens in the page itself
+                // (a black page with no way back): hand it to the app's own download
+                // queue, as Jellyfin web's Download does (#877).
+                if (this._appCanDownload()) {
+                    window.NativeShell.downloadFile({
+                        url: downloadUrl,
+                        item: item,
+                        itemId: item.Id,
+                        serverId: item.ServerId || (api.serverId && api.serverId()),
+                        title: item.Name,
+                        filename: (item.Path || item.Name || 'download').replace(/^.*[\\/]/, '')
+                    });
+                    break;
+                }
                 var a = document.createElement('a');
                 a.href = downloadUrl;
                 a.download = item.Name || 'download';

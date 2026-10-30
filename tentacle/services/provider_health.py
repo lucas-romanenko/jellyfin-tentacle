@@ -253,7 +253,7 @@ def _check_xtream_api(p: Provider, ua: str) -> dict:
         if status.lower() == "expired":
             return _fail("api", "expired", detail=expired_on)
         return _fail("api", "status", detail=_clean(status))
-    if exp and exp < time.time():
+    if exp and exp < _now().timestamp():
         return _fail("api", "expired", detail=expired_on)
     return _ok(expires=exp)
 
