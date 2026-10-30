@@ -90,13 +90,15 @@ Recordings can fill a disk (a sports game is 2.5 to 4 GB an hour). The top of **
 
 ### Pictures for recordings
 
-Every finished recording gets a picture in Jellyfin about 10 minutes after it ends, in both shapes a film has: a wide (16:9) one for wide cards (the TV app's Recordings, Continue Watching on wide rows, Jellyfin Web) and a poster (2:3) for poster rows and library grids. Tentacle uses the first of these that works:
+Every recording gets a picture in Jellyfin within a minute or two of starting, in both shapes a film has: a wide (16:9) one for wide cards (the TV app's Recordings, Continue Watching on wide rows, Jellyfin Web) and a poster (2:3) for poster rows and library grids. Tentacle uses the first of these that works:
 
 1. **A game**: a card with the league, both teams' logos with "@" (or "VS") between them, their names and codes, the date and the channel. Tentacle knows the teams from the team that booked it, or from the title and description ("NHL: Toronto Maple Leafs - Montreal Canadiens", "Canadiens at Blackhawks", "TOR @ MTL"). A race or a league with no teams named gets the league's card.
 2. **A show or film**: its picture from TMDB, only when the title matches well (and the year, when the title has one).
 3. **The guide's own picture** for the programme, when it is wide.
-4. **A frame from the recording**: three are taken (at 30%, 50% and 70% of the programme), black and blank ones are left out, and the one with the most in it wins. Never while Jellyfin is recording.
+4. **A frame from the recording**: three are taken (at 30%, 50% and 70% of the programme), black and blank ones are left out, and the one with the most in it wins. A frame that looks like an ad break (silent, or missing the channel's logo the other frames show) only wins when every frame does. Never while Jellyfin is recording another programme.
 5. **A card with the title**, the channel and the date.
+
+**While it records**, the first three come at once (a game's card, TMDB's picture, the guide's). Anything else starts with the title card and, once about 4 minutes of the programme are recorded, gets a frame from the part recorded so far (eight frames from the last 14 minutes, the same rules), taken again every 15 minutes while it records. Tentacle reads the frames from the file Jellyfin is writing; it never opens the channel again. When the recording ends, the finished recording keeps its picture at once. A game's card, TMDB's and the guide's picture stay; a frame or a title card is made again later from the whole recording.
 
 Games and title cards are drawn in both shapes; a show or film gets TMDB's poster too. A picture that only comes wide (the guide's, a frame) is put on a poster with the title above it and the date and channel below.
 

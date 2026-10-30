@@ -1254,6 +1254,9 @@ class RecordingArtwork(Base):
     still there), left (a person changed or removed it: never touched
     again), theirs (it had a picture Tentacle didn't set: never touched),
     failed (no picture could be made or saved; tried again later).
+    while_recording: 1 while it records (the live pass's), 2 finished with
+    a picture from while it recorded that the finished pass makes again;
+    path: the recording's file (to find the finished item, should it be a new one).
     item_id is Jellyfin's, without dashes."""
     __tablename__ = "recording_artwork"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -1268,6 +1271,8 @@ class RecordingArtwork(Base):
     made_from = Column(String, nullable=True)    # folders: what the picture came from (a child's id, a league)
     primary_shape = Column(String, nullable=True)   # the layout that drew it (recording_art.job.POSTER); empty: #827's 16:9
     team_logos = Column(Integer, nullable=True)     # matchup: 1 when drawn with both teams' logos
+    while_recording = Column(Integer, nullable=True)   # 1 recording, 2 finished: the finished pass makes it again
+    path = Column(String, nullable=True)               # while it records: its file, to find the finished item
     attempts = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)

@@ -1610,12 +1610,55 @@ GET/PUT `/api/live/recordings/artwork`; Sources → Live TV → More.
   Recording ↔ booking: same folded title, `DateCreated` inside the padded
   window. Recording ↔ EPG programme: same title, starting 0–45 min after
   `DateCreated`.
+- While it records (`live_pass`, job `recording_art_live` every
+  `LIVE_MINUTES` (1), first 90 s after start; skips while `run_pass` holds
+  `_lock`): `GET /LiveTv/Recordings?IsInProgress=true&UserId=<admin>` (no
+  user: an empty list; the admin with the fewest BlockedTags, kept 1 h).
+  One call when nothing records. A recording in progress is an item of
+  Type `Recording` (by id, not in the library's `/Items` listing, no
+  RunTimeTicks); only those under the recordings libraries' roots (Path).
+  New: `give_picture(live_at=now, ctx=live_context())`, same order, the
+  frame from `_live_frame` (none until `FRAME_AFTER` (4 min) of the
+  programme is written); row `while_recording` 1, `path`, and a copy of
+  both JPEGs in `DATA_DIR/recording_art_live/` (`_keep`). A frame/title row
+  is tried again every `FRAME_EVERY` (15 min) / `FRAME_RETRY` (5 min)
+  (`refresh_frame`, only while both tags are still Tentacle's).
+  `live_context`: DateCreated of an item in progress is its NFO's local
+  time labelled UTC (4 h off in Toronto), so how much is written comes from
+  the file: `frames.written_seconds` (ffprobe of 1 MB at each end, last
+  minus first video PTS, wrap at 2^33; fallback the clock since
+  DateCreated), and `created` = now - written (booking/guide matching).
+  Finished (`follow_finished`, live pass, when a `while_recording` 1 row's
+  item is no longer in progress): 10.11.8 keeps the item and its id (Type
+  Recording → Movie, pictures kept): `while_recording` None for
+  `KEPT_SOURCES`, 2 for frame/title. Should a Jellyfin make a new item of
+  the file instead (another id), it is found by Path in the library, the
+  kept copy uploaded and the row moved to it; no item after
+  `FOLLOW_CHECKS` (30) passes, or the new one has pictures of its own: the
+  row goes. `reconcile` never drops a `while_recording` 1
+  row. `run_pass`: `while_recording` 2 and `_finished` → `take_over`:
+  made again from the finished file (`make_picture`, may `Defer`; after
+  `MAX_ATTEMPTS` failures the moved picture stays). The growing file:
+  `GET /Videos/{id}/stream?static=true` ignores `Range` on it (200 from
+  byte 0, no length: a ProgressiveFileStream); `GET /Items/{id}/File`
+  honours it, `Content-Range` gives the size so far (`file_size`,
+  `read_file`). Offsets `frames.live_offsets`: `LIVE_FRAMES` (8) spread
+  over the last `LIVE_SPAN` (14 min), 20 s from the end, 30 s past the
+  pre-padding at least (bytes ∝ time).
 - Frames: MPEG-TS only; `GET /Videos/{id}/stream?static=true` with a
   `Range` of `READ_BYTES` (6 MB) at 30/50/70 % of the programme after the
   pre-padding (byte offset ∝ time); ffmpeg `-skip_frame nokey` from stdin,
   `signalstats` (black: YAVG < 26, flat: YHIGH-YLOW < 22), the most
-  edges wins; `nice 19`, 30 s timeout. Not while Jellyfin records or a
-  recording starts within 20 min (`busy_from_timers`): the item waits.
+  edges wins; `nice 19`, 30 s timeout. Ad-looking frames rank after the
+  rest (the cheap signals of the ad-breaks research): silent (a second
+  ffmpeg `volumedetect` on the same piece, mean < `SILENT_DB` -50 dB; no
+  sound track = unknown), or `logo_missing` (3+ frames: the edge pixels,
+  320x180 `FIND_EDGES`, in the corners (30 % wide, 25 % high), that 35 % of
+  the frames share; a frame with < 0.4x the best frame's share of them;
+  fewer than 20 shared = no logo, says nothing). Measured on a golf
+  recording: frames with the bug 0.31-0.77, full-screen ads 0.01-0.15. Not while Jellyfin records or a recording starts within 20 min
+  (`busy_from_timers`): the item waits (the finished file only; the live
+  frame reads the growing one).
 - Safety (`recording_artwork`, plain columns: item id, kind recording/folder,
   state, source, the Primary/Thumb tags Jellyfin gave): an item with any
   picture Tentacle didn't set → `theirs`, never touched; a `set` row whose
