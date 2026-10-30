@@ -228,6 +228,15 @@ def _run_scheduled_sync():
             logger.error(f"Sonarr scan failed: {e}")
             log_activity(db, "sonarr_scan", f"Sonarr scan failed: {e}")
 
+        # Library folders Radarr/Sonarr don't know about: added as they are,
+        # only when "add confident matches automatically" is on (#871)
+        try:
+            from services import untracked
+            untracked.nightly(db)
+        except Exception as e:
+            _rollback(db)
+            logger.error(f"Adding untracked library folders failed: {e}")
+
         logger.info("Refreshing recently added tags")
         try:
             refresh_recently_added_tags(db)

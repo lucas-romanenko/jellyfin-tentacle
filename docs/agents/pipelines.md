@@ -260,7 +260,10 @@ at the default with a warning; the settings form answers 400 for one.
 1. refresh list subscriptions; 2. VOD sync from active providers (each read
 when its turn comes, under `_sync_lock`: one deleted or switched off since
 the job started is skipped, #517); 3. Radarr
-scan; 4. Sonarr scan (and Following state for every series); 5. recently
+scan; 4. Sonarr scan (and Following state for every series); 4b. only with
+`untracked_auto_add` on (off by default): library folders Radarr/Sonarr
+don't know about, the 95%+ sure ones added as they are (#871,
+server.md "Folders Radarr/Sonarr don't know about"); 5. recently
 added tags; 6. Jellyfin pipeline (scan, push tags, refresh playlists);
 7. clean the TMDB cache, then discovery of new categories and Live TV
 groups (gently, see "Gentle on the provider"; existing VOD categories get

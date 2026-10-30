@@ -176,20 +176,30 @@ def radarr_root_folder(radarr_url: str, radarr_key: str) -> str:
 
 
 def add_movie_to_radarr(radarr_url: str, radarr_key: str, tmdb_id: int,
-                        quality_profile_id: int, root_folder: str) -> tuple:
+                        quality_profile_id: int, root_folder: str, *,
+                        path: Optional[str] = None, monitored: bool = True,
+                        search: bool = True) -> tuple:
     """POST one movie to Radarr. Returns (outcome, reason_or_None).
 
     A read timeout is verified against Radarr's library rather than reported as
     a failure — Radarr commonly finishes the add after we stop waiting.
+
+    `path` is a folder the film already sits in (a library folder Radarr
+    doesn't know about, #871): Radarr takes it as the movie's folder and reads
+    the file there in place, nothing moved or renamed; such an add is sent
+    with search=False.
     """
     url = f"{radarr_url.rstrip('/')}/api/v3/movie"
     payload = {
         "tmdbId": tmdb_id,
-        "monitored": True,
+        "monitored": monitored,
         "qualityProfileId": quality_profile_id,
         "rootFolderPath": root_folder,
-        "addOptions": {"searchForMovie": True},
+        "addOptions": {"searchForMovie": search},
     }
+    if path:
+        payload["path"] = path
+        payload["addOptions"]["monitor"] = "movieOnly" if monitored else "none"
     sent_at = time.monotonic()
     try:
         r = requests.post(url, headers={"X-Api-Key": radarr_key}, json=payload, timeout=ADD_TIMEOUT)

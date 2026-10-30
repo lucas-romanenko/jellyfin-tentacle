@@ -644,7 +644,7 @@ function showPage(name, tab) {
   try {
     // Load page data (a tab given in the address opens that tab)
     if (name === 'settings') { loadSettings(); showSettingsSection(tab || state.currentSettingsSection || 'services'); }
-    if (name === 'library') { loadLibrary(); if (tab) showLibTab(tab); }
+    if (name === 'library') { loadLibrary(); if (tab) showLibTab(tab); if (tab !== 'untracked' && typeof untrRefreshBadge === 'function') untrRefreshBadge(); }
     if (name === 'discover') { loadDiscoverPage(); if (tab) showDiscoverTab(tab); }
     if (name === 'jellyfin') { loadJellyfinPage(); if (tab) showJellyfinTab(tab); }
     if (name === 'mychannels' && typeof loadMyChannels === 'function') loadMyChannels();
@@ -701,11 +701,14 @@ function showLibTab(tab) {
   // Music is a type inside Browse (beside Movies and Shows); old #library/music links still land there
   const wantMusic = tab === 'music';
   if (!document.querySelector(`[data-libtab="${tab}"]`)) tab = 'browse';
+  if (tab === 'untracked' && !state.currentUser?.is_admin) tab = 'browse';
   document.querySelectorAll('[data-libtab]').forEach(t => t.classList.remove('active'));
   document.querySelector(`[data-libtab="${tab}"]`)?.classList.add('active');
   document.getElementById('lib-tab-browse').style.display = tab === 'browse' ? '' : 'none';
   document.getElementById('lib-tab-following').style.display = tab === 'following' ? '' : 'none';
+  document.getElementById('lib-tab-untracked').style.display = tab === 'untracked' ? '' : 'none';
   if (tab === 'following') loadFollowing();
+  if (tab === 'untracked' && typeof loadUntracked === 'function') loadUntracked(false);
   if (wantMusic) {
     const btn = document.querySelector('[data-libtype="music"]');
     if (btn) { setLibType('music', btn); return; }
@@ -1117,6 +1120,7 @@ async function completeSetup() {
     await api('/api/settings', { method: 'POST', body: { settings } });
     // Go to plugin install step instead of finishing
     setupGoTo(6);
+    if (typeof untrSetupNote === 'function') untrSetupNote();
   } catch (e) {
     toast(e.message, 'error');
   }
