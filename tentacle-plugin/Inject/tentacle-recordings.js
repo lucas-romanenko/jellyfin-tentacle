@@ -7,12 +7,18 @@
 //     Record in Jellyfin; what teams and rules in preview would record, folded.
 //   - Recordings: what Jellyfin has recorded, newest first (a tap opens it to
 //     play), and what is recording now.
-//   - A click plays (Resume where it was left); one recording now plays the
-//     channel live, on the stream the recording already reads (no new
-//     connection). Right-click / a long press (as the TV's long press):
-//     Resume, Play from start, Mark watched / unwatched, Delete recording…
-//     (when Jellyfin allows it, confirmed), Details; recording now: Watch
-//     live, Details.
+//   - A click plays (Resume where it was left). A recording still recording
+//     asks first (as the TV, #239): Watch live (its channel, on the stream the
+//     recording already reads: no new connection), Resume from … (when a
+//     position is saved), Play from start. Right-click / a long press (as the
+//     TV's long press): Resume, Play from start, Mark watched / unwatched,
+//     Delete recording… (when Jellyfin allows it, confirmed), Details;
+//     recording now: the same three, Mark watched / unwatched, Details.
+//   - Play from start plays the part already recorded from 0:00 in Jellyfin's
+//     player: seeking stays inside what's written, the bar grows, the end lands
+//     just behind it and keeps playing, and Jump to live in the player bar
+//     switches to the channel. Leaving saves the position and doesn't mark it
+//     watched (see "A recording still recording" below).
 // Read-only: teams and rules are picked in Tentacle (Recordings page). Data:
 // TentacleDiscover/Recordings/* (the plugin passes the caller's own token on to
 // Tentacle) and Jellyfin's LiveTv/Recordings and LiveTv/Timers.
@@ -93,7 +99,12 @@
       var a = e.target.closest('[data-item]');
       if (!a) return;
       var item = R.items[a.getAttribute('data-item')];
-      if (item && R.tab === 3) { e.preventDefault(); play(item, false); return; }
+      if (item && R.tab === 3) {
+        e.preventDefault();
+        if (recording(item)) recordingMenu(item, { el: a, short: true });
+        else play(item, false);
+        return;
+      }
       location.hash = '#/details?id=' + encodeURIComponent(a.getAttribute('data-item'));
     });
     if (window.TentacleMenu) {
@@ -248,19 +259,46 @@
 
   function position(item) { return (item.UserData && item.UserData.PlaybackPositionTicks) || 0; }
 
-  // A finished recording plays where it was left (`fromStart`: from 0:00);
-  // one still recording plays its channel live: Jellyfin joins the stream the
-  // recording reads (the growing file itself won't play: NoCompatibleStream).
+  // A finished recording plays where it was left (`fromStart`: from 0:00).
   function play(item, fromStart) {
-    if (recording(item) && item.ChannelId && window.TentacleLiveTV) {
-      window.TentacleLiveTV.playChannel(item.ChannelId);
-      return;
-    }
     var pm = window.playbackManager;
     if (!pm || typeof pm.play !== 'function') { location.hash = '#/details?id=' + encodeURIComponent(item.Id); return; }
     var opts = { ids: [item.Id] };
     if (!fromStart && position(item)) opts.startPositionTicks = position(item);
     pm.play(opts);
+  }
+
+  // A recording still recording: its channel live. Jellyfin joins the stream
+  // the recording reads. Its channel id from the item, else from its timer.
+  function watchLive(item) {
+    channelOf(item).then(function (id) {
+      if (id && window.TentacleLiveTV) window.TentacleLiveTV.playChannel(id);
+      else window.TentacleMenu.toast('The channel couldn’t be found.');
+    });
+  }
+
+  function channelOf(item) {
+    if (item.ChannelId) return Promise.resolve(item.ChannelId);
+    if (!item.TimerId) return Promise.resolve(null);
+    return apiGet('LiveTv/Timers/' + item.TimerId).then(function (t) { return (t && t.ChannelId) || null; }, function () { return null; });
+  }
+
+  // "1:28", "1:02:05"
+  function clock(ticks) {
+    var t = Math.floor(ticks / 1e7), h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, sec = t % 60;
+    var two = function (n) { return (n < 10 ? '0' : '') + n; };
+    return h ? h + ':' + two(m) + ':' + two(sec) : m + ':' + two(sec);
+  }
+
+  // What a recording still recording offers: Watch live, Resume from …
+  // (a saved position), Play from start, as the TV.
+  function recordingChoices(item) {
+    var pos = position(item);
+    return [
+      { key: 'live', label: 'Watch live' },
+      pos ? { key: 'resume', label: 'Resume from ' + clock(pos) } : null,
+      { key: 'start', label: 'Play from start' },
+    ].filter(Boolean);
   }
 
   function setWatched(item, watched) {
@@ -282,7 +320,17 @@
     var details = { label: 'Details', run: function () { location.hash = '#/details?id=' + encodeURIComponent(item.Id); } };
     var items;
     if (recording(item)) {
-      items = [{ label: 'Watch live', run: function () { play(item, false); } }, details];
+      items = recordingChoices(item).map(function (c) {
+        return { label: c.label, run: function () {
+          if (c.key === 'live') watchLive(item);
+          else Growing.play(item, c.key === 'resume' ? position(item) : 0);
+        } };
+      });
+      // a click asks only how to play; right-click / a long press has the rest
+      if (!at.short) {
+        var watched = !!(item.UserData && item.UserData.Played);
+        items.push({ label: watched ? 'Mark unwatched' : 'Mark watched', run: function () { setWatched(item, !watched); } }, details);
+      }
     } else {
       var played = !!(item.UserData && item.UserData.Played);
       items = [
@@ -298,6 +346,191 @@
     }
     M.open({ title: name, items: items, x: at.x, y: at.y, anchor: at.el });
   }
+
+  // ── A recording still recording, from its start (#239) ──────────────
+  //
+  // While it records, Jellyfin swaps the item's own media source for one of
+  // its own (another id, infinite, no runtime) offered only as HLS: an EVENT
+  // playlist that ffmpeg remuxes from 0:00 of the growing file and keeps
+  // appending to. Jellyfin Web plays it once asked without a media source id
+  // (it never names one); a second reader of the file, no new provider
+  // connection. What differs from a finished recording:
+  // - Start at 1 ms: hls.js takes no start for "play at the live edge".
+  // - Resume: from 1 ms too, then a seek once the remux has reached the
+  //   position (a start position would make ffmpeg skip the part before it).
+  // - Seeks land at most EDGE_MS before the end of what's written, so the end
+  //   plays the latest part instead of running dry.
+  // - Jellyfin treats a position on an item without a runtime as "watched to
+  //   the end": the first progress report marked it watched at 0:00 (10.11.8).
+  //   Its reports leave the position out, the stop is reported failed (Jellyfin
+  //   then leaves the user data alone) and the position is saved on its own.
+  //   A recording that finished while watched and played to its end stops as
+  //   any other (watched).
+  // - Jump to live in the player bar: the channel, on the recording's stream.
+  var EDGE_MS = 10000, RESUME_WAIT_MS = 45000, START_TICKS = 10000, NOT_STARTED_MS = 60000;
+  var GR = { id: null, item: null, resume: 0, since: 0, ended: false, video: null, written: 0, grewAt: 0, asked: 0 };
+
+  function normId(id) { return String(id || '').replace(/-/g, '').toLowerCase(); }
+
+  // Where a seek lands: never past what's written less EDGE_MS (0 or less written: as asked).
+  function growingSeekTarget(ms, writtenMs) {
+    if (ms <= 0) return 0;
+    if (writtenMs <= 0) return ms;
+    return Math.min(ms, Math.max(0, writtenMs - EDGE_MS));
+  }
+
+  // Whether a resume can seek now: the remux has reached it, or it waited long enough.
+  function growingResumeReady(targetMs, writtenMs, waitedMs) {
+    return writtenMs >= targetMs + EDGE_MS || waitedMs >= RESUME_WAIT_MS;
+  }
+
+  // The position to save on stop: under a minute in is "not started", as Jellyfin's own threshold.
+  function growingStopTicks(ticks) { return ticks >= NOT_STARTED_MS * 1e4 ? ticks : 0; }
+
+  // A playback report about the recording, as it goes to Jellyfin; `stop` is
+  // filled in for a stop whose position must be saved on its own.
+  function growingReport(method, info) {
+    if (!GR.id || !info || normId(info.ItemId) !== GR.id) return info;
+    var out = Object.assign({}, info);
+    var ticks = out.PositionTicks;
+    delete out.PositionTicks;
+    if (method === 'reportPlaybackStopped') {
+      if (GR.ended) return info;
+      out.Failed = true;
+      out.__save = growingStopTicks(ticks || 0);
+    }
+    return out;
+  }
+
+  function patchReports() {
+    var a = api();
+    if (!a || a.__tgGrowing) return;
+    a.__tgGrowing = true;
+    ['reportPlaybackStart', 'reportPlaybackProgress', 'reportPlaybackStopped'].forEach(function (m) {
+      var orig = a[m];
+      if (typeof orig !== 'function') return;
+      a[m] = function (info) {
+        var mine = !!(GR.id && info && normId(info.ItemId) === GR.id);
+        if (GR.id && !mine && m === 'reportPlaybackStart') stopGrowing();
+        if (!mine) return orig.call(this, info);
+        var out = growingReport(m, info), id = GR.id, ended = GR.ended;
+        if (m === 'reportPlaybackStopped') stopGrowing();
+        if (out === info) {
+          var done = orig.call(this, info);
+          // finished while watched, to its end: watched (Jellyfin may not know its runtime yet)
+          if (m === 'reportPlaybackStopped' && ended) {
+            Promise.resolve(done).catch(function () { }).then(function () {
+              return a.ajax({ type: 'POST', url: a.getUrl('UserPlayedItems/' + id, { userId: a.getCurrentUserId() }) });
+            }).then(function () { if (R.active) setTimeout(load, 300); }, function () { });
+          }
+          return done;
+        }
+        var save = out.__save;
+        delete out.__save;
+        var sent = orig.call(this, out);
+        if (m === 'reportPlaybackStopped') {
+          Promise.resolve(sent).catch(function () { }).then(function () {
+            return a.ajax({ type: 'POST', url: a.getUrl('UserItems/' + id + '/UserData', { userId: a.getCurrentUserId() }),
+              data: JSON.stringify({ PlaybackPositionTicks: save }), contentType: 'application/json' });
+          }).then(function () { if (R.active) setTimeout(load, 300); }, function () { });
+        }
+        return sent;
+      };
+    });
+  }
+
+  function stopGrowing() {
+    GR.id = null; GR.item = null; GR.resume = 0; GR.ended = false; GR.written = 0; GR.asked = 0;
+    if (GR.video) { GR.video.removeEventListener('seeking', onSeeking); GR.video.removeEventListener('ended', onEnded); }
+    GR.video = null;
+    var b = document.querySelector('.tr-live-btn');
+    if (b) b.remove();
+  }
+
+  function writtenMs(v) { return v && isFinite(v.duration) ? v.duration * 1000 : 0; }
+
+  function onSeeking(e) {
+    var v = e.target, to = growingSeekTarget(v.currentTime * 1000, writtenMs(v));
+    if (to < v.currentTime * 1000 - 1) v.currentTime = to / 1000;
+  }
+  function onEnded() { GR.ended = true; }
+
+  // Playing at the end of what's written and it stopped growing: when the
+  // recording has finished, it ends as any recording watched to its end (the
+  // player is stopped: the cut-off last frame of a finished recording made
+  // hls.js recover and replay the last seconds over and over).
+  function checkFinished(v) {
+    var w = writtenMs(v), now = Date.now();
+    if (w > GR.written) { GR.written = w; GR.grewAt = now; return; }
+    if (GR.ended || v.currentTime * 1000 < w - EDGE_MS - 2000 || now - GR.grewAt < 8000 || now - GR.asked < 10000) return;
+    GR.asked = now;
+    var id = GR.id;
+    apiGet('Users/' + api().getCurrentUserId() + '/Items/' + GR.item.Id).then(function (i) {
+      if (GR.id !== id || !i || recording(i)) return;
+      GR.ended = true;
+      var a = api(), ev = window.Events;
+      try { if (ev && a) ev.trigger(a, 'message', [{ MessageType: 'Playstate', Data: { Command: 'Stop' } }]); } catch (e) { }
+    }, function () { });
+  }
+
+  // Every half second while it plays: the player's video, a pending resume, the button.
+  function growingTick() {
+    if (!GR.id) return;
+    if (!/^#\/video\b/.test(location.hash)) {
+      if (Date.now() - GR.since > 60000) stopGrowing(); // never got to the player
+      return;
+    }
+    var v = document.querySelector('video.htmlvideoplayer') || document.querySelector('.videoPlayerContainer video');
+    if (v && v !== GR.video) {
+      if (GR.video) { GR.video.removeEventListener('seeking', onSeeking); GR.video.removeEventListener('ended', onEnded); }
+      GR.video = v;
+      v.addEventListener('seeking', onSeeking);
+      v.addEventListener('ended', onEnded);
+    }
+    if (v && GR.resume && v.readyState >= 2) {
+      var target = GR.resume / 1e4;
+      if (growingResumeReady(target, writtenMs(v), Date.now() - GR.since)) {
+        GR.resume = 0;
+        v.currentTime = growingSeekTarget(target, writtenMs(v)) / 1000;
+      }
+    }
+    if (v) checkFinished(v);
+    liveButton();
+  }
+
+  var ICON_LIVE = '<svg viewBox="0 0 24 24"><path d="M21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h5v2h8v-2h5c1.1 0 1.99-.9 1.99-2L23 5c0-1.1-.9-2-2-2zm0 14H3V5h18v12zm-5-6l-7 4V7z"/></svg>';
+
+  // Jump to live, in Jellyfin's player bar right after ⏩ (as the TV).
+  function liveButton() {
+    if (document.querySelector('.tr-live-btn')) return;
+    var bar = document.querySelector('.videoOsdBottom .buttons');
+    if (!bar) return;
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'paper-icon-button-light tr-live-btn';
+    b.title = 'Jump to live';
+    b.setAttribute('aria-label', 'Jump to live');
+    b.innerHTML = ICON_LIVE + '<span>Jump to live</span>';
+    var ff = bar.querySelector('.btnFastForward');
+    if (ff && ff.parentNode) ff.parentNode.insertBefore(b, ff.nextSibling); else bar.insertBefore(b, bar.firstChild);
+    b.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (GR.item) watchLive(GR.item);
+    });
+  }
+
+  var Growing = {
+    play: function (item, resumeTicks) {
+      var pm = window.playbackManager;
+      if (!pm || typeof pm.play !== 'function') { location.hash = '#/details?id=' + encodeURIComponent(item.Id); return; }
+      patchReports();
+      stopGrowing();
+      GR.id = normId(item.Id); GR.item = item; GR.resume = resumeTicks || 0; GR.since = Date.now();
+      pm.play({ ids: [item.Id], startPositionTicks: START_TICKS });
+    },
+  };
+  setInterval(growingTick, 500);
 
   // ── Live ─────────────────────────────────────────────────────────────
 
@@ -336,5 +569,6 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', onRoute);
   else onRoute();
 
-  window.TentacleRecordings = { isActive: function () { return R.active; }, internals: { renderSchedule: renderSchedule, renderRecordings: renderRecordings, routeTab: routeTab } };
+  window.TentacleRecordings = { isActive: function () { return R.active; }, internals: { renderSchedule: renderSchedule, renderRecordings: renderRecordings, routeTab: routeTab, recordingChoices: recordingChoices,
+    growingSeekTarget: growingSeekTarget, growingResumeReady: growingResumeReady, growingStopTicks: growingStopTicks, growingReport: growingReport, GR: GR } };
 })();

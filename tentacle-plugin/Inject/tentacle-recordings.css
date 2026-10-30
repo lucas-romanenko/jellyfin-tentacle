@@ -73,7 +73,14 @@ body.tentacle-recordings-active .skinHeader [data-tentacle-tab-ancestor] {
 .tr-cname { font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tr-cmeta { font-size: 12px; color: var(--tr-dim); }
 
+/* Jump to live in Jellyfin's player bar, while a recording still recording plays from its start */
+.tr-live-btn { display: inline-flex; align-items: center; gap: 6px; width: auto; padding: 6px 12px; margin: 0 6px; border-radius: 99px; border: 1px solid rgba(255, 255, 255, 0.35); font-size: 14px; font-weight: 500; white-space: nowrap; }
+.tr-live-btn svg { width: 22px; height: 22px; fill: currentColor; flex: none; }
+.tr-live-btn:hover, .tr-live-btn:focus-visible { background: rgba(255, 255, 255, 0.14); }
+
 @media (max-width: 700px) {
+    .tr-live-btn { padding: 6px; border-color: transparent; }
+    .tr-live-btn span { display: none; }
     #tentacleRecordingsContainer { padding: 70px 12px 0; }
     .tr-title { font-size: 21px; }
     .tr-toggle { margin-left: 0; }
