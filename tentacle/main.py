@@ -944,6 +944,11 @@ def setup_scheduler(db):
     scheduler.add_job(_rec_art.run_scheduled, IntervalTrigger(minutes=_rec_art.PASS_MINUTES,
                                                               start_date=datetime.now() + timedelta(seconds=300)),
                       id="recording_art", replace_existing=True, max_instances=1, coalesce=True)
+    # ... and the ones still recording: a picture within a minute or two, a
+    # frame from the part written so far (one Jellyfin call when none records).
+    scheduler.add_job(_rec_art.run_live_scheduled, IntervalTrigger(minutes=_rec_art.LIVE_MINUTES,
+                                                                   start_date=datetime.now() + timedelta(seconds=90)),
+                      id="recording_art_live", replace_existing=True, max_instances=1, coalesce=True)
     # After a Live TV recording (services/recording_check, #869): its clock
     # (a re-dial with another clock: copied with continuous timestamps) and
     # its PremiereDate, once per finished recording, through the plugin.

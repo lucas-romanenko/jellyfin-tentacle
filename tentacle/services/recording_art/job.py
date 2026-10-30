@@ -24,6 +24,17 @@ For each recording in the library that holds Jellyfin's recordings folder:
 - a picture Tentacle set that is no longer there, or no longer the one it
   set: a person changed or removed it (state left), never set again.
 
+While it records (the live pass, every LIVE_MINUTES, one Jellyfin call
+when nothing records): a recording in progress gets its picture within a
+minute or two, the same order without the finished file: a. to c., else a
+frame once FRAME_AFTER of the programme is written (frames.py, from the
+part written so far), else the title card. A frame or a title card is
+taken again from the growing file every FRAME_EVERY (FRAME_RETRY while no
+frame could be had), while it is still Tentacle's. Jellyfin keeps the
+item (and its id) when the recording finishes; then the pass above takes
+over (while_recording): a card, TMDB's or the guide's picture stays, a
+frame or a title card is made again from the finished file (a. to e.).
+
 Pictures drawn by an older layout (primary_shape not POSTER: empty = the
 16:9 as both, before posters; "poster" = before the safe area kept the
 bottom clear for progress bars) are drawn again a few per pass, while they
@@ -67,6 +78,11 @@ POSTER = "poster-safe"               # primary_shape of the current layout; bump
                                     # (empty: #827's 16:9 as both; "poster": #839's, text under progress bars)
 CARD_SOURCES = ("matchup", "league", "title")   # Tentacle drew the 16:9 picture too
 MAX_ATTEMPTS = 4
+LIVE_MINUTES = 1
+FRAME_AFTER = timedelta(minutes=4)      # of the programme written before a frame is taken while it records
+FRAME_EVERY = timedelta(minutes=15)     # a frame taken again from the growing file
+FRAME_RETRY = timedelta(minutes=5)      # a title card while it records: a frame tried again
+KEPT_SOURCES = ("matchup", "league", "tmdb", "guide")   # pictures made while recording that stay when it ends
 RETRY_AFTER = timedelta(hours=1)
 ICON_BYTES = 8 * 1024 * 1024
 FIELDS = "Path,DateCreated,Overview,Genres,MediaSources,ParentId,ChannelInfo,ProviderIds"
@@ -123,6 +139,34 @@ class Jellyfin:
         r = requests.get(f"{self.url}/Items/{item_id}/Images/{kind}", headers=self.headers, timeout=30)
         r.raise_for_status()
         return r.content
+
+    def _file(self, item_id: str, start: int, length: int):
+        return requests.get(f"{self.url}/Items/{item_id}/File",
+                            headers={**self.headers, "Range": f"bytes={start}-{start + length - 1}"},
+                            stream=True, timeout=F.READ_TIMEOUT)
+
+    def file_size(self, item_id: str) -> int:
+        """The size of a recording's file now (one still recording grows)."""
+        with self._file(item_id, 0, 1) as r:
+            r.raise_for_status()
+            total = (r.headers.get("Content-Range") or "").rpartition("/")[2]
+            if r.status_code != 206 or not total.isdigit():
+                raise RuntimeError("Jellyfin didn't say how long the file is")
+            return int(total)
+
+    def read_file(self, item_id: str, start: int, length: int) -> bytes:
+        """`length` bytes (or up to the end) of a recording's file from
+        `start`: one still recording, whose stream ignores Range."""
+        with self._file(item_id, start, length) as r:
+            r.raise_for_status()
+            if r.status_code != 206:
+                raise RuntimeError("Jellyfin didn't send a part of the file")
+            out = bytearray()
+            for block in r.iter_content(256 * 1024):
+                out += block
+                if len(out) >= length:
+                    break
+            return bytes(out[:length])
 
     def read(self, item_id: str, start: int, length: int) -> bytes:
         """`length` bytes of the recording from `start`, through Jellyfin's stream."""
@@ -368,6 +412,28 @@ def _frame(jf, item_id: str, ctx: dict, busy: bool, grabber=None) -> tuple:
     return (C.to_16x9(best.data) if best else None), notes
 
 
+def _live_frame(jf, item_id: str, ctx: dict, now: datetime, grabber=None) -> tuple:
+    """(the best frame of what a recording still recording has written so
+    far, as a 16:9 JPEG, or None; notes). None until FRAME_AFTER of the
+    programme is written."""
+    if ctx["container"] not in F.TS_CONTAINERS:
+        return None, ["not an MPEG-TS recording"]
+    written = (now - ctx["created"]).total_seconds()
+    pre = max(0.0, (ctx["start"] - ctx["created"]).total_seconds()) if ctx["start"] else 0.0
+    if written - pre < FRAME_AFTER.total_seconds():
+        return None, [f"{max(0.0, written - pre) / 60:.0f} min of it recorded so far"]
+    at = F.live_offsets(written, pre)
+    try:
+        size = jf.file_size(item_id)
+        best, notes = F.best_frame(lambda s, n: jf.read_file(item_id, s, n), size, written, at,
+                                   grabber=grabber or F.grab)
+    except F.FramesFailed as e:
+        return None, [str(e)]
+    except Exception as e:
+        return None, [f"the file not read ({type(e).__name__})"]
+    return (C.to_16x9(best.data) if best else None), notes
+
+
 def team_logos(subject: W.Subject) -> Optional[list]:
     """A game's teams' logos from the cache, or None unless all are there."""
     if subject.kind != "game" or not subject.teams:
@@ -413,8 +479,9 @@ def _poster_of_wide(wide: bytes, subject: W.Subject, ctx: dict) -> Optional[byte
 
 
 def make_picture(jf, item_id: str, ctx: dict, subject: W.Subject, tmdb=None, busy: bool = False,
-                 grabber=None) -> tuple:
-    """(16:9 JPEG, 2:3 JPEG, source, what it shows): the first source that works."""
+                 grabber=None, live_at: Optional[datetime] = None) -> tuple:
+    """(16:9 JPEG, 2:3 JPEG, source, what it shows): the first source that
+    works. `live_at`: it still records (the frame from what is written by then)."""
     cards = _cards(subject, ctx)
     if cards:
         return cards[0], cards[1], cards[2], subject.describe()
@@ -424,7 +491,10 @@ def make_picture(jf, item_id: str, ctx: dict, subject: W.Subject, tmdb=None, bus
     wide = _guide_picture(ctx["icon_url"])
     if wide:
         return wide, _poster_of_wide(wide, subject, ctx), "guide", "the guide's picture"
-    wide, notes = _frame(jf, item_id, ctx, busy, grabber)
+    if live_at is not None:
+        wide, notes = _live_frame(jf, item_id, ctx, live_at, grabber)
+    else:
+        wide, notes = _frame(jf, item_id, ctx, busy, grabber)
     if wide:
         return wide, _poster_of_wide(wide, subject, ctx), "frame", "; ".join(notes)[:250]
     wide, poster = _title_cards(subject, ctx)
@@ -537,13 +607,16 @@ def reconcile(db: Session, rows: dict, items: dict) -> int:
 
 
 def give_picture(db: Session, jf, item: dict, row: RecordingArtwork, tmdb=None, busy: bool = False,
-                 grabber=None, ctx: Optional[dict] = None, logo_budget: Optional[list] = None) -> str:
-    """One recording: make its picture and set it. Returns the row's state."""
+                 grabber=None, ctx: Optional[dict] = None, logo_budget: Optional[list] = None,
+                 live_at: Optional[datetime] = None) -> str:
+    """One recording: make its picture and set it. Returns the row's state.
+    `live_at`: it still records (while_recording)."""
     iid = _id(item.get("Id"))
     ctx = ctx or context(db, item)
     subject = subject_of(ctx)
     fetch_logos(db, subject, logo_budget)
-    wide, poster, source, detail = make_picture(jf, iid, ctx, subject, tmdb=tmdb, busy=busy, grabber=grabber)
+    wide, poster, source, detail = make_picture(jf, iid, ctx, subject, tmdb=tmdb, busy=busy, grabber=grabber,
+                                                live_at=live_at)
     # someone (or Jellyfin's own frame grab) may have set one meanwhile
     fresh = _item(jf, iid)
     if fresh is None:
@@ -557,8 +630,65 @@ def give_picture(db: Session, jf, item: dict, row: RecordingArtwork, tmdb=None, 
     row.primary_shape = POSTER if poster else None
     row.team_logos = 1 if source == "matchup" and team_logos(subject) else None
     row.made_from = subject.league["id"] if subject.league and subject.kind in ("game", "event") else None
-    row.updated_at = datetime.utcnow()
-    logger.info(f"[Recording art] “{item.get('Name')}”: {source} ({subject.describe()})")
+    row.while_recording = 1 if live_at is not None else None
+    row.updated_at = live_at or datetime.utcnow()
+    logger.info(f"[Recording art] “{item.get('Name')}”{' (recording)' if live_at else ''}: {source} "
+                f"({subject.describe()})")
+    return row.state
+
+
+def refresh_frame(db: Session, jf, item: dict, row: RecordingArtwork, now: datetime, grabber=None) -> bool:
+    """A recording still recording whose picture is a frame or a title
+    card Tentacle set: a frame from what it has written by now, both
+    shapes, while both pictures are still Tentacle's. True when set."""
+    iid = _id(item.get("Id"))
+    ctx = context(db, item)
+    subject = subject_of(ctx)
+    wide, notes = _live_frame(jf, iid, ctx, now, grabber)
+    row.updated_at = now     # tried: the next in FRAME_RETRY / FRAME_EVERY
+    if not wide:
+        if row.source == "title":
+            row.detail = ("no frame yet: " + "; ".join(notes))[:250]
+        return False
+    poster = _poster_of_wide(wide, subject, ctx)
+    fresh = _item(jf, iid)
+    if fresh is None or not _still_ours(row, fresh):
+        return False    # a person changed it meanwhile: the next pass leaves it
+    row.primary_tag, row.thumb_tag = _set(jf, iid, wide, poster)
+    row.source, row.detail = "frame", "; ".join(notes)[:250]
+    row.primary_shape = POSTER if poster else None
+    logger.info(f"[Recording art] “{item.get('Name')}” (recording): frame")
+    return True
+
+
+def take_over(db: Session, jf, item: dict, row: RecordingArtwork, tmdb=None, busy: bool = False,
+              grabber=None, logo_budget: Optional[list] = None) -> str:
+    """A finished recording whose picture Tentacle set while it recorded
+    (and is still Tentacle's): a card, TMDB's or the guide's picture stays;
+    a frame or a title card is made again from the finished file, in
+    place of the one set while recording. Returns the row's state. Raises
+    Defer (a frame is needed and Jellyfin records): later, the picture
+    from while it recorded stays meanwhile."""
+    if row.source in KEPT_SOURCES:
+        row.while_recording = None
+        return row.state
+    iid = _id(item.get("Id"))
+    ctx = context(db, item)
+    subject = subject_of(ctx)
+    fetch_logos(db, subject, logo_budget)
+    wide, poster, source, detail = make_picture(jf, iid, ctx, subject, tmdb=tmdb, busy=busy, grabber=grabber)
+    fresh = _item(jf, iid)
+    if fresh is None:
+        return "gone"
+    if not _still_ours(row, fresh):
+        return row.state    # reconcile() marks it left
+    row.primary_tag, row.thumb_tag = _set(jf, iid, wide, poster)
+    row.source, row.detail = source, (detail or "")[:250]
+    row.primary_shape = POSTER if poster else None
+    row.team_logos = 1 if source == "matchup" and team_logos(subject) else None
+    row.made_from = subject.league["id"] if subject.league and subject.kind in ("game", "event") else None
+    row.while_recording, row.updated_at = None, datetime.utcnow()
+    logger.info(f"[Recording art] “{item.get('Name')}” finished: {source} ({subject.describe()})")
     return row.state
 
 
@@ -741,7 +871,7 @@ def run_pass(db: Session, jf=None, now: Optional[datetime] = None, tmdb=None, gr
     jf = jf if jf is not None else jellyfin_for(db)
     budget = [L.FETCHES_PER_PASS] if fetch_team_logos else None
     out = {"set": 0, "theirs": 0, "left": 0, "posters": 0, "logos": 0, "folders": 0, "removed": 0, "waiting": 0,
-           "failed": 0}
+           "failed": 0, "finished": 0}
     if jf is None:
         _last.update(blocked="Jellyfin isn't connected")
         return out
@@ -771,6 +901,24 @@ def run_pass(db: Session, jf=None, now: Optional[datetime] = None, tmdb=None, gr
                 break
             iid = _id(item.get("Id"))
             row = rows.get(iid)
+            if row is not None and row.state == "set" and row.while_recording:
+                ctx = context(db, item)
+                if not _finished(item, ctx, now, now_on):
+                    continue    # the live pass's
+                done += 1 if row.source not in KEPT_SOURCES else 0
+                try:
+                    take_over(db, jf, item, row, tmdb=tmdb, busy=busy, grabber=grabber, logo_budget=budget)
+                    out["finished"] += 1
+                except Defer as e:
+                    out["waiting"] += 1
+                    logger.info(f"[Recording art] “{item.get('Name')}” waits: {e}")
+                except Exception as e:
+                    row.attempts = (row.attempts or 0) + 1
+                    if row.attempts >= MAX_ATTEMPTS:
+                        row.while_recording = None    # the picture from while it recorded stays
+                    logger.warning(f"[Recording art] “{item.get('Name')}”: not made again: {e}")
+                db.commit()
+                continue
             if row is not None and row.state in ("set", "left", "theirs"):
                 continue
             if row is not None and row.state == "failed" and (
@@ -811,18 +959,106 @@ def run_pass(db: Session, jf=None, now: Optional[datetime] = None, tmdb=None, gr
     return out
 
 
+def in_progress(jf) -> list:
+    """Jellyfin's recordings still recording (library items, the id they keep when finished)."""
+    return (jf.get("/LiveTv/Recordings", IsInProgress="true", Fields=FIELDS, EnableImages="true",
+                   EnableUserData="false") or {}).get("Items") or []
+
+
+def _under(item: dict, roots: set) -> bool:
+    path = (item.get("Path") or "").replace("\\", "/")
+    return any(r and path.startswith(r.replace("\\", "/") + "/") for r in roots)
+
+
+def live_pass(db: Session, jf=None, now: Optional[datetime] = None, tmdb=None, grabber=None,
+              make_tmdb=None) -> dict:
+    """The recordings still recording: a picture for each that has none,
+    and a frame taken again where Tentacle's picture is a frame or a title
+    card (module docstring). One Jellyfin call when nothing records; skips
+    while the pass above runs. `make_tmdb()`: the TMDB client, made only
+    when a picture is needed. Returns what it did."""
+    now = now or datetime.utcnow()
+    jf = jf if jf is not None else jellyfin_for(db)
+    out = {"set": 0, "frames": 0, "theirs": 0, "left": 0, "failed": 0}
+    if jf is None or not _lock.acquire(blocking=False):
+        return out
+    try:
+        if not enabled(db):
+            return out
+        live = in_progress(jf)
+        if not live:
+            return out
+        libs, _why = recordings_libraries(jf)
+        roots = set().union(*(lib.get("roots") or set() for lib in libs)) if libs else set()
+        live = [i for i in live if _under(i, roots)]
+        ids = [_id(i.get("Id")) for i in live]
+        rows = {r.item_id: r for r in db.query(RecordingArtwork).filter(RecordingArtwork.item_id.in_(ids)).all()}
+        for item in live:
+            iid = _id(item.get("Id"))
+            row = rows.get(iid)
+            try:
+                if row is None:
+                    if any(_tags(item)):
+                        row = _row(db, rows, item, "recording")
+                        row.state, row.detail = "theirs", "had a picture Tentacle didn't set"
+                        out["theirs"] += 1
+                    else:
+                        if tmdb is None and make_tmdb is not None:
+                            tmdb = make_tmdb()
+                        row = _row(db, rows, item, "recording")
+                        state = give_picture(db, jf, item, row, tmdb=tmdb, grabber=grabber, live_at=now)
+                        out["set" if state == "set" else "theirs" if state == "theirs" else "failed"] += 1
+                elif row.state == "set" and not _still_ours(row, item):
+                    row.state, row.updated_at = "left", now
+                    row.detail = "changed or removed in Jellyfin: left as it is"
+                    out["left"] += 1
+                elif row.state == "set" and row.while_recording and row.source in ("frame", "title"):
+                    wait = FRAME_EVERY if row.source == "frame" else FRAME_RETRY
+                    if row.updated_at is None or row.updated_at + wait <= now:
+                        out["frames"] += 1 if refresh_frame(db, jf, item, row, now, grabber=grabber) else 0
+            except Exception as e:
+                if row is not None and row.state != "set":
+                    row.state, row.attempts = "failed", (row.attempts or 0) + 1
+                    row.detail, row.updated_at = f"{type(e).__name__}: {e}"[:250], now
+                out["failed"] += 1
+                logger.warning(f"[Recording art] “{item.get('Name')}” (recording): no picture: {e}")
+            db.commit()
+        return out
+    finally:
+        _lock.release()
+
+
+def _tmdb_for(db: Session):
+    try:
+        from services.tmdb import TMDBService, get_tmdb_token
+        return TMDBService(get_tmdb_token(db), get_setting(db, "data_dir", "/data") or "/data",
+                           float(get_setting(db, "tmdb_match_threshold", "0.7") or 0.7))
+    except Exception as e:
+        logger.info(f"[Recording art] TMDB not set up: {e}")
+        return None
+
+
+def run_live_scheduled() -> None:
+    """The scheduler's live pass, every LIVE_MINUTES."""
+    db = SessionLocal()
+    try:
+        summary = live_pass(db, make_tmdb=lambda: _tmdb_for(db))
+        if any(summary.values()):
+            logger.info(f"[Recording art] live pass: {summary}")
+            from services import live_updates
+            live_updates.publish("recordings", admins=True)
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"[Recording art] live pass failed: {e}")
+    finally:
+        db.close()
+
+
 def run_scheduled() -> None:
     """The scheduler's pass (and the one a setting change asks for)."""
     db = SessionLocal()
     try:
-        tmdb = None
-        if enabled(db):
-            try:
-                from services.tmdb import TMDBService, get_tmdb_token
-                tmdb = TMDBService(get_tmdb_token(db), get_setting(db, "data_dir", "/data") or "/data",
-                                   float(get_setting(db, "tmdb_match_threshold", "0.7") or 0.7))
-            except Exception as e:
-                logger.info(f"[Recording art] TMDB not set up: {e}")
+        tmdb = _tmdb_for(db) if enabled(db) else None
         summary = run_pass(db, tmdb=tmdb, fetch_team_logos=True)
         _last.update(at=datetime.utcnow(), summary=summary, error=None)
         if any(summary.values()):

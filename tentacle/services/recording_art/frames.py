@@ -1,13 +1,20 @@
-"""The best of a few frames from a finished recording.
+"""The best of a few frames from a recording, finished or still recording.
 
-Read through Jellyfin's stream of the item (GET /Videos/{id}/stream,
-static, with a byte Range: no recordings folder mounted, no provider
-connection), a few MB at each of 30/50/70% of the programme's own time
-(after the pre-padding). ffmpeg decodes the first key frame of each piece at
-the lowest priority, with a timeout, and signalstats says how bright and how
+A finished recording is read through Jellyfin's stream of the item (GET
+/Videos/{id}/stream, static, with a byte Range: no recordings folder
+mounted, no provider connection), a few MB at each of 30/50/70% of the
+programme's own time (after the pre-padding). One still recording is read
+through GET /Items/{id}/File (Jellyfin's stream of a growing file ignores
+Range), a few MB at each of 20 s to 4 min behind what is written so far
+(live_offsets). ffmpeg decodes the first key frame of each piece at the
+lowest priority, with a timeout, and signalstats says how bright and how
 spread its light is: black and flat frames (a fade, a slate, a blank
-channel) are left out, and the most detailed of the rest wins. A commercial
-can't be told from the game, which is why the cards and TMDB come first.
+channel) are left out. Of the rest, the most detailed wins, but a frame
+that looks like an ad break comes after any that doesn't (the cheap signals
+of the ad-breaks research): its sound is silent (a break's edge is black +
+silence), or the station's logo the other frames share is missing from it.
+That is a guard, not a detector: a commercial can still win when every
+frame is one, which is why the cards and TMDB come first.
 
 Only MPEG-TS recordings (Jellyfin's own format) are read this way: a byte
 in the middle of a .ts is a place to start decoding; in an .mkv or .mp4 it
@@ -24,6 +31,7 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 FRACTIONS = (0.3, 0.5, 0.7)
+LIVE_BACK = (20, 100, 180, 260)     # seconds behind what a growing recording has written
 READ_BYTES = 6 * 1024 * 1024        # a few seconds of HD video: a key frame is in there
 FFMPEG_TIMEOUT = 30
 READ_TIMEOUT = 30
@@ -31,6 +39,12 @@ TS_CONTAINERS = {"ts", "mpegts", "m2ts", "mts"}
 BLACK_LUMA = 26                     # mean luma (16 = black in TV range)
 FLAT_SPREAD = 22                    # 90th minus 10th percentile of luma
 MIN_DETAIL = 2.0
+SILENT_DB = -50.0                   # mean volume of a piece: silent (volumedetect)
+LOGO_SIZE = (160, 90)               # the logo check's scale; the top and bottom LOGO_BAND of it
+LOGO_BAND = 0.25
+LOGO_EDGE = 40                      # an edge pixel (FIND_EDGES)
+LOGO_MIN = 12                       # pixels the other frames must share to be a logo
+LOGO_SHARE = 0.45                   # of them a frame must have
 
 
 class FramesFailed(Exception):
@@ -42,6 +56,8 @@ class Frame:
     data: bytes          # a JPEG
     detail: float
     seconds: float       # where in the recording
+    silent: bool = False
+    note: str = ""
 
 
 def offsets(duration: float, pre_padding: float = 0.0, programme: Optional[float] = None) -> list:
@@ -54,6 +70,14 @@ def offsets(duration: float, pre_padding: float = 0.0, programme: Optional[float
     length = programme if programme and programme > 0 else duration - pre
     length = min(length, duration - pre)
     return [round(min(duration - 5, pre + f * length), 1) for f in FRACTIONS if pre + f * length < duration - 5]
+
+
+def live_offsets(written: float, pre_padding: float = 0.0) -> list:
+    """Seconds into a recording still recording, `written` seconds so far:
+    LIVE_BACK behind its end, inside the programme (30 s past the
+    pre-padding at least)."""
+    lo = max(0.0, pre_padding or 0.0) + 30
+    return [round(written - back, 1) for back in LIVE_BACK if written - back >= lo]
 
 
 def _lowest_priority():
@@ -78,7 +102,24 @@ def grab(chunk: bytes, timeout: int = FFMPEG_TIMEOUT) -> Optional[tuple]:
     if r.returncode != 0 or not r.stdout:
         return None
     stats = {k.decode(): float(v) for k, v in re.findall(rb"lavfi\.signalstats\.(\w+)=([\d.]+)", r.stderr or b"")}
+    volume = _volume(chunk, timeout)
+    if volume is not None:
+        stats["VOLUME"] = volume
     return r.stdout, stats
+
+
+def _volume(chunk: bytes, timeout: int) -> Optional[float]:
+    """The mean volume (dB) of a piece's first sound track, or None (none, or unreadable)."""
+    cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "info", "-f", "mpegts", "-i", "pipe:0",
+           "-map", "0:a:0", "-af", "volumedetect", "-f", "null", "-"]
+    try:
+        r = subprocess.run(cmd, input=chunk, capture_output=True, timeout=timeout, preexec_fn=_lowest_priority)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.search(rb"mean_volume: (-?[\d.]+|-inf) dB", r.stderr or b"")
+    if r.returncode != 0 or not m:
+        return None
+    return -200.0 if m.group(1) == b"-inf" else float(m.group(1))
 
 
 def detail_of(jpeg: bytes) -> float:
@@ -105,12 +146,46 @@ def judge(jpeg: bytes, stats: dict) -> tuple:
     return detail, None
 
 
+def _logo_pixels(jpeg: bytes) -> set:
+    """The edge pixels in the top and bottom bands of a frame, where a
+    station's logo and a score bug sit."""
+    from PIL import Image, ImageFilter
+    w, h = LOGO_SIZE
+    img = Image.open(io.BytesIO(jpeg)).convert("L").resize(LOGO_SIZE).filter(ImageFilter.FIND_EDGES)
+    px = img.load()
+    band = int(h * LOGO_BAND)
+    return {(x, y) for y in list(range(1, band)) + list(range(h - band, h - 1)) for x in range(1, w - 1)
+            if px[x, y] >= LOGO_EDGE}
+
+
+def logo_missing(frames: list) -> list:
+    """For each of three or more frames: True when it has few of the edges
+    all but one of the frames share in the top and bottom bands (a logo, a
+    score bug). Fewer than three frames, or nothing shared: all False."""
+    if len(frames) < 3:
+        return [False] * len(frames)
+    try:
+        pixels = [_logo_pixels(f.data) for f in frames]
+    except Exception:
+        return [False] * len(frames)
+    counts: dict = {}
+    for p in pixels:
+        for xy in p:
+            counts[xy] = counts.get(xy, 0) + 1
+    shared = {xy for xy, n in counts.items() if n >= len(frames) - 1}
+    if len(shared) < LOGO_MIN:
+        return [False] * len(frames)
+    return [len(shared & mine) < LOGO_SHARE * len(shared) for mine in pixels]
+
+
 def best_frame(read: Callable[[int, int], bytes], size: int, duration: float, at: list,
                grabber: Callable = grab) -> tuple:
-    """(the most detailed usable Frame or None, what happened to each candidate).
+    """(the best usable Frame or None, what happened to each candidate).
     `read(start, length)` returns that many bytes of the recording from
-    `start`. Raises FramesFailed when ffmpeg can't run at all."""
-    best, notes = None, []
+    `start`. The most detailed wins, after any that looks like an ad
+    break (silent, or without the logo the others share). Raises
+    FramesFailed when ffmpeg can't run at all."""
+    usable, notes = [], []
     for seconds in at:
         start = int(size * seconds / duration) if duration else 0
         start = max(0, min(start - start % 188, size - 188))   # on a TS packet
@@ -128,7 +203,13 @@ def best_frame(read: Callable[[int, int], bytes], size: int, duration: float, at
         if why:
             notes.append(f"{seconds:.0f} s: {why}")
             continue
-        notes.append(f"{seconds:.0f} s: detail {detail:.1f}")
-        if best is None or detail > best.detail:
-            best = Frame(jpeg, detail, seconds)
-    return best, notes
+        silent = stats.get("VOLUME") is not None and stats["VOLUME"] < SILENT_DB
+        frame = Frame(jpeg, detail, seconds, silent, f"{seconds:.0f} s: detail {detail:.1f}" + (", silent" if silent else ""))
+        notes.append(frame.note)
+        usable.append(frame)
+    no_logo = logo_missing(usable)
+    for f, missing in zip(usable, no_logo):
+        if missing:
+            notes[notes.index(f.note)] = f.note = f.note + ", no station logo"
+    ranked = sorted(zip(usable, no_logo), key=lambda fm: (fm[0].silent or fm[1], -fm[0].detail))
+    return (ranked[0][0] if ranked else None), notes
