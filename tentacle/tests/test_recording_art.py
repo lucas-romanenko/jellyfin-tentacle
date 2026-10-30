@@ -291,21 +291,31 @@ class FakeJellyfin:
             self.items[iid]["Path"] = f"/config/data/livetv/recordings/{name}/{name}.ts"
 
     def start(self, iid, name, started, until, overview=""):
-        """A recording Jellyfin is making now: in the library (no length
-        yet), in LiveTv/Recordings?IsInProgress, and its timer runs."""
+        """A recording Jellyfin is making now, as 10.11 has it: an item of
+        Type Recording (by id and in LiveTv/Recordings?IsInProgress for a
+        user, not in the library's listing, no length yet), its timer runs."""
         self.add(iid, name, started, minutes=0, overview=overview, size=188 * 1000)
-        self.items[iid]["RunTimeTicks"] = None
+        self.items[iid].update(RunTimeTicks=None, Type="Recording")
         self.recording.add(iid)
         self.timers.append({"Name": name, "Status": "InProgress", "StartDate": started.strftime("%Y-%m-%dT%H:%M:%SZ"),
                             "EndDate": until.strftime("%Y-%m-%dT%H:%M:%SZ"), "PrePaddingSeconds": 0,
                             "PostPaddingSeconds": 0, "_id": iid})
 
-    def finish(self, iid, minutes):
-        """It finished: Jellyfin keeps the item (the same id) and probes its length."""
+    def finish(self, iid, minutes, at, new_id=None):
+        """It finished at `at`: Jellyfin makes the file a Movie item of
+        another id (`new_id`; None: the same item), created then, with its
+        length; the in-progress item and its pictures go."""
         self.recording.discard(iid)
         self.timers = [t for t in self.timers if t.get("_id") != iid]
-        self.items[iid]["RunTimeTicks"] = minutes * 60 * 10_000_000
-        self.items[iid]["MediaSources"] = [{"Size": 10_000_000, "Container": "ts"}]
+        item = dict(self.items[iid], Type="Movie", RunTimeTicks=minutes * 60 * 10_000_000,
+                    MediaSources=[{"Size": 10_000_000, "Container": "ts"}],
+                    DateCreated=at.strftime("%Y-%m-%dT%H:%M:%S.0000000Z"))
+        if new_id:
+            del self.items[iid]
+            for k in [k for k in self.images if k[0] == iid]:
+                del self.images[k]
+            item["Id"] = new_id
+        self.items[item["Id"]] = item
 
     def tags(self, iid):
         return {k: v[0] for (i, k), v in self.images.items() if i == iid}
@@ -319,8 +329,13 @@ class FakeJellyfin:
 
     def get(self, path, **p):
         self.gets.append(path)
+        if path == "/Users":
+            return [{"Id": "u-2", "Name": "kid", "Policy": {"IsAdministrator": False}},
+                    {"Id": "u-1", "Name": "admin", "Policy": {"IsAdministrator": True, "BlockedTags": []}}]
         if path == "/LiveTv/Recordings":
             assert p.get("IsInProgress") == "true"
+            if p.get("UserId") != "u1":
+                return {"Items": []}    # no user: nothing (10.11)
             return {"Items": [self._view(i) for i in sorted(self.recording) if i in self.items]}
         if path == "/System/Configuration/livetv":
             return {"RecordingPath": "", "MediaLocationsCreated": ["/config/data/livetv/recordings"]}
@@ -333,7 +348,8 @@ class FakeJellyfin:
             if p.get("Ids"):
                 return {"Items": [self._view(i) for i in p["Ids"].split(",") if i in self.items]}
             folders = p.get("IsFolder") == "true"
-            return {"Items": [self._view(i) for i, it in self.items.items() if it["IsFolder"] == folders]}
+            return {"Items": [self._view(i) for i, it in self.items.items() if it["IsFolder"] == folders
+                              and it.get("Type") != "Recording"]}
         raise AssertionError(path)
 
     def upload(self, iid, kind, data):
@@ -369,6 +385,7 @@ class Base(unittest.TestCase):
         self.addCleanup(self.db.close)
         self.jf = FakeJellyfin()
         J._last.update(blocked=None, note=None)
+        J._viewer.update(id=None, at=None)
 
     def run_pass(self, now=NOW, **kw):
         kw.setdefault("grabber", lambda chunk: None)   # no ffmpeg unless a test says so
@@ -597,6 +614,26 @@ class RealFrames(unittest.TestCase):
         self.assertIsNotNone(best)
         self.assertLess(best.seconds, 4)
         self.assertTrue(any("black" in n for n in notes), notes)
+
+
+    def test_how_long_a_growing_file_is(self):
+        d = temp_dir(self)
+        path = f"{d}/r.ts"
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25",
+                        "-t", "20", "-c:v", "libx264", "-g", "25", "-f", "mpegts", path], check=True, timeout=60)
+        data = open(path, "rb").read()
+        part = data[:len(data) // 2 // 188 * 188]       # still being written: half of it
+        span = F.written_seconds(lambda s, n: part[s:s + n], len(part))
+        self.assertTrue(span and 7 < span < 13, span)
+
+
+class Timestamps(unittest.TestCase):
+    def test_a_wrap_and_nonsense(self):
+        read = lambda s, n: b"x" * 188
+        self.assertAlmostEqual(600.0, F.written_seconds(read, 10_000, lambda c, last: 10.0 if last else F.PTS_WRAP - 590))
+        self.assertIsNone(F.written_seconds(read, 10_000, lambda c, last: 5.0 if last else 5.0))
+        self.assertIsNone(F.written_seconds(read, 10_000, lambda c, last: None))
+        self.assertIsNone(F.written_seconds(read, 100, lambda c, last: 1.0))
 
 
 class When(Base):
@@ -883,13 +920,22 @@ class Folders(Base):
 class WhileRecording(Base):
     """A recording in progress gets its picture within a minute or two
     (the live pass), a frame from the part written so far once there is
-    enough, and the finished pass takes over without a second picture."""
+    enough, and its picture moves to the finished item (another id) at
+    once; a frame or a title card is made again from the finished file."""
 
     GOOD = (_jpeg(), {"YAVG": 100, "YLOW": 20, "YHIGH": 200})
+    END = NOW + timedelta(minutes=30)
 
     def live(self, now=NOW, **kw):
         kw.setdefault("grabber", lambda chunk: None)
+        kw.setdefault("probe", lambda chunk, last: None)     # no timestamps: the clock since DateCreated
         return J.live_pass(self.db, self.jf, now=now, **kw)
+
+    def show(self, minutes=30):
+        self.jf.start("r1", "Jeopardy!", NOW, NOW + timedelta(minutes=minutes))
+
+    def finish(self, new_id="m1", minutes=30):
+        self.jf.finish("r1", minutes, NOW + timedelta(minutes=minutes), new_id=new_id)
 
     def test_a_game_gets_its_matchup_card_at_once_and_never_a_frame(self):
         self.jf.start("r1", "Canadiens at Blackhawks", NOW - timedelta(minutes=1), NOW + timedelta(hours=3))
@@ -904,16 +950,16 @@ class WhileRecording(Base):
         for minutes in (10, 30, 60):
             self.live(now=NOW + timedelta(minutes=minutes), grabber=grab)
         grab.assert_not_called()
-        self.assertEqual([], self.jf.file_reads)
         self.assertEqual(2, len(self.jf.writes))
 
     def test_a_show_without_art_gets_the_title_card_then_a_frame(self):
-        self.jf.start("r1", "Jeopardy!", NOW, NOW + timedelta(minutes=30))
+        self.show()
         self.live(now=NOW + timedelta(minutes=1), grabber=lambda chunk: self.GOOD)
         row = self.row("r1")
         self.assertEqual(("title", 1), (row.source, row.while_recording))
-        self.assertEqual([], self.jf.file_reads)          # a minute in: nothing to take a frame from yet
+        self.assertEqual("/config/data/livetv/recordings/Jeopardy!/Jeopardy!.ts", row.path)
         title_tags = self.jf.tags("r1")
+        self.jf.file_reads.clear()
         self.live(now=NOW + timedelta(minutes=5), grabber=lambda chunk: self.GOOD)
         self.assertEqual([], self.jf.file_reads)          # tried again FRAME_RETRY after the title card
         self.live(now=NOW + timedelta(minutes=6), grabber=lambda chunk: self.GOOD)
@@ -921,24 +967,42 @@ class WhileRecording(Base):
         self.assertEqual(("set", "frame", 1), (row.state, row.source, row.while_recording))
         self.assertNotEqual(title_tags, self.jf.tags("r1"))
         self.assertEqual((row.primary_tag, row.thumb_tag), (self.jf.tags("r1")["Primary"], self.jf.tags("r1")["Thumb"]))
-        # 20 s to 4 min 20 s behind what is written (6 min = 50 MB), newest last
-        starts = [s for _i, s, _n in self.jf.file_reads]
+        # 20 s to 4 min 20 s behind what is written (6 min = 50 MB); the two timestamp reads first
+        starts = [s for _i, s, n in self.jf.file_reads if n == F.READ_BYTES]
         self.assertEqual(4, len(starts))
         self.assertTrue(all(50_000_000 * 90 // 360 <= s < 50_000_000 for s in starts), starts)
         self.assertEqual([], self.jf.reads)                 # never Jellyfin's stream of a growing file
+
+    def test_how_much_is_written_comes_from_the_timestamps(self):
+        """DateCreated of a recording in progress is the NFO's local time
+        (4 h off in Toronto): the file's first and last timestamps say 6 min."""
+        from models.database import RecordingBooking, RecordingRule
+        rule = RecordingRule(name="Montreal Canadiens", kind="team", league="nhl", team="mtl", mode="record")
+        self.db.add(rule)
+        self.db.commit()
+        self.db.add(RecordingBooking(rule_id=rule.id, pool_key="n13", channel_name="TSN 2", start=NOW,
+                                     stop=NOW + timedelta(hours=3), title="Live: NHL Hockey", state="recording",
+                                     why="same time as “Canadiens vs. Blackhawks”", pre_padding_seconds=0,
+                                     post_padding_seconds=0))
+        self.db.commit()
+        self.jf.start("r1", "Live: NHL Hockey", NOW - timedelta(hours=4), NOW + timedelta(hours=3))
+        self.live(now=NOW + timedelta(minutes=6), probe=lambda chunk, last: 7200.0 + (360 if last else 0))
+        # the teams come from the booking, matched by when it began (the title has none)
+        self.assertEqual(("matchup", "NHL: Montreal Canadiens vs Chicago Blackhawks"),
+                         (self.row("r1").source, self.row("r1").detail))
 
     def test_the_frame_is_taken_again_every_fifteen_minutes(self):
         self.jf.start("r1", "Jeopardy!", NOW, NOW + timedelta(hours=1))
         grab = mock.Mock(return_value=self.GOOD)
         self.live(now=NOW + timedelta(minutes=6), grabber=grab)
         self.assertEqual("frame", self.row("r1").source)
-        n = len(self.jf.file_reads)
+        n = grab.call_count
         self.live(now=NOW + timedelta(minutes=10), grabber=grab)
         self.live(now=NOW + timedelta(minutes=20), grabber=grab)
-        self.assertEqual(n, len(self.jf.file_reads))
+        self.assertEqual(n, grab.call_count)
         tags = self.jf.tags("r1")
         self.live(now=NOW + timedelta(minutes=21), grabber=grab)
-        self.assertEqual(2 * n, len(self.jf.file_reads))
+        self.assertEqual(2 * n, grab.call_count)
         self.assertNotEqual(tags, self.jf.tags("r1"))
 
     def test_no_usable_frame_keeps_the_title_card(self):
@@ -950,8 +1014,8 @@ class WhileRecording(Base):
         self.assertIn("black", row.detail)
         self.assertEqual(2, len(self.jf.writes))
 
-    def test_tmdb_and_the_guide_come_before_a_frame(self):
-        self.jf.start("r1", "Jeopardy!", NOW, NOW + timedelta(minutes=30))
+    def test_tmdb_comes_before_a_frame(self):
+        self.show()
         t = mock.Mock()
         t.search_series.return_value = {"title": "Jeopardy!", "backdrop_path": "/b.jpg", "poster_path": "/p.jpg"}
 
@@ -977,11 +1041,13 @@ class WhileRecording(Base):
     def test_nothing_recording_is_one_call(self):
         self.jf.add("r1", "Jeopardy!", NOW - timedelta(hours=3))
         self.live()
-        self.assertEqual(["/LiveTv/Recordings"], self.jf.gets)
+        self.jf.gets.clear()
+        self.live(now=NOW + timedelta(minutes=1))
+        self.assertEqual(["/LiveTv/Recordings"], self.jf.gets)     # the administrator's id is kept
         self.assertIsNone(self.row("r1"))
 
     def test_only_recordings_in_the_recordings_library(self):
-        self.jf.start("r1", "Jeopardy!", NOW, NOW + timedelta(minutes=30))
+        self.show()
         self.jf.items["r1"]["Path"] = "/media/elsewhere/Jeopardy!.ts"
         self.live(now=NOW + timedelta(minutes=1))
         self.assertEqual([], self.jf.writes)
@@ -1007,95 +1073,152 @@ class WhileRecording(Base):
         self.assertIsNone(self.row("r1"))
 
     def test_a_picture_it_had_at_the_start_is_never_touched(self):
-        self.jf.start("r1", "Jeopardy!", NOW, NOW + timedelta(minutes=30))
+        self.show()
         self.jf.put("r1", "Primary", "jellyfin")
         self.live(now=NOW + timedelta(minutes=1))
         self.assertEqual("theirs", self.row("r1").state)
         self.live(now=NOW + timedelta(minutes=20), grabber=lambda chunk: self.GOOD)
-        self.jf.finish("r1", 30)
-        self.run_pass(now=NOW + timedelta(minutes=45))
         self.assertEqual([], self.jf.writes)
 
     def test_a_picture_a_person_set_while_recording_stays(self):
-        self.jf.start("r1", "Jeopardy!", NOW, NOW + timedelta(minutes=30))
+        self.show()
         self.live(now=NOW + timedelta(minutes=1))
         self.jf.writes.clear()
         self.jf.put("r1", "Thumb", "person")
         self.live(now=NOW + timedelta(minutes=7), grabber=lambda chunk: self.GOOD)
-        self.assertEqual("left", self.row("r1").state)
+        self.assertEqual(("left", None), (self.row("r1").state, self.row("r1").while_recording))
         self.live(now=NOW + timedelta(minutes=25), grabber=lambda chunk: self.GOOD)
-        self.jf.finish("r1", 30)
-        self.run_pass(now=NOW + timedelta(minutes=45), grabber=lambda chunk: self.GOOD)
         self.assertEqual([], self.jf.writes)
         self.assertEqual("person", self.jf.images[("r1", "Thumb")][2])
 
     def test_the_pass_for_finished_recordings_leaves_it_while_it_records(self):
-        self.jf.start("r1", "Jeopardy!", NOW, NOW + timedelta(minutes=30))
+        self.show()
         self.live(now=NOW + timedelta(minutes=1))
         self.jf.writes.clear()
         out = self.run_pass(now=NOW + timedelta(minutes=20), grabber=lambda chunk: self.GOOD)
         self.assertEqual([], self.jf.writes)
         self.assertEqual(0, out["finished"])
-        self.assertEqual(1, self.row("r1").while_recording)
+        self.assertEqual(1, self.row("r1").while_recording)    # not dropped although not in the library listing
 
-    def test_finished_a_frame_is_taken_again_from_the_whole_recording(self):
-        self.jf.start("r1", "Jeopardy!", NOW, NOW + timedelta(minutes=30))
+    def test_finished_its_picture_moves_to_the_new_item_at_once(self):
+        self.jf.start("r1", "Canadiens at Blackhawks", NOW, NOW + timedelta(hours=3))
+        self.live(now=NOW + timedelta(minutes=1))
+        wide = self.jf.image("r1", "Thumb")
+        self.jf.finish("r1", 180, NOW + timedelta(hours=3), new_id="m1")
+        self.jf.writes.clear()
+        out = self.live(now=NOW + timedelta(hours=3, minutes=1))
+        self.assertEqual(1, out["moved"])
+        self.assertEqual({("upload", "m1", "Primary"), ("upload", "m1", "Thumb")}, set(self.jf.writes))
+        self.assertEqual(wide, self.jf.image("m1", "Thumb"))
+        self.assertIsNone(self.row("r1"))
+        row = self.row("m1")
+        self.assertEqual(("set", "matchup", None), (row.state, row.source, row.while_recording))
+        self.assertEqual((row.primary_tag, row.thumb_tag), (self.jf.tags("m1")["Primary"], self.jf.tags("m1")["Thumb"]))
+        # final: no more pictures, and the copy kept on disk is gone
+        self.jf.writes.clear()
+        self.run_pass(now=NOW + timedelta(hours=8))
+        self.live(now=NOW + timedelta(hours=8))
+        self.assertEqual([], self.jf.writes)
+        self.assertEqual((None, None), J._kept(row))
+
+    def test_the_new_item_may_come_later(self):
+        self.jf.start("r1", "Canadiens at Blackhawks", NOW, NOW + timedelta(hours=3))
+        self.live(now=NOW + timedelta(minutes=1))
+        item = self.jf.items.pop("r1")
+        self.jf.recording.discard("r1")
+        self.live(now=NOW + timedelta(hours=3, minutes=1))
+        self.run_pass(now=NOW + timedelta(hours=3, minutes=2))     # not dropped as gone
+        self.assertEqual(1, self.row("r1").while_recording)
+        self.jf.items["r1"] = item
+        self.jf.finish("r1", 180, NOW + timedelta(hours=3), new_id="m1")
+        self.live(now=NOW + timedelta(hours=3, minutes=3))
+        self.assertEqual("set", self.row("m1").state)
+
+    def test_no_new_item_at_all(self):
+        self.show()
+        self.live(now=NOW + timedelta(minutes=1))
+        del self.jf.items["r1"]
+        self.jf.recording.clear()
+        for i in range(J.FOLLOW_CHECKS):
+            self.live(now=NOW + timedelta(minutes=31 + i))
+        self.assertIsNone(self.row("r1"))
+
+    def test_finished_a_frame_is_made_again_from_the_whole_recording(self):
+        self.show()
         self.live(now=NOW + timedelta(minutes=6), grabber=lambda chunk: self.GOOD)
         self.assertEqual("frame", self.row("r1").source)
-        self.jf.finish("r1", 30)
+        self.finish()
         self.jf.writes.clear()
-        self.run_pass(now=NOW + timedelta(minutes=35), grabber=lambda chunk: self.GOOD)
-        self.assertEqual([], self.jf.writes)                # ended less than SETTLE ago
-        out = self.run_pass(now=NOW + timedelta(minutes=41), grabber=lambda chunk: self.GOOD)
-        row = self.row("r1")
+        self.live(now=self.END + timedelta(minutes=1))
+        row = self.row("m1")
+        self.assertEqual(("frame", 2), (row.source, row.while_recording))
+        self.assertEqual({("upload", "m1", "Primary"), ("upload", "m1", "Thumb")}, set(self.jf.writes))
+        self.jf.writes.clear()
+        # the finished pass: when DateCreated (the end) + its length + SETTLE has passed
+        self.run_pass(now=self.END + timedelta(minutes=35), grabber=lambda chunk: self.GOOD)
+        self.assertEqual([], self.jf.writes)
+        out = self.run_pass(now=self.END + timedelta(minutes=41), grabber=lambda chunk: self.GOOD)
+        row = self.row("m1")
         self.assertEqual(1, out["finished"])
         self.assertEqual(("set", "frame", None), (row.state, row.source, row.while_recording))
         self.assertEqual(3, len(self.jf.reads))             # 30/50/70 % of the finished file
-        self.assertEqual({("upload", "r1", "Primary"), ("upload", "r1", "Thumb")}, set(self.jf.writes))
-        self.assertEqual((row.primary_tag, row.thumb_tag), (self.jf.tags("r1")["Primary"], self.jf.tags("r1")["Thumb"]))
-        # and that is all: no more pictures
+        self.assertEqual({("upload", "m1", "Primary"), ("upload", "m1", "Thumb")}, set(self.jf.writes))
+        self.assertEqual((row.primary_tag, row.thumb_tag), (self.jf.tags("m1")["Primary"], self.jf.tags("m1")["Thumb"]))
         self.jf.writes.clear()
-        self.run_pass(now=NOW + timedelta(hours=2), grabber=lambda chunk: self.GOOD)
-        self.live(now=NOW + timedelta(hours=2))
+        self.run_pass(now=NOW + timedelta(hours=5), grabber=lambda chunk: self.GOOD)
+        self.live(now=NOW + timedelta(hours=5))
         self.assertEqual([], self.jf.writes)
 
-    def test_finished_a_card_stays(self):
-        self.jf.start("r1", "Canadiens at Blackhawks", NOW, NOW + timedelta(hours=3))
+    def test_finished_in_place(self):
+        """A Jellyfin that keeps the item: the same, without moving."""
+        self.show()
         self.live(now=NOW + timedelta(minutes=1))
-        tags = self.jf.tags("r1")
-        self.jf.finish("r1", 180)
+        self.finish(new_id=None)
         self.jf.writes.clear()
-        out = self.run_pass(now=NOW + timedelta(hours=4))
+        self.live(now=self.END + timedelta(minutes=1))
         self.assertEqual([], self.jf.writes)
-        self.assertEqual(1, out["finished"])
-        self.assertEqual(tags, self.jf.tags("r1"))
-        self.assertEqual(("set", "matchup", None), (self.row("r1").state, self.row("r1").source,
-                                                     self.row("r1").while_recording))
-
-    def test_finished_while_another_records_the_frame_waits(self):
-        self.jf.start("r1", "Jeopardy!", NOW, NOW + timedelta(minutes=30))
-        self.live(now=NOW + timedelta(minutes=1))
-        self.jf.finish("r1", 30)
-        self.jf.start("r2", "Wheel of Fortune", NOW + timedelta(minutes=30), NOW + timedelta(hours=1))
-        self.jf.writes.clear()
-        grab = mock.Mock(return_value=self.GOOD)
-        out = self.run_pass(now=NOW + timedelta(minutes=41), grabber=grab)
-        self.assertEqual(1, out["waiting"])
-        self.assertNotIn("r1", {w[1] for w in self.jf.writes})
-        self.assertEqual(("title", 1), (self.row("r1").source, self.row("r1").while_recording))
-        self.jf.finish("r2", 30)
-        self.run_pass(now=NOW + timedelta(hours=2), grabber=grab)
+        self.assertEqual(("title", 2), (self.row("r1").source, self.row("r1").while_recording))
+        self.run_pass(now=self.END + timedelta(minutes=41), grabber=lambda chunk: self.GOOD)
         self.assertEqual(("frame", None), (self.row("r1").source, self.row("r1").while_recording))
 
-    def test_a_person_changed_it_after_it_finished(self):
-        self.jf.start("r1", "Jeopardy!", NOW, NOW + timedelta(minutes=30))
+    def test_finished_while_another_records_the_frame_waits(self):
+        self.show()
         self.live(now=NOW + timedelta(minutes=1))
-        self.jf.finish("r1", 30)
-        self.jf.put("r1", "Primary", "person")
+        self.finish()
+        self.live(now=self.END + timedelta(minutes=1))
+        self.jf.start("r2", "Wheel of Fortune", self.END, self.END + timedelta(hours=1))
         self.jf.writes.clear()
-        self.run_pass(now=NOW + timedelta(minutes=45), grabber=lambda chunk: self.GOOD)
+        grab = mock.Mock(return_value=self.GOOD)
+        out = self.run_pass(now=self.END + timedelta(minutes=41), grabber=grab)
+        self.assertEqual(1, out["waiting"])
+        self.assertNotIn("m1", {w[1] for w in self.jf.writes})
+        self.assertEqual(("title", 2), (self.row("m1").source, self.row("m1").while_recording))
+        self.jf.finish("r2", 60, self.END + timedelta(hours=1), new_id="m2")
+        self.run_pass(now=self.END + timedelta(hours=3), grabber=grab)
+        self.assertEqual(("frame", None), (self.row("m1").source, self.row("m1").while_recording))
+
+    def test_the_new_item_with_a_picture_of_its_own(self):
+        self.show()
+        self.live(now=NOW + timedelta(minutes=1))
+        self.finish()
+        self.jf.put("m1", "Primary", "jellyfin")
+        self.jf.writes.clear()
+        self.live(now=self.END + timedelta(minutes=1))
+        self.run_pass(now=self.END + timedelta(hours=2), grabber=lambda chunk: self.GOOD)
         self.assertEqual([], self.jf.writes)
-        self.assertEqual("left", self.row("r1").state)
+        self.assertIsNone(self.row("r1"))
+        self.assertEqual("theirs", self.row("m1").state)
+
+    def test_a_person_changed_it_after_it_finished(self):
+        self.show()
+        self.live(now=NOW + timedelta(minutes=1))
+        self.finish()
+        self.live(now=self.END + timedelta(minutes=1))
+        self.jf.put("m1", "Primary", "person")
+        self.jf.writes.clear()
+        self.run_pass(now=self.END + timedelta(hours=2), grabber=lambda chunk: self.GOOD)
+        self.assertEqual([], self.jf.writes)
+        self.assertEqual("left", self.row("m1").state)
 
 
 def _noisy(seed, logo=True, size=(640, 360)) -> bytes:
@@ -1171,6 +1294,9 @@ class NeverReplaces(unittest.TestCase):
 
     def test_random_sequences(self):
         from models.database import set_setting
+        env = mock.patch.dict("os.environ", {"DATA_DIR": temp_dir(self)})   # the pictures kept while recording
+        env.start()
+        self.addCleanup(env.stop)
         for seed in range(60):
             rnd = random.Random(seed)
             db = _db()
@@ -1195,7 +1321,11 @@ class NeverReplaces(unittest.TestCase):
                     continue
                 if op == "finish":
                     if jf.recording:
-                        jf.finish(rnd.choice(sorted(jf.recording)), rnd.randint(20, 90))
+                        old = rnd.choice(sorted(jf.recording))
+                        new = f"m{old}" if rnd.random() < 0.8 else None
+                        jf.finish(old, rnd.randint(20, 90), now, new_id=new)
+                        if new:
+                            ids.append(new)
                     continue
                 iid = rnd.choice(ids)
                 kind = rnd.choice(["Primary", "Thumb"])
@@ -1217,7 +1347,7 @@ class NeverReplaces(unittest.TestCase):
                 start = len(jf.writes)
                 grabber = (lambda chunk: good) if rnd.random() < 0.5 else (lambda chunk: None)
                 if op == "live":
-                    J.live_pass(db, jf, now=now, grabber=grabber)
+                    J.live_pass(db, jf, now=now, grabber=grabber, probe=lambda chunk, last: None)
                 else:
                     J.run_pass(db, jf, now=now, grabber=grabber)
                 for action, wid, wkind in jf.writes[start:]:

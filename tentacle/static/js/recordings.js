@@ -712,7 +712,7 @@ function _recArtText(d) {
     .map(([k, n]) => `${n} ${REC_ART_SOURCES[k] || k}` +
       (k === 'matchup' && d.with_logos ? ` (${d.with_logos === n ? (n === 1 ? 'with' : 'all with') : d.with_logos + ' with'} team logos)` : ''));
   let text = set ? `${set} recording${set === 1 ? '' : 's'} with a picture from Tentacle: ${parts.join(', ')}.`
-    : 'On. Recordings get a picture about 10 minutes after they finish.';
+    : 'On. Recordings get a picture within a minute or two of starting.';
   const own = (d.counts || {}).theirs || 0, left = (d.counts || {}).left || 0;
   if (own) text += ` ${own} had a picture already and keep it.`;
   if (left) text += ` ${left} changed or removed by someone, left as they are.`;

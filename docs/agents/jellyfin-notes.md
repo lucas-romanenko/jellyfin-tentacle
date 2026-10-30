@@ -146,6 +146,13 @@ same tags hide non-kids channels from kids on one lineup.
   everyone with Live TV. Recording needs `EnableLiveTvManagement`.
   Recordings are one library; a tag on a recording item hides it like a
   channel (survives scans; recording NFOs are locked).
+- A recording in progress is a library item from its first seconds (Type
+  Recording, the same id in `/Items` and `/LiveTv/Recordings?IsInProgress=true`,
+  no RunTimeTicks, MediaSources Size as first probed); pictures uploaded to
+  it show on "Recording now" cards. `/Videos/{id}/stream?static=true`
+  ignores `Range` on its growing file (200 from byte 0, no Content-Length,
+  then follows the file); `/Items/{id}/File` (admin key) answers 206 with
+  `Content-Range: bytes a-b/<size so far>` (10.11.8, 30 Oct 2026).
 - Saving a tuner or listing provider cancels a running RefreshGuide and
   queues a new one. XMLTV programmes have no etag: every refresh re-saves
   every programme.

@@ -1610,12 +1610,41 @@ GET/PUT `/api/live/recordings/artwork`; Sources → Live TV → More.
   Recording ↔ booking: same folded title, `DateCreated` inside the padded
   window. Recording ↔ EPG programme: same title, starting 0–45 min after
   `DateCreated`.
+- While it records (`live_pass`, job `recording_art_live` every
+  `LIVE_MINUTES` (1), first 90 s after start; skips while `run_pass` holds
+  `_lock`): `GET /LiveTv/Recordings?IsInProgress=true` (one call when none
+  records). Those are library items already (Type Recording, no
+  RunTimeTicks), and Jellyfin keeps the item and its id when the recording
+  finishes. Only items under the recordings libraries' roots (by Path).
+  New: `give_picture(live_at=now)`, same order, the frame from
+  `_live_frame` (none until `FRAME_AFTER` (4 min) of the programme is
+  written), row `while_recording` = 1. A `frame`/`title` row is tried again
+  every `FRAME_EVERY` (15 min) / `FRAME_RETRY` (5 min) (`refresh_frame`,
+  only while both tags are still Tentacle's). Finished (`run_pass`,
+  `_finished` as before): `take_over`: `KEPT_SOURCES` (matchup, league,
+  tmdb, guide) just clear the flag; frame/title are made again from the
+  finished file (`make_picture`, may `Defer`), after `MAX_ATTEMPTS`
+  failures the live picture stays.
+  The growing file: `GET /Videos/{id}/stream?static=true` ignores `Range`
+  on it (200 from byte 0, no length: Jellyfin serves it as a
+  ProgressiveFileStream); `GET /Items/{id}/File` honours `Range` and its
+  `Content-Range` gives the size so far (`Jellyfin.file_size`,
+  `read_file`). Offsets `frames.live_offsets`: 20/100/180/260 s behind the
+  written end (seconds since `DateCreated`; bytes ∝ time), at least 30 s
+  past the pre-padding.
 - Frames: MPEG-TS only; `GET /Videos/{id}/stream?static=true` with a
   `Range` of `READ_BYTES` (6 MB) at 30/50/70 % of the programme after the
   pre-padding (byte offset ∝ time); ffmpeg `-skip_frame nokey` from stdin,
   `signalstats` (black: YAVG < 26, flat: YHIGH-YLOW < 22), the most
-  edges wins; `nice 19`, 30 s timeout. Not while Jellyfin records or a
-  recording starts within 20 min (`busy_from_timers`): the item waits.
+  edges wins; `nice 19`, 30 s timeout. Ad-looking frames rank after the
+  rest (the cheap signals of the ad-breaks research): silent (a second
+  ffmpeg `volumedetect` on the same piece, mean < `SILENT_DB` -50 dB; no
+  sound track = unknown), or `logo_missing` (3+ frames: the edge pixels,
+  160x90 `FIND_EDGES`, top and bottom quarter, that all but one frame
+  share; a frame with < 45 % of them; fewer than 12 shared = no logo, says
+  nothing). Not while Jellyfin records or a recording starts within 20 min
+  (`busy_from_timers`): the item waits (the finished file only; the live
+  frame reads the growing one).
 - Safety (`recording_artwork`, plain columns: item id, kind recording/folder,
   state, source, the Primary/Thumb tags Jellyfin gave): an item with any
   picture Tentacle didn't set → `theirs`, never touched; a `set` row whose

@@ -32,6 +32,9 @@ logger = logging.getLogger(__name__)
 
 FRACTIONS = (0.3, 0.5, 0.7)
 LIVE_BACK = (20, 100, 180, 260)     # seconds behind what a growing recording has written
+PTS_BYTES = 1024 * 1024             # read at each end of a growing recording for its timestamps
+PTS_WRAP = 2 ** 33 / 90000          # MPEG-TS timestamps wrap after 26.5 h
+MAX_WRITTEN = 24 * 3600
 READ_BYTES = 6 * 1024 * 1024        # a few seconds of HD video: a key frame is in there
 FFMPEG_TIMEOUT = 30
 READ_TIMEOUT = 30
@@ -78,6 +81,42 @@ def live_offsets(written: float, pre_padding: float = 0.0) -> list:
     pre-padding at least)."""
     lo = max(0.0, pre_padding or 0.0) + 30
     return [round(written - back, 1) for back in LIVE_BACK if written - back >= lo]
+
+
+def pts_of(chunk: bytes, last: bool, timeout: int = FFMPEG_TIMEOUT) -> Optional[float]:
+    """The first (or last) video timestamp, in seconds, in a piece of
+    MPEG-TS, or None (no ffprobe, nothing readable)."""
+    cmd = ["ffprobe", "-v", "error", "-f", "mpegts", "-i", "pipe:0", "-select_streams", "v:0",
+           "-show_entries", "packet=pts_time", "-of", "csv=p=0"]
+    try:
+        r = subprocess.run(cmd, input=chunk, capture_output=True, timeout=timeout, preexec_fn=_lowest_priority)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    times = []
+    for line in (r.stdout or b"").decode(errors="replace").splitlines():
+        try:
+            times.append(float(line.strip().strip(",")))
+        except ValueError:
+            continue
+    return (max(times) if last else min(times)) if times else None
+
+
+def written_seconds(read: Callable[[int, int], bytes], size: int, probe: Callable = pts_of) -> Optional[float]:
+    """How many seconds a recording still recording holds so far: its last
+    video timestamp minus its first (not the clock: Jellyfin's DateCreated
+    of one in progress is its NFO's local time). None when they can't be
+    read or make no sense (a re-dial that brought another clock)."""
+    if size < 2 * 188:
+        return None
+    first = probe(read(0, PTS_BYTES), False)
+    start = max(0, size - PTS_BYTES)
+    last = probe(read(start - start % 188, PTS_BYTES), True)
+    if first is None or last is None:
+        return None
+    span = last - first
+    if span < 0:
+        span += PTS_WRAP
+    return span if 0 < span <= MAX_WRITTEN else None
 
 
 def _lowest_priority():
