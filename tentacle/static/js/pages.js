@@ -6976,6 +6976,7 @@ const _DELETION_KIND_META = {
   'sonarr-scan':       { label: 'Gone from Sonarr', cls: 'badge-accent' },
   'sync-prune':        { label: 'Gone from provider', cls: 'badge-accent' },
   'smartlist-orphan':  { label: 'Playlist cleanup', cls: 'badge-accent' },
+  'recordings-limit':  { label: 'Recordings limit', cls: 'badge-amber' },
   // Removals a safety limit refused: nothing was deleted
   'sync-prune-blocked':   { label: 'Removal refused', cls: 'badge-gray' },
   'orphan-sweep-blocked': { label: 'Removal refused', cls: 'badge-gray' },

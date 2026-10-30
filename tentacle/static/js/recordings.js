@@ -18,6 +18,7 @@ const rec = {
   leagues: null,      // GET /api/live/recording-rules/leagues
   upcoming: null,     // GET /api/live/recordings/upcoming
   history: null,
+  space: null,        // GET /api/live/recordings/space: the total and the limit
   league: null,       // the league open in the team picker
   find: '',           // its search box (long lists)
   edit: null,         // the rule in the editor: {id?, body}
@@ -43,9 +44,11 @@ const REC_PLAYOFF = [0, 30, 60, 90, 120];
 
 async function loadRecordings() {
   try {
-    const [rules, up] = await Promise.all([api('/api/live/recording-rules'), api('/api/live/recordings/upcoming')]);
+    const [rules, up, space] = await Promise.all([api('/api/live/recording-rules'), api('/api/live/recordings/upcoming'),
+      api('/api/live/recordings/space').catch(() => null)]);
     rec.rules = rules;
     rec.upcoming = up;
+    rec.space = space;
     if (rec.tab === 'history') rec.history = await api('/api/live/recordings/history');
   } catch (e) {
     if (!e.sessionExpired) toast('Recordings could not be loaded: ' + e.message, 'error');
@@ -82,10 +85,127 @@ function recRender() {
   document.getElementById('rec-count-teams').textContent = teams || '';
   const words = rec.rules.rules.filter(r => r.kind === 'keywords').length;
   document.getElementById('rec-count-rules').textContent = words || '';
+  recRenderSpace();
   recRenderUpcoming();
   if (rec.tab === 'teams') recRenderTeams();
   if (rec.tab === 'rules') recRenderRules();
   if (rec.tab === 'history') recRenderHistory();
+}
+
+// ── Space: the total and the limit (services/recording_space) ─────────────
+
+function _recGB(bytes) {
+  const gb = (bytes || 0) / 1e9;
+  return gb >= 100 ? `${Math.round(gb)} GB` : gb >= 10 ? `${gb.toFixed(1).replace(/\.0$/, '')} GB` : `${gb.toFixed(1)} GB`;
+}
+
+const REC_KEPT = { favourite: 'favourite', watching: 'part-way through', playing: 'playing now',
+  recording: 'recording now', keep: 'kept by a rule' };
+
+function recRenderSpace() {
+  const el = document.getElementById('rec-space');
+  const d = rec.space;
+  if (!el) return;
+  if (!d || (!d.read_at && !d.on && !d.error)) { el.innerHTML = ''; return; }
+  const set = d.is_admin ? `<button class="rec-space-set" onclick="recSpaceOpen()">${d.on ? 'Change' : 'Set a limit'}</button>` : '';
+  const total = `<b>${escHtml(_recGB(d.total_bytes))}</b>`;
+  let top, bar = '';
+  if (d.limit_gb) {
+    const pct = Math.min(100, Math.round(d.total_bytes / (d.limit_gb * 1e9) * 100));
+    top = `<span>${total} of ${escHtml(_recGB(d.limit_gb * 1e9))}</span>`;
+    bar = `<div class="rec-space-bar${pct >= 100 ? ' full' : ''}" role="img" aria-label="${pct}% of the limit"><span style="width:${pct}%"></span></div>`;
+  } else {
+    top = `<span>${total} of recordings</span>`;
+  }
+  const meta = [`${d.count} recording${d.count === 1 ? '' : 's'}`];
+  const kept = Object.values(d.kept || {}).reduce((a, b) => a + b, 0);
+  if (d.on && kept) meta.push(`${kept} never deleted`);
+  if (d.days) meta.push(`none older than ${d.days} day${d.days === 1 ? '' : 's'}`);
+  if (!d.on) meta.push('no limit');
+  else if (d.would_go && d.would_go.length) meta.push(`<span class="warn">${d.would_go.length === 1 ? 'the oldest goes' : `the ${d.would_go.length} oldest go`} at the next check</span>`);
+  else if (d.kept_over) meta.push('<span class="warn">kept recordings alone are over the limit</span>');
+  const err = d.error ? `<div class="rec-space-meta"><span class="warn">${escHtml(d.error)}</span></div>` : '';
+  el.innerHTML = `<div class="rec-space-top">${top}${set}</div>${bar}
+    <div class="rec-space-meta">${meta.join(' · ')}</div>${err}`;
+}
+
+function recSpaceOpen() {
+  const d = rec.space || {};
+  document.getElementById('rec-space-gb').value = d.limit_gb || '';
+  document.getElementById('rec-space-days').value = d.days || '';
+  document.getElementById('rec-space-off').style.display = d.on ? '' : 'none';
+  showModal('modal-rec-space');
+  recSpacePreview();
+}
+
+function _recSpaceValues() {
+  const gb = Number(document.getElementById('rec-space-gb').value) || null;
+  const days = Math.round(Number(document.getElementById('rec-space-days').value)) || null;
+  return { limit_gb: gb, days };
+}
+
+let _recSpaceSeq = 0;
+async function recSpacePreview() {
+  const el = document.getElementById('rec-space-preview');
+  const v = _recSpaceValues();
+  const seq = ++_recSpaceSeq;
+  if (!v.limit_gb && !v.days) {
+    const d = rec.space || {};
+    el.innerHTML = `Now: <b>${escHtml(_recGB(d.total_bytes))}</b> in ${d.count || 0} recording${d.count === 1 ? '' : 's'}. With no limit nothing is deleted.`;
+    return;
+  }
+  const q = new URLSearchParams({ preview: 'true' });
+  if (v.limit_gb) q.set('limit_gb', v.limit_gb);
+  if (v.days) q.set('days', v.days);
+  let d;
+  try {
+    d = await api('/api/live/recordings/space?' + q);
+  } catch (e) {
+    if (seq === _recSpaceSeq) el.textContent = e.message;
+    return;
+  }
+  if (seq !== _recSpaceSeq) return;
+  el.innerHTML = _recSpacePreviewHtml(d);
+}
+
+function _recSpacePreviewHtml(d) {
+  const kept = Object.entries(d.kept || {}).map(([k, n]) => `${n} ${REC_KEPT[k] || k}`).join(', ');
+  const out = [`<div class="rec-pv-head">Now: <b>${escHtml(_recGB(d.total_bytes))}</b> in ${d.count} recording${d.count === 1 ? '' : 's'}${kept ? ` (never deleted: ${escHtml(kept)})` : ''}.</div>`];
+  if (!d.would_go.length) {
+    out.push('<div><b>Nothing would be deleted now.</b></div>');
+  } else {
+    out.push(`<div><b>${d.would_go.length} recording${d.would_go.length === 1 ? '' : 's'} (${escHtml(_recGB(d.would_free_bytes))}) would be deleted</b>, oldest first:</div>`);
+    out.push(...d.would_go.slice(0, 50).map(r => `<div class="rec-pv-row"><div class="rec-pv-when">${escHtml(_recWhen({ start: r.recorded_at }))}</div>
+      <div class="rec-pv-what">${escHtml(r.name)} <span class="rec-chan">${escHtml(_recGB(r.size_bytes))}</span>
+      <div class="mych-meta"><span>${escHtml(r.why)}</span></div></div></div>`));
+    if (d.would_go.length > 50) out.push(`<div class="mych-hint">and ${d.would_go.length - 50} more</div>`);
+  }
+  if (d.kept_over) out.push('<div class="mych-hint">The recordings that are never deleted take more than this on their own.</div>');
+  if (d.read_at) out.push(`<div class="mych-hint">As of ${escHtml(_recTime(new Date(d.read_at)))}.</div>`);
+  return out.join('');
+}
+
+async function recSpaceSave(off) {
+  const v = off ? { limit_gb: null, days: null } : _recSpaceValues();
+  if (!off && !v.limit_gb && !v.days) { toast('Type a limit, or choose No limit', 'warning'); return; }
+  if (!off) {
+    let d;
+    try {
+      const q = new URLSearchParams({ preview: 'true' });
+      if (v.limit_gb) q.set('limit_gb', v.limit_gb);
+      if (v.days) q.set('days', v.days);
+      d = await api('/api/live/recordings/space?' + q);
+    } catch (e) { if (!e.sessionExpired) toast(e.message, 'warning', 6000); return; }
+    if (d.would_go.length && !confirm(`Delete ${d.would_go.length} recording${d.would_go.length === 1 ? '' : 's'} (${_recGB(d.would_free_bytes)}) now, oldest first?\n\nThey are deleted from Jellyfin, files and all. This can't be undone.`)) return;
+  }
+  try {
+    rec.space = { ...(await api('/api/live/recordings/space', { method: 'PUT', body: v })), is_admin: true };
+    closeModal('modal-rec-space');
+    _recStatus('ok', off ? 'No limit: no recording is deleted for space.' : 'Saved. Checked in a few seconds, then every 15 minutes.');
+    recRenderSpace();
+  } catch (e) {
+    if (!e.sessionExpired) toast(e.message, 'warning', 6000);
+  }
 }
 
 // ── Times, in the viewer's own time zone ───────────────────────────────────
@@ -333,9 +453,10 @@ function recOpenEditor(id) {
     excludes: r.excludes, match_all: r.match_all, search_description: r.search_description, channels: r.channels,
     min_minutes: r.min_minutes, pre_padding_minutes: r.pre_padding_minutes, post_padding_minutes: r.post_padding_minutes,
     playoff_extra_minutes: r.playoff_extra_minutes, pregame_next: r.pregame_next, skip_replays: r.skip_replays, mode: r.mode,
+    keep_forever: r.keep_forever, keep_last: r.keep_last,
   } : { kind: 'keywords', terms: [], excludes: [], match_all: false, search_description: false, home_away: 'both',
     pre_padding_minutes: 5, post_padding_minutes: 10, playoff_extra_minutes: 0, pregame_next: true, skip_replays: true,
-    mode: 'preview', min_minutes: null };
+    mode: 'preview', min_minutes: null, keep_forever: false, keep_last: null };
   rec.edit = { id: r ? r.id : null, body, canEdit: r ? r.can_edit : true };
   document.getElementById('rec-ed-title').textContent = r ? (r.team_name || r.name) : 'New rule';
   _recEditorForm();
@@ -380,6 +501,13 @@ function _recEditorForm() {
     <div class="rec-field"><span>Start early, keep going</span><div class="rec-pad">${_recSelect('pre_padding_minutes', REC_BEFORE, b.pre_padding_minutes, 'min before')}
       ${_recSelect('post_padding_minutes', REC_AFTER, b.post_padding_minutes, 'min after')}</div>
       ${b.kind !== 'keywords' ? `<div class="rec-pad">${_recSelect('playoff_extra_minutes', REC_PLAYOFF, b.playoff_extra_minutes, 'min more')} <small>for playoff games (overtime)</small></div>` : ''}</div>
+    <div class="rec-field"><span>Keep</span><div class="rec-keep">
+      <select class="form-input rec-in" data-k="keep" aria-label="Keep"${dis}>
+        <option value=""${!b.keep_forever && !b.keep_last ? ' selected' : ''}>May go for space</option>
+        <option value="last"${!b.keep_forever && b.keep_last ? ' selected' : ''}>Keep the last</option>
+        <option value="forever"${b.keep_forever ? ' selected' : ''}>Keep forever</option></select>
+      ${!b.keep_forever && b.keep_last ? `<input class="form-input rec-in rec-num" data-k="keep_last" type="number" min="1" max="999" value="${b.keep_last}" aria-label="How many to keep"${dis}> <small>recordings</small>` : ''}</div>
+      <small>What the recordings space limit never deletes.</small></div>
     <label class="rec-check rec-record"><input type="checkbox" class="rec-in" data-k="mode"${b.mode === 'record' ? ' checked' : ''}${dis}>
       <span><b>${b.kind === 'keywords' ? 'Record' : 'Record their games'}</b><small>Off: preview only, nothing is booked</small></span></label>`);
   document.getElementById('rec-ed-form').innerHTML = parts.join('');
@@ -392,6 +520,12 @@ function recEditorInput(el) {
   const k = el.dataset.k;
   if (k === 'terms' || k === 'excludes') b[k] = _recSplit(el.value);
   else if (k === 'mode') b.mode = el.checked ? 'record' : 'preview';
+  else if (k === 'keep') {
+    b.keep_forever = el.value === 'forever';
+    b.keep_last = el.value === 'last' ? (b.keep_last || 5) : null;
+    _recEditorForm();
+    return;
+  } else if (k === 'keep_last') { b.keep_last = Math.max(1, Math.round(Number(el.value))) || 1; return; }
   else if (el.type === 'checkbox') b[k] = el.checked;
   else if (k === 'min_minutes') b[k] = el.value === '' ? null : Number(el.value);
   else b[k] = Number(el.value);
@@ -548,6 +682,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const ed = document.getElementById('modal-rec-rule');
   ed?.addEventListener('input', ev => { const el = ev.target.closest('.rec-in'); if (el && el.type !== 'checkbox' && el.tagName !== 'SELECT') recEditorInput(el); });
   ed?.addEventListener('change', ev => { const el = ev.target.closest('.rec-in'); if (el && (el.type === 'checkbox' || el.tagName === 'SELECT')) recEditorInput(el); });
+  const sp = document.getElementById('modal-rec-space');
+  sp?.addEventListener('input', () => { clearTimeout(rec.previewTimer); rec.previewTimer = setTimeout(recSpacePreview, 350); });
   ed?.addEventListener('click', ev => {
     const ha = ev.target.closest('.rec-ha');
     if (ha && rec.edit) {

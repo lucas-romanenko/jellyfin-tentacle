@@ -1159,6 +1159,10 @@ class RecordingRule(Base):
     mode = Column(String, nullable=False, default="preview")    # preview | record
     active = Column(Boolean, default=True)
     priority = Column(Integer, nullable=False, default=0)
+    # what the recordings space limit (services/recording_space) never deletes:
+    # everything it recorded, or its newest keep_last recordings
+    keep_forever = Column(Boolean, default=False)
+    keep_last = Column(Integer, nullable=True)
     owner_user_id = Column(Integer, nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
@@ -1281,6 +1285,24 @@ class RecordingCheck(Base):
     attempts = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RecordingSize(Base):
+    """The recordings Jellyfin had at the space limit's last read
+    (services/recording_space, #868): one row per recording, rewritten by
+    every pass that could read them all. The Recordings page's total and the
+    "what would go" preview come from here, not from Jellyfin. kept: why the
+    limit never deletes it (favourite, watching, keep, recording, playing),
+    or empty. item_id is Jellyfin's, without dashes."""
+    __tablename__ = "recording_sizes"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    item_id = Column(String, nullable=False, unique=True)
+    name = Column(String, nullable=True)                 # display only
+    recorded_at = Column(DateTime, nullable=False)       # Jellyfin's DateCreated: when it began recording
+    size_bytes = Column(Integer, nullable=False)
+    rule_id = Column(Integer, nullable=True)             # the recording rule it came from
+    kept = Column(String, nullable=True)
+    read_at = Column(DateTime, default=datetime.utcnow)
 
 
 class EPGProgram(Base):
