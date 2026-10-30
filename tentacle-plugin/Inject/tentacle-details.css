@@ -97,7 +97,10 @@ body.moonfin-details-visible {
     overflow: hidden !important;
 }
 
-body.moonfin-details-visible .moonfin-navbar {
+/* Also over the media bar's rule (body.moonfin-mediabar-active.moonfin-navbar-active
+   .moonfin-navbar, z-index 10000): on Home the overlay covered the back button (#877). */
+body.moonfin-details-visible .moonfin-navbar,
+body.moonfin-details-visible.moonfin-mediabar-active.moonfin-navbar-active .moonfin-navbar {
     z-index: 10002;
 }
 
