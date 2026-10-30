@@ -304,6 +304,7 @@ def export(db: Session, parts=None, people=None, providers=None) -> dict:
                 "post_padding_minutes": r.post_padding_minutes, "playoff_extra_minutes": r.playoff_extra_minutes,
                 "pregame_next": bool(r.pregame_next), "skip_replays": bool(r.skip_replays), "mode": r.mode,
                 "active": bool(r.active), "priority": r.priority,
+                "keep_forever": bool(r.keep_forever), "keep_last": r.keep_last,
                 "owner": _person(o) if o else None,
                 "terms": [t.term for t in terms if not t.exclude],
                 "excludes": [t.term for t in terms if t.exclude],
@@ -850,7 +851,7 @@ def _rule_key(r: dict, owner_id) -> tuple:
 
 _RULE_FIELDS = ("name", "home_away", "match_all", "search_description", "min_minutes", "pre_padding_minutes",
                 "post_padding_minutes", "playoff_extra_minutes", "pregame_next", "skip_replays", "mode", "active",
-                "priority")
+                "priority", "keep_forever", "keep_last")
 
 
 def _restore_rules(db, data, people: _People, replace, apply) -> dict:
@@ -910,7 +911,7 @@ def _restore_rules(db, data, people: _People, replace, apply) -> dict:
                 r = RecordingRule(kind=kind, league=row.get("league") if kind != "keywords" else None,
                                   team=row.get("team") if kind == "team" else None, owner_user_id=oid,
                                   created_at=now, updated_at=now,
-                                  **{k: v for k, v in want.items() if v is not None or k == "min_minutes"})
+                                  **{k: v for k, v in want.items() if v is not None or k in ("min_minutes", "keep_last")})
                 db.add(r)
                 db.flush()
                 _set_rule_lists(db, r.id, terms, excludes, keys)

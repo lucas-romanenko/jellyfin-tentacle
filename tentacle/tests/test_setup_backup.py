@@ -75,7 +75,7 @@ def _install(db, provider="Acme", ids=0, setup=True):
     ])
     tsn = db.query(LiveChannel).filter(LiveChannel.name == "TSN 1").one()
     r = RecordingRule(name="Toronto Maple Leafs", kind="team", league="nhl", team="tor", mode="record",
-                      owner_user_id=ben.id)
+                      owner_user_id=ben.id, keep_last=5)
     k = RecordingRule(name="Grand Prix", kind="keywords", mode="preview", owner_user_id=ann.id)
     db.add_all([r, k])
     db.flush()
@@ -179,6 +179,7 @@ class Export(Base):
         rules = {r["name"]: r for r in data["recording_rules"]}
         self.assertEqual("Ben", rules["Toronto Maple Leafs"]["owner"]["name"])
         self.assertEqual("TSN", rules["Toronto Maple Leafs"]["channels"][0]["name"])
+        self.assertEqual((False, 5), (rules["Toronto Maple Leafs"]["keep_forever"], rules["Toronto Maple Leafs"]["keep_last"]))
         self.assertEqual((["Grand Prix"], ["Qualifying"]), (rules["Grand Prix"]["terms"], rules["Grand Prix"]["excludes"]))
 
     def test_only_the_parts_and_people_picked(self):
