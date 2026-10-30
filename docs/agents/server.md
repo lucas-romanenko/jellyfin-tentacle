@@ -773,6 +773,54 @@ Every function called from an `onclick=""` in `index.html` must be exported
 in the `exposeGlobals()` block at the bottom of `pages.js` (else
 `ReferenceError`); top-level functions in `app.js` are global already.
 
+## Backup & restore (`services/backup.py`, `routers/backup.py`, dashboard `static/js/backup.js`, #870)
+
+Settings → Backup & restore (admins). The setup an admin made by hand, as one
+JSON file (`format` "tentacle-setup", `version` 1), in parts (`PARTS`), each
+picked on its own when backing up and when restoring:
+
+- per provider (`providers[]`, by provider name): `vod_categories`
+  (whitelisted or source-tagged, by type + name) and `live_channels`
+  (groups switched on; channels on, off inside a group that is on, or with
+  the admin's own name/number/logo/guide id);
+- the household's: `home_rows` (each person's home file, or "follows the
+  default", plus the `default_home` setting), `playlists`
+  (`AutoPlaylistToggle` + `TagRule` per person), `lists`
+  (`ListSubscription` per person, without items: read again after a
+  restore), `recording_rules` (rules, terms, channels as names, owner as a
+  person).
+
+Matched by name, never by id (ids ride along as hints): a category by type
+and name, a group by name, a channel by group + name (else a unique name),
+a person by Jellyfin id else name, a home row's playlist by its name
+(`write_home_config` remaps rows by `display_name` once the playlists
+exist), a rule by kind + league/team (keywords: name) + owner, its channels
+by the name the pool shows. A file provider with no provider of the same
+name here is skipped unless the admin maps it to one (`providers` {file
+name: id | null}); the preview counts what matches in each provider here.
+
+`plan(apply=False)` is the preview (added / changed / unchanged / removed /
+not found / notes per part) and writes nothing; `apply=True` first saves a
+"before restore" snapshot (refuses to write if it can't), then writes. Merge
+is the default: nothing is removed or switched off, and someone's own home
+keeps its rows (the file's missing rows go after them). `replace` per part
+also un-whitelists categories, switches off groups and channels, deletes
+playlists, lists and rules (`routers/recordings.remove_rule`: booked
+recordings cancelled) the file hasn't, and writes homes as in the file.
+After writing: `_pool_changed` for channels, the rules' scan, and in a
+thread lists read, each touched person's full playlist resync
+(`_run_full_resync`: playlists, home config, plugin notified) and
+`apply_default` for people back on the default.
+
+Never in the file: settings (no keys at all), provider addresses and
+logins, and any exported string that contains a stored secret (provider
+login, a `SENSITIVE_KEYS` value) or that `log_redaction.redact` would
+change (a list address with `?api_key=`): left out and named in `left_out`.
+
+Snapshots: `/data/backups/tentacle-setup-<UTC stamp>-<daily|now|before-restore>.json`,
+daily at 02:30 (main.py `setup_backup`), "Back up now", and before each
+restore; the last 14 kept (other files in the folder are left alone).
+
 ## Database
 
 SQLite `/data/tentacle.db` (WAL). Models in `models/database.py`:

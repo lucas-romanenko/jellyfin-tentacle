@@ -83,6 +83,7 @@ nav:
     - Library: features/library.md
     - Activity Tracking: features/activity.md
     - Multi-User: features/multi-user.md
+    - Backup & Restore: features/backup.md
   - Integrations:
     - Jellyfin Plugin: integrations/jellyfin-plugin.md
     - Radarr: integrations/radarr.md
