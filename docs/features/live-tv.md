@@ -77,6 +77,17 @@ In the guide (the Tentacle Android TV app and Jellyfin's web app), **Multi-view*
 
 Recordings are made in Jellyfin as ordinary recordings, exactly like its Record button, so they play everywhere and keep recording if the rule is switched off. Tentacle only ever cancels the recordings it made, and never one that has started; what people set in Jellyfin themselves is left alone. Anyone whose account may record (People → Can record; admins always, kids never) can follow teams and make rules; they see everyone's, and change their own (admins change any). The list of leagues and teams is built in: Tentacle doesn't ask any league's schedule, so it finds the games your guide lists (usually a day or two ahead).
 
+### Space for recordings
+
+Recordings can fill a disk (a sports game is 2.5 to 4 GB an hour). The top of **Recordings** shows how much they take; an admin sets a limit there with **Set a limit** (**Change** once set):
+
+- **Keep recordings under** a number of GB: when they take more, the oldest go first, by when they were recorded, until they fit. Optionally, **also delete recordings older than** a number of days.
+- The dialog shows what would be deleted at the limit you type before you save, and asks once more when saving deletes something.
+- **Never deleted**: anyone's favourite (the recording, or its show in Jellyfin's Recordings), one someone is part-way through, one playing or recording now, and what a team or rule keeps: **Edit → Keep** offers **Keep forever** or **Keep the last** N recordings. Kept recordings still count towards the total.
+- Sizes come from Jellyfin's recordings, and recordings are deleted through Jellyfin (the file and the library item together), so the library and the disk agree. Each deletion is listed under **Health → What happened → Removals** as "Recordings limit".
+- Checked every 15 minutes. If anything can't be read (Jellyfin not answering, a recording without a size or a date, someone's favourites), nothing is deleted that time and the Recordings page says why.
+- There is no limit until an admin sets one; **No limit** turns it off again. Jellyfin's own per-show "Keep up to" still applies as before.
+
 ### Pictures for recordings
 
 Every finished recording gets a picture in Jellyfin about 10 minutes after it ends, in both shapes a film has: a wide (16:9) one for wide cards (the TV app's Recordings, Continue Watching on wide rows, Jellyfin Web) and a poster (2:3) for poster rows and library grids. Tentacle uses the first of these that works:

@@ -1403,7 +1403,8 @@ schedule or score service: games are found in the guide Tentacle serves.
   channel and name were booked a day earlier (a played game's name rolls
   over to the next day).
 - Tables (plain columns): `recording_rules` (+ `recording_rule_terms`,
-  `recording_rule_channels`), `recording_bookings` (unique rule, pool key,
+  `recording_rule_channels`; `keep_forever`/`keep_last` = what the space
+  limit never deletes), `recording_bookings` (unique rule, pool key,
   start; states preview/booked/recording/waiting/covered/failed/lost/ended/
   skipped), `recording_booking_events`.
 - Who: `can_record` = admin, or Jellyfin's `EnableLiveTvManagement` (read
@@ -1413,6 +1414,36 @@ schedule or score service: games are found in the guide Tentacle serves.
   (plugin Notify), after every change and scan that changed something.
 - `GET /api/live/recordings/busy`: Jellyfin recording or a padded start
   within 20 min; the maintainer's deploy gate checks the same.
+
+## Space limit for recordings (`services/recording_space.py`, #868)
+
+Keep recordings under N GB (oldest first) and optionally none older than N
+days. Settings `recordings_limit_gb`, `recordings_limit_days`; empty = off,
+the default (an upgrade deletes nothing). Recordings page: the total and
+the limit (`#rec-space`), the admin's dialog with a dry-run preview.
+
+- `recording_space` job every 15 min (first 7 min after start), off or on:
+  reads every recording and rewrites `recording_sizes` (plain columns: item,
+  name, recorded_at = DateCreated, size = MediaSources[0].Size, rule_id,
+  kept), which the page and `?preview=` read; nothing asks Jellyfin per page
+  load. A recording = a video in a library over the recordings folder
+  (`recordings_libraries(any_library=True)`) whose Path is under one of
+  `/System/Configuration/livetv`'s folders (a library over a parent folder
+  holds other media: never counted).
+- `kept` (never deleted, still counted in the total): anyone's favourite
+  (the item or a parent folder; `/Items?userId=&Filters=IsFavorite` per
+  Jellyfin user), part-way through (`IsResumable`), playing now
+  (`/Sessions`), recording now (timer InProgress or inside its padded window
+  with the same name, booking `recording`, or DateCreated < 10 min ago), a
+  rule's `keep_forever` or its newest `keep_last` (item → booking by
+  `recording_art.job._booking_of`).
+- Anything unreadable (any of those calls, an item without Path, size or
+  DateCreated) skips the pass, nothing deleted; the reason shows on the page.
+- `plan()` (pure): older than days, then oldest until total <= limit.
+  Each delete re-reads the item (gone: skipped; out of the recordings
+  folder: stop), `DELETE /Items/{id}` (file and item), Deletion Log kind
+  `recordings-limit`, reason `auto`. A failed delete ends the pass.
+- Jellyfin's per-series "keep up to" is left as it is.
 
 ## Pictures for recordings (`services/recording_art/`, #815)
 

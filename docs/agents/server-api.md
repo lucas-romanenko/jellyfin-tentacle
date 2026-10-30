@@ -209,6 +209,8 @@ Declared on the app in `main.py` (no router, all **none**; listed in
 | GET | `/api/live/recordings/marks` | signed in | recordings.py:recordings_marks (for the guides: Jellyfin channel id + start) |
 | POST | `/api/live/recordings/{id}/skip` | can record | recordings.py:skip_booking |
 | POST | `/api/live/recordings/{id}/restore` | can record | recordings.py:restore_booking |
+| GET | `/api/live/recordings/space` | signed in; `preview` admin | recordings.py:recordings_space (#868: total, count, kept counts, the limit, what would go; `preview=true&limit_gb=&days=` is a dry run at other values; from `recording_sizes`, the last read) |
+| PUT | `/api/live/recordings/space` | admin | recordings.py:recordings_space_set (`{"limit_gb": float or null, "days": int or null}`; both null = off; a set limit starts a pass in 5 s) |
 | GET | `/api/live/recordings/artwork` | admin | recordings.py:recording_artwork (pictures for recordings: on/off, counts by state and source, matchup cards with team logos, why none can be set) |
 | PUT | `/api/live/recordings/artwork` | admin | recordings.py:recording_artwork_set (`{"enabled": bool}`; off removes only Tentacle's own pictures) |
 | POST | `/api/live/recordings/cancelled` | none; confirmed with Jellyfin (`/Tentacle/TimerCancelled/{id}`) unless admin or internal | recordings.py:timer_cancelled (the plugin: a person cancelled a timer in Jellyfin) |

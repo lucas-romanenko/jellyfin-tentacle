@@ -930,6 +930,13 @@ def setup_scheduler(db):
     scheduler.add_job(_rec_check.run_scheduled, IntervalTrigger(minutes=_rec_check.PASS_MINUTES,
                                                                 start_date=datetime.now() + timedelta(seconds=360)),
                       id="recording_check", replace_existing=True, max_instances=1, coalesce=True)
+    # The recordings space limit (services/recording_space, #868): reads
+    # Jellyfin's recordings for the Recordings page's total; deletes only
+    # once an admin set a limit.
+    from services import recording_space as _rec_space
+    scheduler.add_job(_rec_space.run_scheduled, IntervalTrigger(minutes=_rec_space.PASS_MINUTES,
+                                                                start_date=datetime.now() + timedelta(seconds=420)),
+                      id="recording_space", replace_existing=True, max_instances=1, coalesce=True)
     # Live TV channel logos (services/channel_logos): the fallback chain and
     # the logo cache, a few logos checked per pass.
     from services import channel_logos as _logos

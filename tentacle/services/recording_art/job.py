@@ -114,6 +114,11 @@ class Jellyfin:
         if r.status_code != 404:
             r.raise_for_status()
 
+    def delete_item(self, item_id: str) -> None:
+        """The item and its files (the recordings space limit)."""
+        r = requests.delete(f"{self.url}/Items/{item_id}", headers=self.headers, timeout=60)
+        r.raise_for_status()
+
     def image(self, item_id: str, kind: str = "Primary") -> bytes:
         r = requests.get(f"{self.url}/Items/{item_id}/Images/{kind}", headers=self.headers, timeout=30)
         r.raise_for_status()

@@ -1563,7 +1563,26 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 .rec-preview-box > summary .mych-hint { margin-left: 8px; }
 .rec-preview-box[open] > summary { border-bottom: 1px solid var(--border); }
 .rec-preview-box .mych-name { color: var(--text2); }
+.rec-space { flex: 0 1 340px; min-width: 220px; font-size: 13px; color: var(--text2); }
+.rec-space:empty { display: none; }
+.rec-space-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.rec-space-top b { font-size: 15px; color: var(--text); font-weight: 600; }
+.rec-space-bar { height: 6px; margin: 6px 0 5px; background: var(--bg3); border-radius: 3px; overflow: hidden; }
+.rec-space-bar > span { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+.rec-space-bar.full > span { background: var(--amber); }
+.rec-space-meta { font-size: 11px; color: var(--text3); }
+.rec-space-meta .warn { color: var(--amber); }
+.rec-space-set { background: none; border: none; padding: 0; color: var(--accent-text); cursor: pointer; font-size: 12px; font-family: 'DM Sans', sans-serif; }
+.modal.rec-space-modal { max-width: 560px; width: calc(100vw - 32px); }
+.rec-space-form { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-height: calc(100vh - 190px); overflow-y: auto; }
+.rec-space-preview { font-size: 13px; color: var(--text2); border-top: 1px solid var(--border); padding-top: 10px; }
+.rec-space-preview b { color: var(--text); }
+.rec-space-preview .rec-pv-row { padding: 6px 0; }
+.rec-keep { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.rec-keep select.form-input { width: auto; padding: 6px 8px; font-size: 13px; }
+.rec-keep .rec-num { width: 64px; }
 @media (max-width: 760px) {
+  .rec-space { flex: 1 1 100%; }
   .rec-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; column-gap: 8px; }
   .rec-row .rec-time { grid-column: 1 / -1; width: auto; font-size: 11px; color: var(--text3); }
   .rec-row .mych-meta { flex-wrap: nowrap; overflow: hidden; white-space: nowrap; }
@@ -2864,6 +2883,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
             <div class="mych-title">Recordings</div>
             <p class="mych-sub">Follow your teams and Tentacle records their games from the TV guide. Recordings are in Jellyfin, for everyone in the household.</p>
           </div>
+          <div class="rec-space" id="rec-space"></div>
           <div class="mych-status" id="rec-status" aria-live="polite"></div>
         </div>
         <div class="live-tabs" id="rec-tabs">
@@ -4034,6 +4054,30 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
   </div>
 </div>
 
+<div class="modal-overlay" id="modal-rec-space" style="display:none">
+  <div class="modal rec-space-modal">
+    <div class="modal-header">
+      <div class="modal-title">Space for recordings</div>
+      <button class="modal-close" onclick="closeModal('modal-rec-space')">&times;</button>
+    </div>
+    <div class="rec-space-form">
+      <label class="rec-field"><span>Keep recordings under</span>
+        <span class="rec-pad"><input class="form-input rec-num" id="rec-space-gb" type="number" min="1" step="1" placeholder="no limit"> <small>GB</small></span>
+        <small>When they take more, the oldest are deleted first, through Jellyfin.</small></label>
+      <label class="rec-field"><span>Also delete recordings older than</span>
+        <span class="rec-pad"><input class="form-input rec-num" id="rec-space-days" type="number" min="1" step="1" placeholder="never"> <small>days</small></span></label>
+      <p class="mych-hint">Never deleted: anyone&rsquo;s favourite (a recording or its show), one someone is part-way through, one playing or recording now, and what a team or rule keeps (Edit &rarr; Keep). Checked every 15 minutes; if any recording can&rsquo;t be read, nothing is deleted that time.</p>
+      <div class="rec-space-preview" id="rec-space-preview" aria-live="polite"></div>
+    </div>
+    <div class="rec-ed-foot">
+      <button class="btn btn-secondary btn-sm" id="rec-space-off" onclick="recSpaceSave(true)">No limit</button>
+      <span style="flex:1"></span>
+      <button class="btn btn-secondary btn-sm" onclick="closeModal('modal-rec-space')">Cancel</button>
+      <button class="btn btn-primary btn-sm" id="rec-space-save" onclick="recSpaceSave(false)">Save</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-add-provider" style="display:none">
   <div class="modal">
     <div class="modal-header">
@@ -4949,7 +4993,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="/static/js/app.js?v=47"></script>
 <script src="/static/js/sources.js?v=46"></script>
-<script src="/static/js/pages.js?v=52"></script>
+<script src="/static/js/pages.js?v=53"></script>
 <script src="/static/js/music.js?v=45"></script>
 <script src="/static/js/mychannels.js?v=50"></script>
 <script src="/static/js/newgroups.js?v=45"></script>
@@ -4957,7 +5001,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 <script src="/static/js/welcome.js?v=50"></script>
 <script src="/static/js/live.js?v=5"></script>
 <script src="/static/js/myyoutube.js?v=48"></script>
-<script src="/static/js/recordings.js?v=4"></script>
+<script src="/static/js/recordings.js?v=5"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {

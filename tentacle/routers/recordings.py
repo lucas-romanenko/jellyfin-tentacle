@@ -165,6 +165,8 @@ class RuleBody(BaseModel):
     mode: str = "preview"
     active: bool = True
     priority: int = 0
+    keep_forever: bool = False
+    keep_last: Optional[int] = None
 
 
 class RulePatch(BaseModel):
@@ -184,6 +186,13 @@ class RulePatch(BaseModel):
     mode: Optional[str] = None
     active: Optional[bool] = None
     priority: Optional[int] = None
+    keep_forever: Optional[bool] = None
+    keep_last: Optional[int] = None
+
+
+def _keep_last(v) -> Optional[int]:
+    """A rule's "keep the last N": 1 to 999, or none."""
+    return max(1, min(int(v), 999)) if v else None
 
 
 def _clean_terms(terms) -> list:
@@ -247,6 +256,7 @@ def _rule_json(db: Session, r: RecordingRule, user, owners: dict, counts: dict) 
         "pre_padding_minutes": r.pre_padding_minutes, "post_padding_minutes": r.post_padding_minutes,
         "playoff_extra_minutes": r.playoff_extra_minutes, "pregame_next": bool(r.pregame_next),
         "skip_replays": bool(r.skip_replays), "mode": r.mode, "active": bool(r.active), "priority": r.priority,
+        "keep_forever": bool(r.keep_forever), "keep_last": r.keep_last,
         "owner": owners.get(r.owner_user_id), "mine": user is not None and r.owner_user_id == user.id,
         "can_edit": _may_edit(user, r), "upcoming": counts.get(r.id, 0),
         "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
@@ -321,6 +331,7 @@ def create_rule(body: RuleBody, request: Request, db: Session = Depends(get_db))
                       min_minutes=body.min_minutes, pre_padding_minutes=d["pre"], post_padding_minutes=d["post"],
                       playoff_extra_minutes=d["playoff"], pregame_next=body.pregame_next,
                       skip_replays=body.skip_replays, mode=body.mode, active=body.active, priority=body.priority,
+                      keep_forever=body.keep_forever, keep_last=None if body.keep_forever else _keep_last(body.keep_last),
                       owner_user_id=user.id if user else None, created_at=now, updated_at=now)
     db.add(r)
     db.flush()
@@ -356,6 +367,12 @@ def update_rule(rule_id: int, body: RulePatch, request: Request, db: Session = D
             if k.endswith("_minutes") and v is not None:
                 v = max(0, min(int(v), 6 * 60))
             setattr(r, k, v if k != "name" else str(v)[:120])
+    if data.get("keep_forever") is not None:
+        r.keep_forever = bool(data["keep_forever"])
+    if "keep_last" in data:
+        r.keep_last = _keep_last(data["keep_last"])
+    if r.keep_forever:
+        r.keep_last = None
     _save_lists(db, r.id, data.get("terms"), data.get("excludes"), data.get("channels"))
     if r.kind == "keywords" and not db.query(RecordingRuleTerm).filter(
             RecordingRuleTerm.rule_id == r.id, RecordingRuleTerm.exclude == False).count():  # noqa: E712
@@ -661,3 +678,52 @@ def recording_artwork_set(body: ArtworkBody, db: Session = Depends(get_db)):
     job.set_enabled(db, body.enabled)
     live_updates.publish("recordings", admins=True)
     return job.status(db)
+
+
+# ── The space limit (services/recording_space, #868) ───────────────────────
+
+class SpaceBody(BaseModel):
+    limit_gb: Optional[float] = None      # empty: no size limit
+    days: Optional[int] = None            # empty: no age limit
+
+
+def _space_values(limit_gb, days) -> tuple:
+    if limit_gb is not None and not (1 <= limit_gb <= 1_000_000):
+        raise HTTPException(422, "The limit is 1 GB or more")
+    if days is not None and not (1 <= days <= 36500):
+        raise HTTPException(422, "Days is 1 or more")
+    return limit_gb or None, days or None
+
+
+@router.get("/api/live/recordings/space")
+def recordings_space(request: Request, limit_gb: Optional[float] = Query(None), days: Optional[int] = Query(None),
+                     preview: bool = Query(False), db: Session = Depends(get_db)):
+    """How much the recordings take and the limit (as of the last read, every
+    15 minutes). `preview`: what would go at `limit_gb`/`days` (admins; a dry
+    run, nothing is deleted)."""
+    from services import recording_space as RS
+    user = _caller(request, db)
+    admin = user is None or bool(user.is_admin)
+    if preview:
+        if not admin:
+            raise HTTPException(403, "Only an admin sets the recordings limit")
+        limit_gb, days = _space_values(limit_gb, days)
+    out = RS.status(db, limit_gb=limit_gb, days=days, preview=preview)
+    out["is_admin"] = admin
+    return out
+
+
+@router.put("/api/live/recordings/space", dependencies=[Depends(require_admin)])
+def recordings_space_set(body: SpaceBody, db: Session = Depends(get_db)):
+    """Set (or clear: both empty) the limit. A pass follows in seconds and
+    deletes what the preview showed."""
+    from services import recording_space as RS
+    limit_gb, days = _space_values(body.limit_gb, body.days)
+    RS.set_limits(db, limit_gb, days)
+    logger.info(f"[Recordings limit] set: {f'{limit_gb:g} GB' if limit_gb else 'no size limit'}"
+                f"{f', {days} days' if days else ''}")
+    if limit_gb or days:
+        RS.request_pass()
+    from services.recording_rules import book
+    book.notify()
+    return RS.status(db)
