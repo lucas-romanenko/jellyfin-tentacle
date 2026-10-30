@@ -2065,6 +2065,20 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 .wm-title { color: var(--text); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wm-meta { font-size: 12px; color: var(--text3); }
 .wm-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.untr-head { margin-bottom: 12px; }
+.untr-count { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+.untr-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.untr-opts { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 4px; font-size: 13px; color: var(--text2); }
+.untr-opts label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.untr-sure { color: var(--green); font-weight: 600; }
+.untr-unsure { color: var(--amber); font-weight: 600; }
+.untr-other { color: var(--text3); text-decoration: underline; }
+.untr-problem { font-size: 12px; color: var(--amber); margin-top: 6px; }
+#untracked-list .wm-title { white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  #untracked-list .wm-row { flex-wrap: wrap; }
+  #untracked-list .wm-actions { width: 100%; justify-content: flex-start; padding-left: 48px; }
+}
 .wm-blocked-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; }
 #wrong-match-blocked summary { cursor: pointer; color: var(--text3); font-size: 12px; }
 .activity-actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
@@ -2547,6 +2561,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <div class="tabs-bar" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
           <button class="live-tab active" data-libtab="browse" onclick="showLibTab('browse')">Browse</button>
           <button class="live-tab" data-libtab="following" onclick="showLibTab('following')">Following <span class="nav-badge nav-badge-quiet" id="lib-follow-badge" style="display:none;margin-left:6px">0</span></button>
+          <button class="live-tab" data-libtab="untracked" data-admin-only onclick="showLibTab('untracked')">Not in Radarr/Sonarr <span class="nav-badge nav-badge-quiet" id="lib-untracked-badge" style="display:none;margin-left:6px">0</span></button>
         </div>
 
         <div id="lib-tab-browse">
@@ -2606,6 +2621,16 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           <div id="following-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px"></div>
           <div id="following-empty" class="empty-state" style="display:none"><p>No shows being followed yet. Add a show to Sonarr with "All Episodes (including future)" or enable following from the show detail modal.</p></div>
         </div><!-- /lib-tab-following -->
+
+        <!-- Folders Radarr/Sonarr don't know about (admins, untracked.js) -->
+        <div id="lib-tab-untracked" style="display:none">
+          <div class="untr-head" id="untracked-head"></div>
+          <div class="untr-opts">
+            <label><input type="checkbox" id="untr-monitored"> Let Radarr/Sonarr upgrade what I add and fetch missing episodes later (monitored)</label>
+            <label><input type="checkbox" id="untr-auto"> Add the ones 95%+ sure automatically each night</label>
+          </div>
+          <div id="untracked-list"></div>
+        </div><!-- /lib-tab-untracked -->
 
       </div>
 
@@ -4035,6 +4060,22 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
 <!-- Add Provider Modal -->
 <!-- Recordings: a team's or a rule's options, and what it would record (recordings.js) -->
+<div class="modal-overlay" id="untr-pick-modal" style="display:none">
+  <div class="modal" style="max-width:520px">
+    <div class="modal-header">
+      <div class="modal-title">Which title is <span id="untr-pick-folder"></span>?</div>
+      <button class="modal-close" id="untr-pick-close">&times;</button>
+    </div>
+    <div style="padding:16px">
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <input class="form-input" id="untr-pick-q" aria-label="Title and year" placeholder="Title and year" style="flex:1">
+        <button class="btn btn-secondary btn-sm" id="untr-pick-go">Search</button>
+      </div>
+      <div id="untr-pick-list"></div>
+      <div class="wm-meta" style="margin-top:12px">The one you pick is added with this folder as it is: nothing is downloaded, moved or renamed.</div>
+    </div>
+  </div>
+</div>
 <div class="modal-overlay" id="modal-rec-rule" style="display:none">
   <div class="modal rec-modal">
     <div class="modal-header">
@@ -4953,6 +4994,13 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
       <h2>Install the Jellyfin Plugin</h2>
       <p>The Tentacle plugin adds a custom home screen and discover tab to Jellyfin. It's optional but recommended.</p>
 
+      <!-- Folders Radarr/Sonarr don't know about (untracked.js), when there are any -->
+      <div id="setup-untracked-note" style="display:none;background:var(--bg2);border-left:3px solid var(--amber);border-radius:8px;padding:12px;margin:12px 0;font-size:13px;color:var(--text2)">
+        <strong id="setup-untracked-count"></strong>
+        Tentacle can add them to Radarr/Sonarr with the folders as they are (nothing downloaded, moved or renamed).
+        <a href="#library/untracked" id="setup-untracked-open" style="color:var(--accent-text);white-space:nowrap">See them in Library →</a>
+      </div>
+
       <div style="background:var(--bg2);border-radius:8px;padding:16px;margin:16px 0">
         <div style="font-weight:600;margin-bottom:12px">How to install:</div>
         <ol style="margin:0;padding-left:20px;line-height:2">
@@ -4979,6 +5027,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         Jellyfin then keeps the plugin up to date from this catalogue by itself (Scheduled tasks → Update Plugins, daily); a new version runs after Jellyfin restarts. Settings → About shows which versions run.
       </div>
 
+
       <div style="display:flex;gap:8px;margin-top:16px">
         <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="setupGoTo(5)">← Back</button>
         <button class="btn btn-primary" style="flex:1;justify-content:center" onclick="finishSetup()">Done →</button>
@@ -4991,7 +5040,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="/static/js/app.js?v=47"></script>
+<script src="/static/js/app.js?v=48"></script>
 <script src="/static/js/sources.js?v=46"></script>
 <script src="/static/js/pages.js?v=53"></script>
 <script src="/static/js/music.js?v=45"></script>
@@ -5002,6 +5051,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 <script src="/static/js/live.js?v=5"></script>
 <script src="/static/js/myyoutube.js?v=48"></script>
 <script src="/static/js/recordings.js?v=5"></script>
+<script src="/static/js/untracked.js?v=1"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {

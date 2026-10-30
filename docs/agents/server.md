@@ -434,6 +434,35 @@ movies/series, then Sonarr/Radarr text-lookup titles TMDB lacks (TheTVDB).
   the background (`_search_jellyfin_ids`, `_search_arr_ids`), only a first
   fetch ever is waited for (up to the same 2 s).
 
+## Folders Radarr/Sonarr don't know about (`services/untracked.py`, #871)
+
+Library → **Not in Radarr/Sonarr** (admins, `static/js/untracked.js`) and
+a line on the last setup step when there are any. Read-only list: each top
+folder of `/media/movies` and `/media/shows` with a real video file (to
+depth 2 / 4; `.strm`-only and empty folders are Tentacle's or nothing) whose
+NAME no Radarr movie / Sonarr series path ends in (as `local_arr_folder`
+finds downloads, #649). Matched to TMDB by the ids in its NFO (`uniqueid`,
+`tmdbid`, `imdbid`, `<id>tt…`; `tvshow.nfo` for shows), else ids in the
+folder name (`{tmdb-603}`, `[imdbid-tt…]`, `{tvdb-…}`): 100 %; else title
+and year from the name (or the NFO's `title`/`year`), scored by
+`confidence()` (99 at most). Under 80, or a runner-up within 5 points (a
+namesake, no year), is in doubt: the row offers Pick (`/search`). A match
+Radarr/Sonarr already has in another folder is shown, not addable.
+
+Add goes through the shared path (`media_requests.add_existing_movie` /
+`add_existing_series` → `arr_add.add_movie_to_radarr(path=…, search=False)`
+/ `SonarrService.add_series(series_path=…, search=False)`): the default
+quality profile (refused without one), the folder as the title's `path`,
+`searchForMovie` / `searchForMissingEpisodes` false, unmonitored unless
+`untracked_monitored`. Radarr/Sonarr read the files where they are; nothing
+is moved, renamed or downloaded, and Tentacle writes nothing there. Their
+path for the folder is the parent most of their titles that Tentacle sees
+by name sit in, else the default root folder setting, else their first
+non-VOD root. Only a folder on the current list is sent. A Radarr/Sonarr
+scan follows 30 s later. The list lives in memory (`_state`), checked again
+when the page opens on one older than 6 h, on "Check again", and nightly
+with `untracked_auto_add` (off by default), which adds the 95 %+ sure ones.
+
 ## Deleting things
 
 - Deleting a provider removes its VOD files and DB records, then rebuilds

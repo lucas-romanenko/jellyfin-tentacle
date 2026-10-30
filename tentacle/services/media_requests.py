@@ -303,6 +303,23 @@ def request_movies(db: Session, tmdb_ids: Iterable[int], *, user_id: Optional[in
     return out
 
 
+def add_existing_movie(db: Session, tmdb_id: int, path: str, root: str, *, monitored: bool,
+                       via: str) -> tuple:
+    """Tell Radarr about a film already in the library at `path` (Radarr's
+    own path of its folder, under `root`): the default profile, no search,
+    the file read where it is (#871). Returns (outcome, reason). Raises
+    RequestRefused before anything is sent."""
+    url, key = _connection(db, "radarr")
+    profile_id, profile_label = _choose_profile(db, "radarr", url, key, None, None, via)
+    logger.info(f"[Request] movie tmdb:{tmdb_id} via {via}: Radarr profile {profile_label}, "
+                f"existing folder {path}, {'monitored' if monitored else 'unmonitored'}, no search")
+    outcome, reason = arr_add.add_movie_to_radarr(url, key, tmdb_id, profile_id, root, path=path,
+                                                  monitored=monitored, search=False)
+    if outcome == ADDED:
+        _bust_discover_cache()
+    return outcome, reason
+
+
 # ── Series ────────────────────────────────────────────────────────────────
 
 def _sonarr_root_folders(sonarr) -> list:
@@ -469,6 +486,32 @@ def request_series(db: Session, *, tmdb_ids: Iterable[int] = (), tvdb_ids: Itera
     if out.added:
         _bust_discover_cache()
     return out
+
+
+def add_existing_series(db: Session, path: str, *, tmdb_id: Optional[int] = None,
+                        tvdb_id: Optional[int] = None, monitored: bool, via: str) -> tuple:
+    """Tell Sonarr about a show already in the library at `path` (Sonarr's
+    own path of its folder): the default profile, no search, the episodes
+    read where they are (#871). Returns (outcome, reason). Raises
+    RequestRefused before anything is sent."""
+    from services.sonarr import SonarrService
+    url, key = _connection(db, "sonarr")
+    profile_id, profile_label = _choose_profile(db, "sonarr", url, key, None, None, via)
+    if tmdb_id and not tvdb_id:
+        tmdb = _tmdb_service(db)
+        tvdb_id = tmdb.get_tvdb_id(tmdb_id) if tmdb else None
+    logger.info(f"[Request] series tmdb:{tmdb_id} tvdb:{tvdb_id} via {via}: Sonarr profile {profile_label}, "
+                f"existing folder {path}, {'monitored' if monitored else 'unmonitored'}, no search")
+    sonarr = SonarrService(url, key)
+    result = sonarr.add_series(tmdb_id, profile_id, monitor="all" if monitored else "none",
+                               series_path=path, monitor_new=monitored, tvdb_id=tvdb_id,
+                               search=False, monitored=monitored)
+    if result and result.get("alreadyExists"):
+        return EXISTS, None
+    if not result:
+        return FAILED, sonarr.last_error
+    _bust_discover_cache()
+    return ADDED, None
 
 
 # ── Albums ────────────────────────────────────────────────────────────────

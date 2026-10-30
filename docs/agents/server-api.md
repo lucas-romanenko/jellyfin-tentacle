@@ -125,6 +125,12 @@ Declared on the app in `main.py` (no router, all **none**; listed in
 | GET | `/api/library/item/{media_type}/{tmdb_id}` | user | library.py:get_item_detail |
 | GET | `/api/library/items` | user | library.py:get_library_items |
 | GET | `/api/library/match-suspects` | admin | library.py:list_match_suspects |
+| GET | `/api/library/untracked` | admin | library.py:list_untracked (an old list starts a check in the background) |
+| POST | `/api/library/untracked/scan` | admin | library.py:rescan_untracked |
+| POST | `/api/library/untracked/add` | admin | library.py:add_untracked |
+| POST | `/api/library/untracked/add-sure` | admin | library.py:add_untracked_sure |
+| GET | `/api/library/untracked/search` | admin | library.py:search_untracked |
+| PUT | `/api/library/untracked/options` | admin | library.py:set_untracked_options |
 | POST | `/api/library/match-suspects/check` | admin | library.py:check_match_suspects_now |
 | POST | `/api/library/match-suspects/{tmdb_id}/dismiss` | admin | library.py:dismiss_match_suspect |
 | POST | `/api/library/replace/{media_type}/{tmdb_id}` | user | library.py:replace_copy |

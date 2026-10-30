@@ -205,7 +205,10 @@ class SonarrService:
                    selected_episodes: list = None,
                    series_path: str = None,
                    monitor_new: bool = False,
-                   tvdb_id: int = None) -> Optional[dict]:
+                   tvdb_id: int = None,
+                   search: bool = True, monitored: bool = True) -> Optional[dict]:
+        # search=False, monitored=False: a library folder Sonarr doesn't know
+        # about, added as it is (series_path, #871): nothing is searched.
         # Prefer the exact TVDB lookup — Sonarr/Skyhook is TVDB-native, so it's
         # immune to the tmdb: term mis-resolution that can return the wrong show.
         self.last_error = None
@@ -256,11 +259,11 @@ class SonarrService:
             # grabs them. The series stays monitored: that search rejects
             # every release of an unmonitored series.
             ongoing = monitor in ("all", "future")
-            payload["monitored"] = True
+            payload["monitored"] = monitored
             payload["monitorNewItems"] = "all" if ongoing else "none"
             payload["addOptions"] = {
                 "monitor": monitor,
-                "searchForMissingEpisodes": True,
+                "searchForMissingEpisodes": search,
             }
 
         sent_at = time.monotonic()

@@ -1163,3 +1163,119 @@ def fix_match(tmdb_id: int, body: FixMatchBody, db: Session = Depends(get_db),
         raise HTTPException(e.status, str(e))
     emit_library_event("movie_removed", {"tmdb_id": tmdb_id, "media_type": "movie"})
     return result
+
+
+# ── Folders Radarr/Sonarr don't know about (#871, services/untracked.py) ──
+
+class UntrackedAddBody(BaseModel):
+    kind: str
+    folder: str
+    tmdb_id: Optional[int] = None
+    monitored: bool = False
+
+
+class UntrackedSureBody(BaseModel):
+    monitored: bool = False
+
+
+class UntrackedOptionsBody(BaseModel):
+    auto_add: Optional[bool] = None
+    monitored: Optional[bool] = None
+
+
+def _untracked_options(db) -> dict:
+    return {"auto_add": (get_setting(db, "untracked_auto_add", "false") or "").lower() == "true",
+            "monitored": (get_setting(db, "untracked_monitored", "false") or "").lower() == "true"}
+
+
+def _rescan_after_add(kinds: set) -> None:
+    """Radarr/Sonarr read the folder right after the add; Tentacle's own scan
+    then picks the titles up as downloaded, a little later."""
+    import routers.radarr as radarr_router
+    import routers.sonarr as sonarr_router
+
+    def run():
+        for kind, mod in (("movie", radarr_router), ("series", sonarr_router)):
+            if kind in kinds and not mod._scan_running:
+                mod._scan_running = True
+                mod._run_scan_background()
+
+    timer = threading.Timer(30, run)
+    timer.daemon = True
+    timer.start()
+
+
+@router.get("/untracked", dependencies=[Depends(require_admin)])
+def list_untracked(db: Session = Depends(get_db)):
+    """Folders in the movie/show library Radarr/Sonarr don't know about.
+    Read-only; an old (or no) list starts a check in the background."""
+    from services import untracked
+    if untracked.stale():
+        untracked.scan_in_background()
+    return {**untracked.state(), "options": _untracked_options(db)}
+
+
+@router.post("/untracked/scan", dependencies=[Depends(require_admin)])
+def rescan_untracked():
+    from services import untracked
+    untracked.scan_in_background()
+    return untracked.state()
+
+
+@router.post("/untracked/add", dependencies=[Depends(require_admin)])
+def add_untracked(body: UntrackedAddBody, db: Session = Depends(get_db)):
+    """Tell Radarr/Sonarr to use this folder as it is: the default quality
+    profile, no search; nothing is downloaded, moved or renamed."""
+    from services import untracked
+    from services.media_requests import RequestRefused
+    if body.kind not in ("movie", "series"):
+        raise HTTPException(400, "kind must be movie or series")
+    try:
+        outcome, reason = untracked.add(db, body.kind, body.folder, tmdb_id=body.tmdb_id,
+                                        monitored=body.monitored)
+    except RequestRefused as e:
+        raise HTTPException(e.status, e.message)
+    if outcome == "failed":
+        raise HTTPException(409, reason or "It wasn't added.")
+    _rescan_after_add({body.kind})
+    return {"outcome": outcome, "count": untracked.state()["count"]}
+
+
+@router.post("/untracked/add-sure", dependencies=[Depends(require_admin)])
+def add_untracked_sure(body: UntrackedSureBody, db: Session = Depends(get_db)):
+    from services import untracked
+    from services.media_requests import RequestRefused
+    kinds = {i["kind"] for i in untracked.state()["items"]}
+    try:
+        result = untracked.add_sure(db, monitored=body.monitored, via="library-untracked")
+    except RequestRefused as e:
+        raise HTTPException(e.status, e.message)
+    if result["added"]:
+        _rescan_after_add(kinds)
+    return {**result, "count": untracked.state()["count"]}
+
+
+@router.get("/untracked/search", dependencies=[Depends(require_admin)])
+def search_untracked(kind: str, q: str, db: Session = Depends(get_db)):
+    """TMDB titles for Pick, by what the person typed ("Heat 1995")."""
+    from services import untracked
+    if kind not in ("movie", "series"):
+        raise HTTPException(400, "kind must be movie or series")
+    tmdb = untracked._tmdb(db)
+    if not tmdb:
+        raise HTTPException(503, "TMDB isn't set up")
+    title, year = untracked.title_and_year(q.strip()[:200])
+    try:
+        return {"candidates": untracked.search_candidates(tmdb, kind, title, year)}
+    except LookupError:
+        raise HTTPException(502, "TMDB didn't answer. Try again in a moment.")
+
+
+@router.put("/untracked/options", dependencies=[Depends(require_admin)])
+def set_untracked_options(body: UntrackedOptionsBody, db: Session = Depends(get_db)):
+    from models.database import set_setting
+    if body.auto_add is not None:
+        set_setting(db, "untracked_auto_add", "true" if body.auto_add else "false")
+    if body.monitored is not None:
+        set_setting(db, "untracked_monitored", "true" if body.monitored else "false")
+    return _untracked_options(db)
