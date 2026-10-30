@@ -182,6 +182,110 @@ class RefreshLiveChannels(_Base):
         self.assertEqual([], _Client.asked)
 
 
+class NamesChanged(_Base):
+    """Activity says how many channel names each refresh changed, so the hour
+    the provider renames its event channels shows (27 Oct 2026: renamed after
+    the 3 am run, before 07:43)."""
+
+    def msgs(self):
+        return [a.message for a in self.db.query(ActivityLog)]
+
+    def test_counted_per_run(self):
+        discovery.refresh_live_channels(self.db, gentle=True)
+        self.assertIn("Live TV channel refresh nightly: 2 names changed", self.msgs())
+        discovery.refresh_live_channels(self.db, gentle=True, run="08:00")
+        self.assertIn("Live TV channel refresh 08:00: 0 names changed", self.msgs())
+
+    def test_one_name(self):
+        ch = self.channel("502")
+        ch.name = "ESPN+ 08: Oilers at Flames Oct 26 9:00PM ET"
+        self.db.commit()
+        discovery.refresh_live_channels(self.db, run="08:00")
+        self.assertIn("Live TV channel refresh 08:00: 1 name changed", self.msgs())
+
+    def test_the_admins_own_name_is_not_a_change_of_ours_but_the_providers_is(self):
+        # 502 carries custom_name "Game 8"; the provider's name under it changed
+        discovery.refresh_live_channels(self.db)
+        self.assertEqual("Game 8", self.channel("502").custom_name)
+        self.assertIn("Live TV channel refresh nightly: 2 names changed", self.msgs())
+
+    def test_new_channels_are_not_renames(self):
+        STREAMS["10"].append({"stream_id": 503, "name": "ESPN+ 09: Kraken at Jets", "category_id": "10"})
+        self.addCleanup(STREAMS["10"].pop)
+        discovery.refresh_live_channels(self.db)
+        self.assertIn("Live TV channel refresh nightly: 2 names changed", self.msgs())
+
+    def test_nothing_read_nothing_said(self):
+        with mock.patch("services.provider_activity.recording_protected", lambda db: True):
+            discovery.refresh_live_channels(self.db, run="08:00")
+        self.assertFalse(any("names changed" in m or "name changed" in m for m in self.msgs()))
+
+    def test_a_failed_morning_run_says_which_run(self):
+        _Client.fail = True
+        discovery.refresh_live_channels(self.db, run="08:00")
+        self.assertTrue(any(m.startswith("Live TV channel refresh 08:00 for Bears failed") for m in self.msgs()))
+
+
+@unittest.skipIf(main is None, "fastapi/apscheduler not installed")
+class TheMorningRefresh(_Base):
+    """At 08:00 the nightly job's channel refresh and Jellyfin guide refresh
+    run again: channel listings only, the same stand-aside rules."""
+
+    def run_morning(self, holds=False):
+        steps = []
+        real_refresh = discovery.refresh_live_channels
+
+        def channels(db, gentle=False, run="nightly"):
+            steps.append(("channels", gentle, run))
+            return real_refresh(db, gentle=gentle, run=run)
+
+        patches = [
+            mock.patch.object(main, "SessionLocal", lambda: self.db),
+            mock.patch.object(discovery, "refresh_live_channels", channels),
+            mock.patch.object(livetv, "refresh_jellyfin_guide_after_sync",
+                              lambda db: steps.append(("jellyfin guide",)) or True),
+            mock.patch.object(livetv, "_nightly_holds_guide", lambda: holds),
+            mock.patch.object(main, "schedule_once",
+                              lambda fn, delay, job_id: steps.append(("again in", delay, job_id))),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        # The test's own session: closing it here would end the test's too
+        with mock.patch.object(self.db, "close", lambda: None):
+            main.run_morning_channel_refresh()
+        self.db.expire_all()
+        return steps
+
+    def test_channels_then_jellyfins_guide(self):
+        self.assertEqual([("channels", True, "08:00"), ("jellyfin guide",)], self.run_morning())
+        self.assertEqual("ESPN+ 07: Leafs at Bruins Oct 26 7:00PM ET", self.channel("501").name)
+        self.assertIn("Live TV channel refresh 08:00: 2 names changed",
+                      [a.message for a in self.db.query(ActivityLog)])
+
+    def test_it_is_scheduled_for_8_am(self):
+        self.assertEqual((8, 0), main.MORNING_CHANNEL_REFRESH)
+
+    def test_a_protected_recording_no_request_no_guide_refresh(self):
+        with mock.patch("services.provider_activity.recording_protected", lambda db: True):
+            self.assertEqual([("channels", True, "08:00")], self.run_morning())
+        self.assertEqual([], _Client.asked)
+
+    def test_a_sync_of_the_provider_running_is_left_alone(self):
+        livetv._set_sync_status(self.pid, {"phase": "running", "progress": 40, "message": "Fetching"})
+        self.assertEqual([("channels", True, "08:00")], self.run_morning())
+        self.assertEqual([], _Client.asked)
+
+    def test_while_the_nightly_job_reads_the_provider_it_tries_again_later(self):
+        self.assertEqual([("again in", main.MORNING_CHANNEL_RETRY_SECONDS, "morning_channel_refresh_retry")],
+                         self.run_morning(holds=True))
+        self.assertEqual([], _Client.asked)
+
+    def test_a_failure_never_raises(self):
+        _Client.fail = True
+        self.assertEqual([("channels", True, "08:00")], self.run_morning())
+
+
 class ChannelsTheProviderDropped(_Base):
     """An Xtream channel the provider no longer lists is kept and marked;
     after GONE_DAYS it leaves the lineup; listed again, it is back as it was."""

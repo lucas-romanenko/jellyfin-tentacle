@@ -3485,6 +3485,7 @@ def _upsert_channels(
 
     new_count = 0
     updated_count = 0
+    renamed_count = 0
     seen_ids = set()
     enabled_groups = _enabled_group_names(db, provider_id)
 
@@ -3500,6 +3501,8 @@ def _upsert_channels(
 
         if sid in existing:
             ch = existing[sid]
+            if ch.name != name:
+                renamed_count += 1
             ch.name = name
             ch.provider_missing_since = None
             ch.stream_url = url
@@ -3522,7 +3525,7 @@ def _upsert_channels(
             new_count += 1
 
     db.flush()
-    return {"new": new_count, "updated": updated_count, "total": len(seen_ids)}
+    return {"new": new_count, "updated": updated_count, "renamed": renamed_count, "total": len(seen_ids)}
 
 
 # An Xtream channel the provider no longer lists: never deleted (the row

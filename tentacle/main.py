@@ -487,6 +487,38 @@ def _run_scheduled_sync():
         db.close()
 
 
+# The provider renames its event channels for the day's games after the
+# nightly job has read them: on 27 Oct 2026 the 3 am run (04:11) still got
+# 26 Oct's names, the new ones came between 04:11 and 07:43, and 475 game
+# channels showed yesterday's games all day. A second channel refresh at
+# 08:00 (channel listings only, never a stream), then Jellyfin's guide.
+MORNING_CHANNEL_REFRESH = (8, 0)
+MORNING_CHANNEL_RETRY_SECONDS = 15 * 60
+
+
+def run_morning_channel_refresh():
+    """The nightly job's Live TV channel refresh and Jellyfin guide refresh,
+    again in the morning. Stands aside as the nightly's does (a provider whose
+    sync runs, a recording under recording protection); while the nightly job
+    is still before its own guide step it tries again in 15 minutes."""
+    from routers.livetv import _nightly_holds_guide, refresh_jellyfin_guide_after_sync
+    from services.discovery import refresh_live_channels
+    if _nightly_holds_guide():
+        logger.info("[LiveTV] Morning channel refresh waits: the nightly job is reading the provider")
+        schedule_once(run_morning_channel_refresh, MORNING_CHANNEL_RETRY_SECONDS, "morning_channel_refresh_retry")
+        return
+    hour, minute = MORNING_CHANNEL_REFRESH
+    db = SessionLocal()
+    try:
+        if refresh_live_channels(db, gentle=True, run=f"{hour:02d}:{minute:02d}"):
+            refresh_jellyfin_guide_after_sync(db)
+    except Exception as e:
+        _rollback(db)
+        logger.error(f"Morning Live TV channel refresh failed: {e}")
+    finally:
+        db.close()
+
+
 def run_native_playlist_refresh():
     """Periodic: re-query only native (genre/rating/year) playlists so they pick up
     items whose Jellyfin metadata arrived after the last full refresh — without waiting
@@ -834,6 +866,18 @@ def setup_scheduler(db):
     )
     logger.info("Live TV guide retry and top-up scheduled: every 5 min (after a failed download: "
                 "5, 15, 30 min, then hourly)")
+
+    # Live TV channel names again at 08:00 (run_morning_channel_refresh)
+    scheduler.add_job(
+        run_morning_channel_refresh,
+        CronTrigger(hour=MORNING_CHANNEL_REFRESH[0], minute=MORNING_CHANNEL_REFRESH[1]),
+        id="morning_channel_refresh",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+    logger.info("Live TV channel refresh scheduled: daily at 08:00 (after the nightly one)")
 
     # YouTube source: check enabled channels for new uploads and live streams.
     # The job checks the youtube_enabled setting itself, so the schedule can

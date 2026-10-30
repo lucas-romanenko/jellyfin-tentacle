@@ -123,7 +123,7 @@ class ChannelSyncWritesTheChosenFormat(_Base):
         out = livetv._upsert_channels(1, self._streams(), {"5": "Sports"}, client, self.db, extension="ts")
         self.db.commit()
         rows = {r.stream_id: r for r in self.db.query(LiveChannel).all()}
-        self.assertEqual({"new": 0, "updated": 2, "total": 2}, out)
+        self.assertEqual({"new": 0, "updated": 2, "renamed": 0, "total": 2}, out)
         self.assertEqual("http://panel.test/live/u/p/101.ts", rows["101"].stream_url)
         self.assertEqual(ids["101"], rows["101"].id, "the row must be re-keyed in place, not replaced")
         self.assertTrue(rows["101"].enabled)
