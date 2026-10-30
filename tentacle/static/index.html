@@ -1800,6 +1800,45 @@ label.pool-row:hover { background: var(--bg2); }
 .about-row .fam-hint { margin: 4px 0 0; }
 .about-tv { display: flex; flex-wrap: wrap; gap: 2px 8px; padding: 2px 0; }
 @media (max-width: 600px) { .about-row { grid-template-columns: 1fr; } }
+/* Settings → Backup & restore (backup.js) */
+.bk-safe { font-size: 12px; color: var(--text2); background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 12px; margin-bottom: 18px; line-height: 1.5; }
+.bk-block { margin-bottom: 22px; }
+.bk-parts { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px 16px; margin-bottom: 12px; }
+.bk-part { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; cursor: pointer; padding: 4px 0; }
+.bk-part input { margin-top: 3px; accent-color: var(--accent); }
+.bk-part small { display: block; color: var(--text3); font-size: 11px; }
+.bk-people { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-bottom: 12px; font-size: 13px; }
+.bk-people label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+.bk-people input { accent-color: var(--accent); }
+.bk-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.bk-snaps { border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.bk-snap { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 9px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.bk-snap:last-child { border-bottom: none; }
+.bk-snap-when { font-weight: 600; min-width: 150px; }
+.bk-snap-what { flex: 1; min-width: 180px; color: var(--text3); font-size: 12px; }
+.bk-restore { border: 1px solid var(--accent); border-radius: var(--radius-sm); padding: 14px 16px; margin-top: 12px; }
+.bk-restore h4 { margin: 0 0 4px; font-size: 14px; }
+.bk-row { display: grid; grid-template-columns: minmax(170px, 1.2fr) 120px 2fr; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.bk-row:last-child { border-bottom: none; }
+.bk-row select { padding: 4px 6px; font-size: 12px; }
+.bk-row.off .bk-result { opacity: .45; }
+.bk-result { font-size: 12px; color: var(--text2); }
+.bk-n { display: inline-block; margin-right: 10px; white-space: nowrap; }
+.bk-n.add { color: var(--green); }
+.bk-n.chg { color: var(--blue); }
+.bk-n.del { color: var(--red); }
+.bk-n.miss { color: var(--amber); }
+.bk-result details { margin-top: 3px; }
+.bk-result summary { cursor: pointer; color: var(--text3); }
+.bk-result ul { margin: 4px 0 0 18px; padding: 0; color: var(--text3); }
+.bk-prov { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(170px, 1.2fr) 2fr; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.bk-prov:last-child { border-bottom: none; }
+.bk-prov select { padding: 5px 6px; font-size: 13px; }
+.bk-sub { font-size: 12px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: .05em; margin: 14px 0 4px; }
+@media (max-width: 600px) {
+  .bk-row, .bk-prov { grid-template-columns: 1fr; gap: 4px; }
+  .bk-snap-when { min-width: 0; }
+}
 .fam-box .form-group { margin-bottom: 12px; }
 .fam-copy { display: flex; align-items: center; gap: 8px; }
 .fam-copy code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-family: 'DM Mono', monospace; font-size: 13px; padding: 7px 10px; background: var(--bg3); border-radius: var(--radius-sm); }
@@ -3714,6 +3753,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
             <button class="settings-nav-item" data-section="schedule">Schedule &amp; notifications</button>
             <button class="settings-nav-item" data-section="signin">People &amp; sign-in</button>
             <button class="settings-nav-item" data-section="advanced">Advanced</button>
+            <button class="settings-nav-item" data-section="backup">Backup &amp; restore</button>
             <button class="settings-nav-item" data-section="about">About</button>
           </div>
 
@@ -4065,6 +4105,14 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <div style="margin-top:20px">
                 <button class="btn btn-primary" onclick="saveSettings()">Save</button>
               </div>
+            </div>
+
+            <!-- Backup & restore: the setup as a file, daily snapshots, restore with a preview (backup.js) -->
+            <div class="settings-section card" id="section-backup">
+              <h3>Backup &amp; restore</h3>
+              <p class="section-desc">What you picked and arranged by hand, in one file: restore it here or on another Tentacle, all of it or only some parts. Everything is matched by name.</p>
+              <div class="bk-safe">&#128274; Never in the file: provider logins and addresses, API keys, tokens or passwords. On another Tentacle, add your providers and keys first.</div>
+              <div id="backup-body"><div class="loading-state"><div class="spinner"></div> Loading&hellip;</div></div>
             </div>
 
             <!-- About: which versions run, and what needs updating (app.js loadAbout) -->
@@ -5077,6 +5125,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 <script src="/static/js/myyoutube.js?v=48"></script>
 <script src="/static/js/recordings.js?v=5"></script>
 <script src="/static/js/untracked.js?v=1"></script>
+<script src="/static/js/backup.js?v=1"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {

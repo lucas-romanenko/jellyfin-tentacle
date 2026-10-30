@@ -389,12 +389,22 @@ def delete_rule(rule_id: int, request: Request, db: Session = Depends(get_db)):
     """The rule goes; its upcoming recordings that haven't started are
     cancelled (by their own timer ids; nothing anyone else set). What it
     recorded stays, and so does the history."""
-    from services import livetv_tuners as T
-    from services.recording_rules import book
     user = _caller(request, db)
     r = _rule_or_404(db, rule_id)
     if not _may_edit(user, r):
         raise HTTPException(403, "Only its owner or an admin can remove this rule")
+    kept = remove_rule(db, r)
+    db.commit()
+    _changed(db)
+    return {"deleted": rule_id, "kept_recording": kept}
+
+
+def remove_rule(db: Session, r: RecordingRule) -> int:
+    """Remove a rule (not committed): its booked recordings are cancelled,
+    the rest of its bookings let go. Returns the bookings Jellyfin wouldn't
+    cancel (they still record). Also a restore's Replace (services/backup.py)."""
+    from services import livetv_tuners as T
+    from services.recording_rules import book
     jf = T.jellyfin_for(db)
     kept = 0
     for b in db.query(RecordingBooking).filter(RecordingBooking.rule_id == r.id).all():
@@ -408,9 +418,7 @@ def delete_rule(rule_id: int, request: Request, db: Session = Depends(get_db)):
     db.query(RecordingRuleTerm).filter(RecordingRuleTerm.rule_id == r.id).delete()
     db.query(RecordingRuleChannel).filter(RecordingRuleChannel.rule_id == r.id).delete()
     db.delete(r)
-    db.commit()
-    _changed(db)
-    return {"deleted": rule_id, "kept_recording": kept}
+    return kept
 
 
 @router.post("/api/live/recording-rules/preview")
