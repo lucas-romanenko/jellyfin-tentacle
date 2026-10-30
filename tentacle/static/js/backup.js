@@ -266,7 +266,7 @@ function _bkRenderRestore() {
           : c.target == null ? (c.same_name == null ? 'No provider of this name here: pick one or skip it.' : 'Skipped.')
           : _bkMatchText(sel);
         return `<div class="bk-prov"><div><strong>${escHtml(c.name)}</strong></div>
-          <select aria-label="Where ${escHtml(c.name)} goes" onchange="bkMapProvider(${escHtml(JSON.stringify(c.name))}, this.value)">
+          <select class="form-input" aria-label="Where ${escHtml(c.name)} goes" onchange="bkMapProvider(${escHtml(JSON.stringify(c.name))}, this.value)">
             <option value="" ${c.target == null ? 'selected' : ''}>Skip</option>${opts}</select>
           <div class="bk-result">${text}</div></div>`;
       }).join('')}`;
@@ -277,7 +277,7 @@ function _bkRenderRestore() {
     return `<div class="bk-row ${st.on ? '' : 'off'}">
       <label class="bk-part"><input type="checkbox" ${st.on ? 'checked' : ''} onchange="bkTickPart('${id}', this.checked)">
         <span>${escHtml(_bkLabel(id))}<small>${f.counts[id] != null ? _bkN(f.counts[id], id) + ' in the file' : ''}</small></span></label>
-      <select aria-label="How to restore ${escHtml(_bkLabel(id))}" onchange="bkReplace('${id}', this.value === 'replace')" ${st.on ? '' : 'disabled'}>
+      <select class="form-input" aria-label="How to restore ${escHtml(_bkLabel(id))}" onchange="bkReplace('${id}', this.value === 'replace')" ${st.on ? '' : 'disabled'}>
         <option value="merge" ${st.replace ? '' : 'selected'}>Add &amp; update</option>
         <option value="replace" ${st.replace ? 'selected' : ''}>Replace</option>
       </select>

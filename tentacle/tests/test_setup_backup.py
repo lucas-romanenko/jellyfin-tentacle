@@ -232,6 +232,11 @@ class Restore(Base):
 
         done = B.plan(dst, data, apply=True)
         self.assertTrue(done["snapshot"].endswith("-before-restore.json"))
+        # the preview said what the restore did
+        counts = ("added", "changed", "unchanged", "removed", "not_found")
+        self.assertEqual({p: [pv["parts"][p][k] for k in counts] for p in B.PART_IDS},
+                         {p: [done["parts"][p][k] for k in counts] for p in B.PART_IDS})
+        self.assertEqual(3, done["parts"]["live_channels"]["added"])   # TSN 1, Sportsnet, BBC News
         after = B.export(dst)
         self.assertEqual(comparable(data)["providers"], comparable(after)["providers"])
         self.assertEqual(comparable(data)["playlists"], comparable(after)["playlists"])
@@ -261,6 +266,20 @@ class Restore(Base):
         self.assertEqual(2, dst.query(RecordingRule).count())
         self.assertEqual(0, dst.query(ProviderCategory).filter_by(whitelisted=True).count())
         self.assertEqual([], self.pool_changes)
+
+    def test_two_playlists_of_one_name_restore_as_two(self):
+        from models.database import TagRule, TentacleUser
+        from services import backup as B
+        src = self.source()
+        ann = src.query(TentacleUser).filter_by(display_name="Ann").one()
+        src.add(TagRule(user_id=ann.id, name="short comedies", output_tag="Short 2", conditions=[]))
+        src.commit()
+        data = B.export(src)
+        dst = self.target()
+        B.plan(dst, data, parts=["playlists"], apply=True)
+        self.assertEqual(["Short 2", "Short comedies"], sorted(r.output_tag for r in dst.query(TagRule)))
+        again = B.plan(dst, data, parts=["playlists"])["parts"]["playlists"]
+        self.assertEqual((0, 0), (again["added"], again["changed"]))
 
     def test_one_persons_rows(self):
         from models.database import TentacleUser

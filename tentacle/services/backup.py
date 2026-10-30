@@ -443,7 +443,7 @@ def _match_counts(db: Session, fp: dict, target_id: int) -> dict:
             .filter(ProviderCategory.provider_id == target_id)}
     groups = {_fold(n) for (n,) in db.query(LiveChannelGroup.name).filter(LiveChannelGroup.provider_id == target_id)}
     idx = _ChannelIndex(db, target_id)
-    fc = [c for c in fp.get("vod_categories") or [] if c.get("whitelisted") or c.get("source_tag")]
+    fc = [c for c in fp.get("vod_categories") or [] if c.get("whitelisted")]
     fg = fp.get("live_groups") or []
     fch = [c for c in fp.get("live_channels") or [] if c.get("enabled")]
     return {"vod_total": len(fc), "vod_matched": sum((c.get("type"), _fold(c.get("name"))) in cats for c in fc),
@@ -496,7 +496,7 @@ def _restore_vod(db, data, choices, replace, apply) -> dict:
         rows = [c for c in fp.get("vod_categories") or []]
         if ch["target"] is None:
             if rows:
-                rep["notes"].append(f"{fp.get('name')}: skipped ({len(rows)} categories)")
+                rep["notes"].append(f"{fp.get('name')}: skipped ({sum(1 for c in rows if c.get('whitelisted'))} categories)")
             continue
         here = db.query(ProviderCategory).filter(ProviderCategory.provider_id == ch["target"]).all()
         index = {(c.type, _fold(c.category_name)): c for c in here}
@@ -535,6 +535,10 @@ def _restore_vod(db, data, choices, replace, apply) -> dict:
 
 
 def _restore_live(db, data, choices, replace, apply) -> dict:
+    """Groups by name, channels by group + name. The state every channel of
+    the provider ends in is worked out first (a group switched on brings its
+    channels, as the group switch does; the file's own choice per channel
+    wins), so the preview counts what the restore does."""
     rep = _report("Live TV channels")
     touched = False
     for fp, ch in zip(data.get("providers") or [], choices):
@@ -546,8 +550,7 @@ def _restore_live(db, data, choices, replace, apply) -> dict:
             continue
         pid = ch["target"]
         groups = {_fold(g.name): g for g in db.query(LiveChannelGroup).filter(LiveChannelGroup.provider_id == pid)}
-        idx = _ChannelIndex(db, pid)
-        on_groups = set()
+        on_groups, turning_on = set(), set()
         for g in fgroups:
             grp = groups.get(_fold(g.get("name")))
             if grp is None:
@@ -555,63 +558,63 @@ def _restore_live(db, data, choices, replace, apply) -> dict:
                 continue
             on_groups.add(grp.name)
             if not grp.enabled:
+                turning_on.add(grp.name)
                 rep["detail"].append(f"group {grp.name} on")
                 if apply:
                     grp.enabled = True
-                    # as the group switch does: its channels with it; the
-                    # file's own choices per channel come next
-                    db.query(LiveChannel).filter(LiveChannel.provider_id == pid,
-                                                 LiveChannel.group_title == grp.name) \
-                        .update({LiveChannel.enabled: True}, synchronize_session=False)
                     touched = True
-        if apply:
-            db.flush()
-            db.expire_all()     # the group switch above went past the session
-            idx = _ChannelIndex(db, pid)
-        seen = set()
-        for row in fchans:
-            c = idx.find(row)
-            if c is None:
-                if row.get("enabled"):
-                    rep["not_found"].append(row.get("custom_name") or row.get("name") or "?")
-                continue
-            seen.add(c.id)
-            want = {"enabled": bool(row.get("enabled")), "custom_name": row.get("custom_name") or None,
-                    "channel_number": row.get("number"), "sort_order": row.get("sort_order") or 0,
-                    "epg_id_override": row.get("epg_id_override") or None,
-                    "custom_logo_url": row.get("custom_logo_url") or None}
-            # merge: the file's own names, numbers and logos; one set here
-            # is cleared only when replacing
-            diff = {}
-            for k, v in want.items():
-                cur = getattr(c, k) or 0 if k == "sort_order" else getattr(c, k)
-                if cur != v and (k == "enabled" or replace or v not in (None, 0)):
-                    diff[k] = v
-            if not diff:
-                rep["unchanged"] += 1
-                continue
-            if diff.get("enabled") and not c.enabled and len(diff) == 1:
-                rep["added"] += 1
-            else:
-                rep["changed"] += 1
-            if apply:
-                for k, v in diff.items():
-                    setattr(c, k, v)
-                c.updated_at = datetime.utcnow()
-                touched = True
         if replace:
-            for c in db.query(LiveChannel).filter(LiveChannel.provider_id == pid, LiveChannel.enabled == True):  # noqa: E712
-                if c.id not in seen and c.group_title not in on_groups:
-                    rep["removed"] += 1
-                    if apply:
-                        c.enabled = False
-                        touched = True
             for g in groups.values():
                 if g.enabled and g.name not in on_groups:
                     rep["detail"].append(f"group {g.name} off")
                     if apply:
                         g.enabled = False
                         touched = True
+        idx = _ChannelIndex(db, pid)
+        rows = {}
+        for row in fchans:
+            c = idx.find(row)
+            if c is None:
+                if row.get("enabled"):
+                    rep["not_found"].append(row.get("custom_name") or row.get("name") or "?")
+                continue
+            rows[c.id] = row
+        for c in db.query(LiveChannel).filter(LiveChannel.provider_id == pid).yield_per(2000):
+            row = rows.get(c.id)
+            if row is not None:
+                on = bool(row.get("enabled"))
+            elif c.group_title in turning_on:
+                on = True
+            elif replace and c.enabled and c.group_title not in on_groups:
+                on = False
+            else:
+                on = bool(c.enabled)
+            diff = {}
+            if row is not None:
+                want = {"custom_name": row.get("custom_name") or None, "channel_number": row.get("number"),
+                        "sort_order": row.get("sort_order") or 0,
+                        "epg_id_override": row.get("epg_id_override") or None,
+                        "custom_logo_url": row.get("custom_logo_url") or None}
+                # merge: the file's own names, numbers and logos; one set
+                # here is cleared only when replacing
+                for k, v in want.items():
+                    cur = (getattr(c, k) or 0) if k == "sort_order" else getattr(c, k)
+                    if cur != v and (replace or v not in (None, 0)):
+                        diff[k] = v
+            if on and not c.enabled:
+                rep["added"] += 1
+            elif c.enabled and not on:
+                rep["changed" if row is not None else "removed"] += 1
+            elif diff:
+                rep["changed"] += 1
+            elif row is not None:
+                rep["unchanged"] += 1
+            if apply and (diff or on != bool(c.enabled)):
+                for k, v in diff.items():
+                    setattr(c, k, v)
+                c.enabled = on
+                c.updated_at = datetime.utcnow()
+                touched = True
     if apply:
         db.commit()
         if touched:
@@ -737,16 +740,18 @@ def _restore_playlists(db, data, people: _People, wanted, replace, apply, follow
                     db.add(AutoPlaylistToggle(user_id=u.id, key=key, enabled=on))
                 else:
                     have.enabled = on
-        rules = {_fold(r.name): r for r in db.query(TagRule).filter(TagRule.user_id == u.id)}
-        names = set()
+        # by name; two of one name (it happens) pair up in order
+        rules = {}
+        for r in db.query(TagRule).filter(TagRule.user_id == u.id).order_by(TagRule.id):
+            rules.setdefault(_fold(r.name), []).append(r)
         for r in entry.get("custom") or []:
             name = (r.get("name") or "").strip()
             if not name or not r.get("output_tag"):
                 continue
-            names.add(_fold(name))
             want = {"conditions": r.get("conditions") or [], "output_tag": r["output_tag"],
                     "active": bool(r.get("active", True)), "apply_to": r.get("apply_to") or "both"}
-            have = rules.get(_fold(name))
+            same = rules.get(_fold(name)) or []
+            have = same.pop(0) if same else None
             if have is None:
                 rep["added"] += 1
                 rep["detail"].append(f"{u.display_name}: {name}")
@@ -762,12 +767,11 @@ def _restore_playlists(db, data, people: _People, wanted, replace, apply, follow
             else:
                 rep["unchanged"] += 1
         if replace:
-            for key, r in rules.items():
-                if key not in names:
-                    rep["removed"] += 1
-                    touched = True
-                    if apply:
-                        db.delete(r)
+            for r in (r for same in rules.values() for r in same):
+                rep["removed"] += 1
+                touched = True
+                if apply:
+                    db.delete(r)
         if touched and apply:
             follow_up.setdefault("users", set()).add(u.id)
     if apply:
