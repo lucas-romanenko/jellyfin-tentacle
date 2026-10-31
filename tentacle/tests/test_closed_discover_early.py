@@ -110,6 +110,29 @@ class TestIssue10VodTitleIsReachable(_DetailBase):
         self.assertIn("891a3459", d.get("jellyfin_url") or "")
 
 
+class TestOneSeriesIsManagedInSonarr(_DetailBase):
+    """#889: a VOD show Sonarr holds too is one show; the clients offer Manage
+    Episodes for it (Download More can't change a show Sonarr already has)."""
+
+    def _row(self, **kw):
+        db = self.Session()
+        db.add(Series(tmdb_id=216562, title="Special Forces", **kw))
+        db.commit()
+        db.close()
+        self.use_jellyfin(FakeJellyfin({"Series": []}))
+        return self.detail("series", 216562)
+
+    def test_a_vod_show_sonarr_holds(self):
+        d = self._row(source="provider_1", sonarr_path="/data/vod/Series/Special Forces (2023)")
+        self.assertEqual(("provider_1", True), (d.get("library_source"), d.get("in_sonarr")))
+
+    def test_a_vod_show_only(self):
+        self.assertFalse(self._row(source="provider_1").get("in_sonarr"))
+
+    def test_a_download(self):
+        self.assertTrue(self._row(source="sonarr").get("in_sonarr"))
+
+
 class _FakeAsyncClient:
     fetched = []
 

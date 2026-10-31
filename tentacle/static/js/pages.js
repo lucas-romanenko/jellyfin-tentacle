@@ -6057,7 +6057,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
       const eta = dlInfo.eta ? ` · ETA ${escapeAttr(dlInfo.eta)}` : '';
       // A copy that plays already (a VOD one, a show's earlier episodes) still plays.
       actionBtn = `<span class="badge ${dlInfo.status === 'stuck' ? 'badge-red' : 'badge-accent'}" style="font-size:12px;padding:4px 10px">${st}${eta}</span>${watchBtn}`;
-    } else if (isInLibrary && isSeries && data.library_source === 'sonarr') {
+    } else if (isInLibrary && isSeries && (data.library_source === 'sonarr' || data.in_sonarr)) {
       actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span>${watchBtn} <button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showManageEpisodesModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Manage Episodes</button>`;
     } else if (isInLibrary && isSeries && data.library_source && data.library_source.startsWith('provider_')) {
       actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span>${watchBtn} <button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showDownloadMoreModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Download Remaining Episodes</button>`;

@@ -707,6 +707,7 @@
         item.year = details.year || item.year;
         if (details.trailer_url) item.trailer_url = details.trailer_url;
         if (details.library_source) item.library_source = details.library_source;
+        if (details.in_sonarr) item.in_sonarr = true;
         // Exact Jellyfin item id resolved server-side by TMDB id, so "Watch"
         // works for VOD titles (whose rows carry no stored id).
         if (details.jellyfin_item_id) item.jellyfin_item_id = details.jellyfin_item_id;
@@ -775,8 +776,8 @@
           '<div class="md-unreleased-date">' + esc(ulLabel) + '</div>' +
         '</div>';
     } else if (item.in_library) {
-      var isSonarr = item.media_type === 'series' && item.library_source === 'sonarr';
-      var isVod = item.media_type === 'series' && item.library_source && item.library_source.indexOf('provider_') === 0;
+      var isSonarr = item.media_type === 'series' && (item.library_source === 'sonarr' || !!item.in_sonarr);
+      var isVod = item.media_type === 'series' && !isSonarr && item.library_source && item.library_source.indexOf('provider_') === 0;
       var isSeries = isSonarr || isVod;
       downloadSection =
         '<div class="md-inlib-row">' +
@@ -954,8 +955,8 @@
         });
       }
       // Auto-expand episode picker for in-library series
-      var isSonarrSeries = item.media_type === 'series' && item.library_source === 'sonarr';
-      var isVodSeries = item.media_type === 'series' && item.library_source && item.library_source.indexOf('provider_') === 0;
+      var isSonarrSeries = item.media_type === 'series' && (item.library_source === 'sonarr' || !!item.in_sonarr);
+      var isVodSeries = item.media_type === 'series' && !isSonarrSeries && item.library_source && item.library_source.indexOf('provider_') === 0;
       if (isSonarrSeries) {
         _mdLoadManageEpisodes(item);
       } else if (isVodSeries) {

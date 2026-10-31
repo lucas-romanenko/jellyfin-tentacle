@@ -1188,8 +1188,9 @@ var Details = {
                 var actionsBar = panel.querySelector('.moonfin-actions');
                 if (!actionsBar) return;
 
-                var isSonarr = detail.library_source === 'sonarr';
-                var isVod = detail.library_source && detail.library_source.indexOf('provider_') === 0;
+                // A VOD show Sonarr holds too is one show (#889): Manage Episodes
+                var isSonarr = detail.library_source === 'sonarr' || !!detail.in_sonarr;
+                var isVod = !isSonarr && detail.library_source && detail.library_source.indexOf('provider_') === 0;
                 if (!isSonarr && !isVod) return;
 
                 var label = isSonarr ? 'Manage Episodes' : 'Download More';
@@ -1222,6 +1223,7 @@ var Details = {
                         rating: detail.rating || null,
                         in_library: true,
                         library_source: detail.library_source,
+                        in_sonarr: !!detail.in_sonarr,
                     };
                     if (window.TentacleDiscover) {
                         if (isSonarr) {

@@ -158,7 +158,10 @@ plays from (`routers/discover.with_episode_sources`): `downloaded` (a real
 Sonarr file), `stream` (the VOD folder's `.strm`, parked or not), `source`
 = both / download / stream / upcoming / missing, and `hasFile` = downloaded
 (Sonarr's own flag is `sonarrHasFile`); web (dashboard and Jellyfin web) and
-the TV app show "DL", "VOD", both, "Not aired" or "Missing". A failed Sonarr read is a
+the TV app show "DL", "VOD", both, "Not aired" or "Missing". Which button
+a show gets: Manage Episodes when Sonarr holds it (the TV app asks Sonarr;
+the web reads `in_sonarr` from the discover detail: source sonarr or a
+`sonarr_path`), Download More for a VOD-only show. A failed Sonarr read is a
 503 (never an empty list); Save stays disabled until a list is shown, and an
 empty selection is refused (400) unless the body says `unmonitor_all: true`
 (the person unticked every episode on purpose) (#764).

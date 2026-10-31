@@ -606,6 +606,9 @@ def get_discover_detail(
         if db_item:
             details["in_library"] = True
             details["library_source"] = db_item.source
+            # Sonarr holds it (a VOD show downloaded too is one show, #889):
+            # the clients offer Manage Episodes, not Download More
+            details["in_sonarr"] = bool(db_item.source == "sonarr" or db_item.sonarr_path)
         else:
             details["in_library"] = False
     else:
