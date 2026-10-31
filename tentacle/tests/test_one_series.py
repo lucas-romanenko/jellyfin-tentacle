@@ -469,6 +469,26 @@ class ManageEpisodesSources(_Base):
         self.assertEqual("missing", out[7]["source"])
         self.assertEqual("upcoming", out[8]["source"])
 
+    def test_through_tentacles_sonarr_client(self):
+        """Production, 31 Oct: SonarrService.get_episodes dropped episodeFileId, so
+        every downloaded episode read as "stream" or "missing"."""
+        from routers.discover import with_episode_sources
+        from services.sonarr import SonarrService
+        self.vod_copy()
+        self.download(folder=self.vod, eps=(1, 6))
+        raw = [{"id": 501, "seasonNumber": 5, "episodeNumber": 1, "hasFile": True, "episodeFileId": 11,
+                "airDateUtc": "2024-01-01T00:00:00Z", "monitored": True, "title": "a"},
+               {"id": 506, "seasonNumber": 5, "episodeNumber": 6, "hasFile": True, "episodeFileId": 16,
+                "airDateUtc": "2024-01-01T00:00:00Z", "monitored": True, "title": "b"}]
+        files = [{"id": 11, "path": f"/data/vod/Series/{VOD_NAME}/Season 5/x.S05E01.mkv"},
+                 {"id": 16, "path": f"/data/vod/Series/{VOD_NAME}/Season 5/x.S05E06.mkv"}]
+        sonarr = SonarrService("http://sonarr", "k")
+        with mock.patch.object(sonarr.session, "get", return_value=_Resp(200, raw)):
+            episodes = sonarr.get_episodes(63, raise_errors=True)
+        with mock.patch.object(sonarr, "get_episode_files", return_value=files):
+            out = {e["episodeNumber"]: e["source"] for e in with_episode_sources(self.db, TMDB, sonarr, 63, episodes)}
+        self.assertEqual({1: "both", 6: "download"}, out)
+
     def test_vod_episodes_include_parked_copies(self):
         from routers.discover import get_vod_episodes
         self.vod_copy()
