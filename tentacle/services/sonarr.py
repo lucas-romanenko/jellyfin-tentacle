@@ -488,6 +488,8 @@ class SonarrService:
                         "monitored": ep.get("monitored", False),
                         "title": ep.get("title", ""),
                         "hasFile": ep.get("hasFile", False),
+                        # which file: a .strm in the show's folder is no download (#889)
+                        "episodeFileId": ep.get("episodeFileId") or 0,
                         "airDateUtc": ep.get("airDateUtc"),
                     }
                     for ep in r.json()
