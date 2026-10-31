@@ -420,14 +420,21 @@ def _after_move(db, row, target: str, vod_dir: Path) -> dict:
     return settled
 
 
-def _tell_jellyfin(jf, paths_gone: list, paths_changed: list) -> None:
+def _tell_jellyfin(jf, paths_gone: list, vod_item: Optional[dict]) -> None:
+    """The download's old folder is gone (Jellyfin removes its show), and the
+    VOD show has new files: a "Modified" notice only refreshes its metadata,
+    so the show is refreshed recursively to make items of the moved files."""
     if jf is None:
         return
     try:
         if paths_gone:
             jf.notify_media_updated(paths_gone, "Deleted")
-        if paths_changed:
-            jf.notify_media_updated(paths_changed, "Modified")
+        if vod_item:
+            r = jf.session.post(f"{jf.url}/Items/{vod_item['Id']}/Refresh",
+                                params={"Recursive": "true", "MetadataRefreshMode": "Default",
+                                        "ImageRefreshMode": "Default", "ReplaceAllMetadata": "false",
+                                        "ReplaceAllImages": "false"}, timeout=30)
+            r.raise_for_status()
     except Exception as e:   # its own scan finds it later
         logger.warning(f"[One series] could not tell Jellyfin about the move: {e}")
 
@@ -564,8 +571,7 @@ def _unify_one(db, sonarr, show, row, folders, layout, stats) -> None:
         return
     stats["moved"] += 1
     gone = [_path(arr_item)] if arr_item else []
-    changed = [_path(vod_item)] if vod_item else []
-    _tell_jellyfin(jf, gone, changed)
+    _tell_jellyfin(jf, gone, vod_item)
     if jf is not None and not vod_item:
         try:
             jf.trigger_library_scan()
