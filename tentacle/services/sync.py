@@ -30,6 +30,7 @@ from services.cleaner import clean_title
 from services.m3u_parser import episode_from_title, container_from_url
 from services.duplicates import delete_vod_files, convert_record_to_downloaded
 from services.media_files import delete_movie_files, delete_series_files, MEDIA_SUFFIXES
+from services.one_series import stream_file_of
 from services.tagger import compute_tags, get_list_tags_for_tmdb_id, apply_tag_rules
 from services.exceptions import (ProviderConnectionError, ProviderDataError, ProviderRefusedError,
                                  SyncCancelledError, SyncError, TMDBConnectionError)
@@ -990,7 +991,9 @@ def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path,
             # Byte-safe: a show folder that fits can still overflow once the
             # episode code and ".strm" are added. Unchanged when it fits.
             ep_filename = fit_file_stem(folder_name, code, len(".strm"))
-            strm_file = season_dir / f"{ep_filename}.strm"
+            # The episode's stream copy may be parked beside its download
+            # (services.one_series): that is the file to keep up to date.
+            strm_file = stream_file_of(season_dir / f"{ep_filename}.strm") or season_dir / f"{ep_filename}.strm"
             expected = client.episode_stream_url(ep_id, container)
             if not strm_file.exists():
                 _write_strm(strm_file, expected)
@@ -1151,6 +1154,10 @@ def _backfill_series_episodes(
 # just taken a title over: truthy (the caller still creates no new row), and
 # the caller must point the title's files at the new provider (#154).
 TAKEOVER = "takeover"
+# ... and when a downloaded-only show (source sonarr) becomes the provider's:
+# falsy for "skip" purposes is wrong here, the caller writes the VOD files
+# into its folder and updates that row instead of inserting one (#889).
+ADOPT = "adopt"
 
 
 def _take_over_files(db: Session, media_type: str, tmdb_id: int, client, item: dict,
@@ -1553,6 +1560,15 @@ def check_and_record_duplicate(
         logger.info(f"[Sync] Enforced keep-downloaded resolution for tmdb:{tmdb_id} — provider copy suppressed")
         return True
 
+    # One series per show (#889): a show downloaded before the provider
+    # offered it gets its VOD episodes too, the row becoming the VOD show the
+    # download belongs to; services.one_series then moves Sonarr's copy into
+    # the VOD folder. Not after Keep Downloaded: its tombstone says no VOD.
+    if media_type == "series" and existing.source == "sonarr":
+        if dup and dup.resolution == "keep_radarr":
+            return True
+        return ADOPT   # the caller converts the row once the files are written
+
     new_source = {"source": source, "path": path}
 
     if dup:
@@ -1926,7 +1942,7 @@ def _holds_own_file(path: Path) -> bool:
     try:
         if not path.is_dir():
             return path.exists()
-        return any(True for _ in path.rglob("*.strm"))
+        return any(True for pattern in ("*.strm", "*.strm.parked") for _ in path.rglob(pattern))
     except OSError:
         return False
 
@@ -2472,6 +2488,15 @@ def sync_provider(
                  if isinstance(pacer, ListingPacer) else "")
         logger.info(f"Sync complete in {run.duration_seconds}s{paced}")
         _tell_provider_health(db, provider, client, run, unread, total_cats)
+        if sync_type in ("full", "series"):
+            # New VOD shows Sonarr already holds: one series, now rather than
+            # at the next Sonarr scan (#889)
+            try:
+                from services import one_series
+                one_series.unify(db)
+            except Exception as e:
+                db.rollback()
+                logger.error(f"[One series] after the sync of {provider.name}: {e}")
 
     except SyncCancelledError as e:
         msg = str(e) or "Cancelled by user"
@@ -4002,7 +4027,8 @@ def _sync_series(
             if dup_answer == TAKEOVER:
                 _take_over_files(db, "series", tmdb_id, client, series, provider, slots)
                 _met(tmdb_id, series)
-            if dup_answer:
+            adopted = db.query(Series).filter(Series.tmdb_id == tmdb_id).first() if dup_answer == ADOPT else None
+            if dup_answer and adopted is None:
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -4036,6 +4062,13 @@ def _sync_series(
                 show_dir.mkdir(parents=True, exist_ok=True)
                 chown_path(show_dir)
 
+                if adopted is not None:
+                    # Its download's tags stay; it gains the provider's, but is
+                    # not "recently added": the show was in the library already.
+                    from services.sonarr import RECENTLY_ADDED_TV_TAG
+                    tags = list(adopted.tags or []) + [t for t in tags if t not in (adopted.tags or [])
+                                                       and t != RECENTLY_ADDED_TV_TAG]
+
                 # Write show NFO
                 nfo_file = show_dir / "tvshow.nfo"
                 write_series_nfo(nfo_file, metadata, tags)
@@ -4043,6 +4076,24 @@ def _sync_series(
 
                 # Write episode strm files
                 ep_count = _write_episode_strms(client, episodes, show_dir, folder_name, slots)
+
+                if adopted is not None:
+                    adopted.source = f"provider_{provider.id}"
+                    adopted.provider_id = provider.id
+                    adopted.strm_path = str(show_dir)
+                    adopted.provider_series_ids = None
+                    adopted.date_updated = now
+                    adopted.nfo_path = str(nfo_file)
+                    adopted.tags = tags
+                    adopted.source_tag = adopted.source_tag or cat.source_tag
+                    _met(tmdb_id, series)
+                    existing_provider_tmdb_ids.add(tmdb_id)
+                    known_titles[lookup_key] = tmdb_id
+                    cat_existing += 1
+                    stats["existing"] += 1
+                    logger.info(f"[Sync] '{title}' was downloaded only; its {ep_count} VOD episode(s) are written "
+                                f"beside it (one series, #889)")
+                    continue
 
                 # Record in DB
                 series_record = Series(

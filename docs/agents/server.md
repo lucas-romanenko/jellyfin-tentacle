@@ -319,7 +319,13 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   `monitored`), mirrored in `Series.sonarr_monitored`, synced both ways on
   every Sonarr scan; unfollowing keeps `monitored=true`. Hidden for ended
   or canceled series.
-- **Hybrid series**: VOD `.strm` and downloaded episodes in one folder.
+- **Hybrid series**: VOD `.strm` and downloaded episodes in one folder,
+  always (#889, `services/one_series.py`, pipelines.md "One series per
+  show"): whatever the order, Sonarr's copy is moved into the VOD folder,
+  and an episode both copies have plays the download (its `.strm` parked as
+  `.strm.parked`, back when the download goes). Everything that counts a
+  show's stream copies counts parked ones (`is_stream_name`; `vod_copy_on_disk`,
+  `_holds_own_file`, vod-episodes); `is_downloaded_file` is False for them.
   "Download more episodes" adds the series to Sonarr with an explicit `path`
   in the VOD folder (needs a Sonarr root folder on the VOD shows directory;
   `add_to_sonarr` in `routers/lists.py` picks the root with "vod" in its

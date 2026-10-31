@@ -29,7 +29,7 @@ def is_downloaded_file(path: Optional[str]) -> bool:
     """A file Radarr/Sonarr imported, not one of Tentacle's own .strm files.
     Sonarr 4 counts .strm as video: a rescan of a folder the VOD sync also
     writes to lists Tentacle's .strm files as the series' episode files."""
-    return bool(path) and not path.lower().endswith(".strm")
+    return bool(path) and not path.lower().endswith((".strm", ".strm.parked"))
 
 
 def drop_orphan_tombstones(db, media_type: str) -> int:
@@ -139,7 +139,7 @@ def _vod_episodes(dup) -> set:
     for s in dup.sources or []:
         path = s.get("path")
         if (s.get("source") or "").startswith("provider_") and path and Path(path).is_dir():
-            for strm in Path(path).rglob("*.strm"):
+            for strm in [*Path(path).rglob("*.strm"), *Path(path).rglob("*.strm.parked")]:
                 vod |= _episode_keys(strm.name)
     return vod
 
@@ -191,7 +191,8 @@ def vod_copy_on_disk(dup, record) -> bool:
             if dup.media_type == "movie":
                 if path.suffix.lower() == ".strm" and path.is_file():
                     return True
-            elif path.is_dir() and any(f.is_file() for f in path.rglob("*.strm")):
+            elif path.is_dir() and any(f.is_file() for pattern in ("*.strm", "*.strm.parked")
+                                       for f in path.rglob(pattern)):
                 return True
         except OSError as e:
             logger.warning(f"Could not check the VOD copy at {p}: {e}")
@@ -534,7 +535,11 @@ def apply_pending_user_data(db) -> int:
     for dup in dups:
         left = []
         try:
-            items = _items_for_tmdb(jf, "Movie", dup.tmdb_id)
+            if dup.media_type == "movie":
+                items = _items_for_tmdb(jf, "Movie", dup.tmdb_id)
+            else:   # a show put into one folder (services.one_series): its episodes, and the show
+                shows = _items_for_tmdb(jf, "Series", dup.tmdb_id)
+                items = shows + [e for s in shows for e in _episodes(jf, s["Id"])]
         except Exception as e:
             logger.warning(f"Duplicate tmdb:{dup.tmdb_id}: could not read Jellyfin for the saved watched state: {e}")
             waiting += len(dup.pending_user_data)

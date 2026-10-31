@@ -74,7 +74,7 @@ Declared on the app in `main.py` (no router, all **none**; listed in
 | GET | `/api/discover/season/{tmdb_id}/{season_number}` | user | discover.py:get_season_episodes |
 | GET | `/api/discover/seasons-tvdb/{tvdb_id}` | user | discover.py:get_seasons_tvdb |
 | GET | `/api/discover/seasons/{tmdb_id}` | user | discover.py:get_seasons |
-| GET | `/api/discover/sonarr-episodes/{tmdb_id}` | user | discover.py:get_sonarr_episodes |
+| GET | `/api/discover/sonarr-episodes/{tmdb_id}` | user | discover.py:get_sonarr_episodes (each episode: `downloaded`, `stream`, `source`, `hasFile` = downloaded, `sonarrHasFile`) |
 | GET | `/api/discover/streaming` | user | discover.py:get_new_on_streaming |
 | GET | `/api/discover/vod-episodes/{tmdb_id}` | user | discover.py:get_vod_episodes |
 | GET | `/api/duplicates` | admin | duplicates.py:get_duplicates |

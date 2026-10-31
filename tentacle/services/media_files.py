@@ -153,9 +153,11 @@ def delete_series_files(show_dir) -> int:
         if not (root.exists() and root.is_dir()):
             return 0
 
-        for strm in list(root.rglob("*.strm")):
+        # Parked copies too (".strm.parked" beside a download, services.one_series)
+        for strm in list(root.rglob("*.strm")) + list(root.rglob("*.strm.parked")):
             try:
-                nfo = strm.with_suffix(".nfo")
+                nfo = strm.with_suffix(".nfo") if strm.suffix == ".strm" else strm.with_name(
+                    strm.name[:-len(".strm.parked")] + ".nfo")
                 has_download = _has_same_stem_media(strm)
                 strm.unlink()
                 deleted += 1

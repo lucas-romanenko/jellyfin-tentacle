@@ -1175,6 +1175,15 @@ def _scan_sonarr_library(db: Session) -> dict:
 
     db.commit()
 
+    # One series per show (#889): Sonarr's copy of a VOD show goes into its
+    # VOD folder, and episodes both copies have play the download.
+    try:
+        from services import one_series
+        stats["one_series"] = one_series.unify(db, sonarr, all_series)
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Sonarr scan: putting shows into one series failed: {e}")
+
     # Push tags to Jellyfin, then trigger a library scan so it picks up new NFOs
     jellyfin_url = get_setting(db, "jellyfin_url")
     jellyfin_key = get_setting(db, "jellyfin_api_key")

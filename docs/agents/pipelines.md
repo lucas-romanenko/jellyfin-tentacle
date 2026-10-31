@@ -111,9 +111,54 @@ monitors only the chosen episodes, sets `monitorNewItems="all"` when
 "Auto-download new episodes" (default on) is ticked, starts a search, and
 records `sonarr_path`/`sonarr_monitored` at once.
 
+**One series per show** (#889, `services/one_series.py`): a show the
+provider streams and Sonarr holds lives in ONE folder, its VOD folder, so
+Jellyfin makes one series of it. `unify()` runs at the end of every Sonarr
+scan (nightly, webhooks: OnImportComplete, SeriesAdd, EpisodeFileDelete;
+Scan now) and after each provider sync, so any order of events ends there:
+VOD after Sonarr, Sonarr after VOD, a show added in Sonarr directly, a
+folder renamed or moved. For every VOD row (`source` provider_N,
+`strm_path`) Sonarr lists by tmdbId at another path, it asks Sonarr to move
+the series to `<Sonarr's VOD root>/<VOD folder name>` (`PUT
+/series/{id}?moveFiles=true`: Sonarr's own move, a rename on one disk; it
+merges into the existing folder and overwrites same-named files), then sets
+`sonarr_path`, `nfo_path` (the VOD tvshow.nfo, the row's tags written back
+into it) and clears `jellyfin_item_id`. Before that: nothing moves when a
+file in Sonarr's folder would overwrite one in the VOD folder (tvshow.nfo
+excepted: Tentacle's on both sides), when Sonarr's folder holds a `.strm`,
+when the VOD folder holds no stream copy, when Tentacle can't see Sonarr's
+folder while Sonarr has files (unless every one of them is already in the
+VOD folder: a folder renamed by hand only gets the new path), or when
+Jellyfin can't be read for users' data; each is logged as "stays in two
+folders" and tried again next run. Users' data on the download show's
+episodes and on the `.strm` episodes it parks is saved first (on the
+show's Duplicate, resolved `keep_both` with `resolved_by="one_series"`,
+`pending_user_data` keyed by each file's new Jellyfin path) and merged onto
+the new items by `apply_pending_user_data` (worker, nightly), the show-level
+favourite at once; Jellyfin is told the old folder is gone. A pending
+duplicate of a show already in one folder is resolved the same way. With
+both copies in one folder, `settle_episode_copies()` parks the `.strm` of
+an episode that is downloaded (`<name>.strm.parked`: Jellyfin and Sonarr
+ignore it; download first, as the duplicates default) and restores it when
+the download goes; nothing is deleted. The VOD sync keeps a parked copy's
+address up to date and never writes a second, visible one
+(`stream_file_of`); relink rewrites parked copies; a show dropped by the
+provider loses them with its `.strm` files (`delete_series_files`). A show
+downloaded before the provider offered it is adopted by the VOD sync
+(`check_and_record_duplicate` → `ADOPT`): the row becomes the provider's,
+keeps its download's tags (not "Recently Added"), gets its VOD folder and
+`.strm` files, and the next `unify()` moves Sonarr's copy in; Keep
+Downloaded (`keep_radarr` tombstone) is respected. Films are not changed.
+
 **"Manage episodes"** on a Sonarr series: `GET /api/discover/sonarr-episodes/{tmdb_id}`,
 then `POST /api/discover/manage-episodes`: the chosen ones monitored, the
-rest unmonitored, those without files searched. A failed Sonarr read is a
+rest unmonitored, those not downloaded searched (a `.strm` Sonarr lists as
+an episode file is no download, #889). Each episode in the GET says where it
+plays from (`routers/discover.with_episode_sources`): `downloaded` (a real
+Sonarr file), `stream` (the VOD folder's `.strm`, parked or not), `source`
+= both / download / stream / upcoming / missing, and `hasFile` = downloaded
+(Sonarr's own flag is `sonarrHasFile`); web (dashboard and Jellyfin web) and
+the TV app show "DL", "VOD", both, "Not aired" or "Missing". A failed Sonarr read is a
 503 (never an empty list); Save stays disabled until a list is shown, and an
 empty selection is refused (400) unless the body says `unmonitor_all: true`
 (the person unticked every episode on purpose) (#764).
@@ -260,7 +305,8 @@ at the default with a warning; the settings form answers 400 for one.
 1. refresh list subscriptions; 2. VOD sync from active providers (each read
 when its turn comes, under `_sync_lock`: one deleted or switched off since
 the job started is skipped, #517); 3. Radarr
-scan; 4. Sonarr scan (and Following state for every series); 4b. only with
+scan; 4. Sonarr scan (and Following state for every series; ends with one
+series per show, #889); 4b. only with
 `untracked_auto_add` on (off by default): library folders Radarr/Sonarr
 don't know about, the 95%+ sure ones added as they are (#871,
 server.md "Folders Radarr/Sonarr don't know about"); 5. recently

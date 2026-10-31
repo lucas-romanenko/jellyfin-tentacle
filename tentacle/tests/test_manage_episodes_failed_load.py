@@ -30,7 +30,11 @@ PAGES = (ROOT / "tentacle" / "static" / "js" / "pages.js").read_text(encoding="u
 
 EPISODES = [{"id": 10 + n, "seasonNumber": 1, "episodeNumber": n, "title": f"Ep {n}", "monitored": n < 3,
              "hasFile": False} for n in (1, 2, 3)]
+SOURCES = [{"id": 20 + n, "seasonNumber": 1, "episodeNumber": n, "title": f"Ep {n}", "monitored": True,
+            "hasFile": src in ("download", "both"), "source": src}
+           for n, src in enumerate(("download", "stream", "both", "missing", "upcoming"), 1)]
 LOADS = {
+    "sources": "Promise.resolve({ in_sonarr: true, sonarr_id: 5, episodes: %s })" % json.dumps(SOURCES),
     "fails": "Promise.reject(new Error('Request timed out'))",
     "slow": "new Promise(() => {})",
     "empty": "Promise.resolve({ in_sonarr: true, sonarr_id: 5, episodes: [] })",
@@ -97,7 +101,7 @@ function apiPost(path, body) { posts.push([path, body]); return Promise.resolve(
   const save = el('mdManageSaveBtn');
   if (!save.disabled) save._click.forEach(f => f());   // a disabled button ignores the click
   await flush();
-  process.stdout.write(JSON.stringify({ posts, list: el('mdEpSeasons').innerHTML }));
+  process.stdout.write(JSON.stringify({ posts, list: el('mdEpSeasons').innerHTML, eps: el('mdEpList1').innerHTML }));
 })();
 """
 
@@ -121,7 +125,7 @@ function api(path, opts) {
   const save = el('add-radarr-confirm-btn');
   if (!save.disabled) await confirmManageEpisodes();   // onclick; a disabled button ignores the click
   await flush();
-  process.stdout.write(JSON.stringify({ posts, list: el('episode-picker-seasons').innerHTML }));
+  process.stdout.write(JSON.stringify({ posts, list: el('episode-picker-seasons').innerHTML, eps: el('ep-list-1').innerHTML }));
 })();
 """
 
@@ -150,6 +154,14 @@ class _Cases:
         self.assertEqual([{"season": 1, "episode": 1}, {"season": 1, "episode": 2}], posts[0][1]["selected_episodes"])
         self.assertFalse(posts[0][1]["unmonitor_all"])
 
+    def test_each_episode_says_where_it_plays_from(self):
+        """#889: downloaded, VOD stream, both, missing, not aired."""
+        out = self.save("sources")
+        rows = re.findall(r"S01E0\d</span>.*?(?=S01E0\d</span>|$)", out["eps"], re.S)
+        self.assertEqual(5, len(rows), out["eps"])
+        badges = [re.findall(r">(DL|VOD|Missing|Not aired)</span>", r) for r in rows]
+        self.assertEqual([["DL"], ["VOD"], ["DL", "VOD"], ["Missing"], ["Not aired"]], badges)
+
     def test_unticking_every_episode_on_purpose_still_saves(self):
         posts = self.save("ok", untick=True)["posts"]
         self.assertEqual(1, len(posts))
@@ -160,14 +172,14 @@ class _Cases:
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class JellyfinWebManageEpisodes(_Cases, unittest.TestCase):
     def save(self, load, untick=False):
-        fns = "\n".join(_plugin_fn(n) for n in ("_mdGetSelectedEpisodes", "_mdLoadManageEpisodes"))
+        fns = "\n".join(_plugin_fn(n) for n in ("_mdGetSelectedEpisodes", "_mdSourceBadges", "_mdLoadManageEpisodes"))
         return _run(PLUGIN_PAGE % {"load": LOADS[load], "fns": fns, "untick": json.dumps(untick)})
 
 
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class DashboardManageEpisodes(_Cases, unittest.TestCase):
     def save(self, load, untick=False):
-        fns = "\n".join(_pages_fn(n) for n in ("_getSelectedEpisodes", "showManageEpisodesModal",
+        fns = "\n".join(_pages_fn(n) for n in ("_getSelectedEpisodes", "_epSourceBadges", "showManageEpisodesModal",
                                                "confirmManageEpisodes"))
         return _run(DASHBOARD_PAGE % {"load": LOADS[load], "fns": fns, "untick": json.dumps(untick)})
 

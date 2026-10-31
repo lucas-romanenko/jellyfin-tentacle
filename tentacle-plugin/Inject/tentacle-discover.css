@@ -1115,6 +1115,7 @@
 .md-ep-dl { font-size: 10px; font-weight: 600; flex-shrink: 0; padding: 1px 6px; border-radius: 4px; }
 .md-badge-vod { color: #4caf50; background: rgba(76, 175, 80, 0.15); }
 .md-badge-dl { color: rgba(160, 150, 255, 0.9); background: rgba(109, 95, 230, 0.15); }
+.md-badge-none { color: rgba(200, 195, 220, 0.4); font-weight: 500; }
 .md-ep-row.md-ep-have { opacity: 0.55; }
 .md-ep-row.md-ep-have input[type="checkbox"] { accent-color: #4caf50; }
 .md-count-full { color: #4caf50 !important; }

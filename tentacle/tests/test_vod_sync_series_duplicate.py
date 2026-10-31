@@ -43,13 +43,16 @@ class RecorderTreatsSonarrLikeRadarr(unittest.TestCase):
         self.db.commit()
         return out
 
-    def test_a_sonarr_owned_show_wins_and_is_recorded(self):
+    def test_a_sonarr_owned_show_is_adopted_not_inserted(self):
+        """One series per show (#889): the downloaded show's row becomes the
+        VOD show's (the caller writes the files and converts it), never a
+        second row, and there is no duplicate to choose between."""
+        from services.sync import ADOPT
         self.db.add(self.mdb.Series(tmdb_id=1403, title="Show", source="sonarr", sonarr_path="/tv/Show"))
         self.db.commit()
-        self.assertTrue(self._check("series"),
-                        "False tells the caller to INSERT a second row for a UNIQUE tmdb_id")
-        dup = self.db.query(self.mdb.Duplicate).filter_by(media_type="series").one()
-        self.assertEqual({"sonarr", f"provider_{self.provider.id}"}, {s["source"] for s in dup.sources})
+        self.assertEqual(ADOPT, self._check("series"),
+                         "False tells the caller to INSERT a second row for a UNIQUE tmdb_id")
+        self.assertEqual([], self.db.query(self.mdb.Duplicate).filter_by(media_type="series").all())
 
     def test_radarr_still_wins_for_movies(self):
         self.db.add(self.mdb.Movie(tmdb_id=603, title="Film", source="radarr", radarr_path="/m/Film"))

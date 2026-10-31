@@ -230,6 +230,22 @@ same tags hide non-kids channels from kids on one lineup.
   `media_files.local_arr_folder` (`/data/movies` → `/media/movies`, else
   the folder by name under the mount; Windows paths too). Never
   `str.replace` or `Path()` on their paths: other roots and `D:\...` break.
+- **One series = one folder** (checked on Jellyfin 10.11.8 and Sonarr 4
+  with the production images, #889): a show's folders under two library
+  paths are two series even with the same TMDB/TVDB ids
+  (EnableAutomaticSeriesGrouping is off); "Season 5" and "Season 05" in one
+  show folder are one season; a `.strm` and a download of one episode in one
+  show are two episode entries; a `*.strm.parked` file is ignored by
+  Jellyfin and by Sonarr's disk scan (Sonarr 4 lists `.strm` as an episode
+  file, quality SDTV). Users' data does not follow a file that moves to
+  another folder: the new item is made while the old one still exists, and
+  the old one's data is detached (10.11 keeps it under a placeholder item),
+  not re-attached by key. Jellyfin skips (removes nothing from) a library
+  folder that became empty. Sonarr's `PUT /series/{id}?moveFiles=true`
+  answers 202 and moves in the background: into a missing folder it renames
+  the series folder; into an existing one it moves file by file,
+  OVERWRITING same-named files, then deletes the emptied source folder; on
+  an error it reverts the series path, leaving moved files where they went.
 - **Hybrid series** need a Sonarr root folder on the VOD shows directory
   (the same host folder as Tentacle's `/media/vod/shows`); Tentacle finds
   it by "vod" in the path.
