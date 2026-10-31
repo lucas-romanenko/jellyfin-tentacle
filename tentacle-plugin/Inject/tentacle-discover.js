@@ -1355,6 +1355,18 @@
     return selected;
   }
 
+  // Where an episode plays from (#889): the server's `source` (both,
+  // download, stream, upcoming, missing); an older server only says hasFile.
+  function _mdSourceBadges(ep) {
+    var src = ep.source || (ep.hasFile ? 'download' : 'missing');
+    var out = '';
+    if (src === 'download' || src === 'both') out += '<span class="md-ep-dl md-badge-dl" title="Downloaded">DL</span>';
+    if (src === 'stream' || src === 'both') out += '<span class="md-ep-dl md-badge-vod" title="Plays from the provider">VOD</span>';
+    if (src === 'upcoming') out += '<span class="md-ep-dl md-badge-none">Not aired</span>';
+    if (src === 'missing') out += '<span class="md-ep-dl md-badge-none">Missing</span>';
+    return out;
+  }
+
   function _mdLoadManageEpisodes(item) {
     var section = document.getElementById('mdManageSection');
     if (!section) return;
@@ -1400,7 +1412,7 @@
         var list = document.getElementById('mdEpList' + sn);
         list.innerHTML = seasonMap[sn].map(function (ep) {
           var num = 'S' + String(sn).padStart(2, '0') + 'E' + String(ep.episodeNumber).padStart(2, '0');
-          var dlBadge = ep.hasFile ? '<span class="md-ep-dl">\u2713</span>' : '';
+          var dlBadge = _mdSourceBadges(ep);
           return '<label class="md-ep-row">' +
             '<input type="checkbox" ' + (ep.monitored ? 'checked' : '') + ' data-season="' + sn + '" data-episode="' + ep.episodeNumber + '" onchange="window._mdUpdateSeasonCb(' + sn + ')">' +
             '<span class="md-ep-num">' + num + '</span>' +

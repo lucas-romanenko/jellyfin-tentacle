@@ -9,6 +9,7 @@ import logging
 import threading
 import random
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
@@ -1425,8 +1426,61 @@ def get_sonarr_episodes(
     return {
         "in_sonarr": True,
         "sonarr_id": series["id"],
-        "episodes": episodes,
+        "episodes": with_episode_sources(db, tmdb_id, sonarr, series["id"], episodes),
     }
+
+
+def _air_time(ep: dict):
+    try:
+        return datetime.fromisoformat((ep.get("airDateUtc") or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def episode_source(downloaded: bool, stream: bool, aired) -> str:
+    """Where an episode plays from, one word for the clients: both, download,
+    stream, upcoming (not aired yet), missing."""
+    if downloaded and stream:
+        return "both"
+    if downloaded:
+        return "download"
+    if stream:
+        return "stream"
+    if aired is not None and aired > datetime.now(timezone.utc):
+        return "upcoming"
+    return "missing"
+
+
+def with_episode_sources(db, tmdb_id: int, sonarr, series_id: int, episodes: list) -> list:
+    """Sonarr's episodes with where each one plays from (#889): `downloaded`
+    (a real file Sonarr imported), `stream` (the show's VOD .strm, parked
+    beside a download or not) and `source` (episode_source). `hasFile` says
+    downloaded: Sonarr counts Tentacle's .strm files as episode files once
+    both share the show's folder; Sonarr's own is `sonarrHasFile`."""
+    from services.duplicates import is_downloaded_file
+    from services.one_series import episode_sources
+    try:
+        files = {f.get("id"): f for f in sonarr.get_episode_files(series_id)}
+    except Exception as e:
+        logger.warning(f"Could not read Sonarr's episode files of series {series_id}: {e}")
+        files = None
+    row = db.query(Series).filter(Series.tmdb_id == tmdb_id).first() if db is not None else None
+    on_disk = episode_sources(row.strm_path) if row is not None and row.strm_path and \
+        (row.source or "").startswith("provider_") else {}
+    out = []
+    for ep in episodes:
+        key = f"S{ep.get('seasonNumber') or 0:02d}E{ep.get('episodeNumber') or 0:02d}"
+        f = (files or {}).get(ep.get("episodeFileId"))
+        if files is None:   # couldn't tell: Sonarr's word
+            downloaded = bool(ep.get("hasFile"))
+        else:
+            downloaded = bool(ep.get("hasFile") and f is not None and is_downloaded_file(f.get("path")))
+        stream = bool(on_disk.get(key, {}).get("stream")) or bool(
+            ep.get("hasFile") and f is not None and not is_downloaded_file(f.get("path")))
+        out.append({**ep, "sonarrHasFile": bool(ep.get("hasFile")), "hasFile": downloaded,
+                    "downloaded": downloaded, "stream": stream,
+                    "source": episode_source(downloaded, stream, _air_time(ep))})
+    return out
 
 
 @router.get("/vod-episodes/{tmdb_id}", dependencies=[Depends(get_user_from_request)])
@@ -1448,18 +1502,21 @@ def get_vod_episodes(
 
     episodes = {}
     ep_pattern = re.compile(r'S(\d+)E(\d+)', re.IGNORECASE)
+    from services.one_series import is_stream_name
 
     for item in sorted(show_dir.iterdir()):
         if not item.is_dir() or not item.name.startswith("Season"):
             continue
         for strm_file in sorted(item.iterdir()):
-            if strm_file.suffix.lower() != ".strm":
+            # A stream copy parked beside its download counts (#889)
+            if not is_stream_name(strm_file.name):
                 continue
             match = ep_pattern.search(strm_file.name)
             if match:
                 season = int(match.group(1))
                 episode = int(match.group(2))
-                episodes.setdefault(season, []).append(episode)
+                if episode not in episodes.get(season, []):
+                    episodes.setdefault(season, []).append(episode)
 
     for season in episodes:
         episodes[season].sort()
@@ -1536,11 +1593,14 @@ def manage_episodes(
         raise HTTPException(502, "Sonarr monitored the selected episodes but did not accept unmonitoring the "
                                  "others. Please retry.")
 
-    # Search for newly monitored episodes that don't have files
+    # Search for newly monitored episodes that aren't downloaded: a stream
+    # copy in the show's folder is a file to Sonarr, not a download (#889)
+    downloaded = {ep["id"] for ep in with_episode_sources(db, body.tmdb_id, sonarr, series["id"], episodes)
+                  if ep["downloaded"]}
     need_search = []
     for sel in body.selected_episodes:
         ep = ep_lookup.get((sel["season"], sel["episode"]))
-        if ep and ep["id"] not in currently_monitored and not ep.get("hasFile"):
+        if ep and ep["id"] not in currently_monitored and ep["id"] not in downloaded:
             need_search.append(ep["id"])
     search_ok = True
     if need_search:

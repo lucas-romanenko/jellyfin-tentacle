@@ -1273,7 +1273,7 @@ async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
       const list = document.getElementById(`ep-list-${sn}`);
       list.innerHTML = seasonMap[sn].map(ep => {
         const epNum = `S${String(sn).padStart(2, '0')}E${String(ep.episodeNumber).padStart(2, '0')}`;
-        const dlBadge = ep.hasFile ? '<span class="ep-dl-badge">✓</span>' : '';
+        const dlBadge = _epSourceBadges(ep);
         return `<label class="ep-picker-ep">
           <input type="checkbox" ${ep.monitored ? 'checked' : ''} data-season="${sn}" data-episode="${ep.episodeNumber}" onchange="updateSeasonCheckbox(${sn})">
           <span class="ep-num">${epNum}</span>
@@ -1288,6 +1288,18 @@ async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
     container.innerHTML = '<div style="padding:12px;color:var(--text3)">Failed to load episodes</div>';
   }
   loading.style.display = 'none';
+}
+
+// Where an episode plays from, as Manage Episodes shows it (#889): the
+// server's `source` (both, download, stream, upcoming, missing).
+function _epSourceBadges(ep) {
+  const src = ep.source || (ep.hasFile ? 'download' : 'missing');
+  const out = [];
+  if (src === 'download' || src === 'both') out.push('<span class="ep-dl-badge ep-badge-dl" title="Downloaded">DL</span>');
+  if (src === 'stream' || src === 'both') out.push('<span class="ep-dl-badge ep-badge-vod" title="Plays from the provider">VOD</span>');
+  if (src === 'upcoming') out.push('<span class="ep-dl-badge ep-badge-none">Not aired</span>');
+  if (src === 'missing') out.push('<span class="ep-dl-badge ep-badge-none">Missing</span>');
+  return out.join('');
 }
 
 async function confirmManageEpisodes() {
@@ -4686,7 +4698,7 @@ function renderDupList() {
         ${poster ? `<img src="${escapeAttr(poster)}" style="width:48px;border-radius:6px;flex-shrink:0" alt="">` : ''}
         <div style="flex:1;min-width:0">
           <div class="dup-header">
-            <span class="badge ${dup.resolution === 'pending' ? 'badge-amber' : 'badge-green'}"${dup.resolved_why ? ` title="${escapeAttr(dup.resolved_why)}"` : ''}>${dup.resolution === 'pending' ? 'Pending' : (resLabel[dup.resolution] || dup.resolution) + (dup.resolved_by === 'rule' ? ' (rule)' : '')}</span>
+            <span class="badge ${dup.resolution === 'pending' ? 'badge-amber' : 'badge-green'}"${dup.resolved_why ? ` title="${escapeAttr(dup.resolved_why)}"` : ''}>${dup.resolution === 'pending' ? 'Pending' : (resLabel[dup.resolution] || dup.resolution) + (dup.resolved_by === 'rule' ? ' (rule)' : dup.resolved_by === 'one_series' ? ' · one series' : '')}</span>
             <span class="badge badge-gray">${dup.media_type}</span>
             <span style="font-size:13px;font-weight:500">${escapeAttr(title)}</span>
           </div>

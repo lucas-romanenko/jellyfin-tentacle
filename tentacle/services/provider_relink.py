@@ -113,7 +113,8 @@ def relink_strms(db: Session, provider: Provider, before: tuple = None) -> dict:
         if series.strm_disabled:
             continue
         try:
-            files = sorted(Path(series.strm_path).rglob("*.strm"))
+            # Parked stream copies too (beside a download, services.one_series)
+            files = sorted(Path(series.strm_path).rglob("*.strm")) + sorted(Path(series.strm_path).rglob("*.strm.parked"))
         except OSError:
             continue
         for strm in files:
@@ -377,7 +378,8 @@ def relink_vod_route(db: Session, provider: Provider) -> dict:
         if series.strm_disabled:
             continue
         try:
-            files = sorted(Path(series.strm_path).rglob("*.strm"))
+            # Parked stream copies too (beside a download, services.one_series)
+            files = sorted(Path(series.strm_path).rglob("*.strm")) + sorted(Path(series.strm_path).rglob("*.strm.parked"))
         except OSError:
             continue
         for strm in files:
