@@ -539,7 +539,14 @@ def apply_pending_user_data(db) -> int:
                 items = _items_for_tmdb(jf, "Movie", dup.tmdb_id)
             else:   # a show put into one folder (services.one_series): its episodes, and the show
                 shows = _items_for_tmdb(jf, "Series", dup.tmdb_id)
-                items = shows + [e for s in shows for e in _episodes(jf, s["Id"])]
+                items = list(shows)
+                for show in shows:
+                    # Jellyfin lists the moved-away copy's show for a while after
+                    # removing it, and answers 400 for its episodes: skip it
+                    try:
+                        items.extend(_episodes(jf, show["Id"]))
+                    except Exception as e:
+                        logger.debug(f"Duplicate tmdb:{dup.tmdb_id}: episodes of {show.get('Path')}: {e}")
         except Exception as e:
             logger.warning(f"Duplicate tmdb:{dup.tmdb_id}: could not read Jellyfin for the saved watched state: {e}")
             waiting += len(dup.pending_user_data)

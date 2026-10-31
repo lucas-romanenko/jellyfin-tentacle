@@ -498,14 +498,22 @@ class WatchedStateFollows(_Base):
             def trigger_library_scan(self, library_id=None):
                 return True
 
+            def post(self, url, params=None, json=None, timeout=None):
+                if url.endswith("/Refresh"):
+                    JF.refreshed.append(url.rsplit("/", 2)[1])
+                    return _Resp(204)
+                return super().post(url, params, json, timeout)
+
             def get(self, url, params=None, timeout=None):
+                if (params or {}).get("ParentId") in JF.gone:
+                    return _Resp(400)   # Jellyfin lists a removed show for a while; its episodes: 400
                 if url.endswith("/Sessions"):
                     if self.down:
                         raise ConnectionError("Jellyfin is down")
                     return _Resp(200, [{"NowPlayingItem": i} for i in JF.playing])
                 return super().get(url, params, timeout)
 
-        JF.playing = []
+        JF.playing, JF.refreshed, JF.gone = [], [], set()
 
         self.JF = JF
         FakeJellyfin.items, FakeJellyfin.data, FakeJellyfin.posts = [], {}, []
@@ -540,10 +548,14 @@ class WatchedStateFollows(_Base):
         self.assertEqual(1, out["moved"], out)
         self.assertEqual({"IsFavorite": True}, self.jf.data[("B", "vod")], "the favourite show")
         self.assertEqual(([ja], "Deleted"), self.JF.notified[0])
+        self.assertEqual(["vod"], self.JF.refreshed, "Jellyfin makes items of the moved files only on a refresh")
 
         # Jellyfin's scan: the download's old items go, the moved files get new ones in the VOD show.
+        # It still lists the old show for a while, and answers 400 for its episodes.
+        self.JF.gone = {"dl"}
         self.jf.items = [
             {"Id": "vod", "Type": "Series", "Path": jv, "ProviderIds": {"Tmdb": str(TMDB)}},
+            {"Id": "dl", "Type": "Series", "Path": ja, "ProviderIds": {"Tmdb": str(TMDB)}},
             {"Id": "n5", "Type": "Episode", "ParentId": "vod", "Path": f"{jv}/Season 5/{mkv.format(5)}",
              "ParentIndexNumber": 5, "IndexNumber": 5},
             {"Id": "n6", "Type": "Episode", "ParentId": "vod", "Path": f"{jv}/Season 5/{mkv.format(6)}",
