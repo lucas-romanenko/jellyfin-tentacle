@@ -286,6 +286,16 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   `window.playbackManager` for the other Tentacle pages. It also stops a
   live video still playing off `#/video` (not picture-in-picture): a
   local Playstate Stop, then pause and drop its source.
+- **Jellyfin's phone apps** (#877): the iOS app (jellyfin-expo) is one
+  WebView with no browser back, no swipe-back, no second window and no
+  handler for a link to a file; it injects `window.NativeShell` before load.
+  Downloads go through `NativeShell.downloadFile`, outside links through
+  `NativeShell.openUrl` (when `AppHost.supports('externallinks')`). Back:
+  the navbar shows its back on Favorites/Discover/Activity (overlays on the
+  home route) only when `noBrowserBack()`: a NativeShell on a touch screen
+  or with the `mobile` layout, or a home-screen web app. Jellyfin Media
+  Player has a NativeShell too (desktop layout, a mouse): key touch sizing on
+  `(pointer: coarse)`, never on NativeShell alone.
 - **Home sections**: when Tentacle's home is on, the server turns
   Jellyfin's own home sections off per user (see server.md).
 - **Brand**: `Brand/*.svg` is `scripts/brand.py`'s copy of the server's

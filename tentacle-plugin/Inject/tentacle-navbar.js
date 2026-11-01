@@ -148,6 +148,47 @@
             return h === '' || h === 'home';
         },
 
+        // Discover, Activity and Favorites: overlays on the home route.
+        isHomeOverlay: function () {
+            var h = location.hash || '';
+            if (/[?&]tentacle=(discover|activity)\b/.test(h)) return true;
+            return /^#\/home(\.html)?\?/.test(h) && /[?&]tab=1\b/.test(h);
+        },
+
+        // No back of its own around the page: Jellyfin's phone and tablet apps
+        // (iOS: one WebView, no browser back, no swipe-back) and a web app
+        // added to the home screen (#877). Jellyfin Media Player has a
+        // NativeShell too, but a mouse and a desktop layout: not this.
+        noBrowserBack: function () {
+            var mm = window.matchMedia;
+            var coarse = !!(mm && mm('(pointer: coarse)').matches);
+            var shell = window.NativeShell;
+            if (shell) {
+                var host = shell.AppHost;
+                var layout = '';
+                try { layout = host && typeof host.getDefaultLayout === 'function' ? host.getDefaultLayout() : ''; } catch (e) { }
+                return coarse || layout === 'mobile';
+            }
+            return coarse && !!((mm && mm('(display-mode: standalone)').matches) || navigator.standalone);
+        },
+
+        // Has this tab shown a page besides Discover/Activity/Favorites? Not
+        // when it was opened or reloaded straight onto one of them.
+        notePage: function () {
+            if ((location.hash || '').length > 2 && !this.isHomeOverlay()) this._visitedOtherPage = true;
+        },
+
+        // A Discover/Activity pop-up (its own ✕) closes before back leaves the page.
+        closeTopPopup: function () {
+            var closers = ['.moonfin-trailer-overlay .moonfin-trailer-close',
+                '#mdUpcomingModal.md-visible .md-up-close', '#mdDetailModal.md-visible .md-modal-close'];
+            for (var i = 0; i < closers.length; i++) {
+                var btn = document.querySelector(closers[i]);
+                if (btn) { btn.click(); return true; }
+            }
+            return false;
+        },
+
         isVideoPage: function () {
             return (location.hash || '').indexOf('#/video') !== -1;
         },
@@ -648,8 +689,12 @@
             var navBack = this.container.querySelector('.moonfin-nav-back');
             if (navBack) {
                 navBack.addEventListener('click', function () {
+                    if (self.closeTopPopup()) return;
                     if (typeof Details !== 'undefined' && Details.isVisible) {
                         Details.goBack();
+                    } else if (self.isHomeOverlay() && !self._visitedOtherPage) {
+                        // Opened straight onto Discover/Activity/Favorites: nothing to go back to
+                        self.handleNavigation('home');
                     } else {
                         history.back();
                     }
@@ -972,6 +1017,7 @@
             if (!this.container) return;
 
             this.updateVisibility();
+            this.updateBackButton();
 
             // Route-driven overlays: highlight from the URL, so back/forward
             // navigation into an overlay route highlights the right button
@@ -1004,13 +1050,6 @@
             } else if (hash.indexOf('/search') !== -1) {
                 var searchBtn = this.container.querySelector('.moonfin-nav-search');
                 if (searchBtn) searchBtn.classList.add('active');
-            }
-
-            // Show back button on non-home pages OR when details overlay is open
-            var backBtn = this.container.querySelector('.moonfin-nav-back');
-            if (backBtn) {
-                var detailsOpen = typeof Details !== 'undefined' && Details.isVisible;
-                backBtn.style.display = (isHome && !detailsOpen) ? 'none' : '';
             }
 
             // Library active state
@@ -1052,6 +1091,17 @@
             this.clockInterval = setInterval(updateClock, 1000);
         },
 
+        // Back shows on every page but Home, and over Details. Discover,
+        // Activity and Favorites are on the home route too: a browser has its
+        // own back there, a Jellyfin phone app doesn't (#877).
+        updateBackButton: function () {
+            var btn = this.container ? this.container.querySelector('.moonfin-nav-back') : null;
+            if (!btn) return;
+            var detailsOpen = typeof Details !== 'undefined' && Details.isVisible;
+            var show = detailsOpen || !this.isHomePage() || (this.isHomeOverlay() && this.noBrowserBack());
+            btn.style.display = show ? '' : 'none';
+        },
+
         // Called by details overlay to force back button visible
         showBackButton: function (show) {
             var btn = this.container ? this.container.querySelector('.moonfin-nav-back') : null;
@@ -1061,6 +1111,10 @@
 
     // Expose globally for other modules (Details overlay, Discover)
     window.TentacleNavbar = Navbar;
+
+    // From the first page on, before the navbar is up
+    Navbar.notePage();
+    window.addEventListener('hashchange', function () { Navbar.notePage(); });
 
     // Boot
     function boot() {

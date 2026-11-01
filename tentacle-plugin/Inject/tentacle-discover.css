@@ -13,6 +13,10 @@
   z-index: 99;
   background: linear-gradient(165deg, #0f0d1a 0%, #141222 40%, #1a1632 100%);
   overflow-y: auto;
+  /* Pulling down at the top must not reach the page behind (the iOS app's
+   pull-to-refresh reloads Jellyfin), #877; y only: a trackpad's sideways
+   swipe stays the browser's back */
+  overscroll-behavior-y: contain;
   padding-top: 7em;
   font-family: "Inter", system-ui, sans-serif;
 }
@@ -564,6 +568,10 @@
   z-index: 99;
   background: linear-gradient(165deg, #0f0d1a 0%, #141222 40%, #1a1632 100%);
   overflow-y: auto;
+  /* Pulling down at the top must not reach the page behind (the iOS app's
+   pull-to-refresh reloads Jellyfin), #877; y only: a trackpad's sideways
+   swipe stays the browser's back */
+  overscroll-behavior-y: contain;
   padding-top: 7em;
   font-family: "Inter", system-ui, sans-serif;
 }
