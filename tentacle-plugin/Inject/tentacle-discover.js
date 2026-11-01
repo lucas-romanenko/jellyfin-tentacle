@@ -33,6 +33,7 @@
     generation: 0,        // incremented on navigation, stale API responses check this
     view: 0,              // incremented whenever the grid is repainted for another tab/pill
     _pendingAction: null, // 'manage' or 'downloadMore' — auto-trigger after modal render
+    _adding: false,       // an Add to Radarr/Sonarr is on its way (#896)
     streamingProviders: null, // [{slug,name}] once loaded
     streamingActive: null,    // active provider slug
     streamingSection: null,   // {id:'streaming', items:[...]} for findItem
@@ -1697,18 +1698,21 @@
     var uid = window.ApiClient.getCurrentUserId();
     var profileEp = isSeries ? 'TentacleDiscover/SonarrProfiles?userId=' + uid : 'TentacleDiscover/RadarrProfiles?userId=' + uid;
 
+    // This dialog's own controls (#896): when the dialog is drawn again before
+    // the profiles arrive, a lookup by id then found the newer dialog's button
+    // and each load added one more listener, so one tap sent the add twice.
+    var ps = document.getElementById('mdProfileSelect');
+    var btn = document.getElementById('mdDownloadBtn');
     apiGet(profileEp).then(function (profiles) {
       profiles = profiles || [];
-      var ps = document.getElementById('mdProfileSelect');
-      if (!ps) return;
+      if (!ps || ps.isConnected === false) return;
 
       ps.innerHTML = profileOptionsHtml(profiles);
 
-      var btn = document.getElementById('mdDownloadBtn');
-      if (btn) {
-        btn.addEventListener('click', function () {
+      if (btn && btn.isConnected !== false) {
+        btn.onclick = function () {
           doDownload(item, ps.value);
-        });
+        };
       }
     }).catch(function () {
       var s = document.getElementById('mdDownloadStatus');
@@ -1720,6 +1724,7 @@
     var btn = document.getElementById('mdDownloadBtn');
     var status = document.getElementById('mdDownloadStatus');
     if (!btn || !status) return;
+    if (MD._adding) return;  // one add on its way at a time (#896)
 
     btn.disabled = true;
     btn.textContent = 'Adding...';
@@ -1758,7 +1763,9 @@
     }
 
     var arrName = isSeries ? 'Sonarr' : 'Radarr';
+    MD._adding = true;
     apiPost(ep, body).then(function (r) {
+      MD._adding = false;
       r = r || {};
       // The backend returns 200 with counts \u2014 inspect them instead of
       // blind-trusting the status code ("added: 0" is not a success)
@@ -1788,6 +1795,7 @@
         btn.textContent = 'Retry';
       }
     }).catch(function (err) {
+      MD._adding = false;
       status.style.color = '#f44336';
       status.textContent = 'Error: ' + (err.message || 'Failed');
       btn.disabled = false;

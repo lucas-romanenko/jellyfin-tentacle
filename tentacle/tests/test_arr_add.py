@@ -18,6 +18,7 @@ from services.arr_add import (
 
 MOVIE_EXISTS = '[{"propertyName":"TmdbId","errorMessage":"This movie has already been added","errorCode":"MovieExistsValidator"}]'
 SERIES_EXISTS = '[{"propertyName":"TvdbId","errorMessage":"This series has already been added","errorCode":"SeriesExistsValidator"}]'
+UNIQUE_RACE = '{"message":"constraint failed\\r\\nUNIQUE constraint failed: MovieMetadata.TmdbId","description":"System.Data.SQLite.SQLiteException"}'
 NOT_FOUND = '[{"propertyName":"TmdbId","errorMessage":"A movie with this ID was not found","errorCode":"MovieNotFound"}]'
 
 
@@ -72,6 +73,36 @@ class TestAddReport(unittest.TestCase):
 
 
 class TestAddMovieToRadarr(unittest.TestCase):
+    def test_unique_index_race_with_the_film_there_is_already_added(self):
+        # #896: two adds of one film at once. The second passes Radarr's
+        # MovieExistsValidator before the first commits, then fails on the
+        # unique index; the film is in Radarr, so it reads "already there".
+        probes = []
+
+        def _get(url, **kwargs):
+            probes.append(kwargs.get("params"))
+            r = mock.Mock()
+            r.raise_for_status.return_value = None
+            r.json.return_value = [{"tmdbId": 438631}]
+            return r
+
+        with mock.patch("requests.post", return_value=_response(500, UNIQUE_RACE)), \
+             mock.patch("requests.get", side_effect=_get), mock.patch("time.sleep"):
+            outcome, reason = add_movie_to_radarr("http://r", "k", 438631, 4, "/movies")
+        self.assertEqual(outcome, EXISTS)
+        self.assertIsNone(reason)
+        self.assertEqual([{"tmdbId": 438631}], probes)
+
+    def test_unique_index_failure_with_the_film_missing_stays_a_failure(self):
+        r = mock.Mock()
+        r.raise_for_status.return_value = None
+        r.json.return_value = []
+        with mock.patch("requests.post", return_value=_response(500, UNIQUE_RACE)), \
+             mock.patch("requests.get", return_value=r), mock.patch("time.sleep"):
+            outcome, reason = add_movie_to_radarr("http://r", "k", 438631, 4, "/movies")
+        self.assertEqual(outcome, FAILED)
+        self.assertIn("UNIQUE", reason)
+
     def test_already_added_is_not_a_failure(self):
         with mock.patch("requests.post", return_value=_response(400, MOVIE_EXISTS)):
             outcome, reason = add_movie_to_radarr("http://r", "k", 1, 1, "/movies")

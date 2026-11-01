@@ -244,6 +244,12 @@ def add_movie_to_radarr(radarr_url: str, radarr_key: str, tmdb_id: int,
         return ADDED, None
     if already_exists_in_body(r.text):
         return EXISTS, None
+    if _unique_index_race(r.text) and _radarr_has_movie_now(radarr_url, radarr_key, tmdb_id):
+        # Two adds of one film at once (#896): this one passed Radarr's
+        # MovieExistsValidator before the other committed, then failed on the
+        # unique index. The film is in Radarr, which is what was asked.
+        logger.info(f"Radarr add tmdb:{tmdb_id} lost a race with another add of it; the movie is there")
+        return EXISTS, None
     logger.error(f"Radarr rejected tmdb:{tmdb_id} — HTTP {r.status_code}: {r.text}")
     return FAILED, explain_arr_error(r.status_code, r.text, "Radarr")
 
@@ -304,6 +310,26 @@ def _redirect_dropped_the_post(r) -> bool:
     if getattr(getattr(r, "request", None), "method", "POST") != "POST":
         return True
     return any(getattr(h, "status_code", 0) in (301, 302, 303) for h in history)
+
+
+def _unique_index_race(body: str) -> bool:
+    """True when an *arr's error is its database's unique index refusing a row
+    (SQLite or PostgreSQL wording), the mark of two adds of one title at once."""
+    low = (body or "").lower()
+    return "unique constraint failed" in low or "duplicate key value violates unique constraint" in low
+
+
+def _radarr_has_movie_now(radarr_url: str, radarr_key: str, tmdb_id: int) -> bool:
+    """One look at Radarr's library for this movie; False if it can't be asked."""
+    try:
+        r = requests.get(f"{radarr_url.rstrip('/')}/api/v3/movie", headers={"X-Api-Key": radarr_key},
+                         params={"tmdbId": tmdb_id}, timeout=READ_TIMEOUT)
+        r.raise_for_status()
+        movies = r.json()
+    except (requests.exceptions.RequestException, ValueError) as e:
+        logger.debug(f"Radarr lookup of tmdb:{tmdb_id} failed: {e}")
+        return False
+    return isinstance(movies, list) and any(isinstance(m, dict) and m.get("tmdbId") == tmdb_id for m in movies)
 
 
 def _radarr_has_movie(radarr_url: str, radarr_key: str, tmdb_id: int,
