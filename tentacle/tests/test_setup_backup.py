@@ -257,6 +257,37 @@ class Restore(Base):
         again = B.plan(dst, data)
         self.assertEqual([0] * 6, [again["parts"][p]["added"] + again["parts"][p]["changed"] for p in B.PART_IDS])
 
+    def test_a_channel_listed_twice_restores_onto_its_own_twin(self):
+        """#902: the provider lists one channel twice (same group, same name,
+        other stream ids) and only the second copy is on: a round trip onto
+        the same server changes nothing, and each twin keeps its own setup."""
+        from models.database import LiveChannel, Provider
+        from services import backup as B
+        db = self.source()
+        p = db.query(Provider).one()
+        db.add_all([LiveChannel(provider_id=p.id, name="TSN 1 RAW", group_title="CA| Sports", stream_id=sid,
+                                stream_url=f"http://iptv.example/live/{sid}", enabled=on, custom_name=name)
+                    for sid, on, name in (("901", False, None), ("902", True, "TSN raw"))])
+        db.commit()
+        data = B.export(db)
+        pv = B.plan(db, data)
+        live = pv["parts"]["live_channels"]
+        self.assertEqual((0, 0, 0), (live["added"], live["changed"], live["removed"]), live)
+        B.plan(db, data, apply=True)
+        twins = {c.stream_id: (bool(c.enabled), c.custom_name)
+                 for c in db.query(LiveChannel).filter_by(name="TSN 1 RAW")}
+        self.assertEqual({"901": (False, None), "902": (True, "TSN raw")}, twins)
+        # onto another install (other stream ids) the twins pair up in order
+        dst = self.target()
+        dst.add_all([LiveChannel(provider_id=dst.query(Provider).one().id, name="TSN 1 RAW",
+                                 group_title="CA| Sports", stream_id=sid, stream_url=f"http://iptv.example/{sid}",
+                                 enabled=False) for sid in ("1901", "1902")])
+        dst.commit()
+        B.plan(dst, data, apply=True)
+        twins = {c.stream_id: (bool(c.enabled), c.custom_name)
+                 for c in dst.query(LiveChannel).filter_by(name="TSN 1 RAW")}
+        self.assertEqual({"1901": (False, None), "1902": (True, "TSN raw")}, twins)
+
     def test_only_the_parts_picked(self):
         from models.database import ProviderCategory, RecordingRule
         from services import backup as B

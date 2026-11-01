@@ -453,19 +453,35 @@ def _match_counts(db: Session, fp: dict, target_id: int) -> dict:
 
 
 class _ChannelIndex:
+    """Channels of the file -> channels here: by group + name, else by name.
+    A provider can list one channel twice under the same group and name
+    (other stream ids, #902): the twin with the file's stream id wins, else
+    the twins pair up in order, and `taken` keeps two file rows off one
+    channel."""
+
     def __init__(self, db: Session, provider_id: int):
         self.by_group_name = {}
         self.by_name = {}
-        for ch in db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id).yield_per(2000):
-            self.by_group_name.setdefault((_fold(ch.group_title), _fold(ch.name)), ch)
+        q = db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id).order_by(LiveChannel.id)
+        for ch in q.yield_per(2000):
+            self.by_group_name.setdefault((_fold(ch.group_title), _fold(ch.name)), []).append(ch)
             self.by_name.setdefault(_fold(ch.name), []).append(ch)
 
-    def find(self, row) -> Optional[LiveChannel]:
-        ch = self.by_group_name.get((_fold(row.get("group")), _fold(row.get("name"))))
-        if ch is not None:
-            return ch
-        same = self.by_name.get(_fold(row.get("name")), [])
-        return same[0] if len(same) == 1 else None
+    def find(self, row, taken=None) -> Optional[LiveChannel]:
+        same = self.by_group_name.get((_fold(row.get("group")), _fold(row.get("name"))))
+        if not same:
+            same = self.by_name.get(_fold(row.get("name")), [])
+            if len(same) != 1:
+                return None
+        sid = row.get("id")
+        if sid is not None:
+            for ch in same:
+                if ch.stream_id == str(sid) and (taken is None or ch.id not in taken):
+                    return ch
+        for ch in same:
+            if taken is None or ch.id not in taken:
+                return ch
+        return None
 
 
 def provider_choices(db: Session, data: dict, mapping: Optional[dict] = None) -> list:
@@ -573,8 +589,11 @@ def _restore_live(db, data, choices, replace, apply) -> dict:
                         touched = True
         idx = _ChannelIndex(db, pid)
         rows = {}
-        for row in fchans:
-            c = idx.find(row)
+        # rows with this provider's stream id first, so a twin listed later
+        # in the file isn't taken by an earlier row (#902)
+        here_ids = {c.stream_id for v in idx.by_name.values() for c in v}
+        for row in sorted(fchans, key=lambda r: str(r.get("id")) not in here_ids):
+            c = idx.find(row, rows)
             if c is None:
                 if row.get("enabled"):
                     rep["not_found"].append(row.get("custom_name") or row.get("name") or "?")
