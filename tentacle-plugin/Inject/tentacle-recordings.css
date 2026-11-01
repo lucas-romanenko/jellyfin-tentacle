@@ -78,6 +78,15 @@ body.tentacle-recordings-active .skinHeader [data-tentacle-tab-ancestor] {
 .tr-live-btn svg { width: 22px; height: 22px; fill: currentColor; flex: none; }
 .tr-live-btn:hover, .tr-live-btn:focus-visible { background: rgba(255, 255, 255, 0.14); }
 
+/* A recording still recording while the server's remux catches up: no bar that isn't the whole recorded part yet; Watch live: no picture, a spinner */
+body.tr-growing-wait .videoOsdBottom .sliderContainer,
+body.tr-growing-wait .videoOsdBottom .osdPositionText,
+body.tr-growing-wait .videoOsdBottom .osdDurationText { visibility: hidden; }
+body.tr-growing-golive video.htmlvideoplayer { opacity: 0; }
+.tr-growing-spinner { position: fixed; left: 50%; top: 50%; z-index: 1001; width: 48px; height: 48px; margin: -24px 0 0 -24px; border-radius: 50%;
+    border: 4px solid rgba(255, 255, 255, 0.25); border-top-color: #fff; animation: tr-spin 0.9s linear infinite; pointer-events: none; }
+@keyframes tr-spin { to { transform: rotate(360deg); } }
+
 @media (max-width: 700px) {
     .tr-live-btn { padding: 6px; border-color: transparent; }
     .tr-live-btn span { display: none; }
