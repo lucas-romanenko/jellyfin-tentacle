@@ -50,10 +50,15 @@ public class RecordingRetimeController : ControllerBase
     /// </summary>
     /// <param name="itemId">The recording's item id.</param>
     /// <param name="dryRun">Copy and check, but keep the recording as it is.</param>
+    /// <param name="start">The programme's start (UTC) as the server knows it: the window starts at the earliest of it, DateCreated and the file name's start.</param>
     /// <param name="cancellationToken">The request's token.</param>
     [HttpPost("{itemId}/Retime")]
     [Authorize(Policy = "RequiresElevation")]
-    public async Task<ActionResult> Retime([FromRoute] Guid itemId, [FromQuery] bool dryRun = false, CancellationToken cancellationToken = default)
+    public async Task<ActionResult> Retime(
+        [FromRoute] Guid itemId,
+        [FromQuery] bool dryRun = false,
+        [FromQuery] DateTime? start = null,
+        CancellationToken cancellationToken = default)
     {
         var (item, refusal) = Recording(itemId);
         if (item is null)
@@ -67,8 +72,9 @@ public class RecordingRetimeController : ControllerBase
         }
 
         var created = item.DateCreated;
+        var began = RecordingRetime.Began(item.Path, created, start);
         var outcome = await RecordingRetime.Run(
-            _mediaEncoder.EncoderPath, _mediaEncoder.ProbePath, item.Path, created, dryRun, _logger, cancellationToken).ConfigureAwait(false);
+            _mediaEncoder.EncoderPath, _mediaEncoder.ProbePath, item.Path, began, dryRun, _logger, cancellationToken).ConfigureAwait(false);
         if (outcome.State == "retimed")
         {
             await Refresh(itemId, created, cancellationToken).ConfigureAwait(false);
@@ -105,7 +111,7 @@ public class RecordingRetimeController : ControllerBase
             return Ok(new { set = false });
         }
 
-        var utc = date.Kind == DateTimeKind.Unspecified ? DateTime.SpecifyKind(date, DateTimeKind.Utc) : date.ToUniversalTime();
+        var utc = RecordingRetime.Utc(date);
         item.PremiereDate = utc;
         item.ProductionYear ??= utc.Year;
         await item.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, cancellationToken).ConfigureAwait(false);

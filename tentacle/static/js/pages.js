@@ -4748,39 +4748,11 @@ function _dupRuleCounts(r) {
   return parts.join(', ') || 'nothing pending';
 }
 
-// The rule's inputs, by element id: the saved rule's key for each. What the
-// admin typed is kept in pages.dup.ruleEdits until Save, so a re-render (a
-// resolved duplicate, Run now, another mode, a list change) never drops it (#899).
-const _DUP_RULE_FIELDS = {
-  'dup-rule-cap': 'cap', 'dup-rule-indexers': 'protected_indexers', 'dup-rule-qb-url': 'qbittorrent_url',
-  'dup-rule-qb-user': 'qbittorrent_username', 'dup-rule-qb-pass': 'qbittorrent_password', 'dup-rule-qb-tag': 'qbittorrent_tag',
-};
-
-function dupRuleEdit(input) {
-  if (!input || !(input.id in _DUP_RULE_FIELDS)) return;
-  pages.dup.ruleEdits = pages.dup.ruleEdits || {};
-  pages.dup.ruleEdits[input.id] = input.value;
-  _dupRuleUnsavedHint();
-}
-
-function _dupRuleUnsavedHint() {
-  const dirty = Object.keys(pages.dup.ruleEdits || {}).length > 0;
-  for (const id of ['dup-rule-unsaved', 'dup-rule-unsaved-more']) {
-    const e = document.getElementById(id);
-    if (e) e.textContent = dirty ? 'Not saved yet' : '';
-  }
-}
-
 function renderDupRule() {
   const el = document.getElementById('dup-rule');
   const rule = pages.dup.rule;
   if (!el || !rule) return;
   const mode = pages.dup.ruleMode;
-  const edits = pages.dup.ruleEdits || {};
-  const val = id => (id in edits ? edits[id] : rule[_DUP_RULE_FIELDS[id]]) ?? '';
-  const edit = 'oninput="dupRuleEdit(this)"';
-  const unsaved = Object.keys(edits).length ? 'Not saved yet' : '';
-  const moreEdited = Object.keys(edits).some(id => id !== 'dup-rule-cap');
   const last = rule.last;
   const modeBtn = (m, label) => `<button class="filter-btn ${mode === m ? 'active' : ''}" onclick="setDupRuleMode('${escapeJS(m)}')">${label}</button>`;
   const when = last ? new Date(last.at).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '';
@@ -4804,38 +4776,32 @@ function renderDupRule() {
       </div>
       <div class="form-group" style="max-width:220px">
         <label class="form-label" for="dup-rule-cap">Ask me first above</label>
-        <input class="form-input" id="dup-rule-cap" type="number" min="0" max="10000" value="${escapeAttr(String(val('dup-rule-cap')))}" ${edit} title="When one run would change more titles than this, it changes nothing and waits for you">
+        <input class="form-input" id="dup-rule-cap" type="number" min="0" max="10000" value="${Number(rule.cap)}" title="When one run would change more titles than this, it changes nothing and waits for you">
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
         <button class="btn btn-primary btn-sm" onclick="saveDupRule(this)">Save</button>
-        <span class="form-hint" id="dup-rule-unsaved">${unsaved}</span>
         <button class="btn btn-secondary btn-sm" onclick="previewDupRule(this)" title="What the selected mode would do now; nothing is changed">Preview</button>
         ${rule.mode !== 'off' ? `<button class="btn btn-secondary btn-sm" onclick="runDupRule(null, this)">Run now</button>` : ''}
       </div>
     </div>
     <p class="dup-rule-say">${escapeAttr(_DUP_RULE_SAY[mode] || '')}${mode !== 'off' ? ` Runs every ${Number(rule.every_minutes)} minutes; every change is in the Deletion Log.` : ''}</p>
     ${mode === 'stream' && bins.length ? `<div class="dup-rule-warn">&#9888; ${escapeAttr(bins.join(' and '))} ${bins.length === 1 ? 'has' : 'have'} no recycle bin: downloads the rule deletes can't be recovered. Set one in ${bins.length === 1 ? 'its' : 'their'} Media Management settings.</div>` : ''}
-    ${mode === 'stream' ? `<details class="dup-rule-more" ${(rule.protected_indexers || rule.qbittorrent_url) && !moreEdited ? '' : 'open'}>
+    ${mode === 'stream' ? `<details class="dup-rule-more" ${rule.protected_indexers || rule.qbittorrent_url ? '' : 'open'}>
       <summary>Downloads that stay (stream first)</summary>
       <div class="dup-rule-grid">
         <div class="form-group"><label class="form-label" for="dup-rule-indexers">Protected indexers</label>
-          <input class="form-input" id="dup-rule-indexers" value="${escapeAttr(val('dup-rule-indexers'))}" ${edit} placeholder="Names, comma separated">
+          <input class="form-input" id="dup-rule-indexers" value="${escapeAttr(rule.protected_indexers || '')}" placeholder="Names, comma separated">
           <div class="form-hint">As Radarr/Sonarr name them; their downloads always stay</div></div>
         <div class="form-group"><label class="form-label" for="dup-rule-qb-url">qBittorrent address</label>
-          <input class="form-input" id="dup-rule-qb-url" value="${escapeAttr(val('dup-rule-qb-url'))}" ${edit} placeholder="http://qbittorrent:8080">
+          <input class="form-input" id="dup-rule-qb-url" value="${escapeAttr(rule.qbittorrent_url || '')}" placeholder="http://qbittorrent:8080">
           <div class="form-hint">Read only: a torrent still in it is still seeding</div></div>
         <div class="form-group"><label class="form-label" for="dup-rule-qb-user">User</label>
-          <input class="form-input" id="dup-rule-qb-user" value="${escapeAttr(val('dup-rule-qb-user'))}" ${edit} autocomplete="off"></div>
+          <input class="form-input" id="dup-rule-qb-user" value="${escapeAttr(rule.qbittorrent_username || '')}" autocomplete="off"></div>
         <div class="form-group"><label class="form-label" for="dup-rule-qb-pass">Password</label>
-          <input class="form-input" id="dup-rule-qb-pass" type="password" value="${escapeAttr(val('dup-rule-qb-pass'))}" ${edit} autocomplete="new-password">
-          <div class="form-hint">${rule.qbittorrent_password ? 'Password saved' : 'No password saved'}</div></div>
+          <input class="form-input" id="dup-rule-qb-pass" type="password" value="${escapeAttr(rule.qbittorrent_password || '')}" autocomplete="new-password"></div>
         <div class="form-group"><label class="form-label" for="dup-rule-qb-tag">Only torrents tagged</label>
-          <input class="form-input" id="dup-rule-qb-tag" value="${escapeAttr(val('dup-rule-qb-tag'))}" ${edit} placeholder="Any torrent">
+          <input class="form-input" id="dup-rule-qb-tag" value="${escapeAttr(rule.qbittorrent_tag || '')}" placeholder="Any torrent">
           <div class="form-hint">e.g. your private tracker's tag</div></div>
-      </div>
-      <div style="display:flex;gap:6px;align-items:center">
-        <button class="btn btn-primary btn-sm" onclick="saveDupRule(this)">Save</button>
-        <span class="form-hint" id="dup-rule-unsaved-more">${unsaved}</span>
       </div>
     </details>` : ''}
     <div class="dup-titles">
@@ -4852,14 +4818,14 @@ function renderDupRule() {
 }
 
 function setDupRuleMode(m) {
+  pages.dup.rule.cap = document.getElementById('dup-rule-cap')?.value ?? pages.dup.rule.cap;
   pages.dup.ruleMode = m;
   pages.dup.plan = null;
   renderDupRule();
 }
 
 async function saveDupRule(btn) {
-  const edits = pages.dup.ruleEdits || {};
-  const v = id => (id in edits ? edits[id] : document.getElementById(id)?.value);
+  const v = id => document.getElementById(id)?.value;
   const rule = pages.dup.rule;
   const body = {
     mode: pages.dup.ruleMode,
@@ -4870,13 +4836,10 @@ async function saveDupRule(btn) {
     qbittorrent_password: v('dup-rule-qb-pass') ?? null,
     qbittorrent_tag: v('dup-rule-qb-tag') ?? rule.qbittorrent_tag ?? '',
   };
-  const sent = { ...edits };
   if (btn) btn.disabled = true;
   try {
     pages.dup.rule = await api('/api/duplicates/rule', { method: 'PUT', body });
     pages.dup.ruleMode = pages.dup.rule.mode;
-    // Keep only what was typed while the save was on its way.
-    for (const id of Object.keys(sent)) if (edits[id] === sent[id]) delete edits[id];
     toast(body.mode === 'off' ? 'Automatic rule off' : `Automatic rule on: ${body.mode} first`);
     renderDupRule();
   } catch (e) {
@@ -7531,7 +7494,7 @@ function renderHealthLog() {
     toggleStrmManaged,
     // Duplicates
     setDupFilter, resolveDup, resolveAllKeepRadarr, showAllDuplicates, showMoreHealthLog,
-    setDupRuleMode, dupRuleEdit, saveDupRule, previewDupRule, runDupRule, showDupRulePlan, hideDupRulePlan, setPreferDownload,
+    setDupRuleMode, saveDupRule, previewDupRule, runDupRule, showDupRulePlan, hideDupRulePlan, setPreferDownload,
     dupTitlePreferOff, dupTitleStrmOn, dupTitleSearch, dupTitleAdd,
     // Log viewer
     clearLogPanel, toggleLogScroll,

@@ -1729,7 +1729,10 @@ recording, never on live bytes (Lucas, 30 Oct 2026).
 - The plugin does the file work (`POST /Tentacle/Recordings/{id}/Retime`,
   plugin.md "RecordingRetime"): the files are Jellyfin's
   (`/config/data/livetv/recordings` by default), not in Tentacle's
-  container. 409 = still recording: asked next pass. 404 without a state =
+  container. It sends `?start=` (the programme's start as in `context()`,
+  when known): Jellyfin's DateCreated is reset to about the last write by a
+  refresh as a recording stops (#900). 409 = still recording: asked next
+  pass. 404 without a state =
   an older plugin: the pass stops, nothing stored.
 - Then `POST .../Premiere?date=`: PremiereDate = the programme's start
   (booking, else guide programme as in `context()`, else DateCreated),
@@ -1737,7 +1740,8 @@ recording, never on live bytes (Lucas, 30 Oct 2026).
 - `recording_checks` (plain columns: item id, state ok/retimed/not_fixed/
   failed/no_window/no_space/not_a_recording, duration/wall/after seconds,
   premiere_set, attempts). `failed`/`no_space` are tried again after 6 h,
-  3 times. Activity: `livetv_recording_retimed` ("Recording fixed"),
+  3 times. A `no_window` without a wall (from a plugin before #900) is
+  asked once more. Activity: `livetv_recording_retimed` ("Recording fixed"),
   `livetv_recording_not_fixed` (a problem).
 
 ## YouTube per person (`services/youtube/follows.py`, `routers/my_youtube.py`, dashboard `static/js/myyoutube.js`)

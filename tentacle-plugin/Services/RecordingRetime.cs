@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Tentacle.Services;
@@ -10,8 +11,8 @@ namespace Jellyfin.Plugin.Tentacle.Services;
 /// is lost, but ffprobe (and so Jellyfin) takes the length from the first and last
 /// timestamps: a 3 h 45 min game shows as 21.7 h and seeking past the jump misbehaves.
 ///
-/// The check: the probed length against the file's wall-clock window (its creation, as
-/// Jellyfin's DateCreated, to its last write). Far over it, ffmpeg copies the file
+/// The check: the probed length against the file's wall-clock window (from when it began,
+/// see <see cref="Began"/>, to its last write). Far over it, ffmpeg copies the file
 /// (<c>-fflags +genpts+discardcorrupt -c copy</c>: its MPEG-TS input carries on across a
 /// timestamp jump instead of keeping it) into a hidden temp file next to it. The copy
 /// takes the recording's place (one rename) only when its length fits the window, it
@@ -35,6 +36,9 @@ public static class RecordingRetime
     /// <summary>The copy must keep this share of the recording's bytes.</summary>
     public const double MinSizeShare = 0.95;
 
+    /// <summary>A window this short for the file's size isn't its real one (no recording is sent this fast).</summary>
+    public const double MaxBitsPerSecond = 60_000_000;
+
     private const long SpareBytes = 2L * 1024 * 1024 * 1024;
 
     private static readonly SemaphoreSlim OneAtATime = new(1, 1);
@@ -49,6 +53,51 @@ public static class RecordingRetime
 
     /// <summary>True when a probed length is far over its wall-clock window.</summary>
     public static bool TooLong(double duration, double wall) => duration > (wall * Slack) + SlackSeconds;
+
+    /// <summary>
+    /// When a recording began (#900): the earliest of Jellyfin's DateCreated, the programme's
+    /// start the server knows (its booking, else the guide) and the start in the file name
+    /// (Jellyfin names it after the programme's start in its own time zone, "… 2026_10_30_13_45_00.ts").
+    /// DateCreated alone isn't it: a refresh as the recording stops resets it to about its last
+    /// write (a 1 s window, so a good recording was copied for nothing), and one still recording
+    /// carries local time stamped as UTC.
+    /// </summary>
+    public static DateTime Began(string path, DateTime createdUtc, DateTime? startUtc)
+    {
+        var began = Utc(createdUtc);
+        foreach (var other in new[] { startUtc, NamedStart(path) })
+        {
+            if (other is { } t && t != default && Utc(t) < began)
+            {
+                began = Utc(t);
+            }
+        }
+
+        return began;
+    }
+
+    /// <summary>A date as UTC (one without a kind is taken as UTC, as Jellyfin stores them).</summary>
+    public static DateTime Utc(DateTime date) =>
+        date.Kind == DateTimeKind.Unspecified ? DateTime.SpecifyKind(date, DateTimeKind.Utc) : date.ToUniversalTime();
+
+    private static DateTime? NamedStart(string path)
+    {
+        var m = Regex.Match(Path.GetFileName(path), @"(\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})(?: - \d+)?\.ts$", RegexOptions.IgnoreCase);
+        if (!m.Success
+            || !DateTime.TryParseExact(m.Groups[1].Value, "yyyy_MM_dd_HH_mm_ss", CultureInfo.InvariantCulture, DateTimeStyles.None, out var local))
+        {
+            return null;
+        }
+
+        try
+        {
+            return TimeZoneInfo.ConvertTimeToUtc(local, TimeZoneInfo.Local);
+        }
+        catch (ArgumentException)
+        {
+            return null;    // a time the clock skipped (the spring change)
+        }
+    }
 
     /// <summary>The hidden temp file the copy is written to (same folder, so the swap is one rename).</summary>
     public static string TempPath(string path) =>
@@ -65,7 +114,7 @@ public static class RecordingRetime
         string ffmpeg,
         string ffprobe,
         string path,
-        DateTime createdUtc,
+        DateTime beganUtc,
         bool dryRun,
         ILogger? logger,
         CancellationToken cancellationToken)
@@ -77,7 +126,7 @@ public static class RecordingRetime
 
         try
         {
-            return await RunLocked(ffmpeg, ffprobe, path, createdUtc, dryRun, logger, cancellationToken).ConfigureAwait(false);
+            return await RunLocked(ffmpeg, ffprobe, path, beganUtc, dryRun, logger, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -89,7 +138,7 @@ public static class RecordingRetime
         string ffmpeg,
         string ffprobe,
         string path,
-        DateTime createdUtc,
+        DateTime beganUtc,
         bool dryRun,
         ILogger? logger,
         CancellationToken cancellationToken)
@@ -107,10 +156,10 @@ public static class RecordingRetime
             return new Outcome("recording");
         }
 
-        var wall = (written - createdUtc).TotalSeconds;
-        if (wall <= 0)
+        var wall = (written - Utc(beganUtc)).TotalSeconds;
+        if (wall <= 0 || size * 8 / wall > MaxBitsPerSecond)
         {
-            return new Outcome("no_window");
+            return new Outcome("no_window", Wall: Math.Max(0, wall));
         }
 
         var duration = await Probe(ffprobe, path, cancellationToken).ConfigureAwait(false);

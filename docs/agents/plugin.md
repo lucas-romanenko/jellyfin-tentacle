@@ -101,8 +101,12 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   Tentacle's `recording_check` asks per finished recording. Only `.ts` files
   in `IRecordingsManager.GetRecordingFolders()`, never one with
   `GetActiveRecordingInfo` or written to in the last 10 min. Probed
-  length (Jellyfin's ffprobe) > 1.25 x (last write - DateCreated) + 600 s =
-  a clock jump: Jellyfin's ffmpeg (`-fflags +genpts+discardcorrupt -map 0
+  length (Jellyfin's ffprobe) > 1.25 x (last write - began) + 600 s =
+  a clock jump, where began = the earliest of DateCreated, the server's
+  `?start=` (booking, else guide) and the file name's start (Jellyfin's
+  local time): DateCreated alone is reset to about the last write by a
+  refresh as it stops (#900). A window that means over 60 Mbit/s is
+  `no_window`, never a copy. On a clock jump, Jellyfin's ffmpeg (`-fflags +genpts+discardcorrupt -map 0
   -c copy -f mpegts`, nice 19, one at a time) writes `.<name>.retime.tmp`
   beside it; the copy replaces it (one rename, mtime kept) only when its
   length fits the window, it has 95 % of the bytes and the file didn't
