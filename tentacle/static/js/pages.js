@@ -5635,13 +5635,7 @@ function renderActivity(data) {
   const unreleased = data.unreleased || [];
   let html = '';
 
-  // What in Radarr/Sonarr is stopping downloads (indexers, download client, disk).
-  const problems = data.problems || [];
-  if (problems.length > 0) {
-    html += `<div class="arr-problems activity-problems${problems.some(p => p.level === 'error') ? ' error' : ''}">
-      <div class="arr-problems-head">⚠ Searches may not work right now</div>
-      <ul>${problems.slice(0, 4).map(p => `<li><strong>${escapeAttr(p.app)}:</strong> ${escapeAttr(p.message)}</li>`).join('')}</ul></div>`;
-  }
+  // What in Radarr/Sonarr is stopping downloads is on Health (admins), not here.
 
   if (downloads.length > 0) {
     html += '<div class="activity-section-title">Downloading</div><div class="activity-grid">';
