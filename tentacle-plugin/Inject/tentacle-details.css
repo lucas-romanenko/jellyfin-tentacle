@@ -26,6 +26,10 @@
     background-color: transparent;
     overflow-y: auto;
     overflow-x: hidden;
+    /* Pulling down at the top must not reach the page behind (the iOS app's
+       pull-to-refresh reloads Jellyfin), #877; y only: a trackpad's sideways
+       swipe stays the browser's back */
+    overscroll-behavior-y: contain;
     scrollbar-width: none;
     -ms-overflow-style: none;
 }

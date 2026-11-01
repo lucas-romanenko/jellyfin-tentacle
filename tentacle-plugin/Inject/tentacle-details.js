@@ -261,8 +261,10 @@ var Details = {
         if (navbarBack) navbarBack.style.display = show ? '' : 'none';
         if (sidebarBack) sidebarBack.style.display = show ? '' : 'none';
 
-        // Also tell navbar directly
-        if (window.TentacleNavbar && window.TentacleNavbar.showBackButton) {
+        // Also tell navbar directly: closed, the page under it decides (#877)
+        if (window.TentacleNavbar && window.TentacleNavbar.updateBackButton) {
+            window.TentacleNavbar.updateBackButton();
+        } else if (window.TentacleNavbar && window.TentacleNavbar.showBackButton) {
             window.TentacleNavbar.showBackButton(show);
         }
     },
@@ -2185,7 +2187,9 @@ var Details = {
         // Download — requires EnableContentDownloading permission and CanDownload on item.
         // A VOD title's file is its .strm text: a browser would save that, only a
         // Jellyfin app (its own download queue, transcoded downloads) gets the video.
-        if (policy.EnableContentDownloading && item.CanDownload && (!this._isStrm(item) || this._appCanDownload())) {
+        // A recording still recording isn't offered: its file isn't finished (#877).
+        if (policy.EnableContentDownloading && item.CanDownload && item.Status !== 'InProgress' &&
+            (!this._isStrm(item) || this._appCanDownload())) {
             menuItems.push({ id: 'download', name: 'Download', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M480-320 280-520l56-58 104 104v-326h80v326l104-104 56 58-200 200ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z"/></svg>' });
         }
 

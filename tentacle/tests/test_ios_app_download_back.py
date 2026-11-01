@@ -1,4 +1,4 @@
-"""Jellyfin's phone apps (iOS, Android): Download, back on Home, trailer (#877).
+"""Jellyfin's phone apps (iOS, Android): Download, back, trailer (#877).
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 
@@ -15,8 +15,13 @@ its downloads go only through `NativeShell.downloadFile({url, item, filename,
   specificity to the media bar's `body.moonfin-mediabar-active
   .moonfin-navbar-active .moonfin-navbar {z-index: 10000}`.
 - Activity's "Coming up" trailer was a target="_blank" link: no window to open.
+- Favorites, Discover and Activity (overlays on the home route) had no back at
+  all: in the app, a dead end. Back shows there only without a browser's own
+  back (the apps on a touch screen, a home-screen web app); desktop browsers
+  and Jellyfin Media Player (a NativeShell too, but a mouse) are unchanged.
+- A recording still recording was offered Download: an unfinished file.
 
-Download and the trailer run the real code under node with a fake shell.
+Download, back and the trailer run the real code under node with a fake shell.
 """
 import json
 import re
@@ -28,6 +33,7 @@ from pathlib import Path
 INJECT = Path(__file__).resolve().parents[2] / "tentacle-plugin" / "Inject"
 DETAILS_JS = INJECT / "tentacle-details.js"
 DISCOVER_JS = INJECT / "tentacle-discover.js"
+NAVBAR_JS = INJECT / "tentacle-navbar.js"
 
 
 def _method(src: str, name: str) -> str:
@@ -126,6 +132,165 @@ class DownloadOfferedOnlyWhereItWorks(unittest.TestCase):
 
     def test_the_app_is_offered_a_vod_title(self):
         self.assertIn("download", self.menu(APP_SHELL, VOD)["menu"])
+
+    def test_a_recording_still_recording_is_not_offered(self):
+        recording = dict(MOVIE, Path="/rec/Game (2026)/Game.ts", Status="InProgress")
+        self.assertNotIn("download", self.menu(APP_SHELL, recording)["menu"])
+        self.assertNotIn("download", self.menu("undefined", recording)["menu"])
+
+    def test_a_finished_recording_is(self):
+        self.assertIn("download", self.menu(APP_SHELL, dict(MOVIE, Status="Completed"))["menu"])
+
+
+def _navbar_method(src: str, name: str) -> str:
+    start = src.index("        " + name + ": function")
+    end = src.index("\n        },\n", start)
+    return src[start:end] + "\n        }"
+
+
+IOS_APP = ("{ AppHost: { getDefaultLayout: function () { return 'mobile'; } }, "
+           "downloadFile: function () {} }")
+JMP = ("{ AppHost: { getDefaultLayout: function () { return 'desktop'; } }, "
+       "downloadFile: function () {} }")
+
+
+def _navbar_harness(shell: str, media: dict, hash_: str, body: str, details_open=False, popup=None) -> str:
+    """The navbar's back logic under node: a fake page at `hash_`, matchMedia
+    answering `media`, the app's NativeShell (or none)."""
+    src = NAVBAR_JS.read_text(encoding="utf-8")
+    methods = ["isHomePage", "isHomeOverlay", "noBrowserBack", "notePage", "closeTopPopup",
+               "updateBackButton", "setupEventListeners"]
+    return r"""
+var log = { went: [], closed: [], back: 0 };
+var listeners = {};
+function el(name) { return { name: name, style: { display: 'none' }, dataset: {},
+  addEventListener: function (t, f) { listeners[name + ':' + t] = f; },
+  querySelector: function () { return null; }, querySelectorAll: function () { return []; },
+  click: function () { log.closed.push(name); } }; }
+var backBtn = el('back'), userBtn = el('user');
+var POPUP = %POPUP%;
+var document = { querySelector: function (sel) { return POPUP && sel.indexOf(POPUP) !== -1 ? el(POPUP) : null; },
+  addEventListener: function () {} };
+var location = { hash: %HASH% };
+var history = { length: 5, back: function () { log.back++; } };
+var navigator = {};
+var MEDIA = %MEDIA%;
+var window = { NativeShell: %SHELL%, matchMedia: function (q) { return { matches: !!MEDIA[q] }; },
+  addEventListener: function () {} };
+var Details = { isVisible: %DETAILS%, goBack: function () { log.went.push('details-back'); } };
+function MutationObserver() { this.observe = function () {}; }
+var Navbar = {
+%METHODS%,
+  isMobile: function () { return false; },
+  updateActiveState: function () {},
+  handleNavigation: function (a) { log.went.push(a); }
+};
+Navbar.container = { addEventListener: function () {}, querySelector: function (sel) {
+  return sel === '.moonfin-nav-back' ? backBtn : sel === '.moonfin-user-btn' ? userBtn : null; } };
+%BODY%
+log.backShown = backBtn.style.display !== 'none';
+process.stdout.write(JSON.stringify(log));
+""".replace("%METHODS%", ",\n".join(_navbar_method(src, m) for m in methods)) \
+   .replace("%SHELL%", shell).replace("%MEDIA%", json.dumps(media)).replace("%HASH%", json.dumps(hash_)) \
+   .replace("%DETAILS%", "true" if details_open else "false").replace("%POPUP%", json.dumps(popup)) \
+   .replace("%BODY%", body)
+
+
+TOUCH = {"(pointer: coarse)": True}
+MOUSE = {}
+HOME_WEB_APP = {"(pointer: coarse)": True, "(display-mode: standalone)": True}
+OVERLAYS = ["#/home.html?tab=1", "#/home.html?tentacle=discover", "#/home?tentacle=activity"]
+
+
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
+class BackOnFavoritesDiscoverActivity(unittest.TestCase):
+    def shown(self, shell, media, hash_, details_open=False):
+        return _run(_navbar_harness(shell, media, hash_, "Navbar.updateBackButton();",
+                                    details_open))["backShown"]
+
+    def test_the_ios_app_gets_back_on_every_home_overlay(self):
+        for h in OVERLAYS:
+            self.assertTrue(self.shown(IOS_APP, TOUCH, h), h)
+
+    def test_also_when_the_app_reports_no_touch_but_the_mobile_layout(self):
+        self.assertTrue(self.shown(IOS_APP, MOUSE, "#/home.html?tentacle=discover"))
+
+    def test_a_web_app_on_the_home_screen_too(self):
+        self.assertTrue(self.shown("undefined", HOME_WEB_APP, "#/home.html?tab=1"))
+
+    def test_browsers_and_jellyfin_media_player_are_unchanged(self):
+        for shell, media in (("undefined", MOUSE), ("undefined", TOUCH), (JMP, MOUSE)):
+            for h in OVERLAYS:
+                self.assertFalse(self.shown(shell, media, h), (shell, media, h))
+
+    def test_home_itself_has_no_back_anywhere(self):
+        for shell, media in (("undefined", MOUSE), (IOS_APP, TOUCH)):
+            for h in ("#/home.html", "#/home", ""):
+                self.assertFalse(self.shown(shell, media, h), (shell, h))
+
+    def test_other_pages_and_details_keep_theirs(self):
+        for shell, media in (("undefined", MOUSE), (IOS_APP, TOUCH)):
+            self.assertTrue(self.shown(shell, media, "#/search.html"))
+            self.assertTrue(self.shown(shell, media, "#/home.html", details_open=True))
+
+    def click_back(self, hash_, visited=True, popup=None, details_open=False):
+        body = ("Navbar._visitedOtherPage = %s;\n" % ("true" if visited else "false") +
+                "Navbar.setupEventListeners();\nlisteners['back:click']();\n")
+        return _run(_navbar_harness(IOS_APP, TOUCH, hash_, body, details_open, popup))
+
+    def test_back_goes_to_the_page_before(self):
+        log = self.click_back("#/home.html?tentacle=discover")
+        self.assertEqual((1, []), (log["back"], log["went"]))
+
+    def test_opened_straight_onto_an_overlay_back_goes_home(self):
+        log = self.click_back("#/home.html?tab=1", visited=False)
+        self.assertEqual((0, ["home"]), (log["back"], log["went"]))
+
+    def test_a_pop_up_closes_first(self):
+        log = self.click_back("#/home.html?tentacle=discover", popup="#mdDetailModal")
+        self.assertEqual((["#mdDetailModal"], 0, []), (log["closed"], log["back"], log["went"]))
+
+    def test_details_close_before_leaving(self):
+        log = self.click_back("#/home.html?tab=1", details_open=True)
+        self.assertEqual((0, ["details-back"]), (log["back"], log["went"]))
+
+    def test_a_first_page_counts_once_its_shown(self):
+        body = "location.hash = '#/home.html?tentacle=discover'; Navbar.notePage(); log.a = !!Navbar._visitedOtherPage;\n" \
+               "location.hash = '#/search.html'; Navbar.notePage(); log.b = !!Navbar._visitedOtherPage;\n"
+        log = _run(_navbar_harness(IOS_APP, TOUCH, "", body))
+        self.assertEqual((False, True), (log["a"], log["b"]))
+
+
+class TouchPolish(unittest.TestCase):
+    """Only what doesn't change the look: no pull-to-refresh behind an overlay,
+    44 pt to tap without bigger buttons, no iOS preview on a long press."""
+
+    def css(self, name):
+        return re.sub(r"/\*.*?\*/", "", (INJECT / name).read_text(encoding="utf-8"), flags=re.S)
+
+    def block(self, css, selector):
+        m = re.search(r"(?:^|\})\s*" + re.escape(selector) + r"\s*\{([^}]*)\}", css)
+        self.assertIsNotNone(m, selector)
+        return m.group(1)
+
+    def test_overlays_keep_a_pull_at_the_top_to_themselves(self):
+        for name, sel in (("tentacle-details.css", ".moonfin-details-panel"),
+                          ("tentacle-discover.css", ".md-discover-overlay"),
+                          ("tentacle-discover.css", ".md-activity-overlay")):
+            self.assertIn("overscroll-behavior-y: contain", self.block(self.css(name), sel), sel)
+
+    def test_touch_targets_grow_only_on_touch_screens(self):
+        css = self.css("tentacle-navbar.css")
+        coarse = css[css.index("@media (pointer: coarse)"):]
+        self.assertRegex(coarse, r"\.moonfin-nav-back::after[^{]*\{[^}]*inset: -4px")
+        before = css[:css.index("@media (pointer: coarse)")]
+        self.assertNotIn("::after", before.replace(".moonfin-libraries-list::before", ""))
+
+    def test_long_press_cells_have_no_ios_callout(self):
+        css = self.css("tentacle-livetv.css")
+        m = re.search(r"\.tg-prog,\s*\.tg-chan,\s*\.mv-tile\s*\{([^}]*)\}", css)
+        self.assertIsNotNone(m)
+        self.assertIn("-webkit-touch-callout: none", m.group(1))
 
 
 class BackAboveDetailsOnHome(unittest.TestCase):

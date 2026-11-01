@@ -1097,3 +1097,13 @@ body.tentacle-multiview-active .skinHeader { display: none !important; }
 @media (hover: hover) {
     .tpl-card:hover { background: #262145; box-shadow: inset 0 0 0 2px #8b80ff; }
 }
+
+/* A long press opens Tentacle's menu: iOS must not take it for its own
+   link preview or text selection (#877) */
+.tg-prog,
+.tg-chan,
+.mv-tile {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+}

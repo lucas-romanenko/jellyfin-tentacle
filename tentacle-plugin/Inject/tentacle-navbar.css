@@ -542,3 +542,29 @@ body.moonfin-navbar-active .cardOverlayContainer {
         min-width: 36px;
     }
 }
+
+/* Touch screens: at least 44 pt to tap on back, the avatar and the pill's
+   buttons, without changing how they look (#877) */
+@media (pointer: coarse) {
+    .moonfin-nav-back,
+    .moonfin-user-btn {
+        position: relative;
+    }
+
+    .moonfin-nav-back::after,
+    .moonfin-user-btn::after {
+        content: '';
+        position: absolute;
+        inset: -4px;
+        border-radius: 50%;
+    }
+
+    .moonfin-nav-btn::after {
+        content: '';
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: -2px;
+        bottom: -2px;
+    }
+}
