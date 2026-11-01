@@ -29,6 +29,7 @@ from services.exceptions import SonarrConnectionError
 from services.logstream import emit_library_event
 from services.arr_add import (
     ADD_TIMEOUT, READ_TIMEOUT, _poll_until_present, already_exists_in_body, explain_arr_error,
+    lost_add_race,
 )
 
 logger = logging.getLogger(__name__)
@@ -349,6 +350,16 @@ class SonarrService:
         if r.status_code in (400, 409) and already_exists_in_body(r.text):
             logger.info(f"Sonarr: series already present (tmdb:{tmdb_id} tvdb:{tvdb_id})")
             return {"alreadyExists": True}
+        # The same show added twice at once: the second insert fails on the
+        # unique index. If Sonarr has it now, that's the outcome wanted.
+        if tvdb_id and lost_add_race(r.text, "Series.TvdbId"):
+            try:
+                there = self.get_series_by_tvdb(tvdb_id)
+            except Exception:
+                there = None
+            if there:
+                logger.info(f"Sonarr add tvdb:{tvdb_id} lost a race with another add of it; Sonarr has the series")
+                return {"alreadyExists": True}
 
         logger.error(f"Sonarr rejected tmdb:{tmdb_id} tvdb:{tvdb_id} — HTTP {r.status_code}: {r.text}")
         self.last_error = explain_arr_error(r.status_code, r.text, "Sonarr")

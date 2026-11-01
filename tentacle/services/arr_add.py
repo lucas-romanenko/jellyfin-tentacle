@@ -113,6 +113,16 @@ def already_exists_in_body(body: str) -> bool:
     )
 
 
+def lost_add_race(body: str, column: str) -> bool:
+    """True when an *arr refused an add because the same title went in a moment
+    earlier: two adds sent at once both pass the "already added" validator and
+    the second insert fails on the unique index (`column`, e.g.
+    "MovieMetadata.TmdbId"). The title may well be there now, so the caller
+    checks before calling it a failure."""
+    low = (body or "").lower()
+    return "unique constraint failed" in low and column.lower() in low
+
+
 class AddReport:
     """Accumulates add results and de-duplicates the failure reasons.
 
@@ -244,6 +254,9 @@ def add_movie_to_radarr(radarr_url: str, radarr_key: str, tmdb_id: int,
         return ADDED, None
     if already_exists_in_body(r.text):
         return EXISTS, None
+    if lost_add_race(r.text, "MovieMetadata.TmdbId") and _radarr_has_movie_now(radarr_url, radarr_key, tmdb_id):
+        logger.info(f"Radarr add tmdb:{tmdb_id} lost a race with another add of it; Radarr has the movie")
+        return EXISTS, None
     logger.error(f"Radarr rejected tmdb:{tmdb_id} — HTTP {r.status_code}: {r.text}")
     return FAILED, explain_arr_error(r.status_code, r.text, "Radarr")
 
@@ -304,6 +317,18 @@ def _redirect_dropped_the_post(r) -> bool:
     if getattr(getattr(r, "request", None), "method", "POST") != "POST":
         return True
     return any(getattr(h, "status_code", 0) in (301, 302, 303) for h in history)
+
+
+def _radarr_has_movie_now(radarr_url: str, radarr_key: str, tmdb_id: int) -> bool:
+    """One look: whether Radarr has this movie right now (no polling)."""
+    try:
+        r = requests.get(f"{radarr_url.rstrip('/')}/api/v3/movie", headers={"X-Api-Key": radarr_key},
+                         params={"tmdbId": tmdb_id}, timeout=READ_TIMEOUT)
+        r.raise_for_status()
+        movies = r.json()
+        return isinstance(movies, list) and any(m.get("tmdbId") == tmdb_id for m in movies)
+    except (requests.exceptions.RequestException, ValueError):
+        return False
 
 
 def _radarr_has_movie(radarr_url: str, radarr_key: str, tmdb_id: int,

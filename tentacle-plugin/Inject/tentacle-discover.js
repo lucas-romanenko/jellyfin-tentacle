@@ -1706,9 +1706,13 @@
 
       var btn = document.getElementById('mdDownloadBtn');
       if (btn) {
-        btn.addEventListener('click', function () {
+        // onclick, not addEventListener: the profiles load again when the
+        // dialog is drawn again, and each extra listener sent one more add on
+        // a single tap (2 on the first tap, 4 on Retry), so Radarr got the
+        // same film twice at once and refused the second.
+        btn.onclick = function () {
           doDownload(item, ps.value);
-        });
+        };
       }
     }).catch(function () {
       var s = document.getElementById('mdDownloadStatus');
@@ -1720,6 +1724,7 @@
     var btn = document.getElementById('mdDownloadBtn');
     var status = document.getElementById('mdDownloadStatus');
     if (!btn || !status) return;
+    if (btn.disabled) return;   // an add is already on its way
 
     btn.disabled = true;
     btn.textContent = 'Adding...';

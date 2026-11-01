@@ -13,11 +13,14 @@ import requests
 
 from services.arr_add import (
     ADDED, EXISTS, FAILED, AddReport, add_movie_to_radarr,
-    already_exists_in_body, explain_arr_error, radarr_root_folder,
+    already_exists_in_body, explain_arr_error, lost_add_race, radarr_root_folder,
 )
 
 MOVIE_EXISTS = '[{"propertyName":"TmdbId","errorMessage":"This movie has already been added","errorCode":"MovieExistsValidator"}]'
 SERIES_EXISTS = '[{"propertyName":"TvdbId","errorMessage":"This series has already been added","errorCode":"SeriesExistsValidator"}]'
+# Radarr 6.4's answer when the same film is added twice at once (the second insert).
+RACE = ('{"message":"constraint failed\nUNIQUE constraint failed: MovieMetadata.TmdbId",'
+        '"description":"code = Constraint (19), message = System.Data.SQLite.SQLiteException"}')
 NOT_FOUND = '[{"propertyName":"TmdbId","errorMessage":"A movie with this ID was not found","errorCode":"MovieNotFound"}]'
 
 
@@ -115,6 +118,25 @@ class TestAddMovieToRadarr(unittest.TestCase):
         self.assertGreaterEqual(sum(verify_backoff_delays()), 127,
                                 "budget is shorter than a measured real add")
         self.assertGreaterEqual(VERIFY_TOTAL_SECONDS, 150)
+
+    def test_lost_race_is_already_added_when_radarr_has_it(self):
+        # Two adds of one film at once (a double tap): the second fails on the
+        # unique index, but the film is there, which is what the user asked for.
+        with mock.patch("requests.post", return_value=_response(500, RACE)),              mock.patch("requests.get", return_value=_mock_json([{"tmdbId": 1765072}])):
+            outcome, reason = add_movie_to_radarr("http://r", "k", 1765072, 1, "/movies")
+        self.assertEqual(outcome, EXISTS)
+        self.assertIsNone(reason)
+
+    def test_lost_race_stays_a_failure_when_radarr_has_no_such_movie(self):
+        with mock.patch("requests.post", return_value=_response(500, RACE)),              mock.patch("requests.get", return_value=_mock_json([])):
+            outcome, reason = add_movie_to_radarr("http://r", "k", 1765072, 1, "/movies")
+        self.assertEqual(outcome, FAILED)
+        self.assertIn("Radarr", reason)
+
+    def test_lost_race_detection_is_specific(self):
+        self.assertTrue(lost_add_race(RACE, "MovieMetadata.TmdbId"))
+        self.assertFalse(lost_add_race(RACE, "Series.TvdbId"))
+        self.assertFalse(lost_add_race(NOT_FOUND, "MovieMetadata.TmdbId"))
 
     def test_rejection_reason_is_returned(self):
         with mock.patch("requests.post", return_value=_response(400, NOT_FOUND)):
