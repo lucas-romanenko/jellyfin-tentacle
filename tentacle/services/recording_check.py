@@ -8,7 +8,10 @@ Jellyfin's, in its recordings folder; Tentacle never sees them).
   file loses nothing, but ffprobe and so Jellyfin take its length from the
   first and last timestamps: a 3 h 45 min game shows as 21.7 h and seeking
   past the jump misbehaves. The plugin (POST /Tentacle/Recordings/{id}/Retime)
-  compares the probed length with the file's wall-clock window; far over it,
+  compares the probed length with the file's wall-clock window (from the
+  earliest of Jellyfin's DateCreated, the programme's start sent along and
+  the start in the file name: a refresh as it stops resets DateCreated to
+  about its last write, #900); far over it,
   it copies the file with continuous timestamps (`ffmpeg -fflags
   +genpts+discardcorrupt -c copy`) beside it, puts the copy in its place
   only when its length fits the window and nothing was lost, and refreshes
@@ -54,9 +57,11 @@ def _dashed(item_id: str) -> str:
     return f"{i[:8]}-{i[8:12]}-{i[12:16]}-{i[16:20]}-{i[20:]}" if len(i) == 32 else i
 
 
-def retime(jf, item_id: str) -> tuple:
-    """The plugin's clock check of one recording: (HTTP status, body)."""
-    status, body = jf.post(f"/Tentacle/Recordings/{_dashed(item_id)}/Retime", COPY_TIMEOUT)
+def retime(jf, item_id: str, start: Optional[datetime] = None) -> tuple:
+    """The plugin's clock check of one recording: (HTTP status, body).
+    `start`: the programme's start (UTC), when known."""
+    params = {"start": start.strftime("%Y-%m-%dT%H:%M:%SZ")} if start else {}
+    status, body = jf.post(f"/Tentacle/Recordings/{_dashed(item_id)}/Retime", COPY_TIMEOUT, **params)
     if status == 404 and not body.get("state"):
         raise PluginTooOld("the Tentacle plugin has no recording check (update it)")
     return status, body
@@ -92,15 +97,18 @@ def _finished(item: dict, ctx: dict, now: datetime, now_on: list) -> bool:
 def _due(row: Optional[RecordingCheck], now: datetime) -> bool:
     if row is None:
         return True
+    if row.state == "no_window" and row.wall is None and not row.attempts:
+        return True         # from a plugin that had only DateCreated (#900): asked once more
     if row.state in DONE:
         return False
     return (row.attempts or 0) < MAX_ATTEMPTS and not (row.updated_at and row.updated_at + RETRY_AFTER > now)
 
 
-def check(db: Session, jf, item: dict, row: Optional[RecordingCheck], now: datetime) -> Optional[RecordingCheck]:
+def check(db: Session, jf, item: dict, row: Optional[RecordingCheck], now: datetime,
+          start: Optional[datetime] = None) -> Optional[RecordingCheck]:
     """One recording's clock check. Returns its row, or None when the plugin
     says it still records (asked again next pass)."""
-    status, body = retime(jf, item.get("Id"))
+    status, body = retime(jf, item.get("Id"), start)
     state = body.get("state") or f"http {status}"
     if status == 409:
         return row
@@ -116,6 +124,8 @@ def check(db: Session, jf, item: dict, row: Optional[RecordingCheck], now: datet
         row.attempts = (row.attempts or 0) + 1
         row.detail = row.detail or state
         logger.warning(f"[Recording check] “{name}”: {state} {row.detail or ''}".rstrip())
+    elif state == "no_window":
+        row.attempts = (row.attempts or 0) + 1
     elif state == "retimed":
         msg = (f"Recording “{name}”: its clock jumped ({_hours(row.duration)} for {_hours(row.wall)} recorded); "
                f"copied with continuous timestamps, now {_hours(row.after)}")
@@ -162,7 +172,7 @@ def run_pass(db: Session, jf=None, now: Optional[datetime] = None, limit: int = 
                         out["waiting"] += 1
                         continue
                     checked += 1
-                    row = check(db, jf, item, row, now)
+                    row = check(db, jf, item, row, now, ctx["start"])
                     if row is None or row.updated_at != now:     # the plugin: it still records
                         out["waiting"] += 1
                         continue

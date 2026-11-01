@@ -19,12 +19,14 @@ without ffmpeg).
 
 Run from the tentacle/ directory:  python tests/hermetic.py test_recording_check
 """
+import os
 import re
 import shutil
 import subprocess
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from tmp_dirs import temp_dir
 from services import recording_check as RC
@@ -42,6 +44,7 @@ class FakePlugin(FakeJellyfin):
         super().__init__(**kw)
         self.answers = {}         # item id -> (status, body) for Retime
         self.retimes = []
+        self.retime_params = []
         self.premieres = []
         self.premiere = {}        # item id -> PremiereDate Jellyfin has
         self.old_plugin = False
@@ -54,6 +57,7 @@ class FakePlugin(FakeJellyfin):
         iid = m.group(1).replace("-", "")
         if m.group(2) == "Retime":
             self.retimes.append(iid)
+            self.retime_params.append(params)
             return self.answers.get(iid, (200, {"state": "ok", "duration": 3600.0, "wall": 3700.0}))
         self.premieres.append((iid, params["date"]))
         if iid in self.premiere:
@@ -249,6 +253,39 @@ class PremiereDate(Base):
         self.assertEqual([], self.jf.premieres)
 
 
+class TheStart(Base):
+    """#900: Jellyfin's DateCreated isn't when a recording began. A refresh as
+    it stops resets it to about its last write (on the maintainer's install
+    every recording's DateCreated is its file's last write: window 0 s,
+    no_window), so the server sends the programme's start along."""
+
+    def test_the_programme_start_goes_to_the_plugin(self):
+        from models.database import EPGProgram
+        start = NOW - timedelta(hours=3)
+        self.db.add(EPGProgram(channel_id="tsn", title="NHL Hockey", start=start, stop=start + timedelta(hours=3)))
+        self.db.commit()
+        self.jf.add(ID, "Live: NHL Hockey", start - timedelta(minutes=1))
+        self.run_pass()
+        self.assertEqual([{"start": "2026-10-30T09:00:00Z"}], self.jf.retime_params)
+
+    def test_no_start_known_sends_none(self):
+        self.jf.add(ID, "The National", NOW - timedelta(hours=2))
+        self.run_pass()
+        self.assertEqual([{}], self.jf.retime_params)
+
+    def test_a_no_window_from_before_is_asked_once_more(self):
+        from models.database import RecordingCheck
+        self.jf.add(ID, "Live: NHL Hockey", NOW - timedelta(hours=5))
+        self.db.add(RecordingCheck(item_id=ID, state="no_window", attempts=0, premiere_set=1,
+                                   created_at=NOW - timedelta(days=1), updated_at=NOW - timedelta(days=1)))
+        self.db.commit()
+        self.jf.answers[ID] = (200, {"state": "no_window", "wall": 0.0})
+        self.run_pass()
+        self.run_pass(now=NOW + timedelta(days=1))
+        self.assertEqual([ID], self.jf.retimes)
+        self.assertEqual(("no_window", 0.0), (self.row().state, self.row().wall))
+
+
 # ── The plugin ──────────────────────────────────────────────────────────────
 
 def _src(name: str) -> str:
@@ -320,6 +357,120 @@ class TheRecipeOnAFile(unittest.TestCase):
         argv = [lit or (str(rec) if var == "input" else str(d / "copy.ts")) for lit, var in args]
         subprocess.run(["ffmpeg", *argv], check=True, timeout=120)
         self.assertAlmostEqual(40, self.probe(d / "copy.ts"), delta=2)
+
+
+HARNESS = r"""
+using Jellyfin.Plugin.Tentacle.Services;
+var a = args;
+DateTime? start = a[4] == "-" ? null : DateTime.Parse(a[4], null, System.Globalization.DateTimeStyles.AdjustToUniversal);
+var created = DateTime.Parse(a[3], null, System.Globalization.DateTimeStyles.AdjustToUniversal);
+var began = RecordingRetime.Began(a[2], created, start);
+var o = await RecordingRetime.Run(a[0], a[1], a[2], began, false, null, CancellationToken.None);
+Console.WriteLine($"{began:yyyy-MM-ddTHH:mm:ssZ} {o.State} {o.Wall?.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+
+namespace Microsoft.Extensions.Logging
+{
+    public interface ILogger { }
+
+    public static class LoggerExtensions
+    {
+        public static void LogInformation(this ILogger l, string m, params object?[] a) { }
+
+        public static void LogWarning(this ILogger l, string m, params object?[] a) { }
+    }
+}
+"""
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None)
+
+
+@unittest.skipUnless(shutil.which("dotnet"), "needs dotnet")
+class TheWindowOnAFile(unittest.TestCase):
+    """#900 (Rob, 1 Nov 2026): a good 2 h 17 min game (8.26 GB) probed 8262 s
+    "in a 1 s window": its DateCreated was reset as it stopped, to its last
+    write minus 1 s, so the whole file was copied for nothing and Activity
+    said "2 h 17 min for 0 min recorded". The plugin's RecordingRetime.cs
+    (no Jellyfin types) is compiled and run on a file, with an ffprobe that
+    says 8262 s and an ffmpeg that only notes it was run."""
+
+    @classmethod
+    def setUpClass(cls):
+        d = Path(temp_dir(cls))
+        cls.dir = d
+        major = subprocess.run(["dotnet", "--version"], capture_output=True, text=True, timeout=60).stdout.split(".")[0]
+        (d / "h.csproj").write_text(
+            f"<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><OutputType>Exe</OutputType>"
+            f"<TargetFramework>net{major}.0</TargetFramework><Nullable>enable</Nullable>"
+            f"<ImplicitUsings>enable</ImplicitUsings></PropertyGroup>"
+            f"<ItemGroup><Compile Include=\"{(PLUGIN / 'Services/RecordingRetime.cs').resolve()}\" /></ItemGroup></Project>")
+        (d / "Program.cs").write_text(HARNESS)
+        (d / "tmp").mkdir()          # dotnet's scratch files go with the rest
+        cls.env = {**os.environ, "TMPDIR": str(d / "tmp"), "DOTNET_NOLOGO": "1", "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
+                   "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1", "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE": "1"}
+        built = subprocess.run(["dotnet", "build", "--disable-build-servers", "-nologo", "-v", "q", "-o",
+                                str(d / "out"), str(d / "h.csproj")], capture_output=True, text=True, timeout=600,
+                               env=cls.env)
+        assert built.returncode == 0, built.stdout[-3000:]
+        (d / "ffprobe").write_text("#!/bin/sh\necho 8262.0\n")
+        (d / "ffmpeg").write_text(f"#!/bin/sh\ntouch '{d / 'ffmpeg-ran'}'\nexit 1\n")
+        for tool in ("ffprobe", "ffmpeg"):
+            (d / tool).chmod(0o755)
+
+    def check(self, name, created, start=None, size=8_262_474_792):
+        """(state, wall) for a recording `name` last written an hour ago;
+        `created` and `start` from its last write."""
+        rec = self.dir / name
+        with open(rec, "wb") as f:
+            f.truncate(size)         # sparse: no real bytes
+        self.addCleanup(rec.unlink)
+        self.addCleanup(lambda: (self.dir / "ffmpeg-ran").unlink(missing_ok=True))
+        written = _utc_now() - timedelta(hours=1)
+        stamp = (written - datetime(1970, 1, 1)).total_seconds()
+        os.utime(rec, (stamp, stamp))
+        iso = lambda t: t.strftime("%Y-%m-%dT%H:%M:%SZ") if t else "-"
+        out = subprocess.run(["dotnet", str(self.dir / "out" / "h.dll"), str(self.dir / "ffmpeg"),
+                              str(self.dir / "ffprobe"), str(rec), iso(created(written)), iso(start and start(written))],
+                             capture_output=True, text=True, timeout=120, env={**self.env, "TZ": "America/Toronto"})
+        self.assertEqual(0, out.returncode, out.stderr)
+        _, state, wall = (out.stdout.split() + [""])[:3]
+        return state, float(wall) if wall else None
+
+    def ran_ffmpeg(self) -> bool:
+        return (self.dir / "ffmpeg-ran").exists()
+
+    def test_a_reset_date_created_and_no_start_is_no_window_without_a_copy(self):
+        state, wall = self.check("Game.ts", lambda w: w - timedelta(seconds=1))
+        self.assertEqual(("no_window", 1.0), (state, wall))          # 8.26 GB in 1 s: 66 Gbit/s
+        self.assertFalse(self.ran_ffmpeg())
+
+    def test_the_programme_start_from_the_server_gives_the_window(self):
+        state, wall = self.check("Game.ts", lambda w: w - timedelta(seconds=1),
+                                 start=lambda w: w - timedelta(seconds=8300))
+        self.assertEqual(("ok", 8300.0), (state, wall))
+        self.assertFalse(self.ran_ffmpeg())
+
+    def test_the_start_in_the_file_name_is_local_time(self):
+        # Jellyfin names the file after the programme's start in its own time zone
+        local = (_utc_now() - timedelta(hours=1, seconds=8300)).replace(tzinfo=timezone.utc).astimezone(
+            ZoneInfo("America/Toronto"))
+        state, wall = self.check(f"EuroLeague  Zalgiris - Partizan {local:%Y_%m_%d_%H_%M_%S} - 1.ts",
+                                 lambda w: w - timedelta(seconds=1))
+        self.assertEqual("ok", state)
+        self.assertAlmostEqual(8300, wall, delta=2)
+        self.assertFalse(self.ran_ffmpeg())
+
+    def test_the_earliest_start_wins(self):
+        state, wall = self.check("Game.ts", lambda w: w - timedelta(seconds=9000),
+                                 start=lambda w: w - timedelta(seconds=8300))
+        self.assertEqual(("ok", 9000.0), (state, wall))
+
+    def test_a_real_clock_jump_is_still_copied(self):
+        state, wall = self.check("Game.ts", lambda w: w - timedelta(seconds=1),
+                                 start=lambda w: w - timedelta(seconds=3000))
+        self.assertEqual("failed", state)                            # the fake ffmpeg fails, but it ran
+        self.assertTrue(self.ran_ffmpeg())
 
 
 if __name__ == "__main__":
