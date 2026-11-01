@@ -8,17 +8,18 @@
 //   - Recordings: what Jellyfin has recorded, newest first (a tap opens it to
 //     play), and what is recording now.
 //   - A click plays (Resume where it was left). A recording still recording
-//     asks first (as the TV, #239): Watch live (its channel, on the stream the
-//     recording already reads: no new connection), Resume from … (when a
+//     asks first (as the TV, #239): Watch live, Resume from … (when a
 //     position is saved), Play from start. Right-click / a long press (as the
 //     TV's long press): Resume, Play from start, Mark watched / unwatched,
 //     Delete recording… (when Jellyfin allows it, confirmed), Details;
 //     recording now: the same three, Mark watched / unwatched, Details.
-//   - Play from start plays the part already recorded from 0:00 in Jellyfin's
-//     player: seeking stays inside what's written, the bar grows, the end lands
-//     just behind it and keeps playing, and Jump to live in the player bar
-//     switches to the channel. Leaving saves the position and doesn't mark it
-//     watched (see "A recording still recording" below).
+//   - All three play the recording itself in Jellyfin's player, only the start
+//     differs (cable-box style, Lucas 30 Oct): Watch live at its live end, from
+//     where ⏪ / the bar go back to 0:00; Play from start at 0:00. Seeking stays
+//     inside what's written, the bar grows, the end lands just behind it and
+//     keeps playing, and Jump to live in the player bar goes back to the end.
+//     Leaving saves the position and doesn't mark it watched (see "A recording
+//     still recording" below).
 // Read-only: teams and rules are picked in Tentacle (Recordings page). Data:
 // TentacleDiscover/Recordings/* (the plugin passes the caller's own token on to
 // Tentacle) and Jellyfin's LiveTv/Recordings and LiveTv/Timers.
@@ -268,21 +269,6 @@
     pm.play(opts);
   }
 
-  // A recording still recording: its channel live. Jellyfin joins the stream
-  // the recording reads. Its channel id from the item, else from its timer.
-  function watchLive(item) {
-    channelOf(item).then(function (id) {
-      if (id && window.TentacleLiveTV) window.TentacleLiveTV.playChannel(id);
-      else window.TentacleMenu.toast('The channel couldn’t be found.');
-    });
-  }
-
-  function channelOf(item) {
-    if (item.ChannelId) return Promise.resolve(item.ChannelId);
-    if (!item.TimerId) return Promise.resolve(null);
-    return apiGet('LiveTv/Timers/' + item.TimerId).then(function (t) { return (t && t.ChannelId) || null; }, function () { return null; });
-  }
-
   // "1:28", "1:02:05"
   function clock(ticks) {
     var t = Math.floor(ticks / 1e7), h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, sec = t % 60;
@@ -322,8 +308,7 @@
     if (recording(item)) {
       items = recordingChoices(item).map(function (c) {
         return { label: c.label, run: function () {
-          if (c.key === 'live') watchLive(item);
-          else Growing.play(item, c.key === 'resume' ? position(item) : 0);
+          Growing.play(item, c.key === 'live' ? LIVE : c.key === 'resume' ? position(item) : 0);
         } };
       });
       // a click asks only how to play; right-click / a long press has the rest
@@ -356,6 +341,15 @@
   // (it never names one); a second reader of the file, no new provider
   // connection. What differs from a finished recording:
   // - Start at 1 ms: hls.js takes no start for "play at the live edge".
+  // - The first playlist holds only what the remux did in its first second
+  //   (2:25 of a 35 min recording on 30 Oct), the next one all of it: the bar
+  //   and its times stay hidden until what's written is as long as the
+  //   recording should be by now, or grows at about real time (or 45 s), so
+  //   they show the whole recorded part from the first moment (no start that
+  //   isn't one, then a jump, Lucas 30 Oct).
+  // - Watch live: the same, with the picture hidden, muted and a spinner, then
+  //   the live end. Jump to live goes there too (no channel switch: one
+  //   player, the recording's one provider connection).
   // - Resume: from 1 ms too, then a seek once the remux has reached the
   //   position (a start position would make ffmpeg skip the part before it).
   // - Seeks land at most EDGE_MS before the end of what's written, so the end
@@ -366,9 +360,9 @@
   //   then leaves the user data alone) and the position is saved on its own.
   //   A recording that finished while watched and played to its end stops as
   //   any other (watched).
-  // - Jump to live in the player bar: the channel, on the recording's stream.
-  var EDGE_MS = 10000, RESUME_WAIT_MS = 45000, START_TICKS = 10000, NOT_STARTED_MS = 60000;
-  var GR = { id: null, item: null, resume: 0, since: 0, ended: false, video: null, written: 0, grewAt: 0, asked: 0 };
+  var EDGE_MS = 10000, RESUME_WAIT_MS = 45000, START_TICKS = 10000, NOT_STARTED_MS = 60000, LIVE = -1;
+  var GR = { id: null, item: null, resume: 0, since: 0, ended: false, video: null, written: 0, grewAt: 0, asked: 0,
+    whole: false, live: false, muted: null, seen: 0, seenAt: 0, grew: -1, over: -1 };
 
   function normId(id) { return String(id || '').replace(/-/g, '').toLowerCase(); }
 
@@ -382,6 +376,23 @@
   // Whether a resume can seek now: the remux has reached it, or it waited long enough.
   function growingResumeReady(targetMs, writtenMs, waitedMs) {
     return writtenMs >= targetMs + EDGE_MS || waitedMs >= RESUME_WAIT_MS;
+  }
+
+  // How long the recording should be by now, from its start (the programme's
+  // start: a rule's pre-padding only makes it longer), or 0 when unknown.
+  function growingExpectedMs(startDate, nowMs) {
+    var ms = nowMs - Date.parse(startDate || '');
+    return ms > 0 && ms <= 86400000 ? ms : 0;
+  }
+
+  // Whether the remux has caught up with the recording: what's written is as
+  // long as it should be (less a minute), or its last growth (`grewMs` over
+  // `overMs`, between two playlists; negative before the second) was about
+  // real time, or it has waited RESUME_WAIT_MS.
+  function growingCaughtUp(writtenMs, expectedMs, grewMs, overMs, waitedMs) {
+    return waitedMs >= RESUME_WAIT_MS ||
+      (writtenMs > 0 && expectedMs > 0 && writtenMs >= expectedMs - 60000) ||
+      (grewMs >= 0 && overMs > 0 && grewMs * 2 < overMs * 5);
   }
 
   // The position to save on stop: under a minute in is "not started", as Jellyfin's own threshold.
@@ -440,7 +451,9 @@
   }
 
   function stopGrowing() {
+    waiting(false);
     GR.id = null; GR.item = null; GR.resume = 0; GR.ended = false; GR.written = 0; GR.asked = 0;
+    GR.whole = false; GR.live = false; GR.seen = 0; GR.seenAt = 0; GR.grew = -1; GR.over = -1;
     if (GR.video) { GR.video.removeEventListener('seeking', onSeeking); GR.video.removeEventListener('ended', onEnded); }
     GR.video = null;
     var b = document.querySelector('.tr-live-btn');
@@ -448,6 +461,43 @@
   }
 
   function writtenMs(v) { return v && isFinite(v.duration) ? v.duration * 1000 : 0; }
+
+  // While the remux catches up: the bar and its times hidden, and for Watch
+  // live the picture too, muted, a spinner over it.
+  function waiting(on) {
+    var b = document.body;
+    if (!b) return;
+    b.classList.toggle('tr-growing-wait', !!on);
+    b.classList.toggle('tr-growing-golive', !!on && GR.live);
+    var sp = document.querySelector('.tr-growing-spinner');
+    if (on && GR.live && !sp) {
+      sp = document.createElement('div');
+      sp.className = 'tr-growing-spinner';
+      b.appendChild(sp);
+    } else if (!(on && GR.live) && sp) sp.remove();
+    var v = GR.video;
+    if (on && GR.live && v && GR.muted === null) { GR.muted = v.muted; v.muted = true; }
+    if (!(on && GR.live) && GR.muted !== null) { if (v) v.muted = GR.muted; GR.muted = null; }
+  }
+
+  // To the live end: just behind what's written (as far as a seek goes).
+  function goLive(v) {
+    GR.live = false;
+    v.currentTime = growingSeekTarget(Number.MAX_SAFE_INTEGER, writtenMs(v)) / 1000;
+  }
+
+  // Each tick until the bar holds the whole recorded part: how it grows.
+  function catchUp(v) {
+    var w = writtenMs(v), now = Date.now();
+    if (w !== GR.seen) {
+      if (GR.seen > 0) { GR.grew = w - GR.seen; GR.over = now - GR.seenAt; }
+      GR.seen = w; GR.seenAt = now;
+    }
+    if (!growingCaughtUp(w, growingExpectedMs(GR.item && GR.item.StartDate, now), GR.grew, GR.over, now - GR.since)) return;
+    GR.whole = true;
+    if (GR.live) goLive(v);
+    waiting(false);
+  }
 
   function onSeeking(e) {
     var v = e.target, to = growingSeekTarget(v.currentTime * 1000, writtenMs(v));
@@ -473,7 +523,7 @@
     }, function () { });
   }
 
-  // Every half second while it plays: the player's video, a pending resume, the button.
+  // Every 300 ms while it plays: the player's video, the catch-up, a pending resume, the button.
   function growingTick() {
     if (!GR.id) return;
     if (!/^#\/video\b/.test(location.hash)) {
@@ -486,6 +536,10 @@
       GR.video = v;
       v.addEventListener('seeking', onSeeking);
       v.addEventListener('ended', onEnded);
+    }
+    if (v && !GR.whole) {
+      waiting(true);
+      if (v.readyState >= 1) catchUp(v);
     }
     if (v && GR.resume && v.readyState >= 2) {
       var target = GR.resume / 1e4;
@@ -516,7 +570,10 @@
     b.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
-      if (GR.item) watchLive(GR.item);
+      var v = GR.video;
+      if (!v) return;
+      if (GR.whole) goLive(v);
+      else { GR.live = true; waiting(true); }
     });
   }
 
@@ -526,11 +583,17 @@
       if (!pm || typeof pm.play !== 'function') { location.hash = '#/details?id=' + encodeURIComponent(item.Id); return; }
       patchReports();
       stopGrowing();
-      GR.id = normId(item.Id); GR.item = item; GR.resume = resumeTicks || 0; GR.since = Date.now();
+      GR.id = normId(item.Id); GR.item = item; GR.since = Date.now();
+      GR.live = resumeTicks === LIVE; GR.resume = GR.live ? 0 : resumeTicks || 0;
+      waiting(true);
       pm.play({ ids: [item.Id], startPositionTicks: START_TICKS });
     },
   };
-  setInterval(growingTick, 500);
+  setInterval(growingTick, 300);
+  // and at once when the player starts or the length changes (no moment of a bar at 0:00, no sound before live)
+  ['loadstart', 'play', 'durationchange'].forEach(function (ev) {
+    document.addEventListener(ev, function (e) { if (GR.id && e.target && e.target.tagName === 'VIDEO') growingTick(); }, true);
+  });
 
   // ── Live ─────────────────────────────────────────────────────────────
 
@@ -570,5 +633,5 @@
   else onRoute();
 
   window.TentacleRecordings = { isActive: function () { return R.active; }, internals: { renderSchedule: renderSchedule, renderRecordings: renderRecordings, routeTab: routeTab, recordingChoices: recordingChoices,
-    growingSeekTarget: growingSeekTarget, growingResumeReady: growingResumeReady, growingStopTicks: growingStopTicks, growingReport: growingReport, GR: GR } };
+    growingSeekTarget: growingSeekTarget, growingResumeReady: growingResumeReady, growingStopTicks: growingStopTicks, growingReport: growingReport, growingExpectedMs: growingExpectedMs, growingCaughtUp: growingCaughtUp, GR: GR } };
 })();

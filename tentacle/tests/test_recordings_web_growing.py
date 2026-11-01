@@ -8,6 +8,13 @@ the playback reports leave the position out (Jellyfin marks an item without a ru
 watched at 0:00 on any position) and stop as failed, with the position saved on its
 own. Runs the real functions under node (skipped without node).
 
+Lucas, 2026-10-30 ~17:00 Toronto: "Its like it uses two different players. If i hit play
+from start it does show more options then if I hit watch live". Watch live is the same
+recording in the same player, at its live end; Jump to live seeks there. And "the
+scrubbing back is a little weird though it goes all the back then jumps up then you can
+scroll back more again and again": the first playlist holds only what the remux did in
+its first second, so the bar stays hidden (Watch live: a spinner) until it has caught up.
+
 Run from the tentacle/ directory:  python -m unittest tests.test_recordings_web_growing
 """
 import json
@@ -24,12 +31,14 @@ def _function(name):
 
 
 def _line(prefix):
+    # one statement, to its ";" at a line's end
     start = SRC.index(prefix)
-    return SRC[start:SRC.index("\n", start) + 1]
+    return SRC[start:SRC.index(";\n", start) + 2]
 
 
 FUNCS = "".join(_function(f) for f in ("position", "clock", "recordingChoices", "normId", "growingSeekTarget",
-                                       "growingResumeReady", "growingStopTicks", "growingReport"))
+                                       "growingResumeReady", "growingStopTicks", "growingReport",
+                                       "growingExpectedMs", "growingCaughtUp"))
 PRELUDE = _line("  var EDGE_MS =") + _line("  var GR =")
 
 
@@ -50,6 +59,26 @@ class Wiring(unittest.TestCase):
         body = _function("checkFinished")
         self.assertIn("GR.ended = true;", body)
         self.assertIn("Command: 'Stop'", body)
+
+    def test_watch_live_is_the_recording_at_its_live_end(self):
+        # one player for all three choices; no channel switch any more
+        self.assertIn("Growing.play(item, c.key === 'live' ? LIVE : c.key === 'resume' ? position(item) : 0);", SRC)
+        self.assertNotIn("playChannel", SRC)
+        self.assertIn("if (GR.live) goLive(v);", _function("catchUp"))
+
+    def test_jump_to_live_seeks_to_the_end_of_the_same_recording(self):
+        body = _function("liveButton")
+        self.assertIn("if (GR.whole) goLive(v);", body)
+        self.assertIn("GR.live = true; waiting(true);", body)
+        self.assertIn("growingSeekTarget(Number.MAX_SAFE_INTEGER, writtenMs(v))", _function("goLive"))
+
+    def test_the_bar_stays_hidden_until_it_holds_the_whole_recorded_part(self):
+        body = _function("waiting")
+        self.assertIn("b.classList.toggle('tr-growing-wait', !!on);", body)
+        self.assertIn("v.muted = true", body)
+        css = (INJECT / "tentacle-recordings.css").read_text(encoding="utf-8")
+        self.assertIn("body.tr-growing-wait .videoOsdBottom .sliderContainer", css)
+        self.assertIn("body.tr-growing-golive video.htmlvideoplayer { opacity: 0; }", css)
 
     def test_the_three_reports_are_wrapped(self):
         self.assertIn("['reportPlaybackStart', 'reportPlaybackProgress', 'reportPlaybackStopped']", SRC)
@@ -79,6 +108,27 @@ class Seeking(unittest.TestCase):
     def test_resume_waits_for_the_remux_then_gives_up_waiting(self):
         out = run("return [growingResumeReady(600000, 300000, 1000), growingResumeReady(600000, 610000, 1000), growingResumeReady(600000, 300000, 45000)];")
         self.assertEqual([False, True, True], out)
+
+
+@unittest.skipUnless(HAVE_NODE, "node is not installed")
+class CatchUp(unittest.TestCase):
+    def test_the_length_a_recording_should_have_by_now(self):
+        now = "Date.parse('2026-10-31T19:35:00Z')"
+        out = run("""var n = %s; return [growingExpectedMs('2026-10-31T19:00:00.0000000Z', n), growingExpectedMs(null, n),
+          growingExpectedMs('2026-10-31T19:40:00Z', n), growingExpectedMs('2026-10-29T19:00:00Z', n)];""" % now)
+        self.assertEqual([35 * 60000, 0, 0, 0], out)
+
+    def test_caught_up(self):
+        out = run("""return [
+          growingCaughtUp(145000, 2100000, -1, -1, 500),
+          growingCaughtUp(2096000, 2100000, 1951000, 3000, 3500),
+          growingCaughtUp(2096000, 5100000, 1951000, 3000, 3500),
+          growingCaughtUp(2099000, 5100000, 3000, 3000, 6500),
+          growingCaughtUp(600000, 5100000, 60000, 3000, 45000),
+          growingCaughtUp(0, 0, -1, -1, 2000)];""")
+        # production, 30 Oct: the first playlist held 2:25 of a 35 min recording, the next all of it;
+        # started late (expected too long): growth at real time tells; never longer than 45 s
+        self.assertEqual([False, True, False, True, True, False], out)
 
 
 @unittest.skipUnless(HAVE_NODE, "node is not installed")

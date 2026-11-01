@@ -158,6 +158,17 @@ same tags hide non-kids channels from kids on one lineup.
   growing file (200 from byte 0, no Content-Length, follows the file);
   `/Items/{id}/File` (admin key) answers 206 with `Content-Range: bytes
   a-b/<size so far>` (10.11.8, 30 Oct 2026).
+- Playing a recording in progress (PlaybackInfo without a MediaSourceId; with
+  the item's own id: NoCompatibleStream) gives an infinite source offered
+  only as HLS: an EVENT `live.m3u8` that ffmpeg remuxes (`-c copy`, fmp4,
+  3 s segments) from 0:00 of the growing file and keeps appending to. The
+  first playlist holds only what the remux did in its first second (2:25 of
+  a 35 min recording on production), the next one all of it, then it grows
+  at real time: a player that trusts the first one starts "live" minutes
+  early and its bar jumps. A start position makes ffmpeg skip what's before
+  it; a position in a progress report marks it watched at 0:00 (no runtime).
+  Clients start at 1 ms, wait for the catch-up, then seek (TV app and
+  tentacle-recordings.js, 30-31 Oct 2026).
 - Saving a tuner or listing provider cancels a running RefreshGuide and
   queues a new one. XMLTV programmes have no etag: every refresh re-saves
   every programme.
