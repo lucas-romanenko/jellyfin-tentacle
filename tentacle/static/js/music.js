@@ -265,7 +265,7 @@ function _musicLists(d, grid) {
   const sid = musicState.dSub.lists;
   let html = _musicBuilding(d, 'lists', 'the album lists');
   if (!items.length) {
-    grid.innerHTML = html + (d.building && d.building.lists ? '' : _musicEmpty('No album lists yet.')) + _musicListAdmin(null);
+    grid.innerHTML = html + (d.building && d.building.lists ? '' : _musicEmpty('No album lists yet.'));
     return;
   }
   html += `<div class="music-note music-list-bar">
@@ -289,15 +289,32 @@ function _musicLists(d, grid) {
   const shown = albums.filter(a => !musicState.hideOwned || a.status === 'available');
   grid.innerHTML = html + (shown.map(a => _musicAlbumCard(a, {
     meta: `#${a.rank} · ${escapeAttr(a.artist || '')}${a.year ? ' · ' + a.year : ''}` })).join('')
-    || _musicEmpty('You have every album on this list.')) + _musicListAdmin(sid);
+    || _musicEmpty('You have every album on this list.'));
 }
 
-function _musicListAdmin(sid) {
-  if (!_musicIsAdmin()) return '';
-  return `<div class="music-note" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">
+// Which album lists Discover → Music shows is the household's, so admins pick
+// them under Sources → Music (Album lists), not on Discover.
+async function loadMusicListsCard() {
+  const card = document.getElementById('music-lists-card');
+  const el = document.getElementById('music-lists');
+  if (!card || !el || !_musicIsAdmin()) return;
+  if (!musicState.config) await loadMusicConfig();
+  if (!(musicState.config && musicState.config.enabled)) { card.style.display = 'none'; return; }
+  card.style.display = '';
+  let items;
+  try {
+    items = ((await api('/api/music/discover')).lists || {}).items || [];
+  } catch (e) {
+    el.innerHTML = `<p class="form-hint">${escapeAttr(e.message)}</p>`;
+    return;
+  }
+  el.innerHTML = `${items.length ? items.map(l => `<div class="music-list-row">
+      <span>${escapeAttr(l.name)} <span style="color:var(--text3)">(${Number(l.count) || 0})</span></span>
+      <button class="btn btn-secondary btn-sm" onclick="removeMusicList('${escapeJS(l.id)}', this)">Remove</button></div>`).join('')
+    : '<p class="form-hint">No album lists yet.</p>'}
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px">
       <button class="btn btn-secondary btn-sm" onclick="addMusicList(this)">Add a list…</button>
-      ${sid ? `<button class="btn btn-secondary btn-sm" onclick="removeMusicList('${escapeJS(sid)}', this)">Remove this list</button>` : ''}
-      <span>Any MusicBrainz album list works: find one at musicbrainz.org (search for a series) and paste its link.</span>
+      <span class="form-hint" style="margin:0">Any MusicBrainz album list works: find one at musicbrainz.org (search for a series) and paste its link.</span>
     </div>`;
 }
 
@@ -309,7 +326,7 @@ async function addMusicList(btn) {
     const r = await api('/api/music/lists', { method: 'POST', body: { series: link } });
     toast(`Adding “${r.name}”…`, 'info');
     musicState.dSub.lists = r.id;
-    await _loadMusicDiscover();
+    await loadMusicListsCard();
   } catch (e) {
     toast(e.message, 'error', 8000);
   }
@@ -317,13 +334,13 @@ async function addMusicList(btn) {
 }
 
 async function removeMusicList(sid, btn) {
-  if (!confirm('Remove this list from Discover?')) return;
+  if (!confirm('Remove this list from Discover, for everyone?')) return;
   btn.disabled = true;
   try {
     await api(`/api/music/lists/${encodeURIComponent(sid)}`, { method: 'DELETE' });
     delete musicState.listCache[sid];
     musicState.dSub.lists = '';
-    await _loadMusicDiscover();
+    await loadMusicListsCard();
   } catch (e) {
     toast(e.message, 'error');
     btn.disabled = false;
@@ -605,7 +622,6 @@ function _musicTracklist(discs) {
 }
 
 function _musicActions(a) {
-  const isAdmin = state.currentUser && state.currentUser.is_admin;
   const parts = [];
   // An ambiguous album with tracklist options is requested with one of them (below);
   // one MusicBrainz can't date is requested as is and its edition picked once Lidarr has it.
@@ -615,10 +631,6 @@ function _musicActions(a) {
   (a.players || []).forEach(p => {
     if (a.status === 'in_library') parts.push(`<a class="btn btn-secondary" href="${escapeAttr(p.url)}" target="_blank" rel="noopener">Open in ${escapeAttr(p.name)}</a>`);
   });
-  if (a.status === 'needs_review' && isAdmin && a.verdict && (a.verdict.options || []).length) {
-    parts.push(...a.verdict.options.map(o =>
-      `<button class="btn btn-secondary" onclick="resolveMusicReview('${escapeJS(a.mbid)}', ${Number(o.tracks)}, this)">Keep ${Number(o.tracks)} tracks</button>`));
-  }
   return parts.length ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">${parts.join('')}</div>` : '';
 }
 
@@ -737,7 +749,7 @@ async function resolveMusicReview(mbid, tracks, btn) {
   try {
     await api(`/api/music/review/${encodeURIComponent(mbid)}`, { method: 'POST', body: { tracks } });
     toast(`Keeping the ${tracks}-track tracklist — pinning it in Lidarr`, 'success');
-    setTimeout(() => { if (typeof loadMusicLibrary === 'function') loadMusicLibrary(); }, 1500);
+    setTimeout(loadMusicFixCard, 1500);
   } catch (e) {
     toast(e.message, 'error', 8000);
     if (btn) btn.disabled = false;
@@ -756,9 +768,6 @@ function setMusicLibFilter(filter, btn) {
 async function loadMusicLibrary() {
   const el = document.getElementById('music-library');
   if (!el) return;
-  const isAdmin = state.currentUser && state.currentUser.is_admin;
-  if (isAdmin) loadMusicStatusLine();
-  if (musicState.libFilter === 'fix') return loadMusicFix(el);
   try {
     const data = await api(`/api/music/library?status=${encodeURIComponent(musicState.libFilter)}`);
     const c = data.counts || {};
@@ -783,7 +792,7 @@ async function loadMusicLibrary() {
 
 // Library → Music is a grid of square album covers, like the movie and show posters
 // (Lucas, 20 Oct), artist by artist; a big library is drawn a page of albums at a time.
-// Opening an album has its actions (Open in the player, Keep N tracks).
+// Opening an album has its actions (Open in the player, Request).
 const MUSIC_ALBUMS_PER_PAGE = 60;
 
 function showMoreMusicAlbums() {
@@ -842,7 +851,19 @@ async function startMusicReconcile(btn) {
   }
 }
 
-// ── Library: Fix library (the reconcile review page, admins) ──────────────
+// ── Fix library (the reconcile review, admins: Sources → Music) ────────────
+// Server-level (Lidarr editions, deleting tracks), so it isn't on Library:
+// family pages show only what everyone needs.
+
+async function loadMusicFixCard() {
+  const card = document.getElementById('music-fix-card');
+  const el = document.getElementById('music-fix');
+  if (!card || !el || !state.currentUser?.is_admin) return;
+  if (!musicState.config) await loadMusicConfig();
+  if (!(musicState.config && musicState.config.enabled)) { card.style.display = 'none'; return; }
+  card.style.display = '';
+  loadMusicFix(el);
+}
 
 const _FIX_GROUPS = [
   ['repin', 'Fix to original album', 'Your files already fit the original release. Tentacle pins it; Lidarr re-matches the files.'],
@@ -954,7 +975,7 @@ async function applyMusicFix(mbids, btn, trimCount) {
   try {
     const r = await api('/api/music/apply', { method: 'POST', body: { mbids } });
     toast(`Applying ${r.queued} album${r.queued === 1 ? '' : 's'}…`, 'info');
-    setTimeout(loadMusicLibrary, 1200);
+    setTimeout(loadMusicFixCard, 1200);
   } catch (e) {
     toast(e.message, 'error', 8000);
     if (btn) btn.disabled = false;
@@ -968,7 +989,7 @@ async function applyMusicFixGroup(category, n, btn) {
   try {
     const r = await api('/api/music/apply', { method: 'POST', body: { category } });
     toast(`Applying ${r.queued} albums, one at a time…`, 'info', 6000);
-    setTimeout(loadMusicLibrary, 1500);
+    setTimeout(loadMusicFixCard, 1500);
   } catch (e) {
     toast(e.message, 'error', 8000);
     if (btn) btn.disabled = false;
@@ -980,7 +1001,7 @@ async function lockMusicAlbums(btn) {
   try {
     await api('/api/music/lock', { method: 'POST' });
     toast('Locking albums to their original release…', 'info');
-    setTimeout(loadMusicLibrary, 3000);
+    setTimeout(loadMusicFixCard, 3000);
   } catch (e) {
     toast(e.message, 'error');
     if (btn) btn.disabled = false;
@@ -992,7 +1013,7 @@ async function pickMusicPicture(mbid, deezerId, btn) {
   try {
     await api(`/api/music/artist/${encodeURIComponent(mbid)}/picture/deezer`, { method: 'POST', body: { deezer_id: deezerId } });
     toast('Setting the picture…', 'info');
-    setTimeout(loadMusicLibrary, 2500);
+    setTimeout(loadMusicFixCard, 2500);
   } catch (e) {
     toast(e.message, 'error', 8000);
     if (btn) btn.disabled = false;
@@ -1011,7 +1032,7 @@ async function uploadMusicPicture(mbid, input) {
       throw new Error(err.detail || 'Upload failed');
     }
     toast('Setting the picture…', 'info');
-    setTimeout(loadMusicLibrary, 2500);
+    setTimeout(loadMusicFixCard, 2500);
   } catch (e) {
     toast(e.message, 'error', 8000);
   }

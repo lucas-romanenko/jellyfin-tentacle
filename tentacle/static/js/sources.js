@@ -33,8 +33,9 @@ function showSourcesTab(tab) {
   else loadProviders({ quiet: true });   // the Live TV tab follows the switches
   if (tab === 'live') loadLiveTV();
   if (tab === 'youtube') loadYouTubePage();
-  if (tab === 'arr') loadArrSources();
-  if (tab === 'music') { loadSettings(); if (typeof loadMusicStatusLine === 'function') loadMusicStatusLine(); }
+  if (tab === 'arr') { loadArrSources(); if (typeof loadUntracked === 'function') loadUntracked(false); }
+  else if (typeof untrRefreshBadge === 'function') untrRefreshBadge();
+  if (tab === 'music') { loadSettings(); if (typeof loadMusicStatusLine === 'function') loadMusicStatusLine(); if (typeof loadMusicFixCard === 'function') { loadMusicFixCard(); loadMusicListsCard(); } }
   setRoute('sources', tab);
 }
 

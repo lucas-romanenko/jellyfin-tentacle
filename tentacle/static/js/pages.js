@@ -1676,14 +1676,6 @@ async function showMediaDetail(tmdbId, mediaType) {
             Source: ${escapeAttr(data.source)} · Added: ${data.date_added ? new Date(data.date_added).toLocaleDateString() : '—'}
             ${data.strm_path ? `<br>Path: ${escapeAttr(data.strm_path)}` : ''}
           </div>
-          ${data.is_vod ? `<label class="detail-follow-toggle" style="margin-top:10px" title="Turn this off to keep the title in the catalog but stop Tentacle writing or repairing its .strm files — for shows you have switched to downloaded copies">
-            <input type="checkbox" ${data.strm_managed ? 'checked' : ''} onchange="toggleStrmManaged('${escapeJS(mediaType)}', ${tmdbId}, this.checked)">
-            <span class="detail-follow-label">Manage .strm files</span>
-          </label>` : ''}
-          ${state.currentUser?.is_admin ? `<label class="detail-follow-toggle" style="margin-top:10px" title="The automatic duplicates rule, stream first: when this title has both a stream and a download, keep the download">
-            <input type="checkbox" ${data.prefer_download ? 'checked' : ''} onchange="setPreferDownload('${escapeJS(mediaType)}', ${tmdbId}, this.checked)">
-            <span class="detail-follow-label">Prefer the download</span>
-          </label>` : ''}
           ${data.source === 'radarr' ? `<div style="margin-top:10px">
             <button class="btn btn-secondary btn-sm" title="Wrong language, burned-in subtitles, broken audio or a fake: delete this file, block its release, find another"
               onclick="replaceCopy('movie', ${tmdbId}, null, null, this)">Bad copy? Get another one</button>
@@ -4734,10 +4726,12 @@ async function loadDupRule() {
   const el = document.getElementById('dup-rule');
   if (!el) return;
   try {
-    const [rule, prefer] = await Promise.all([api('/api/duplicates/rule'), api('/api/duplicates/prefer-download')]);
+    const [rule, prefer, strmOff] = await Promise.all([api('/api/duplicates/rule'), api('/api/duplicates/prefer-download'),
+      api('/api/library/strm-managed')]);
     pages.dup.rule = rule;
     pages.dup.ruleMode = rule.mode;
     pages.dup.prefer = prefer;
+    pages.dup.strmOff = strmOff;
     renderDupRule();
   } catch (e) {
     el.innerHTML = '';
@@ -4769,7 +4763,11 @@ function renderDupRule() {
     : `<div class="dup-rule-last">Last run ${escapeAttr(when)} (${last.mode === 'stream' ? 'stream' : 'download'} first): ${escapeAttr(_dupRuleCounts(last))}.
          ${last.pending ? `<a href="#" onclick="showDupRulePlan('last');return false">Show</a>` : ''}</div>`;
   const bins = Object.entries(rule.recycle_bins || {}).filter(([, v]) => v === false).map(([k]) => k);
-  const prefer = pages.dup.prefer || [];
+  const prefer = pages.dup.prefer || [], strmOff = pages.dup.strmOff || [];
+  const chips = (list, undo, label) => list.length
+    ? `<div class="dup-rule-chips">${list.map(p => `<span class="badge badge-gray dup-rule-chip">${escapeAttr(p.title || 'tmdb:' + p.tmdb_id)}
+        <button title="${label}" aria-label="${label}: ${escapeAttr(p.title || '')}" onclick="${undo}('${escapeJS(p.media_type)}', ${Number(p.tmdb_id)})">&times;</button></span>`).join('')}</div>`
+    : ' <span>none</span>';
   el.innerHTML = `
     <div class="dup-rule-row">
       <div class="form-group">
@@ -4806,9 +4804,14 @@ function renderDupRule() {
           <div class="form-hint">e.g. your private tracker's tag</div></div>
       </div>
     </details>` : ''}
-    ${mode === 'stream' || prefer.length ? `<div class="dup-rule-last">Prefer the download${prefer.length ? '' : ': none yet (switch it on in a title&rsquo;s details)'}
-      ${prefer.length ? `<div class="dup-rule-chips">${prefer.map(p => `<span class="badge badge-gray dup-rule-chip">${escapeAttr(p.title || 'tmdb:' + p.tmdb_id)}
-        <button title="Take it off the list" aria-label="Take ${escapeAttr(p.title || '')} off the list" onclick="setPreferDownload('${escapeJS(p.media_type)}', ${Number(p.tmdb_id)}, false)">&times;</button></span>`).join('')}</div>` : ''}</div>` : ''}
+    <div class="dup-titles">
+      <div class="dup-rule-last"><strong>Prefer the download</strong>: stream first keeps the download of these.${chips(prefer, 'dupTitlePreferOff', 'Take it off the list')}</div>
+      <div class="dup-rule-last"><strong>No .strm files</strong>: Tentacle doesn&rsquo;t write or repair the stream files of these (titles moved to downloads).${chips(strmOff, 'dupTitleStrmOn', 'Write its .strm files again')}</div>
+      <div class="dup-title-add">
+        <input class="form-input" id="dup-title-q" placeholder="Add a title: type its name" aria-label="Add a title to these lists" autocomplete="off" oninput="dupTitleSearch()">
+        <div id="dup-title-results"></div>
+      </div>
+    </div>
     ${lastLine}
     <div id="dup-rule-plan" class="dup-rule-plan"></div>`;
   if (pages.dup.plan) _renderDupRulePlan(pages.dup.plan);
@@ -4915,6 +4918,59 @@ async function setPreferDownload(mediaType, tmdbId, prefer) {
   } catch (e) {
     toast(e.message, 'error');
   }
+}
+
+// Per-title lists under the rule (Health → Duplicates, admins). They used to be
+// switches in a title's details on Library; Library is everyone's, so they
+// live here now: find the title, put it on a list.
+function dupTitlePreferOff(mediaType, tmdbId) { setPreferDownload(mediaType, tmdbId, false); }
+async function dupTitleStrmOn(mediaType, tmdbId) {
+  await toggleStrmManaged(mediaType, tmdbId, true);
+  loadDupRule();
+}
+
+let _dupTitleTimer = null;
+let _dupTitleSeq = 0;
+let _dupTitleHits = [];
+function dupTitleSearch() {
+  clearTimeout(_dupTitleTimer);
+  _dupTitleTimer = setTimeout(_dupTitleSearchNow, 250);
+}
+async function _dupTitleSearchNow() {
+  const box = document.getElementById('dup-title-results');
+  const q = (document.getElementById('dup-title-q')?.value || '').trim();
+  const seq = ++_dupTitleSeq;
+  if (!box) return;
+  if (q.length < 2) { box.innerHTML = ''; _dupTitleHits = []; return; }
+  let d;
+  try {
+    d = await api(`/api/library/items?search=${encodeURIComponent(q)}&sort=title_asc&limit=8`);
+  } catch (e) {
+    if (seq === _dupTitleSeq) box.innerHTML = `<div class="dup-rule-last">${escapeAttr(e.message)}</div>`;
+    return;
+  }
+  if (seq !== _dupTitleSeq) return;
+  _dupTitleHits = d.items || [];
+  const on = (list, x) => list.some(p => p.media_type === x.media_type && Number(p.tmdb_id) === Number(x.tmdb_id));
+  box.innerHTML = _dupTitleHits.length ? _dupTitleHits.map((x, i) => {
+    const prefer = on(pages.dup.prefer || [], x), off = on(pages.dup.strmOff || [], x);
+    const vod = (x.source || '').startsWith('provider_');
+    return `<div class="dup-title-hit">
+      <span class="dup-title-name">${escapeAttr(x.title || '')}${x.year ? ` (${escapeAttr(String(x.year))})` : ''} <span class="dup-title-kind">${x.media_type === 'series' ? 'Show' : 'Film'}</span></span>
+      <span class="dup-title-acts">
+        ${prefer ? '<span class="dup-title-kind">prefers the download</span>' : `<button class="btn btn-secondary btn-sm" onclick="dupTitleAdd(${i}, 'prefer')">Prefer the download</button>`}
+        ${off ? '<span class="dup-title-kind">no .strm files</span>' : vod ? `<button class="btn btn-secondary btn-sm" onclick="dupTitleAdd(${i}, 'strm')">No .strm files</button>` : ''}
+      </span></div>`;
+  }).join('') : '<div class="dup-rule-last">No title in the library by that name.</div>';
+}
+async function dupTitleAdd(i, what) {
+  const x = _dupTitleHits[i];
+  if (!x) return;
+  if (what === 'prefer') await setPreferDownload(x.media_type, x.tmdb_id, true);
+  else { await toggleStrmManaged(x.media_type, x.tmdb_id, false); loadDupRule(); }
+  const q = document.getElementById('dup-title-q');
+  if (q) q.value = '';
+  _dupTitleHits = [];
 }
 
 function resolveDup(id, resolution, mediaType) {
@@ -6259,10 +6315,11 @@ function showLiveTab(name) {
   if (name === 'channels') page.querySelector('[data-livetab="more"]')?.classList.add('active');
 }
 
-// More: Jellyfin's setup, the region, the channel checker, pictures for recordings.
+// More: Jellyfin's setup, the region, space for recordings, the channel checker, pictures for recordings.
 function loadLiveMore() {
   loadLiveSetup();
   _poolLoadRegion();
+  if (typeof recSpaceLoad === 'function') recSpaceLoad();
   checkerLoad();
   if (typeof recArtLoad === 'function') recArtLoad();
 }
@@ -7444,6 +7501,7 @@ function renderHealthLog() {
     // Duplicates
     setDupFilter, resolveDup, resolveAllKeepRadarr, showAllDuplicates, showMoreHealthLog,
     setDupRuleMode, saveDupRule, previewDupRule, runDupRule, showDupRulePlan, hideDupRulePlan, setPreferDownload,
+    dupTitlePreferOff, dupTitleStrmOn, dupTitleSearch, dupTitleAdd,
     // Log viewer
     clearLogPanel, toggleLogScroll,
     // Radarr / Sonarr

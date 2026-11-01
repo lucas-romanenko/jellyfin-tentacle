@@ -932,6 +932,17 @@ class StrmManagedBody(BaseModel):
     delete_files: bool = False  # also remove the .strm/.nfo Tentacle wrote
 
 
+@router.get("/strm-managed", dependencies=[Depends(require_admin)])
+def list_strm_unmanaged(db: Session = Depends(get_db)):
+    """The titles whose .strm files Tentacle doesn't write or repair (the
+    admins' list on Health → Duplicates)."""
+    rows = [{"media_type": "movie", "tmdb_id": m.tmdb_id, "title": m.title}
+            for m in db.query(Movie).filter(Movie.strm_disabled.is_(True)).all()]
+    rows += [{"media_type": "series", "tmdb_id": s.tmdb_id, "title": s.title}
+             for s in db.query(Series).filter(Series.strm_disabled.is_(True)).all()]
+    return sorted(rows, key=lambda r: (r["title"] or "").casefold())
+
+
 @router.post("/strm-managed/{media_type}/{tmdb_id}")
 def set_strm_managed(media_type: str, tmdb_id: int, body: StrmManagedBody,
                      db: Session = Depends(get_db),

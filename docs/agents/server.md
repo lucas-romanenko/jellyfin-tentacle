@@ -469,8 +469,11 @@ movies/series, then Sonarr/Radarr text-lookup titles TMDB lacks (TheTVDB).
 
 ## Folders Radarr/Sonarr don't know about (`services/untracked.py`, #871)
 
-Library → **Not in Radarr/Sonarr** (admins, `static/js/untracked.js`) and
-a line on the last setup step when there are any. Read-only list: each top
+Sources → Radarr & Sonarr → **Not in Radarr/Sonarr** (admins,
+`static/js/untracked.js`; the tab's badge is the count) and a line on the
+last setup step when there are any, linking there (`#sources/arr`; the old
+`#library/untracked` lands there too). It was a Library tab until the
+admin split (31 Oct): Library is everyone's page. Read-only list: each top
 folder of `/media/movies` and `/media/shows` with a real video file (to
 depth 2 / 4; `.strm`-only and empty folders are Tentacle's or nothing) whose
 NAME no Radarr movie / Sonarr series path ends in (as `local_arr_folder`
@@ -761,11 +764,44 @@ messages that still say EPG or SmartList).
 
 Dashboard layout (`static/js/sources.js` holds the Sources page):
 
+**Family pages vs Server: admin/server things go under Server, never on
+family pages** (Lucas, 31 Oct 2026: "Our split is having 'Server' settings on
+their own and only for admin users. To keep it simple for a family setup").
+This holds for every feature request, Rob's and anyone's:
+
+- The pages everyone uses (Library, Discover with Activity, My Home Screen,
+  My Channels, Recordings, My YouTube, the TV app's screens, someone's own
+  settings) show only what a normal person needs: what to watch, their own
+  favourites, rows, teams, requests.
+- Anything server-level (managing Radarr/Sonarr/Lidarr, duplicates rules,
+  per-title .strm or download rules, backups, space limits, providers,
+  channels for the household, health, logs, sync) lives on a Server page
+  (People, Requests, Sources, Health, Settings), which only admins see.
+- Hiding a control from non-admins on a family page (`data-admin-only`,
+  `is_admin ? … : ''`) is NOT enough: move it to Server, so the family pages
+  stay simple for admins too. A family page may at most say one plain,
+  harmless line about it (Recordings: "Old recordings are deleted after a
+  while to make room…" while a space limit is on).
+- When a request mixes both (a person's thing plus a server setting), split
+  it: the person's part on their page, the setting on Server, linked from the
+  setup or Health when it needs attention.
+- `tests/test_admin_split.py` fails on `data-admin-only` on a family page
+  (one allowed and waiting for Lucas: My Home Screen's "Everyone's default"
+  switch).
+
+Moved there on 31 Oct (tentacle-admin-split): Not in Radarr/Sonarr (was a
+Library tab) → Sources → Radarr & Sonarr; the recordings space limit (was the
+top of Recordings) → Sources → Live TV → More; Prefer the download and
+Manage .strm files (were switches in a title's details) → lists on Health →
+Duplicates; Fix library (was a Library → Music filter) and adding/removing
+album lists (were buttons on Discover → Music → Lists) → Sources → Music.
+
 - Everyone: **Library** (Browse, Music, Following; content only, one Source
   dropdown), **Discover** (Browse, My Lists, Activity), **My Home Screen**
-  (page id `jellyfin`: Home rows, Playlists with the "How playlists work" help).
-- Admins (`ADMIN_PAGES` in `app.js`; anyone else is sent to Library):
-  **Sources** (IPTV providers as cards with "Use for Movies & Series" =
+  (page id `jellyfin`: Home rows, Playlists with the "How playlists work" help),
+  **My Channels**, **Recordings**, **My YouTube**.
+- Admins, the sidebar's **Server** section (`ADMIN_PAGES` in `app.js`; anyone
+  else is sent to Library): **People**, **Requests**, **Sources** (IPTV providers as cards with "Use for Movies & Series" =
   `active` and "Use for Live TV" = `live_tv_enabled`, each card holding its
   Categories / Channel groups; a Live TV tab once a provider has Live TV on;
   YouTube; Radarr & Sonarr; Music), **Health** (every admin notice and
@@ -1529,8 +1565,11 @@ schedule or score service: games are found in the guide Tentacle serves.
 
 Keep recordings under N GB (oldest first) and optionally none older than N
 days. Settings `recordings_limit_gb`, `recordings_limit_days`; empty = off,
-the default (an upgrade deletes nothing). Recordings page: the total and
-the limit (`#rec-space`), the admin's dialog with a dry-run preview.
+the default (an upgrade deletes nothing). Sources → Live TV → More →
+Space for recordings (admins): the total and the limit (`#rec-space`,
+`recSpaceLoad`), the dialog with a dry-run preview. The Recordings page is
+everyone's: it shows only one plain line while a limit is on
+(`#rec-space-note`), never the numbers or the button.
 
 - `recording_space` job every 15 min (first 7 min after start), off or on:
   reads every recording and rewrites `recording_sizes` (plain columns: item,

@@ -147,6 +147,7 @@ Declared on the app in `main.py` (no router, all **none**; listed in
 | POST | `/api/library/match-suspects/{tmdb_id}/dismiss` | admin | library.py:dismiss_match_suspect |
 | POST | `/api/library/replace/{media_type}/{tmdb_id}` | user | library.py:replace_copy |
 | GET | `/api/library/stream` | user | library.py:stream_library_events |
+| GET | `/api/library/strm-managed` | admin | library.py:list_strm_unmanaged (the titles with .strm management off: Health → Duplicates) |
 | POST | `/api/library/strm-managed/{media_type}/{tmdb_id}` | admin | library.py:set_strm_managed |
 | GET | `/api/library/tmdb/{media_type}/{tmdb_id}` | user | library.py:get_tmdb_detail |
 | POST | `/api/library/wrong-match/movie/{tmdb_id}` | admin | library.py:report_wrong_match |

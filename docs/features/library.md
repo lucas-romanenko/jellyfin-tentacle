@@ -94,7 +94,7 @@ Instead of resolving each duplicate by hand, Tentacle can resolve them for you. 
 
 - **Download first** (the default when you turn it on): the download stays and the stream's `.strm` goes, the same as **Keep Downloaded**. Your download doesn't depend on the provider.
 - **Stream first**: the stream stays and the download is deleted through Radarr or Sonarr, the same as **Keep VOD**. Set a recycle bin in Radarr/Sonarr (Media Management) so a deleted download can be recovered; the card warns when there isn't one. The download stays when:
-    - the title is on the **Prefer the download** list (switch it on in the title's details; useful for shows whose streams are unreliable),
+    - the title is on the **Prefer the download** list (add a title under the rule: type its name, **Prefer the download**; useful for shows whose streams are unreliable),
     - its stream is on the **Streams that don't play** list,
     - it came from a **protected indexer** (names as Radarr/Sonarr show them).
 

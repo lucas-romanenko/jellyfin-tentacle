@@ -72,6 +72,11 @@ Server (details in server.md, pipelines.md, jellyfin-notes.md):
 - Functions used from `onclick=""` in `index.html` must be exported in
   `exposeGlobals()` at the bottom of `static/js/pages.js`.
 - UI says "Playlist", never "Tag" or "Collection".
+- Admin/server things go under Server (People, Requests, Sources, Health,
+  Settings), never on family pages (Library, Discover, My Home Screen, My
+  Channels, Recordings, My YouTube, the TV app): hiding them from non-admins
+  isn't enough. Every feature request (Rob's or anyone's) is split this way:
+  server.md "UI words".
 - Lidarr: one request at a time, pageSize 50 or less, no `include*`;
   MusicBrainz 1 request/s.
 
