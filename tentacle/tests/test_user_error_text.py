@@ -8,11 +8,12 @@ address ("HTTPConnectionPool(host='10.0.0.5', port=7878): ..."):
   - /api/lists/radarr-profiles, /sonarr-profiles, /radarr-folders,
     /sonarr-folders (any signed-in user; the Add dialogs);
   - a music request while Lidarr is down ("Can't reach Lidarr at http://...");
-  - the Activity "problems" entries' detail (any signed-in user), and a
+  - the Activity "problems" entries' detail (any signed-in user; Activity
+    sends no problems at all since 31 Oct, Health has them), and a
     requester's "Download" when Radarr/Sonarr can't be reached;
   - the login picker and login while Jellyfin is down (before sign-in).
 They now name the failure (and the error type); the full text goes to the
-log. Admins still see the problems' detail.
+log. Admins see the problems' detail on Health.
 """
 import unittest
 from types import SimpleNamespace
@@ -114,12 +115,13 @@ class ReplaceCopyText(_Db):
 
 
 class ActivityProblems(unittest.TestCase):
-    def test_detail_only_for_admins(self):
+    def test_activity_sends_no_arr_problems(self):
+        # Radarr/Sonarr problems are the admins' (Health), never on Activity (everyone's)
         import inspect
         from routers import activity
         src = inspect.getsource(activity.get_activity)
-        self.assertIn('if k != "detail"', src)
-        self.assertIn("if not is_admin:", src.split("searching_problems(db)", 1)[1][:200])
+        self.assertNotIn("searching_problems(", src)
+        self.assertIn("problems = []", src)
 
 
 if __name__ == "__main__":

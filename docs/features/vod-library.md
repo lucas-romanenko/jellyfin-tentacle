@@ -195,8 +195,8 @@ Blocked removals are recorded in the deletion log (Health → What happened → 
 ## Opting a Title Out of `.strm` Management
 
 Sometimes a provider's stream for one title is broken and you switch that title
-to downloaded copies. Open the title from the Library page and turn off
-**Manage .strm files**: it stays in the catalog, playlists and Discover, but
+to downloaded copies. Under **Health → Duplicates**, type the title's name
+and press **No .strm files** (an admin's list; × puts a title back): it stays in the catalog, playlists and Discover, but
 the sync stops writing or repairing its `.strm` files. You can also delete the
 existing ones at the same time — downloaded episodes in the same folder are
 left alone.

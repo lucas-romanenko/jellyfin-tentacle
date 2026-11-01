@@ -74,7 +74,7 @@ The check lists every release it found. **Download** (or **Download anyway** for
 
 #### "Searches may not work right now"
 
-Activity shows this box, and admins also get a banner at the top of the dashboard, when Radarr or Sonarr reports a problem that stops downloads: indexers failing, the download client unreachable, a root folder missing, Tentacle unable to reach Radarr/Sonarr at all, or under 20 GB (or 5%) free on the disk a root folder lives on. The messages are Radarr/Sonarr's own. The dashboard banner links to their fix-it pages, and **Hide** keeps it away until the problems change.
+Admins get this banner on **Health** when Radarr or Sonarr reports a problem that stops downloads: indexers failing, the download client unreachable, a root folder missing, Tentacle unable to reach Radarr/Sonarr at all, or under 20 GB (or 5%) free on the disk a root folder lives on. The messages are Radarr/Sonarr's own. The banner links to their fix-it pages, and **Hide** keeps it away until the problems change. Activity, which everyone uses, doesn't show it (on the dashboard, in Jellyfin or on the TV).
 
 #### Coming up this week
 

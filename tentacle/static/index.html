@@ -1177,6 +1177,13 @@ body.modal-open { overflow: hidden; }
 .dup-rule-chip button { background: none; border: none; color: var(--text2); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 0 0 4px; }
 .dup-rule-chip button:hover { color: var(--red); }
 .dup-rule a { color: var(--accent-text); }
+.music-list-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.dup-titles { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.dup-titles .dup-rule-last:first-child { margin-top: 0; }
+.dup-title-add { margin-top: 10px; max-width: 560px; }
+.dup-title-hit { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.dup-title-kind { font-size: 11px; color: var(--text3); }
+.dup-title-acts { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 @media (max-width: 600px) {
   .dup-rule-row { flex-direction: column; align-items: stretch; }
   .dup-rule-plan td:first-child { width: auto; }
@@ -1588,7 +1595,7 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 .rec-preview-box > summary .mych-hint { margin-left: 8px; }
 .rec-preview-box[open] > summary { border-bottom: 1px solid var(--border); }
 .rec-preview-box .mych-name { color: var(--text2); }
-.rec-space { flex: 0 1 340px; min-width: 220px; font-size: 13px; color: var(--text2); }
+.rec-space { font-size: 13px; color: var(--text2); }
 .rec-space:empty { display: none; }
 .rec-space-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .rec-space-top b { font-size: 15px; color: var(--text); font-weight: 600; }
@@ -1597,7 +1604,7 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 .rec-space-bar.full > span { background: var(--amber); }
 .rec-space-meta { font-size: 11px; color: var(--text3); }
 .rec-space-meta .warn { color: var(--amber); }
-.rec-space-set { background: none; border: none; padding: 0; color: var(--accent-text); cursor: pointer; font-size: 12px; font-family: 'DM Sans', sans-serif; }
+.live-more-row .rec-space { margin-top: 10px; max-width: 420px; }
 .modal.rec-space-modal { max-width: 560px; width: calc(100vw - 32px); }
 .rec-space-form { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-height: calc(100vh - 190px); overflow-y: auto; }
 .rec-space-preview { font-size: 13px; color: var(--text2); border-top: 1px solid var(--border); padding-top: 10px; }
@@ -1607,7 +1614,6 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 .rec-keep select.form-input { width: auto; padding: 6px 8px; font-size: 13px; }
 .rec-keep .rec-num { width: 64px; }
 @media (max-width: 760px) {
-  .rec-space { flex: 1 1 100%; }
   .rec-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; column-gap: 8px; }
   .rec-row .rec-time { grid-column: 1 / -1; width: auto; font-size: 11px; color: var(--text3); }
   .rec-row .mych-meta { flex-wrap: nowrap; overflow: hidden; white-space: nowrap; }
@@ -2169,7 +2175,6 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 .provider-offer { margin: 6px 0 2px 18px; font-size: 13px; color: var(--text2); }
 .provider-offer .mono { font-family: 'DM Mono', monospace; color: var(--text); }
 .provider-offer-actions { display: inline-flex; gap: 6px; flex-wrap: wrap; margin-left: 4px; vertical-align: middle; }
-.activity-problems { margin-bottom: 14px; }
 .activity-check { font-size: 12px; margin-top: 2px; }
 .activity-check.rejected, .activity-check.none { color: var(--amber); }
 .activity-check.usable, .activity-check.delayed { color: var(--green); }
@@ -2625,7 +2630,6 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <div class="tabs-bar" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
           <button class="live-tab active" data-libtab="browse" onclick="showLibTab('browse')">Browse</button>
           <button class="live-tab" data-libtab="following" onclick="showLibTab('following')">Following <span class="nav-badge nav-badge-quiet" id="lib-follow-badge" style="display:none;margin-left:6px">0</span></button>
-          <button class="live-tab" data-libtab="untracked" data-admin-only onclick="showLibTab('untracked')">Not in Radarr/Sonarr <span class="nav-badge nav-badge-quiet" id="lib-untracked-badge" style="display:none;margin-left:6px">0</span></button>
         </div>
 
         <div id="lib-tab-browse">
@@ -2667,7 +2671,6 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <button class="filter-btn" data-musicfilter="downloading" onclick="setMusicLibFilter('downloading',this)">Downloading<span id="music-count-downloading"></span></button>
               <button class="filter-btn" data-musicfilter="wanted" onclick="setMusicLibFilter('wanted',this)">Wanted<span id="music-count-wanted"></span></button>
               <button class="filter-btn" data-musicfilter="needs_review" onclick="setMusicLibFilter('needs_review',this)">Needs review<span id="music-count-needs_review"></span></button>
-              <button class="filter-btn" data-musicfilter="fix" data-admin-only onclick="setMusicLibFilter('fix',this)">Fix library<span id="music-count-fix"></span></button>
             </div>
           </div>
           <div id="music-library"><div class="loading-state"><div class="spinner"></div></div></div>
@@ -2685,16 +2688,6 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           <div id="following-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px"></div>
           <div id="following-empty" class="empty-state" style="display:none"><p>No shows being followed yet. Add a show to Sonarr with "All Episodes (including future)" or enable following from the show detail modal.</p></div>
         </div><!-- /lib-tab-following -->
-
-        <!-- Folders Radarr/Sonarr don't know about (admins, untracked.js) -->
-        <div id="lib-tab-untracked" style="display:none">
-          <div class="untr-head" id="untracked-head"></div>
-          <div class="untr-opts">
-            <label><input type="checkbox" id="untr-monitored"> Let Radarr/Sonarr upgrade what I add and fetch missing episodes later (monitored)</label>
-            <label><input type="checkbox" id="untr-auto"> Add the ones 95%+ sure automatically each night</label>
-          </div>
-          <div id="untracked-list"></div>
-        </div><!-- /lib-tab-untracked -->
 
       </div>
 
@@ -2971,8 +2964,9 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           <div class="mych-head-text">
             <div class="mych-title">Recordings</div>
             <p class="mych-sub">Follow your teams and Tentacle records their games from the TV guide. Recordings are in Jellyfin, for everyone in the household.</p>
+            <!-- One plain line while an admin's space limit is on (the limit itself: Sources → Live TV → More) -->
+            <p class="mych-sub" id="rec-space-note" style="display:none"></p>
           </div>
-          <div class="rec-space" id="rec-space"></div>
           <div class="mych-status" id="rec-status" aria-live="polite"></div>
         </div>
         <div class="live-tabs" id="rec-tabs">
@@ -3089,7 +3083,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           <button class="live-tab active" data-sourcestab="providers" onclick="showSourcesTab('providers')">IPTV providers</button>
           <button class="live-tab" data-sourcestab="live" style="display:none" onclick="showSourcesTab('live')">Live TV</button>
           <button class="live-tab" data-sourcestab="youtube" onclick="showSourcesTab('youtube')">YouTube</button>
-          <button class="live-tab" data-sourcestab="arr" onclick="showSourcesTab('arr')">Radarr &amp; Sonarr</button>
+          <button class="live-tab" data-sourcestab="arr" onclick="showSourcesTab('arr')">Radarr &amp; Sonarr <span class="nav-badge nav-badge-quiet" id="arr-untracked-badge" style="display:none;margin-left:6px" title="Folders Radarr/Sonarr don&rsquo;t know about">0</span></button>
           <button class="live-tab" data-sourcestab="music" onclick="showSourcesTab('music')">Music</button>
         </div>
 
@@ -3308,6 +3302,16 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                 <div class="live-more-hint">People follow their teams and set recording rules on <a href="#" onclick="showPage('recordings');return false" style="color: var(--accent-text)">Recordings</a>, and record single programmes in Jellyfin (Guide &rarr; Record); recordings are the household&rsquo;s, like a family recorder. How many channels can play or record at once is <strong>Streams at once</strong> on the provider&rsquo;s card; problems with a recording are on <a href="#" onclick="showPage('health');return false" style="color: var(--accent-text)">Health</a>.</div>
               </div>
             </div>
+            <!-- Space for recordings (services/recording_space; recordings.js recSpace*) -->
+            <div class="live-more-row" id="rec-space-row">
+              <div style="flex:1;min-width:0">
+                <div class="live-more-title">Space for recordings</div>
+                <div class="live-more-hint">Keep recordings under a size, an age, or both: the oldest are deleted first, from Jellyfin, files and all. Favourites, ones someone is part-way through and ones a rule keeps are never deleted.</div>
+                <div class="rec-space" id="rec-space"></div>
+                <div id="rec-space-status" class="mych-setup-status" aria-live="polite"></div>
+              </div>
+              <button type="button" class="btn btn-secondary btn-sm" id="rec-space-set" onclick="recSpaceOpen()" style="flex-shrink:0">Set a limit</button>
+            </div>
             <!-- Channel checker (services/livetv_checker; pages.js checker*) -->
             <div class="live-more-row" id="checker-row">
               <div>
@@ -3437,6 +3441,19 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           </div>
         </div>
 
+        <!-- Folders Radarr/Sonarr don't know about (untracked.js, #871) -->
+        <div class="card" style="margin-bottom:16px" id="untracked-card">
+          <div class="card-header"><div class="card-title">Not in Radarr/Sonarr</div></div>
+          <div>
+            <div class="untr-head" id="untracked-head"></div>
+            <div class="untr-opts">
+              <label><input type="checkbox" id="untr-monitored"> Let Radarr/Sonarr upgrade what I add and fetch missing episodes later (monitored)</label>
+              <label><input type="checkbox" id="untr-auto"> Add the ones 95%+ sure automatically each night</label>
+            </div>
+            <div id="untracked-list"></div>
+          </div>
+        </div>
+
         <div class="card" style="margin-bottom:16px">
           <div class="card-header"><div class="card-title">Webhooks</div></div>
           <div>
@@ -3556,6 +3573,19 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <div style="margin-top:20px">
                 <button class="btn btn-primary" onclick="saveSettings()">Save Music</button>
               </div>
+            </div>
+
+            <!-- Album lists Discover → Music shows (music.js loadMusicListsCard); were buttons on Discover -->
+            <div class="card" id="music-lists-card" style="display:none;margin-top:16px">
+              <h3>Album lists</h3>
+              <p class="section-desc">The lists of albums everyone sees on Discover &rarr; Music &rarr; Lists.</p>
+              <div id="music-lists"></div>
+            </div>
+
+            <!-- Fix library: the daily check's findings (music.js loadMusicFix); was a Library → Music filter -->
+            <div class="card" id="music-fix-card" style="display:none;margin-top:16px">
+              <h3>Fix library<span id="music-count-fix" style="color:var(--text3);font-weight:400"></span></h3>
+              <div id="music-fix"></div>
             </div>
 
         </div>
@@ -5072,7 +5102,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
       <div id="setup-untracked-note" style="display:none;background:var(--bg2);border-left:3px solid var(--amber);border-radius:8px;padding:12px;margin:12px 0;font-size:13px;color:var(--text2)">
         <strong id="setup-untracked-count"></strong>
         Tentacle can add them to Radarr/Sonarr with the folders as they are (nothing downloaded, moved or renamed).
-        <a href="#library/untracked" id="setup-untracked-open" style="color:var(--accent-text);white-space:nowrap">See them in Library →</a>
+        <a href="#sources/arr" id="setup-untracked-open" style="color:var(--accent-text);white-space:nowrap">See them in Sources → Radarr &amp; Sonarr →</a>
       </div>
 
       <div style="background:var(--bg2);border-radius:8px;padding:16px;margin:16px 0">
@@ -5114,18 +5144,18 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="/static/js/app.js?v=48"></script>
-<script src="/static/js/sources.js?v=46"></script>
-<script src="/static/js/pages.js?v=53"></script>
-<script src="/static/js/music.js?v=45"></script>
+<script src="/static/js/app.js?v=49"></script>
+<script src="/static/js/sources.js?v=47"></script>
+<script src="/static/js/pages.js?v=54"></script>
+<script src="/static/js/music.js?v=46"></script>
 <script src="/static/js/mychannels.js?v=50"></script>
 <script src="/static/js/newgroups.js?v=45"></script>
 <script src="/static/js/family.js?v=47"></script>
 <script src="/static/js/welcome.js?v=50"></script>
-<script src="/static/js/live.js?v=5"></script>
+<script src="/static/js/live.js?v=6"></script>
 <script src="/static/js/myyoutube.js?v=48"></script>
-<script src="/static/js/recordings.js?v=6"></script>
-<script src="/static/js/untracked.js?v=1"></script>
+<script src="/static/js/recordings.js?v=7"></script>
+<script src="/static/js/untracked.js?v=2"></script>
 <script src="/static/js/backup.js?v=1"></script>
 <script>
   // ── Mobile off-canvas sidebar ──

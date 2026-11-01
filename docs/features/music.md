@@ -52,7 +52,7 @@ library (or the album) once in Jellyfin, with *Search for missing metadata*.
 
 **5. Save Connections.** Tentacle then reads your Lidarr library once (about
 ten minutes for a few hundred albums; MusicBrainz allows one request a second).
-**Library → Music → Check library now** runs it again any time.
+**Sources → Music → Check the library now** runs it again any time.
 
 **6. Optional: add the Lidarr webhook** so new downloads show up in Tentacle
 right away instead of at the daily check. **Sources → Music** shows the URL.
@@ -73,8 +73,9 @@ Without a search there are five tabs:
 - **Lists:** critics' album lists, ranked: Rolling Stone's 500 Greatest Albums
   (2023 and 2003), Apple Music's 100 Best Albums, 1001 Albums You Must Hear
   Before You Die, and Pitchfork's best of the 1960s, 1970s, 1990s and 2010s.
-  Admins can add any list from MusicBrainz (search musicbrainz.org for a
-  series and paste its link) or remove one.
+  Admins add any list from MusicBrainz (search musicbrainz.org for a
+  series and paste its link) or remove one under **Sources → Music → Album
+  lists**.
 - **Top of all time:** the most-listened studio albums on ListenBrainz, by
   genre. *Hide albums I have* narrows it to what's missing (Lists have it too).
 - **From Spotify:** your imported playlists (below).
@@ -140,8 +141,10 @@ a **Retry** button.
 Your monitored albums, by artist, with filters for *In library*,
 *Downloading*, *Wanted* and *Needs review*.
 
-**Fix library** (admins) is where the daily check puts albums that aren't on
-their original release:
+## Sources → Music → Fix library
+
+**Fix library** (admins, under Sources → Music) is where the daily check puts
+albums that aren't on their original release:
 
 | Group | What Apply does |
 |---|---|

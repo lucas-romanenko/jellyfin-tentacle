@@ -18,7 +18,7 @@ const rec = {
   leagues: null,      // GET /api/live/recording-rules/leagues
   upcoming: null,     // GET /api/live/recordings/upcoming
   history: null,
-  space: null,        // GET /api/live/recordings/space: the total and the limit
+  space: null,        // GET /api/live/recordings/space: the total and the limit (set on Sources → Live TV → More)
   league: null,       // the league open in the team picker
   find: '',           // its search box (long lists)
   edit: null,         // the rule in the editor: {id?, body}
@@ -85,7 +85,7 @@ function recRender() {
   document.getElementById('rec-count-teams').textContent = teams || '';
   const words = rec.rules.rules.filter(r => r.kind === 'keywords').length;
   document.getElementById('rec-count-rules').textContent = words || '';
-  recRenderSpace();
+  recRenderSpaceNote();
   recRenderUpcoming();
   if (rec.tab === 'teams') recRenderTeams();
   if (rec.tab === 'rules') recRenderRules();
@@ -93,6 +93,8 @@ function recRender() {
 }
 
 // ── Space: the total and the limit (services/recording_space) ─────────────
+// The limit is the admins' (Server: Sources → Live TV → More). The Recordings
+// page is everyone's, so it shows at most one plain line while a limit is on.
 
 function _recGB(bytes) {
   const gb = (bytes || 0) / 1e9;
@@ -104,12 +106,34 @@ function _recGB(bytes) {
 const REC_KEPT = { favourite: 'favourite', watching: 'part-way through', playing: 'playing now',
   recording: 'recording now', keep: 'kept by a rule' };
 
+function recRenderSpaceNote() {
+  const el = document.getElementById('rec-space-note');
+  if (!el) return;
+  const on = !!rec.space?.on;
+  el.textContent = on ? 'Old recordings are deleted after a while to make room. Favourites and ones someone is part-way through are kept.' : '';
+  el.style.display = on ? '' : 'none';
+}
+
+async function recSpaceLoad() {
+  if (!document.getElementById('rec-space')) return;
+  try {
+    rec.space = await api('/api/live/recordings/space');
+  } catch (e) {
+    if (e.sessionExpired) return;
+    const st = document.getElementById('rec-space-status');
+    if (st) st.textContent = 'Couldn’t read this: ' + (e.message || e);
+    return;
+  }
+  recRenderSpace();
+}
+
 function recRenderSpace() {
   const el = document.getElementById('rec-space');
   const d = rec.space;
   if (!el) return;
+  const btn = document.getElementById('rec-space-set');
+  if (btn) btn.textContent = d?.on ? 'Change' : 'Set a limit';
   if (!d || (!d.read_at && !d.on && !d.error)) { el.innerHTML = ''; return; }
-  const set = d.is_admin ? `<button class="rec-space-set" onclick="recSpaceOpen()">${d.on ? 'Change' : 'Set a limit'}</button>` : '';
   const total = `<b>${escHtml(_recGB(d.total_bytes))}</b>`;
   let top, bar = '';
   if (d.limit_gb) {
@@ -127,7 +151,7 @@ function recRenderSpace() {
   else if (d.would_go && d.would_go.length) meta.push(`<span class="warn">${d.would_go.length === 1 ? 'the oldest goes' : `the ${d.would_go.length} oldest go`} at the next check</span>`);
   else if (d.kept_over) meta.push('<span class="warn">kept recordings alone are over the limit</span>');
   const err = d.error ? `<div class="rec-space-meta"><span class="warn">${escHtml(d.error)}</span></div>` : '';
-  el.innerHTML = `<div class="rec-space-top">${top}${set}</div>${bar}
+  el.innerHTML = `<div class="rec-space-top">${top}</div>${bar}
     <div class="rec-space-meta">${meta.join(' · ')}</div>${err}`;
 }
 
@@ -203,7 +227,8 @@ async function recSpaceSave(off) {
   try {
     rec.space = { ...(await api('/api/live/recordings/space', { method: 'PUT', body: v })), is_admin: true };
     closeModal('modal-rec-space');
-    _recStatus('ok', off ? 'No limit: no recording is deleted for space.' : 'Saved. Checked in a few seconds, then every 15 minutes.');
+    const st = document.getElementById('rec-space-status');
+    if (st) st.textContent = off ? 'No limit: no recording is deleted for space.' : 'Saved. Checked in a few seconds, then every 15 minutes.';
     recRenderSpace();
   } catch (e) {
     if (!e.sessionExpired) toast(e.message, 'warning', 6000);

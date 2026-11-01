@@ -79,13 +79,13 @@ Recordings are made in Jellyfin as ordinary recordings, exactly like its Record 
 
 ### Space for recordings
 
-Recordings can fill a disk (a sports game is 2.5 to 4 GB an hour). The top of **Recordings** shows how much they take; an admin sets a limit there with **Set a limit** (**Change** once set):
+Recordings can fill a disk (a sports game is 2.5 to 4 GB an hour). An admin sees how much they take, and sets a limit, under **Sources → Live TV → More → Space for recordings** with **Set a limit** (**Change** once set). The Recordings page, which everyone uses, only says that old recordings make room while a limit is on:
 
 - **Keep recordings under** a number of GB: when they take more, the oldest go first, by when they were recorded, until they fit. Optionally, **also delete recordings older than** a number of days.
 - The dialog shows what would be deleted at the limit you type before you save, and asks once more when saving deletes something.
 - **Never deleted**: anyone's favourite (the recording, or its show in Jellyfin's Recordings), one someone is part-way through, one playing or recording now, and what a team or rule keeps: **Edit → Keep** offers **Keep forever** or **Keep the last** N recordings. Kept recordings still count towards the total.
 - Sizes come from Jellyfin's recordings, and recordings are deleted through Jellyfin (the file and the library item together), so the library and the disk agree. Each deletion is listed under **Health → What happened → Removals** as "Recordings limit".
-- Checked every 15 minutes. If anything can't be read (Jellyfin not answering, a recording without a size or a date, someone's favourites), nothing is deleted that time and the Recordings page says why.
+- Checked every 15 minutes. If anything can't be read (Jellyfin not answering, a recording without a size or a date, someone's favourites), nothing is deleted that time and Space for recordings says why.
 - There is no limit until an admin sets one; **No limit** turns it off again. Jellyfin's own per-show "Keep up to" still applies as before.
 
 ### Pictures for recordings

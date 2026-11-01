@@ -612,6 +612,8 @@ function showRouteFromHash() {
 
 function showPage(name, tab) {
   if (PAGE_ALIASES[name]) { const [n, t] = PAGE_ALIASES[name]; name = n; tab = tab || t; }
+  // Not in Radarr/Sonarr was a Library tab (#871); it is on Server → Sources now
+  if (name === 'library' && tab === 'untracked') { name = 'sources'; tab = 'arr'; }
   if (!document.getElementById(`page-${name}`)) { name = 'library'; tab = null; }
   if (ADMIN_PAGES.has(name) && !(state.currentUser && state.currentUser.is_admin)) { name = 'library'; tab = null; }
   if (name === 'discover' && state.kidsProfile) { name = 'library'; tab = null; }
@@ -644,7 +646,7 @@ function showPage(name, tab) {
   try {
     // Load page data (a tab given in the address opens that tab)
     if (name === 'settings') { loadSettings(); showSettingsSection(tab || state.currentSettingsSection || 'services'); }
-    if (name === 'library') { loadLibrary(); if (tab) showLibTab(tab); if (tab !== 'untracked' && typeof untrRefreshBadge === 'function') untrRefreshBadge(); }
+    if (name === 'library') { loadLibrary(); if (tab) showLibTab(tab); }
     if (name === 'discover') { loadDiscoverPage(); if (tab) showDiscoverTab(tab); }
     if (name === 'jellyfin') { loadJellyfinPage(); if (tab) showJellyfinTab(tab); }
     if (name === 'mychannels' && typeof loadMyChannels === 'function') loadMyChannels();
@@ -701,14 +703,11 @@ function showLibTab(tab) {
   // Music is a type inside Browse (beside Movies and Shows); old #library/music links still land there
   const wantMusic = tab === 'music';
   if (!document.querySelector(`[data-libtab="${tab}"]`)) tab = 'browse';
-  if (tab === 'untracked' && !state.currentUser?.is_admin) tab = 'browse';
   document.querySelectorAll('[data-libtab]').forEach(t => t.classList.remove('active'));
   document.querySelector(`[data-libtab="${tab}"]`)?.classList.add('active');
   document.getElementById('lib-tab-browse').style.display = tab === 'browse' ? '' : 'none';
   document.getElementById('lib-tab-following').style.display = tab === 'following' ? '' : 'none';
-  document.getElementById('lib-tab-untracked').style.display = tab === 'untracked' ? '' : 'none';
   if (tab === 'following') loadFollowing();
-  if (tab === 'untracked' && typeof loadUntracked === 'function') loadUntracked(false);
   if (wantMusic) {
     const btn = document.querySelector('[data-libtype="music"]');
     if (btn) { setLibType('music', btn); return; }

@@ -1,10 +1,12 @@
-// Tentacle - Library → Not in Radarr/Sonarr (admins, #871)
+// Tentacle - Sources → Radarr & Sonarr → Not in Radarr/Sonarr (admins, #871)
 //
 // Folders in the movie and show library that Radarr/Sonarr don't know about
 // (a manual copy, an old server's library), each with its best TMDB match and
 // how sure it is. Add tells Radarr/Sonarr to use the folder as it is: the
 // default quality profile, no search; nothing is downloaded, moved or renamed.
 // Pick when the match is in doubt. Also shown on the last setup step.
+// Server-level, so it lives under Server (Sources), never on Library: family
+// pages show only what everyone needs.
 //
 // Folder and title names come from disk and TMDB: text, never markup (every
 // value goes through escHtml).
@@ -20,13 +22,13 @@ function _untrSize(bytes) {
 function _untrName(kind) { return kind === 'movie' ? 'Radarr' : 'Sonarr'; }
 
 function untrSetBadge(n) {
-  const b = document.getElementById('lib-untracked-badge');
+  const b = document.getElementById('arr-untracked-badge');
   if (!b) return;
   b.textContent = n;
   b.style.display = n ? '' : 'none';
 }
 
-// Library opened: the tab's count (a stale list is checked again in the background)
+// Sources opened: the tab's count (a stale list is checked again in the background)
 async function untrRefreshBadge() {
   if (!state.currentUser?.is_admin) return;
   try {
@@ -211,13 +213,13 @@ async function untrSetupNote() {
 }
 
 function untrOpenFromSetup() {
-  // Full reload (as Done does) straight onto Library → Not in Radarr/Sonarr
-  window.location.hash = '#library/untracked';
+  // Full reload (as Done does) straight onto Sources → Radarr & Sonarr
+  window.location.hash = '#sources/arr';
   window.location.reload();
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  const panel = document.getElementById('lib-tab-untracked');
+  const panel = document.getElementById('untracked-card');
   panel?.addEventListener('click', ev => {
     const btn = ev.target.closest('[data-untr]');
     if (!btn) return;
