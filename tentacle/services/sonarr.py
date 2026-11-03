@@ -992,11 +992,14 @@ def _scan_sonarr_library(db: Session) -> dict:
                                           Counter(series_download_kind(r) for r in rows)):
         refused = len(lost_file)
         keep = {r.tmdb_id for r in lost_file}
+        # Which still have episodes on disk: Sonarr may have only lost track (#913).
+        on_disk = [r.title for r in lost_file if media_files.arr_folder_has_media(
+            r.sonarr_path, media_files.SONARR_MEDIA_ROOT, "/data/shows")]
         logger.error(
             f"Sonarr scan: REFUSING to remove {refused} of {len(rows)} downloaded series that "
             f"Sonarr still lists but reports as having no episode files. That many at once looks "
-            f"like Sonarr's media storage being unavailable, not a clean-up. Rows kept; if the "
-            f"files really are gone, remove the series from Sonarr.")
+            f"like Sonarr's media storage being unavailable, not a clean-up. Rows kept. "
+            + media_files.lost_track_advice(on_disk, refused - len(on_disk), "Sonarr", "series"))
     # A row Sonarr doesn't list by tmdbId may be a show TMDB failed to
     # resolve this scan: kept until a scan can tell (#795).
     if unresolved:
@@ -1085,6 +1088,7 @@ def _scan_sonarr_library(db: Session) -> dict:
     owned = tentacle_owned_tags(db)
     recently_added_days = get_recently_added_days(db)
     not_found = 0
+    found = 0
     first_not_found = ""
     for tmdb_id, db_series in series_needing_nfo:
         try:
@@ -1139,8 +1143,9 @@ def _scan_sonarr_library(db: Session) -> dict:
             if series_folder is None:
                 if not is_vod_arr_path(db_series.sonarr_path):
                     not_found += 1
-                    first_not_found = first_not_found or db_series.sonarr_path
+                    first_not_found = first_not_found or f"{db_series.title} (Sonarr's {db_series.sonarr_path})"
                 continue
+            found += 1
 
             # Build NFO metadata from DB record
             nfo_metadata = {
@@ -1171,9 +1176,12 @@ def _scan_sonarr_library(db: Session) -> dict:
     if not_found:
         root = media_files.SONARR_MEDIA_ROOT
         logger.warning(
-            f"Sonarr scan: {not_found} downloads not found under {root} (first: Sonarr's "
-            f"{first_not_found}); no NFO or tags written beside them. Mount the folder Sonarr "
-            f"downloads to at {root} (Settings → Library Paths).")
+            f"Sonarr scan: {not_found} downloads not found under {root} (first: "
+            f"{first_not_found}); no NFO or tags written beside them. "
+            # Others were found: the mount works, these sit somewhere else (#913).
+            + (f"The other {found} were found, so the mount works: check where Sonarr "
+               f"keeps these." if found else
+               f"Mount the folder Sonarr downloads to at {root} (Settings → Library Paths)."))
 
     db.commit()
 

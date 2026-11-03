@@ -98,7 +98,9 @@ tentacle:
     - /path/to/movies:/media/movies    # Same folder Radarr downloads to
 ```
 
-Radarr may call this folder anything (`/data/movies`, `/data/media/movies`, `D:\Movies`): Tentacle finds each download by its folder name under `/media/movies`, so mount the same host folder Radarr's root folder is on. When a scan can't find downloads there, the log says so ("downloads not found under /media/movies") and no NFO or tags are written beside them.
+Radarr may call this folder anything (`/data/movies`, `/data/media/movies`, `D:\Movies`): Tentacle finds each download by its folder name under `/media/movies` (also one inside a pack folder, `<Pack>/<Film>`), so mount the same host folder Radarr's root folder is on. When a scan can't find downloads there, the log says so ("downloads not found under /media/movies") and no NFO or tags are written beside them.
+
+When Radarr reports many downloads without a file at once, Tentacle keeps them (that looks like Radarr's storage being unavailable) and checks each file itself. Files it still sees on disk are ones Radarr lost track of: rescan them in Radarr or point the movie at its file's folder; don't remove them from Radarr with "delete files" ticked.
 
 ## Download Client Prerequisites
 

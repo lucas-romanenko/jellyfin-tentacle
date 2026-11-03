@@ -342,7 +342,8 @@ def _flush_missing_from_disk(gen: Optional[int] = None, db: Optional[Session] = 
         from models.database import SessionLocal
         db = SessionLocal()
     try:
-        rows = {m.tmdb_id: download_kind(m) for m in downloaded_movie_rows(db)}
+        row_objs = {m.tmdb_id: m for m in downloaded_movie_rows(db)}
+        rows = {t: download_kind(m) for t, m in row_objs.items()}
         # Downloads already removed for an earlier report still count, in the
         # loss and in the library it is measured against. Judged over all of
         # them and over each kind alone (#505).
@@ -355,11 +356,14 @@ def _flush_missing_from_disk(gen: Optional[int] = None, db: Optional[Session] = 
             with _missing_lock:
                 for t in batch:
                     _missing_recent[t] = (now, rows.get(t))
+            # Which files are still there: Radarr may have only lost track (#913).
+            on_disk = [row_objs[t].title for t in lost_now if media_files.arr_file_on_disk(
+                row_objs[t].radarr_path, media_files.RADARR_MEDIA_ROOT, "/data/movies")]
             logger.error(
                 f"[Radarr webhook] REFUSING to remove {len(lost_now)} downloaded movies Radarr reported missing "
                 f"from disk: with the reports of the last {MISSING_WINDOW_SECONDS // 3600} h that is {lost} of "
                 f"{total}. That many looks like Radarr's media storage being unavailable, not a clean-up. Rows "
-                f"kept; if the files really are gone, remove the movies from Radarr.")
+                f"kept. " + media_files.lost_track_advice(on_disk, len(lost_now) - len(on_disk), "Radarr", "movies"))
             return {"status": "refused", "kept": len(lost_now)}
         removed = 0
         for tmdb_id, (title, arr_folder) in batch.items():
