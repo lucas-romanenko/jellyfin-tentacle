@@ -281,6 +281,17 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   object. Before: flipping onto a channel being recorded and away closed
   the recording's stream (it stops being written and still says
   recording, no retry).
+  Every open is a share of its own (#909): the TV app's guide preview and
+  its player are one Jellyfin session, and Jellyfin keeps one play session
+  per session and stream (`_activeLiveStreamSessions`), so two shares of
+  one channel from one TV (Back from the player into the guide with focus
+  on it: the preview joins before the player's stop) were released by the
+  first stop only and the stream ran for hours unwatched. A stop report
+  naming its stream whose consumer count didn't move (checked under the
+  device's lock) gives that play session's share back once; a channel
+  switch gives back every share the device still holds; after
+  `SessionEnded` (Jellyfin gave one back, which isn't known) none is given
+  back by a stop again. A give-back logs `consumer count A -> B`.
 - **The guide plays in its own tab** (`tentacle-livetv.js`): Jellyfin Web
   10.11 has no global `playbackManager`, and `sendPlayCommand` makes the
   server send Play to the browser's newest websocket, which may be another
