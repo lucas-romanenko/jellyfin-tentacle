@@ -137,16 +137,16 @@ class OneStreamPerDevice(unittest.TestCase):
         # anyway and nobody reports the stream
         self.assertIn("UnusedGrace = TimeSpan.FromSeconds(45)", self.src)
         keep = self.src[self.src.index("private void Remember"):]
-        self.assertRegex(keep, r"if \(ReferenceEquals\(kept, entry\)\)\s*\{\s*_ = CloseIfUnusedLater\(")
+        self.assertRegex(keep, r"if \(open\.TryAdd\(entry, 0\)\)\s*\{\s*_ = CloseIfUnusedLater\(")
         later = self.src[self.src.index("private async Task CloseIfUnusedLater"):]
         self.assertIn("await Task.Delay(UnusedGrace)", later)
         # under the device's lock, only if still this device's and unplayed
         self.assertIn("await gate.WaitAsync()", later)
-        self.assertIn("ReferenceEquals(now, opened)", later)
+        self.assertIn("|| !open.ContainsKey(opened)", later)
         self.assertIn("InUse(deviceId, liveStreamId, opened)", later)
         # given back exactly as on a channel switch: once, off the list first
-        self.assertLess(later.index("open.TryRemove(liveStreamId, out _);"),
-                        later.index("await CloseOne(deviceId, liveStreamId, opened,"))
+        self.assertLess(later.index("open.TryRemove(opened, out _);"),
+                        later.index("await CloseOne(deviceId, opened,"))
 
     def test_played_means_reported_or_transcoding(self):
         used = self.src[self.src.index("private bool InUse"):]
@@ -194,17 +194,68 @@ class GivesBackOnlyWhatItHolds(unittest.TestCase):
 
     def test_only_the_stream_object_it_opened(self):
         keep = self.src[self.src.index("private void Remember"):]
-        self.assertIn("var entry = new Opened(session, channelId, stream);", keep)
+        self.assertIn("var entry = new Opened(liveStreamId, session, channelId, stream);", keep)
         close = self.src[self.src.index("private async Task CloseOne"):]
         self.assertIn("if (stream is null || !ReferenceEquals(stream, opened.Stream))", close)
         later = self.src[self.src.index("private async Task CloseIfUnusedLater"):]
         self.assertIn("!ReferenceEquals(_mediaSourceManager.GetLiveStreamInfo(liveStreamId), opened.Stream)", later)
 
-    def test_a_new_share_after_a_stop_is_remembered(self):
-        # the device opens the channel again after its stop: the new share is
-        # the one a later switch gives back
+    def test_every_open_is_its_own_share(self):
+        # the device opens the channel again (after its stop, or while it
+        # still plays it): each open is a consumer of its own, remembered
+        # with its own play session
         keep = self.src[self.src.index("private void Remember"):]
-        self.assertIn("had.Stopped || !ReferenceEquals(had.Stream, stream) ? entry : had", keep)
+        self.assertIn("var entry = new Opened(liveStreamId, session, channelId, stream);", keep)
+        self.assertIn("open.TryAdd(entry, 0)", keep)
+        self.assertNotIn("AddOrUpdate", keep)
+
+
+class OneStopPerShare(unittest.TestCase):
+    """#909: the TV app's guide preview and its player are one Jellyfin
+    session. Jellyfin keeps one play session per session and live stream,
+    so two shares of one channel from one TV (Back from the player into the
+    guide with focus on that channel: the preview joins before the player's
+    stop) are released by the first stop only; the second stop released
+    nothing and the stream ran for hours with no viewer (a 58 GB copy in
+    /cache/transcodes, every recording on a one-connection account fighting
+    it). The next morning's channel switch only found the stopped share."""
+
+    def setUp(self):
+        self.src = FILTER.read_text(encoding="utf-8")
+
+    def test_shares_are_kept_per_open_not_per_stream_id(self):
+        self.assertIn("ConcurrentDictionary<string, ConcurrentDictionary<Opened, byte>> _streams", self.src)
+
+    def test_a_stop_that_released_nothing_gives_its_share_back(self):
+        stop = self.src[self.src.index("private async Task OnStopRequest"):self.src.index("private void OnPlaybackStopped")]
+        # under the device's lock, so its own opens don't move the count meanwhile
+        self.assertLess(stop.index("await gate.WaitAsync()"), stop.rindex("await next()"))
+        # only a stop that names the stream (Jellyfin releases on those alone)
+        self.assertIn('GetProperty("LiveStreamId")', stop)
+        # the count before Jellyfin's stop, then: unchanged = nothing released
+        self.assertLess(stop.index("Before: share.Stream.ConsumerCount"), stop.rindex("await next()"))
+        self.assertRegex(stop, r"ReferenceEquals\(_mediaSourceManager\.GetLiveStreamInfo\(share\.LiveStreamId\), share\.Stream\)"
+                               r"\s*&& share\.Stream\.ConsumerCount == before\)")
+        self.assertIn("await _mediaSourceManager.CloseLiveStream(share.LiveStreamId)", stop)
+        self.assertIn('"[Tentacle] Device {Device} stopped play session {PlaySession}, which released nothing: giving back its share of live stream {LiveStream}"', stop)
+
+    def test_the_switch_gives_back_every_share_the_device_still_holds(self):
+        body = self.src[self.src.index("private async Task CloseStreamsOf"):self.src.index("private async Task CloseOne")]
+        self.assertIn("foreach (var opened in open.Keys.ToArray())", body)
+        self.assertIn("open.TryRemove(opened, out _);", body)
+
+    def test_an_ended_session_never_gives_back_twice(self):
+        # Jellyfin gave back one share as the session ended; a late stop
+        # report must not give back another (a recording's)
+        self.assertIn("_sessionManager.SessionEnded += OnSessionEnded;", self.src)
+        ended = self.src[self.src.index("private void OnSessionEnded"):self.src.index("private void MarkStopped(")]
+        self.assertIn("opened.Stopped = true;", ended)
+        stop = self.src[self.src.index("private async Task OnStopRequest"):self.src.index("private void OnPlaybackStopped")]
+        self.assertIn("if (!share.Stopped", stop)
+
+    def test_the_switch_logs_what_it_did(self):
+        close = self.src[self.src.index("private async Task CloseOne"):self.src.index("private void Remember")]
+        self.assertIn('"[Tentacle] Live stream {LiveStream}: consumer count {Before} -> {After}"', close)
 
 
 if __name__ == "__main__":
