@@ -79,8 +79,48 @@ def local_arr_folder(arr_folder: Optional[str], root: Path, arr_root: str) -> Op
         else:
             candidates.append(Path(arr_folder))
     if not is_vod_arr_path(arr_folder):
-        candidates.append(Path(root) / parts[-1])
+        # By name, then with its parent folders too: a film inside a pack
+        # (<root>/<Trilogy>/<Film 1>) sits deeper than one level (#913).
+        candidates += [Path(root, *parts[-n:]) for n in range(1, len(parts))]
     return next((c for c in candidates if c.is_dir()), None)
+
+
+def arr_file_on_disk(arr_file: Optional[str], root: Path, arr_root: str) -> bool:
+    """Whether the file Radarr last reported (`arr_file`) is still there,
+    seen through Tentacle's mount: Radarr can lose track of a file that never
+    went anywhere (#913)."""
+    parts = arr_path_parts(arr_file)
+    folder = local_arr_folder(arr_parent(arr_file), root, arr_root) if parts else None
+    return bool(folder and (folder / parts[-1]).is_file())
+
+
+def arr_folder_has_media(arr_folder: Optional[str], root: Path, arr_root: str) -> bool:
+    """Whether a series folder Sonarr reported still holds a video file,
+    seen through Tentacle's mount (#913)."""
+    folder = local_arr_folder(arr_folder, root, arr_root)
+    if folder is None:
+        return False
+    try:
+        return any(f.suffix.lower() in MEDIA_SUFFIXES for f in folder.rglob("*") if f.is_file())
+    except OSError:
+        return False
+
+
+def lost_track_advice(on_disk: list, gone: int, arr: str, things: str) -> str:
+    """What to do about downloads the *arr reports without a file, once the
+    files themselves were checked (#913). "Remove them from Radarr" is only
+    safe for the ones really gone: with "delete files" ticked it deletes the
+    ones the *arr merely lost track of."""
+    if not on_disk:
+        return (f"None of their files can be seen from here either; if they really are gone, "
+                f"remove the {things} from {arr}.")
+    first = ", ".join(on_disk[:3]) + (", ..." if len(on_disk) > 3 else "")
+    advice = (f"{len(on_disk)} of them are still on disk ({first}): {arr} lost track of them. "
+              f"Don't remove those from {arr}; rescan them there, or point each at the folder "
+              f"its file is in.")
+    if gone:
+        advice += f" The other {gone} really are gone: remove those from {arr}."
+    return advice
 
 
 def _prune_empty_dirs(root: Path) -> None:

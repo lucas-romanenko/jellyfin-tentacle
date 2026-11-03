@@ -424,11 +424,14 @@ def _scan_radarr_library(db: Session) -> dict:
                                           Counter(download_kind(m) for m in rows)):
         refused = len(lost_file)
         keep = {m.tmdb_id for m in lost_file}
+        # Which files are still there: Radarr may have only lost track (#913).
+        on_disk = [m.title for m in lost_file if media_files.arr_file_on_disk(
+            m.radarr_path, media_files.RADARR_MEDIA_ROOT, "/data/movies")]
         logger.error(
             f"Radarr scan: REFUSING to remove {refused} of {len(rows)} downloaded movies that "
             f"Radarr still lists but reports as having no file. That many at once looks like "
-            f"Radarr's media storage being unavailable, not a clean-up. Rows kept; if the files "
-            f"really are gone, remove the movies from Radarr.")
+            f"Radarr's media storage being unavailable, not a clean-up. Rows kept. "
+            + media_files.lost_track_advice(on_disk, refused - len(on_disk), "Radarr", "movies"))
     else:
         keep = set()
     removed = 0
@@ -487,6 +490,7 @@ def _scan_radarr_library(db: Session) -> dict:
     owned = tentacle_owned_tags(db)
     recently_added_days = get_recently_added_days(db)
     not_found = 0
+    found = 0
     first_not_found = ""
     for tmdb_id, db_movie in movies_needing_nfo:
         try:
@@ -542,8 +546,9 @@ def _scan_radarr_library(db: Session) -> dict:
             if movie_folder is None:
                 if not is_vod_arr_path(arr_folder):
                     not_found += 1
-                    first_not_found = first_not_found or arr_folder
+                    first_not_found = first_not_found or f"{db_movie.title} (Radarr's {arr_folder})"
                 continue
+            found += 1
 
             nfo_metadata = {
                 "title": db_movie.title,
@@ -578,9 +583,12 @@ def _scan_radarr_library(db: Session) -> dict:
     if not_found:
         root = media_files.RADARR_MEDIA_ROOT
         logger.warning(
-            f"Radarr scan: {not_found} downloads not found under {root} (first: Radarr's "
-            f"{first_not_found}); no NFO or tags written beside them. Mount the folder Radarr "
-            f"downloads to at {root} (Settings → Library Paths).")
+            f"Radarr scan: {not_found} downloads not found under {root} (first: "
+            f"{first_not_found}); no NFO or tags written beside them. "
+            # Others were found: the mount works, these sit somewhere else (#913).
+            + (f"The other {found} were found, so the mount works: check where Radarr "
+               f"keeps these." if found else
+               f"Mount the folder Radarr downloads to at {root} (Settings → Library Paths)."))
 
     db.commit()
 
