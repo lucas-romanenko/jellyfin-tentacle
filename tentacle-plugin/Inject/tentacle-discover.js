@@ -1327,7 +1327,8 @@
     var list = document.getElementById('mdEpList' + sn);
     if (!list) return;
     // Tick once the season's episodes are on the page, however long they take.
-    var opened = (checked && !list.classList.contains('open')) ? window._mdToggleSeason(sn) : Promise.resolve();
+    // Open the season either way, so what the box changed is on screen.
+    var opened = !list.classList.contains('open') ? window._mdToggleSeason(sn) : Promise.resolve();
     return opened.then(function () {
       list.querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach(function (cb) { cb.checked = checked; });
       window._mdUpdateSeasonCb(sn);

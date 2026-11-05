@@ -1008,7 +1008,9 @@ body.modal-open { overflow: hidden; }
 .ep-picker-ep.ep-have input[type="checkbox"] { accent-color: #4caf50; }
 .ep-count-full { color: #4caf50 !important; }
 .ep-count-partial { color: #ff9800 !important; }
-.ep-picker-season-check { display: flex; align-items: center; }
+/* Big enough to hit: a miss lands on the header, which opens or closes the season */
+.ep-picker-season-check { width: 18px; height: 18px; margin: 0; flex-shrink: 0; cursor: pointer; }
+@media (pointer: coarse) { .ep-picker-season-check { width: 24px; height: 24px; } }
 
 /* ── Library Detail Episodes ── */
 .detail-ep-seasons { max-height: 350px; overflow-y: auto; border: 1px solid var(--bg3); border-radius: 8px; }
