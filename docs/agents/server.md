@@ -1741,7 +1741,8 @@ recording, never on live bytes (Lucas, 30 Oct 2026).
   failed/no_window/no_space/not_a_recording, duration/wall/after seconds,
   premiere_set, attempts). `failed`/`no_space` are tried again after 6 h,
   3 times. A `no_window` without a wall (from a plugin before #900) is
-  asked once more. Activity: `livetv_recording_retimed` ("Recording fixed"),
+  asked once more, and so is an `ok` far shorter than its window from a
+  plugin before #924 (a clock that went back). Activity: `livetv_recording_retimed` ("Recording fixed"),
   `livetv_recording_not_fixed` (a problem).
 
 ## YouTube per person (`services/youtube/follows.py`, `routers/my_youtube.py`, dashboard `static/js/myyoutube.js`)

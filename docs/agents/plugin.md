@@ -106,10 +106,13 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   `?start=` (booking, else guide) and the file name's start (Jellyfin's
   local time): DateCreated alone is reset to about the last write by a
   refresh as it stops (#900). A window that means over 60 Mbit/s is
-  `no_window`, never a copy. On a clock jump, Jellyfin's ffmpeg (`-fflags +genpts+discardcorrupt -map 0
+  `no_window`, never a copy. A probed length that means over 60 Mbit/s
+  for the file's own bytes is a clock that went back (#924: a 4 h game
+  probes as seconds) and is copied too; short for its window alone isn't
+  (split parts, late starts). On a clock jump, Jellyfin's ffmpeg (`-fflags +genpts+discardcorrupt -map 0
   -c copy -f mpegts`, nice 19, one at a time) writes `.<name>.retime.tmp`
   beside it; the copy replaces it (one rename, mtime kept) only when its
-  length fits the window, it has 95 % of the bytes and the file didn't
+  length fits the window and its bytes, it has 95 % of the bytes and the file didn't
   change; then a FullRefresh with ReplaceAllMetadata/Images false and the
   old DateCreated put back. No space (size + 2 GB) or a bad copy: the
   recording stays. `Premiere` sets PremiereDate (+ ProductionYear) only
