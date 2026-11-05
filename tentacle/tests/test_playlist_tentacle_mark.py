@@ -242,6 +242,17 @@ class TheRealService(unittest.TestCase):
         svc.get_playlists_checked("jf-1")
         self.assertTrue(all("ProviderIds" in p["Fields"] for p in asked))
 
+    def test_listings_skip_the_per_playlist_user_data(self):
+        # Jellyfin computes a playlist's user data from every entry: a 6,000-episode
+        # playlist made one user's listing take 16 s, past the 15 s timeout, which
+        # switched the duplicate cleanup and the marking off for every user.
+        svc = jellyfin.JellyfinService("http://jf:8096", "k", "jf-1")
+        asked = []
+        svc._get = lambda path, params=None: asked.append(params) or {"Items": []}
+        svc.get_playlists("jf-1")
+        svc.get_playlists_checked("jf-1")
+        self.assertEqual(["false", "false"], [p.get("EnableUserData") for p in asked])
+
 
 if __name__ == "__main__":
     unittest.main()

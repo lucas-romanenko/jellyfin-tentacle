@@ -318,6 +318,7 @@ def _playlists_visible_to_other_users(jf, db: Session, user_id: int):
             logger.warning(f"[SmartLists] Could not list playlists of Jellyfin user {other_jf_id}: {e}")
             return None
         if listing is None:
+            logger.warning(f"[SmartLists] Playlist listing of Jellyfin user {other_jf_id} did not arrive")
             return None
         for pl in listing:
             if pl.get("Id"):
