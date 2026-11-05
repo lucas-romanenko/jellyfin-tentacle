@@ -11,7 +11,9 @@ Jellyfin's, in its recordings folder; Tentacle never sees them).
   compares the probed length with the file's wall-clock window (from the
   earliest of Jellyfin's DateCreated, the programme's start sent along and
   the start in the file name: a refresh as it stops resets DateCreated to
-  about its last write, #900); far over it,
+  about its last write, #900; one that didn't stop normally keeps local time
+  stamped as UTC, so before the programme it counts only as a pre-padding,
+  #931); far over it,
   it copies the file with continuous timestamps (`ffmpeg -fflags
   +genpts+discardcorrupt -c copy`) beside it, puts the copy in its place
   only when its length fits the window and nothing was lost, and refreshes
@@ -99,6 +101,10 @@ def _due(row: Optional[RecordingCheck], now: datetime) -> bool:
         return True
     if row.state == "no_window" and row.wall is None and not row.attempts:
         return True         # from a plugin that had only DateCreated (#900): asked once more
+    if row.state == "ok" and row.duration and row.wall and row.duration * 2 < row.wall and not row.attempts:
+        return True         # far shorter than its window, from a plugin before #924 (a clock that went back): once more
+    if row.state == "not_fixed" and row.wall is not None and row.wall < 60 and not row.attempts:
+        return True         # judged by v1.42's 1 s window (#900, #931): once more
     if row.state in DONE:
         return False
     return (row.attempts or 0) < MAX_ATTEMPTS and not (row.updated_at and row.updated_at + RETRY_AFTER > now)
@@ -124,7 +130,7 @@ def check(db: Session, jf, item: dict, row: Optional[RecordingCheck], now: datet
         row.attempts = (row.attempts or 0) + 1
         row.detail = row.detail or state
         logger.warning(f"[Recording check] “{name}”: {state} {row.detail or ''}".rstrip())
-    elif state == "no_window":
+    elif state in ("no_window", "ok"):
         row.attempts = (row.attempts or 0) + 1
     elif state == "retimed":
         msg = (f"Recording “{name}”: its clock jumped ({_hours(row.duration)} for {_hours(row.wall)} recorded); "
@@ -133,6 +139,7 @@ def check(db: Session, jf, item: dict, row: Optional[RecordingCheck], now: datet
         log_activity(db, "livetv_recording_retimed", msg, {"item_id": row.item_id, "duration": row.duration,
                                                             "wall": row.wall, "after": row.after})
     elif state == "not_fixed":
+        row.attempts = (row.attempts or 0) + 1       # asked again at most once (#931)
         msg = (f"Recording “{name}” shows as {_hours(row.duration)} for {_hours(row.wall)} recorded, and a copy "
                f"with continuous timestamps didn't fix it: left as it was")
         logger.warning(f"[Recording check] {msg}")

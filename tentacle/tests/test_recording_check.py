@@ -285,6 +285,52 @@ class TheStart(Base):
         self.assertEqual([ID], self.jf.retimes)
         self.assertEqual(("no_window", 0.0), (self.row().state, self.row().wall))
 
+    def test_an_ok_far_shorter_than_its_window_is_asked_once_more(self):
+        # #924: a plugin from before marked a clock that went back "ok" (333 s in 11610 s)
+        from models.database import RecordingCheck
+        self.jf.add(ID, "Live: NHL Hockey", NOW - timedelta(hours=5))
+        self.db.add(RecordingCheck(item_id=ID, state="ok", duration=332.9, wall=11609.8, attempts=0, premiere_set=1,
+                                   created_at=NOW - timedelta(days=1), updated_at=NOW - timedelta(days=1)))
+        self.db.commit()
+        self.jf.answers[ID] = (200, {"state": "ok", "duration": 332.9, "wall": 11609.8})
+        self.run_pass()
+        self.run_pass(now=NOW + timedelta(days=1))
+        self.assertEqual([ID], self.jf.retimes)
+        self.assertEqual("ok", self.row().state)
+
+    def test_a_not_fixed_from_a_one_second_window_is_asked_once_more(self):
+        # #931: v1.42's 1 s window (#900) made good recordings not_fixed, never asked again
+        from models.database import RecordingCheck
+        self.jf.add(ID, "Live: NHL Hockey", NOW - timedelta(hours=5))
+        self.db.add(RecordingCheck(item_id=ID, state="not_fixed", duration=13500.0, wall=0.68, after=13500.0,
+                                   attempts=0, premiere_set=1,
+                                   created_at=NOW - timedelta(days=1), updated_at=NOW - timedelta(days=1)))
+        self.db.commit()
+        self.jf.answers[ID] = (200, {"state": "not_fixed", "duration": 13500.0, "wall": 0.7, "after": 13500.0})
+        self.run_pass()
+        self.run_pass(now=NOW + timedelta(days=1))
+        self.assertEqual([ID], self.jf.retimes)                       # once, not every pass
+        self.assertEqual("not_fixed", self.row().state)
+
+    def test_a_not_fixed_with_a_real_window_is_not_asked_again(self):
+        from models.database import RecordingCheck
+        self.jf.add(ID, "Live: NHL Hockey", NOW - timedelta(hours=5))
+        self.db.add(RecordingCheck(item_id=ID, state="not_fixed", duration=332.9, wall=11609.8, attempts=0,
+                                   premiere_set=1, created_at=NOW - timedelta(days=1),
+                                   updated_at=NOW - timedelta(days=1)))
+        self.db.commit()
+        self.run_pass()
+        self.assertEqual([], self.jf.retimes)
+
+    def test_an_ok_that_fits_its_window_is_not_asked_again(self):
+        from models.database import RecordingCheck
+        self.jf.add(ID, "Live: NHL Hockey", NOW - timedelta(hours=5))
+        self.db.add(RecordingCheck(item_id=ID, state="ok", duration=13155.6, wall=13300.0, attempts=0, premiere_set=1,
+                                   created_at=NOW - timedelta(days=1), updated_at=NOW - timedelta(days=1)))
+        self.db.commit()
+        self.run_pass()
+        self.assertEqual([], self.jf.retimes)
+
 
 # ── The plugin ──────────────────────────────────────────────────────────────
 
@@ -317,7 +363,7 @@ class ThePlugin(unittest.TestCase):
         src = _src("Services/RecordingRetime.cs")
         locked = src[src.index("private static async Task<Outcome> RunLocked"):src.index("public static async Task<double?> Probe")]
         move = locked.index("File.Move(temp, path, overwrite: true)")
-        for check in ("TooLong(after.Value, wall)", "copied < size * MinSizeShare", "file.LastWriteTimeUtc != written",
+        for check in ("TooLong(after.Value, wall)", "TooShort(after.Value, copied)", "copied < size * MinSizeShare", "file.LastWriteTimeUtc != written",
                       "if (dryRun)", "DateTime.UtcNow - written < Settle"):
             self.assertLess(locked.index(check), move, check)
         self.assertIn('"." + Path.GetFileName(path) + ".retime.tmp"', src)   # hidden, same folder: one rename
@@ -413,15 +459,18 @@ class TheWindowOnAFile(unittest.TestCase):
                                 str(d / "out"), str(d / "h.csproj")], capture_output=True, text=True, timeout=600,
                                env=cls.env)
         assert built.returncode == 0, built.stdout[-3000:]
-        (d / "ffprobe").write_text("#!/bin/sh\necho 8262.0\n")
+        (d / "ffprobe").write_text(f"#!/bin/sh\ncat '{d / 'probed'}' 2>/dev/null || echo 8262.0\n")
         (d / "ffmpeg").write_text(f"#!/bin/sh\ntouch '{d / 'ffmpeg-ran'}'\nexit 1\n")
         for tool in ("ffprobe", "ffmpeg"):
             (d / tool).chmod(0o755)
 
-    def check(self, name, created, start=None, size=8_262_474_792):
+    def check(self, name, created, start=None, size=8_262_474_792, probed=None):
         """(state, wall) for a recording `name` last written an hour ago;
-        `created` and `start` from its last write."""
+        `created` and `start` from its last write; ffprobe says `probed` s (8262 s)."""
         rec = self.dir / name
+        if probed is not None:
+            (self.dir / "probed").write_text(f"{probed}\n")
+            self.addCleanup(lambda: (self.dir / "probed").unlink(missing_ok=True))
         with open(rec, "wb") as f:
             f.truncate(size)         # sparse: no real bytes
         self.addCleanup(rec.unlink)
@@ -471,6 +520,71 @@ class TheWindowOnAFile(unittest.TestCase):
                                  start=lambda w: w - timedelta(seconds=3000))
         self.assertEqual("failed", state)                            # the fake ffmpeg fails, but it ran
         self.assertTrue(self.ran_ffmpeg())
+
+    # #924 (Rob, 5 Nov 2026): the provider's clock stepped back near the end, so the last
+    # timestamp lands just after the first: a 4 h NHL game (14.8 GB) probed 8.66 s and played
+    # as 0:00. On the maintainer's install a 14.0 GB game probed 333 s in an 11610 s window.
+    # Short for its window says nothing (split parts and late starts are too); short for its
+    # own bytes does: no recording is sent at over 60 Mbit/s.
+
+    def test_a_clock_that_went_back_is_copied(self):
+        # its 165 MB "- 1" part: 15 s probed, about 19 min real (88 Mbit/s)
+        state, _ = self.check("Live  NHL Hockey - 1.ts", lambda w: w - timedelta(seconds=1),
+                              start=lambda w: w - timedelta(seconds=1140), size=165_000_000, probed=15.0)
+        self.assertEqual("failed", state)                            # the fake ffmpeg fails, but it ran
+        self.assertTrue(self.ran_ffmpeg())
+
+    def test_a_good_later_part_short_for_its_window_is_left(self):
+        # 1473 s at the channel's ~8.2 Mbit/s, its window from the programme's start
+        state, wall = self.check("Game - 1.ts", lambda w: w - timedelta(seconds=1),
+                                 start=lambda w: w - timedelta(seconds=19559), size=1_510_000_000, probed=1473.0)
+        self.assertEqual(("ok", 19559.0), (state, wall))
+        self.assertFalse(self.ran_ffmpeg())
+
+    # #931 (Rob, 5 Nov 2026, UTC-5): a recording that didn't stop normally keeps the DateCreated
+    # Jellyfin gave it while recording: local time stamped as UTC, west of UTC hours before the
+    # real start. The first part of a game cut short (booked with 15 min pre-padding, ran 1473 s)
+    # got a 19559 s window, so any clock jump up to 6.9 h passed.
+
+    def _local_stamp(self, real):
+        """`real` (UTC) as Jellyfin stamps a recording still recording: its local time, called UTC."""
+        return real.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("America/Toronto")).replace(tzinfo=None)
+
+    def test_a_local_date_created_west_of_utc_is_read_as_local(self):
+        real = lambda w: w - timedelta(seconds=1500)                  # began 15 min before the programme
+        state, wall = self.check("Game.ts", lambda w: self._local_stamp(real(w)),
+                                 start=lambda w: real(w) + timedelta(minutes=15), size=1_510_000_000, probed=1473.0)
+        self.assertEqual("ok", state)
+        self.assertAlmostEqual(1500, wall, delta=2)
+        self.assertFalse(self.ran_ffmpeg())
+
+    def test_a_clock_jump_in_a_part_cut_short_is_copied(self):
+        real = lambda w: w - timedelta(seconds=1500)
+        state, _ = self.check("Game.ts", lambda w: self._local_stamp(real(w)),
+                              start=lambda w: real(w) + timedelta(minutes=15), size=1_510_000_000,
+                              probed=1473.0 + 2 * 3600)              # a re-dial's clock 2 h away
+        self.assertEqual("failed", state)                            # the fake ffmpeg fails, but it ran
+        self.assertTrue(self.ran_ffmpeg())
+
+    def test_a_long_pre_padding_in_utc_is_kept(self):
+        # a server whose clock is UTC: DateCreated is the real start, 4 h before the programme
+        state, wall = self.check("Game.ts", lambda w: w - timedelta(seconds=8300 + 4 * 3600),
+                                 start=lambda w: w - timedelta(seconds=8300), probed=8262.0 + 4 * 3600)
+        self.assertEqual("ok", state)
+        self.assertAlmostEqual(8300 + 4 * 3600, wall, delta=2)
+
+    def test_the_start_in_a_second_continuation_name_is_read(self):
+        local = (_utc_now() - timedelta(hours=1, seconds=8300)).replace(tzinfo=timezone.utc).astimezone(
+            ZoneInfo("America/Toronto"))
+        state, wall = self.check(f"Game {local:%Y_%m_%d_%H_%M_%S} - 1 - 2.ts", lambda w: w - timedelta(seconds=1))
+        self.assertEqual("ok", state)
+        self.assertAlmostEqual(8300, wall, delta=2)
+
+    def test_an_empty_leftover_is_left(self):
+        state, _ = self.check("Game - 2.ts", lambda w: w - timedelta(seconds=1),
+                              start=lambda w: w - timedelta(seconds=600), size=20_304, probed=0.02)
+        self.assertEqual("ok", state)
+        self.assertFalse(self.ran_ffmpeg())
 
 
 if __name__ == "__main__":

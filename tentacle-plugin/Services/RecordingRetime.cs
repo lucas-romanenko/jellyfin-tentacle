@@ -14,8 +14,9 @@ namespace Jellyfin.Plugin.Tentacle.Services;
 /// The check: the probed length against the file's wall-clock window (from when it began,
 /// see <see cref="Began"/>, to its last write). Far over it, ffmpeg copies the file
 /// (<c>-fflags +genpts+discardcorrupt -c copy</c>: its MPEG-TS input carries on across a
-/// timestamp jump instead of keeping it) into a hidden temp file next to it. The copy
-/// takes the recording's place (one rename) only when its length fits the window, it
+/// timestamp jump instead of keeping it) into a hidden temp file next to it. Far too short for
+/// its own bytes (the clock went back, #924) is copied the same way. The copy takes the
+/// recording's place (one rename) only when its length fits the window and its bytes, it
 /// kept nearly every byte and the recording didn't change meanwhile; otherwise the copy is
 /// deleted and the recording stays as it was.
 ///
@@ -55,25 +56,67 @@ public static class RecordingRetime
     public static bool TooLong(double duration, double wall) => duration > (wall * Slack) + SlackSeconds;
 
     /// <summary>
+    /// True when a probed length is far too short for the file's bytes (#924): the provider's clock
+    /// went back near the end, so the last timestamp lands just after the first (a 4 h game probes
+    /// as seconds). Short for its window says nothing (a split recording's later parts, one that
+    /// began late); no recording is sent at over <see cref="MaxBitsPerSecond"/>.
+    /// </summary>
+    public static bool TooShort(double duration, long size) => size * 8 / Math.Max(duration, 1) > MaxBitsPerSecond;
+
+    /// <summary>
     /// When a recording began (#900): the earliest of Jellyfin's DateCreated, the programme's
     /// start the server knows (its booking, else the guide) and the start in the file name
     /// (Jellyfin names it after the programme's start in its own time zone, "… 2026_10_30_13_45_00.ts").
     /// DateCreated alone isn't it: a refresh as the recording stops resets it to about its last
     /// write (a 1 s window, so a good recording was copied for nothing), and one still recording
-    /// carries local time stamped as UTC.
+    /// carries local time stamped as UTC. One that didn't stop normally keeps that (#931): west of
+    /// UTC hours before the programme, so a DateCreated before the programme counts only as the
+    /// pre-padding it could be (<see cref="MaxPrePadding"/>), and its local-time reading may be it.
     /// </summary>
     public static DateTime Began(string path, DateTime createdUtc, DateTime? startUtc)
     {
-        var began = Utc(createdUtc);
+        DateTime? programme = null;
         foreach (var other in new[] { startUtc, NamedStart(path) })
         {
-            if (other is { } t && t != default && Utc(t) < began)
+            if (other is { } t && t != default && (programme is null || Utc(t) < programme))
             {
-                began = Utc(t);
+                programme = Utc(t);
+            }
+        }
+
+        var created = Utc(createdUtc);
+        if (programme is not { } p)
+        {
+            return created;
+        }
+
+        // Before the programme only as a pre-padding: of its UTC and local-time readings (the stamp
+        // of a recording still recording), the latest that is one; none, the programme's start.
+        var began = p;
+        foreach (var reading in new[] { created, AsLocal(createdUtc) })
+        {
+            if (reading is { } r && r < p && r >= p - MaxPrePadding && (began == p || r > began))
+            {
+                began = r;
             }
         }
 
         return began;
+    }
+
+    /// <summary>The longest pre-padding a recording has (Tentacle's rules allow 0–6 h), plus a few minutes.</summary>
+    public static readonly TimeSpan MaxPrePadding = TimeSpan.FromHours(6) + TimeSpan.FromMinutes(10);
+
+    private static DateTime? AsLocal(DateTime stamp)
+    {
+        try
+        {
+            return TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(stamp, DateTimeKind.Unspecified), TimeZoneInfo.Local);
+        }
+        catch (ArgumentException)
+        {
+            return null;    // a time the clock skipped (the spring change)
+        }
     }
 
     /// <summary>A date as UTC (one without a kind is taken as UTC, as Jellyfin stores them).</summary>
@@ -82,7 +125,7 @@ public static class RecordingRetime
 
     private static DateTime? NamedStart(string path)
     {
-        var m = Regex.Match(Path.GetFileName(path), @"(\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})(?: - \d+)?\.ts$", RegexOptions.IgnoreCase);
+        var m = Regex.Match(Path.GetFileName(path), @"(\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})(?: - \d+)*\.ts$", RegexOptions.IgnoreCase);
         if (!m.Success
             || !DateTime.TryParseExact(m.Groups[1].Value, "yyyy_MM_dd_HH_mm_ss", CultureInfo.InvariantCulture, DateTimeStyles.None, out var local))
         {
@@ -168,7 +211,7 @@ public static class RecordingRetime
             return new Outcome("failed", Wall: wall, Error: "ffprobe gave no duration");
         }
 
-        if (!TooLong(duration.Value, wall))
+        if (!TooLong(duration.Value, wall) && !TooShort(duration.Value, size))
         {
             return new Outcome("ok", duration, wall);
         }
@@ -197,7 +240,7 @@ public static class RecordingRetime
 
             var after = await Probe(ffprobe, temp, cancellationToken).ConfigureAwait(false);
             var copied = new FileInfo(temp).Length;
-            if (after is null || TooLong(after.Value, wall) || copied < size * MinSizeShare)
+            if (after is null || TooLong(after.Value, wall) || TooShort(after.Value, copied) || copied < size * MinSizeShare)
             {
                 logger?.LogWarning(
                     "[Tentacle] Recording {Path}: the copy isn't right ({After} s, {Copied} of {Size} bytes); left as it was",

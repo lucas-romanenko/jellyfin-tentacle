@@ -108,6 +108,13 @@ The code wins where they differ.
   library scan does not probe them. Jellyfin Web in Chrome direct-plays a
   remote mkv itself: the browser fetches the .strm address from its own
   address while the extraction comes from Jellyfin's.
+- **Next Up and resume points** (10.11.8, `TVSeriesManager.GetNextUp`): with
+  `EnableResumable = false` a show whose next episode has
+  `PlaybackPositionTicks > 0` is left out entirely. A position saved without a
+  playback (`POST /UserItems/{id}/UserData`) has no `LastPlayedDate` and
+  `PlayCount` 0, so a resume list ordered by DatePlayed puts it last. The home
+  rows ask with `EnableResumable = true` and skip only dated in-progress
+  episodes (#920).
 - **API key**: Jellyfin → Dashboard → API Keys; Tentacle checks it at
   startup and logs a warning if it's invalid. Invalid key = no playlists.
 - **Plugin updates** (10.11's source): every installed plugin's
