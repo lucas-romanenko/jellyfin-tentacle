@@ -1199,7 +1199,7 @@ def _scan_sonarr_library(db: Session) -> dict:
     jellyfin_key = get_setting(db, "jellyfin_api_key")
     jellyfin_uid = get_setting(db, "jellyfin_user_id", "")
     if jellyfin_url and jellyfin_key:
-        from services.jellyfin import JellyfinService
+        from services.jellyfin import JellyfinService, library_scan_left_to_caller
         jf = JellyfinService(jellyfin_url, jellyfin_key, jellyfin_uid)
 
         # Push tags to Jellyfin via API for all downloaded series.
@@ -1253,11 +1253,14 @@ def _scan_sonarr_library(db: Session) -> dict:
         # nothing would be pushed (#819). A title new in this scan isn't in
         # Jellyfin yet either way.
         if stats["nfo_written"] > 0 or stats["new"] > 0 or stats["strm_only_released"] > 0:
-            try:
-                jf.trigger_library_scan()
-                logger.info("Triggered Jellyfin library scan after Sonarr NFO updates")
-            except Exception as e:
-                logger.warning(f"Failed to trigger Jellyfin scan: {e}")
+            if library_scan_left_to_caller():
+                logger.info("Jellyfin library scan after Sonarr NFO updates left to the nightly job's scan")
+            else:
+                try:
+                    jf.trigger_library_scan()
+                    logger.info("Triggered Jellyfin library scan after Sonarr NFO updates")
+                except Exception as e:
+                    logger.warning(f"Failed to trigger Jellyfin scan: {e}")
 
     logger.info(
         f"Sonarr scan complete: {stats['new']} new, {stats['updated']} updated, "

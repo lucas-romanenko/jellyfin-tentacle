@@ -10,6 +10,7 @@ import threading
 import time
 import logging
 import requests
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, List
 from services.exceptions import JellyfinConnectionError
@@ -43,6 +44,31 @@ PRUNE_POLL_MAX_SECONDS = 3 * 3600
 # Jellyfin scheduled tasks that keep its database busy; the hourly prune skips
 # an hour while one runs (each slow prune run coincided with one, #181).
 BUSY_LIBRARY_TASKS = ("RefreshLibrary", "RefreshGuide")
+
+
+# The Radarr/Sonarr scans run inside library_scan_later() leave the Jellyfin
+# library scan to the job that runs them. Per thread: a webhook scan running
+# meanwhile still asks for its own.
+_scan_later = threading.local()
+
+
+@contextmanager
+def library_scan_later():
+    """The nightly job's Radarr and Sonarr scans don't each ask Jellyfin for a
+    library scan: its pipeline right after them runs one. Each POST
+    /Library/Refresh cancels the scan running and queues another, so the
+    nightly cancelled Jellyfin's scan twice in half a minute, and the Sonarr
+    scan's tag push listed Jellyfin while the Radarr scan's ran: it timed out
+    every night ("series listing came back empty")."""
+    _scan_later.on = True
+    try:
+        yield
+    finally:
+        _scan_later.on = False
+
+
+def library_scan_left_to_caller() -> bool:
+    return getattr(_scan_later, "on", False)
 
 
 class PartialListing(RuntimeError):
