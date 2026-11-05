@@ -140,7 +140,8 @@ class NightlyJobRunsBothScansInside(unittest.TestCase):
             mock.patch("services.provider_activity.live_streams_active", lambda: False),
             mock.patch.object(jellyfin.JellyfinService, "wait_for_library_scan", pipeline),
         ]
-        for k, v in (("jellyfin_url", "http://jellyfin.test"), ("jellyfin_api_key", "k")):
+        for k, v in (("jellyfin_url", "http://jellyfin.test"), ("jellyfin_api_key", "k"),
+                     ("data_dir", str(tmp))):
             mdb.set_setting(db, k, v)
         db.commit()
         for p in patches:
