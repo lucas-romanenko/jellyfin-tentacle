@@ -13,8 +13,7 @@ from typing import Optional
 import requests
 from sqlalchemy.orm import Session
 
-from datetime import timedelta
-from models.database import Movie, Duplicate, DownloadRequest, TentacleUser, get_setting, DeletionLog, get_recently_added_days
+from models.database import Movie, Duplicate, DownloadRequest, TentacleUser, get_setting, DeletionLog
 from services.tmdb import TMDBService
 from services.nfo import write_movie_nfo, make_folder_name, refresh_arr_nfo
 from services import media_files
@@ -488,7 +487,11 @@ def _scan_radarr_library(db: Session) -> dict:
     # Compute tags and write NFO files for all downloaded movies
     from services.tagger import tentacle_owned_tags
     owned = tentacle_owned_tags(db)
-    recently_added_days = get_recently_added_days(db)
+    # The recency window and tag forms of the tag refresh (refresh_recently_added_tags):
+    # with others, each scan and the next refresh rewrote the same NFOs back and forth.
+    from models.database import recently_added_cutoff
+    from services.tagger import _recency_pass
+    recent_cutoff = recently_added_cutoff(db, Movie)
     not_found = 0
     found = 0
     first_not_found = ""
@@ -498,8 +501,8 @@ def _scan_radarr_library(db: Session) -> dict:
             tags = [DOWNLOADED_MOVIES_TAG]
 
             # Recently added (within rolling window)
-            cutoff = datetime.utcnow() - timedelta(days=recently_added_days)
-            if db_movie.date_added and db_movie.date_added >= cutoff:
+            is_recent = bool(db_movie.date_added and db_movie.date_added >= recent_cutoff)
+            if is_recent:
                 tags.append(RECENTLY_ADDED_MOVIES_TAG)
 
             if db_movie.source_tag:
@@ -533,6 +536,11 @@ def _scan_radarr_library(db: Session) -> dict:
                     user_tag = f"{req_user.display_name}'s Downloads"
                     if user_tag not in tags:
                         tags.append(user_tag)
+
+            # The source tag as the refresh keeps it ("Netflix" -> "Netflix Movies",
+            # plus "Netflix Recently Added Movies" while recent)
+            tags = _recency_pass(tags, is_recent, db_movie.source_tag, "Movies",
+                                 set(rule_tags) | set(list_tags))
 
             # Update tags on DB record
             db_movie.tags = tags
