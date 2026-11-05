@@ -1121,6 +1121,7 @@ async function toggleSeasonAll(seasonNum, checked) {
     await toggleSeasonAccordion(seasonNum);
   }
   list.querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach(cb => cb.checked = checked);
+  updateSeasonCheckbox(seasonNum);
 }
 
 function updateSeasonCheckbox(seasonNum) {
@@ -1138,12 +1139,17 @@ function _updateSeasonStatus(seasonNum, totalEps) {
   const haveCount = new Set([...vodEps, ...dlEps]).size;
   const seasonEl = document.querySelector(`.ep-picker-season[data-season="${seasonNum}"]`);
   if (!seasonEl) return;
+  // Counted as the season header counts it (_renderSeasonsWithVod): episodes
+  // Sonarr says haven't aired don't make a season incomplete.
+  totalEps = Math.max(0, totalEps - (_unairedPerSeason[seasonNum] || 0));
 
-  // Update season checkbox — disable if full season already owned
+  // Season checkbox: ticked and disabled when the whole season is already
+  // owned; otherwise left as the user set it (a tick that opened the season
+  // stays ticked).
   const seasonCb = seasonEl.querySelector('.ep-picker-season-check');
   if (seasonCb) {
     const full = haveCount >= totalEps && totalEps > 0;
-    seasonCb.checked = full;
+    if (full) seasonCb.checked = true;
     seasonCb.disabled = full;
   }
 

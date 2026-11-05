@@ -1258,20 +1258,21 @@
     var arrow = document.getElementById('mdEpArrow' + sn);
     if (!list) return;
     var isOpen = list.classList.contains('open');
-    if (isOpen) { list.classList.remove('open'); if (arrow) arrow.classList.remove('open'); return; }
+    if (isOpen) { list.classList.remove('open'); if (arrow) arrow.classList.remove('open'); return Promise.resolve(); }
     list.classList.add('open'); if (arrow) arrow.classList.add('open');
     if (!MD._epLoaded[sn]) {
       list.innerHTML = '<div style="padding:8px 12px;color:#999;font-size:12px">Loading...</div>';
       var epUrl = (MD._currentItem.tmdb_id && MD._currentItem.tmdb_id > 0)
         ? 'TentacleDiscover/Season/' + MD._currentItem.tmdb_id + '/' + sn
         : 'TentacleDiscover/SeasonTvdb/' + (MD._currentItem.tvdb_id || 0) + '/' + sn;
-      apiGet(epUrl).then(function (data) {
+      return apiGet(epUrl).then(function (data) {
         MD._epLoaded[sn] = data.episodes || [];
         _mdRenderEpisodes(sn);
       }).catch(function () {
         list.innerHTML = '<div style="padding:8px 12px;color:#999;font-size:12px">Failed</div>';
       });
     }
+    return Promise.resolve();
   };
 
   function _mdRenderEpisodes(sn) {
@@ -1313,7 +1314,8 @@
     var seasonEl = document.querySelector('.md-ep-season[data-season="' + sn + '"]');
     if (!seasonEl) return;
     var seasonCb = seasonEl.querySelector('.md-ep-season-hdr input[type="checkbox"]');
-    if (seasonCb) { var full = haveCount >= totalEps && totalEps > 0; seasonCb.checked = full; seasonCb.disabled = full; }
+    // Ticked and disabled when the whole season is owned; otherwise left as the user set it.
+    if (seasonCb) { var full = haveCount >= totalEps && totalEps > 0; if (full) seasonCb.checked = true; seasonCb.disabled = full; }
     var countEl = seasonEl.querySelector('.md-ep-count');
     if (!countEl) return;
     if (haveCount === 0) { countEl.textContent = totalEps + ' ep'; countEl.className = 'md-ep-count'; }
@@ -1324,12 +1326,12 @@
   window._mdToggleSeasonAll = function (sn, checked) {
     var list = document.getElementById('mdEpList' + sn);
     if (!list) return;
-    if (checked && !list.classList.contains('open')) {
-      window._mdToggleSeason(sn);
-    }
-    setTimeout(function () {
+    // Tick once the season's episodes are on the page, however long they take.
+    var opened = (checked && !list.classList.contains('open')) ? window._mdToggleSeason(sn) : Promise.resolve();
+    return opened.then(function () {
       list.querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach(function (cb) { cb.checked = checked; });
-    }, 100);
+      window._mdUpdateSeasonCb(sn);
+    });
   };
 
   window._mdUpdateSeasonCb = function (sn) {
