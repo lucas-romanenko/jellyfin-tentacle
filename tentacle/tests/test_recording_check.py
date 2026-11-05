@@ -298,6 +298,30 @@ class TheStart(Base):
         self.assertEqual([ID], self.jf.retimes)
         self.assertEqual("ok", self.row().state)
 
+    def test_a_not_fixed_from_a_one_second_window_is_asked_once_more(self):
+        # #931: v1.42's 1 s window (#900) made good recordings not_fixed, never asked again
+        from models.database import RecordingCheck
+        self.jf.add(ID, "Live: NHL Hockey", NOW - timedelta(hours=5))
+        self.db.add(RecordingCheck(item_id=ID, state="not_fixed", duration=13500.0, wall=0.68, after=13500.0,
+                                   attempts=0, premiere_set=1,
+                                   created_at=NOW - timedelta(days=1), updated_at=NOW - timedelta(days=1)))
+        self.db.commit()
+        self.jf.answers[ID] = (200, {"state": "not_fixed", "duration": 13500.0, "wall": 0.7, "after": 13500.0})
+        self.run_pass()
+        self.run_pass(now=NOW + timedelta(days=1))
+        self.assertEqual([ID], self.jf.retimes)                       # once, not every pass
+        self.assertEqual("not_fixed", self.row().state)
+
+    def test_a_not_fixed_with_a_real_window_is_not_asked_again(self):
+        from models.database import RecordingCheck
+        self.jf.add(ID, "Live: NHL Hockey", NOW - timedelta(hours=5))
+        self.db.add(RecordingCheck(item_id=ID, state="not_fixed", duration=332.9, wall=11609.8, attempts=0,
+                                   premiere_set=1, created_at=NOW - timedelta(days=1),
+                                   updated_at=NOW - timedelta(days=1)))
+        self.db.commit()
+        self.run_pass()
+        self.assertEqual([], self.jf.retimes)
+
     def test_an_ok_that_fits_its_window_is_not_asked_again(self):
         from models.database import RecordingCheck
         self.jf.add(ID, "Live: NHL Hockey", NOW - timedelta(hours=5))
@@ -516,6 +540,45 @@ class TheWindowOnAFile(unittest.TestCase):
                                  start=lambda w: w - timedelta(seconds=19559), size=1_510_000_000, probed=1473.0)
         self.assertEqual(("ok", 19559.0), (state, wall))
         self.assertFalse(self.ran_ffmpeg())
+
+    # #931 (Rob, 5 Nov 2026, UTC-5): a recording that didn't stop normally keeps the DateCreated
+    # Jellyfin gave it while recording: local time stamped as UTC, west of UTC hours before the
+    # real start. The first part of a game cut short (booked with 15 min pre-padding, ran 1473 s)
+    # got a 19559 s window, so any clock jump up to 6.9 h passed.
+
+    def _local_stamp(self, real):
+        """`real` (UTC) as Jellyfin stamps a recording still recording: its local time, called UTC."""
+        return real.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("America/Toronto")).replace(tzinfo=None)
+
+    def test_a_local_date_created_west_of_utc_is_read_as_local(self):
+        real = lambda w: w - timedelta(seconds=1500)                  # began 15 min before the programme
+        state, wall = self.check("Game.ts", lambda w: self._local_stamp(real(w)),
+                                 start=lambda w: real(w) + timedelta(minutes=15), size=1_510_000_000, probed=1473.0)
+        self.assertEqual("ok", state)
+        self.assertAlmostEqual(1500, wall, delta=2)
+        self.assertFalse(self.ran_ffmpeg())
+
+    def test_a_clock_jump_in_a_part_cut_short_is_copied(self):
+        real = lambda w: w - timedelta(seconds=1500)
+        state, _ = self.check("Game.ts", lambda w: self._local_stamp(real(w)),
+                              start=lambda w: real(w) + timedelta(minutes=15), size=1_510_000_000,
+                              probed=1473.0 + 2 * 3600)              # a re-dial's clock 2 h away
+        self.assertEqual("failed", state)                            # the fake ffmpeg fails, but it ran
+        self.assertTrue(self.ran_ffmpeg())
+
+    def test_a_long_pre_padding_in_utc_is_kept(self):
+        # a server whose clock is UTC: DateCreated is the real start, 4 h before the programme
+        state, wall = self.check("Game.ts", lambda w: w - timedelta(seconds=8300 + 4 * 3600),
+                                 start=lambda w: w - timedelta(seconds=8300), probed=8262.0 + 4 * 3600)
+        self.assertEqual("ok", state)
+        self.assertAlmostEqual(8300 + 4 * 3600, wall, delta=2)
+
+    def test_the_start_in_a_second_continuation_name_is_read(self):
+        local = (_utc_now() - timedelta(hours=1, seconds=8300)).replace(tzinfo=timezone.utc).astimezone(
+            ZoneInfo("America/Toronto"))
+        state, wall = self.check(f"Game {local:%Y_%m_%d_%H_%M_%S} - 1 - 2.ts", lambda w: w - timedelta(seconds=1))
+        self.assertEqual("ok", state)
+        self.assertAlmostEqual(8300, wall, delta=2)
 
     def test_an_empty_leftover_is_left(self):
         state, _ = self.check("Game - 2.ts", lambda w: w - timedelta(seconds=1),
