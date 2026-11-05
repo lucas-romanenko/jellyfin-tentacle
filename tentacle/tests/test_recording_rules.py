@@ -569,6 +569,26 @@ class Api(unittest.TestCase):
         with self.assertRaises(self.R.HTTPException):
             self.R.create_rule(self.R.RuleBody(kind="keywords", terms=["  "]), None, self.db)
 
+    def test_a_keyword_rule_can_be_edited(self):
+        from models.database import RecordingRuleTerm
+        self.db.autoflush = False       # as the app's SessionLocal
+        self.as_user(self.admin)
+        r = self.R.create_rule(self.R.RuleBody(kind="keywords", terms=["Grand Prix"]), None, self.db)
+        out = self.R.update_rule(r["id"], self.R.RulePatch(terms=["Grand Prix", "Formula 1"], mode="record"),
+                                 None, self.db)
+        self.assertEqual((["Grand Prix", "Formula 1"], "record"), (out["terms"], out["mode"]))
+        with self.assertRaises(self.R.HTTPException) as e:
+            self.R.update_rule(r["id"], self.R.RulePatch(terms=["  "]), None, self.db)
+        self.assertEqual(422, e.exception.status_code)
+        kept = self.db.query(RecordingRuleTerm).filter_by(rule_id=r["id"], exclude=False).all()
+        self.assertEqual({"Grand Prix", "Formula 1"}, {t.term for t in kept})
+
+    def test_padding_sent_to_the_api_stays_within_six_hours(self):
+        self.as_user(self.admin)
+        r = self.R.create_rule(self.R.RuleBody(kind="keywords", terms=["Grand Prix"], pre_padding_minutes=-30,
+                                               post_padding_minutes=100000, min_minutes=-5), None, self.db)
+        self.assertEqual((0, 360, 0), (r["pre_padding_minutes"], r["post_padding_minutes"], r["min_minutes"]))
+
     def test_a_cancel_in_jellyfin_skips_that_showing(self):
         from models.database import RecordingBooking
         b = RecordingBooking(rule_id=1, pool_key="c5", start=at(23), stop=at(1, 30, 25), state="booked",

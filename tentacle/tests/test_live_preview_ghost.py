@@ -198,6 +198,35 @@ class IdleSubscriber(_Live):
         self.assertEqual(1, n)
         self.assertFalse(ghost_kept)
 
+    def test_a_recording_that_stalls_is_kept_until_it_is_no_longer_recorded(self):
+        """#930: Jellyfin stalls for over a minute in its nightly task window
+        and its recorder takes nothing. Letting it go closed the upstream,
+        Jellyfin took that as the recording failing and split the game into
+        several files with minutes missing. A recording is kept; once the
+        channel is no longer recorded it is a viewer again and the limit holds."""
+        cid = self._channel()
+        livetv = self.livetv
+
+        async def body():
+            with mock.patch.object(livetv, "_IDLE_SUBSCRIBER_SECONDS", 0.2):
+                await livetv.stream_proxy(cid, self.db)       # the recorder, stalled
+                shared = livetv._shared_streams.get(cid)
+                lease = next(iter(livetv._stream_slots.leases.values()))
+                livetv._stream_slots.sync_recordings({lease.stream_key})
+                await asyncio.sleep(0.8)
+                kept = (not shared._closed, len(shared.subscribers), livetv._stream_slots.active)
+                livetv._stream_slots.sync_recordings(set())   # its timer ended
+                for _ in range(100):
+                    await asyncio.sleep(0.02)
+                    if shared._closed:
+                        break
+                await asyncio.sleep(0.05)
+                return kept, (shared._closed, livetv._stream_slots.active)
+
+        kept, after = self._run(body)
+        self.assertEqual((True, 1, 1), kept, "a stalled recording was let go and its upstream closed")
+        self.assertEqual((True, 0), after, "once no longer recorded, the idle reader is let go")
+
 
 if __name__ == "__main__":
     unittest.main()

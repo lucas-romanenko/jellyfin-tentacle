@@ -99,6 +99,8 @@ def _due(row: Optional[RecordingCheck], now: datetime) -> bool:
         return True
     if row.state == "no_window" and row.wall is None and not row.attempts:
         return True         # from a plugin that had only DateCreated (#900): asked once more
+    if row.state == "ok" and row.duration and row.wall and row.duration * 2 < row.wall and not row.attempts:
+        return True         # far shorter than its window, from a plugin before #924 (a clock that went back): once more
     if row.state in DONE:
         return False
     return (row.attempts or 0) < MAX_ATTEMPTS and not (row.updated_at and row.updated_at + RETRY_AFTER > now)
@@ -124,7 +126,7 @@ def check(db: Session, jf, item: dict, row: Optional[RecordingCheck], now: datet
         row.attempts = (row.attempts or 0) + 1
         row.detail = row.detail or state
         logger.warning(f"[Recording check] “{name}”: {state} {row.detail or ''}".rstrip())
-    elif state == "no_window":
+    elif state in ("no_window", "ok"):
         row.attempts = (row.attempts or 0) + 1
     elif state == "retimed":
         msg = (f"Recording “{name}”: its clock jumped ({_hours(row.duration)} for {_hours(row.wall)} recorded); "
