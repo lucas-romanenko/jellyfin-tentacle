@@ -309,14 +309,22 @@ public class TentacleHomeController : ControllerBase
             DtoOptions = dtoOptions,
         });
 
-        var entries = resume
-            .Select(i => (Item: i, Played: _userDataManager.GetUserData(user, i)?.LastPlayedDate ?? DateTime.MinValue))
+        var resumed = resume
+            .Select(i => (Item: i, Played: _userDataManager.GetUserData(user, i)?.LastPlayedDate))
+            .ToList();
+        var entries = resumed
+            .Where(e => e.Played is not null)
+            .Select(e => (e.Item, Played: e.Played!.Value))
             .ToList();
 
         if (includeNextUp)
         {
             entries.AddRange(NextEpisodes(user, dtoOptions));
         }
+
+        // In progress but never played (a position saved without a playback): after Next Up,
+        // which places a show's next episode by when the show was last watched.
+        entries.AddRange(resumed.Where(e => e.Played is null).Select(e => (e.Item, DateTime.MinValue)));
 
         return RowOf(user, entries, limit, dtoOptions);
     }
@@ -359,7 +367,7 @@ public class TentacleHomeController : ControllerBase
     private List<(BaseItem Item, DateTime Played)> NextEpisodes(Jellyfin.Database.Implementations.Entities.User user, DtoOptions dtoOptions)
     {
         var nextUp = _tvSeriesManager.GetNextUp(
-            new NextUpQuery { User = user, Limit = NextUpFetchLimit, EnableResumable = false, EnableTotalRecordCount = false },
+            new NextUpQuery { User = user, Limit = NextUpFetchLimit, EnableResumable = true, EnableTotalRecordCount = false },
             dtoOptions).Items;
         if (nextUp.Count == 0)
         {
@@ -388,6 +396,14 @@ public class TentacleHomeController : ControllerBase
         foreach (var item in nextUp)
         {
             if (item is not Episode next)
+            {
+                continue;
+            }
+
+            // In progress: Continue Watching's resume list has it, by when it was played. Not one
+            // without a last-played date: that list puts it last, past the row's limit, and
+            // Jellyfin's EnableResumable = false would drop the show from Next Up too.
+            if (_userDataManager.GetUserData(user, next) is { PlaybackPositionTicks: > 0, LastPlayedDate: not null })
             {
                 continue;
             }
