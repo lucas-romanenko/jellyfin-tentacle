@@ -1117,7 +1117,9 @@ function _renderEpisodes(seasonNum) {
 
 async function toggleSeasonAll(seasonNum, checked) {
   const list = document.getElementById(`ep-list-${seasonNum}`);
-  if (checked && !list.classList.contains('open')) {
+  // Open the season either way, so what the box changed is on screen (an untick
+  // in Manage Episodes unmonitors the whole season on Save).
+  if (!list.classList.contains('open')) {
     await toggleSeasonAccordion(seasonNum);
   }
   list.querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach(cb => cb.checked = checked);
@@ -1220,9 +1222,11 @@ async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
     : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
   info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${escapeAttr(title || 'Unknown')}</div><div style="color:var(--text2);font-size:14px">${escapeAttr(year || '')}</div></div>`;
 
-  // Hide add-specific fields
+  // Hide add-specific fields (and Download More's toggle, which Save here ignores)
   document.getElementById('add-radarr-quality').parentElement.style.display = 'none';
   document.getElementById('sonarr-extra-fields').style.display = 'none';
+  const monitorWrap = document.getElementById('dl-more-monitor-wrap');
+  if (monitorWrap) monitorWrap.style.display = 'none';
 
   // Show episode picker directly
   const picker = document.getElementById('episode-picker');

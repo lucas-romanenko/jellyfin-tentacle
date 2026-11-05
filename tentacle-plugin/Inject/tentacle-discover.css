@@ -1106,6 +1106,9 @@
   cursor: pointer; font-size: 13px; color: rgba(200, 195, 220, 0.8); user-select: none;
 }
 .md-ep-season-hdr:hover { background: rgba(139, 128, 255, 0.05); }
+/* Big enough to hit: a miss lands on the header, which opens or closes the season */
+.md-ep-season-hdr input[type="checkbox"] { width: 18px; height: 18px; margin: 0; flex-shrink: 0; cursor: pointer; }
+@media (pointer: coarse) { .md-ep-season-hdr input[type="checkbox"] { width: 24px; height: 24px; } }
 .md-ep-arrow { font-size: 10px; color: rgba(200, 195, 220, 0.3); transition: transform 0.15s; }
 .md-ep-arrow.open { transform: rotate(90deg); }
 .md-ep-count { margin-left: auto; color: rgba(200, 195, 220, 0.35); font-size: 12px; font-weight: 400; }
