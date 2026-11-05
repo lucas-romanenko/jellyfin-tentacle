@@ -1086,7 +1086,11 @@ def _scan_sonarr_library(db: Session) -> dict:
     # Compute tags and write NFO files for all downloaded series
     from services.tagger import tentacle_owned_tags
     owned = tentacle_owned_tags(db)
-    recently_added_days = get_recently_added_days(db)
+    # The recency window and tag forms of the tag refresh (refresh_recently_added_tags):
+    # with others, each scan and the next refresh rewrote the same NFOs back and forth.
+    from models.database import recently_added_cutoff
+    from services.tagger import _recency_pass
+    recent_cutoff = recently_added_cutoff(db, Series)
     not_found = 0
     found = 0
     first_not_found = ""
@@ -1096,8 +1100,8 @@ def _scan_sonarr_library(db: Session) -> dict:
             tags = [DOWNLOADED_TV_TAG]
 
             # Recently added (within rolling window)
-            cutoff = datetime.utcnow() - timedelta(days=recently_added_days)
-            if db_series.date_added and db_series.date_added >= cutoff:
+            is_recent = bool(db_series.date_added and db_series.date_added >= recent_cutoff)
+            if is_recent:
                 tags.append(RECENTLY_ADDED_TV_TAG)
 
             if db_series.source_tag:
@@ -1131,6 +1135,11 @@ def _scan_sonarr_library(db: Session) -> dict:
                     user_tag = f"{req_user.display_name}'s Downloads"
                     if user_tag not in tags:
                         tags.append(user_tag)
+
+            # The source tag as the refresh keeps it ("Netflix" -> "Netflix TV",
+            # plus "Netflix Recently Added TV" while recent)
+            tags = _recency_pass(tags, is_recent, db_series.source_tag, "TV",
+                                 set(rule_tags) | set(list_tags))
 
             # Update tags on DB record
             db_series.tags = tags
