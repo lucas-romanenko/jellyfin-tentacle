@@ -190,6 +190,11 @@ class RulePatch(BaseModel):
     keep_last: Optional[int] = None
 
 
+def _minutes(v) -> int:
+    """Padding and a shortest length: 0 to 6 hours."""
+    return max(0, min(int(v), 6 * 60))
+
+
 def _keep_last(v) -> Optional[int]:
     """A rule's "keep the last N": 1 to 999, or none."""
     return max(1, min(int(v), 999)) if v else None
@@ -211,10 +216,11 @@ def _defaults(body: RuleBody) -> dict:
     lg = LG.league(body.league) if body.kind in ("team", "series") else None
     sports = body.kind != "keywords"
     return {
-        "pre": body.pre_padding_minutes if body.pre_padding_minutes is not None else 5,
-        "post": body.post_padding_minutes if body.post_padding_minutes is not None else
+        "pre": _minutes(body.pre_padding_minutes) if body.pre_padding_minutes is not None else 5,
+        "post": _minutes(body.post_padding_minutes) if body.post_padding_minutes is not None else
         int((lg or {}).get("post_padding_minutes") or (60 if sports else 10)),
-        "playoff": body.playoff_extra_minutes if body.playoff_extra_minutes is not None else (60 if sports else 0),
+        "playoff": _minutes(body.playoff_extra_minutes) if body.playoff_extra_minutes is not None else
+        (60 if sports else 0),
     }
 
 
@@ -328,7 +334,8 @@ def create_rule(body: RuleBody, request: Request, db: Session = Depends(get_db))
     r = RecordingRule(name=name[:120], kind=body.kind, league=body.league if body.kind != "keywords" else None,
                       team=body.team if body.kind == "team" else None, home_away=body.home_away,
                       match_all=body.match_all, search_description=body.search_description,
-                      min_minutes=body.min_minutes, pre_padding_minutes=d["pre"], post_padding_minutes=d["post"],
+                      min_minutes=None if body.min_minutes is None else _minutes(body.min_minutes),
+                      pre_padding_minutes=d["pre"], post_padding_minutes=d["post"],
                       playoff_extra_minutes=d["playoff"], pregame_next=body.pregame_next,
                       skip_replays=body.skip_replays, mode=body.mode, active=body.active, priority=body.priority,
                       keep_forever=body.keep_forever, keep_last=None if body.keep_forever else _keep_last(body.keep_last),
@@ -365,7 +372,7 @@ def update_rule(rule_id: int, body: RulePatch, request: Request, db: Session = D
         if k in data and (data[k] is not None or k == "min_minutes"):
             v = data[k]
             if k.endswith("_minutes") and v is not None:
-                v = max(0, min(int(v), 6 * 60))
+                v = _minutes(v)
             setattr(r, k, v if k != "name" else str(v)[:120])
     if data.get("keep_forever") is not None:
         r.keep_forever = bool(data["keep_forever"])
@@ -374,6 +381,7 @@ def update_rule(rule_id: int, body: RulePatch, request: Request, db: Session = D
     if r.keep_forever:
         r.keep_last = None
     _save_lists(db, r.id, data.get("terms"), data.get("excludes"), data.get("channels"))
+    db.flush()      # the session doesn't autoflush: the count below must see the new words
     if r.kind == "keywords" and not db.query(RecordingRuleTerm).filter(
             RecordingRuleTerm.rule_id == r.id, RecordingRuleTerm.exclude == False).count():  # noqa: E712
         db.rollback()
