@@ -203,30 +203,34 @@ def _run_scheduled_sync():
         _after_sync["nightly"] = nightly_started
         pause.run_id = None     # later waits (discovery) belong to no sync run
 
-        logger.info("Scheduled Radarr scan starting")
-        try:
-            radarr_stats = scan_radarr_library(db)
-            new_count = radarr_stats.get("new", 0) if radarr_stats else 0
-            if new_count:
-                log_activity(db, "radarr_scan", f"Radarr scan — {new_count} new movie(s) imported")
-            logger.info(f"Radarr scan complete: {radarr_stats}")
-        except Exception as e:
-            _rollback(db)
-            logger.error(f"Radarr scan failed: {e}")
-            log_activity(db, "radarr_scan", f"Radarr scan failed: {e}")
+        # One Jellyfin library scan for both, the pipeline's below: a scan each
+        # cancelled and restarted Jellyfin's, and the Sonarr tag push timed out.
+        from services.jellyfin import library_scan_later
+        with library_scan_later():
+            logger.info("Scheduled Radarr scan starting")
+            try:
+                radarr_stats = scan_radarr_library(db)
+                new_count = radarr_stats.get("new", 0) if radarr_stats else 0
+                if new_count:
+                    log_activity(db, "radarr_scan", f"Radarr scan — {new_count} new movie(s) imported")
+                logger.info(f"Radarr scan complete: {radarr_stats}")
+            except Exception as e:
+                _rollback(db)
+                logger.error(f"Radarr scan failed: {e}")
+                log_activity(db, "radarr_scan", f"Radarr scan failed: {e}")
 
-        logger.info("Scheduled Sonarr scan starting")
-        try:
-            from services.sonarr import scan_sonarr_library
-            sonarr_stats = scan_sonarr_library(db)
-            new_count = sonarr_stats.get("new", 0) if sonarr_stats else 0
-            if new_count:
-                log_activity(db, "sonarr_scan", f"Sonarr scan — {new_count} new series imported")
-            logger.info(f"Sonarr scan complete: {sonarr_stats}")
-        except Exception as e:
-            _rollback(db)
-            logger.error(f"Sonarr scan failed: {e}")
-            log_activity(db, "sonarr_scan", f"Sonarr scan failed: {e}")
+            logger.info("Scheduled Sonarr scan starting")
+            try:
+                from services.sonarr import scan_sonarr_library
+                sonarr_stats = scan_sonarr_library(db)
+                new_count = sonarr_stats.get("new", 0) if sonarr_stats else 0
+                if new_count:
+                    log_activity(db, "sonarr_scan", f"Sonarr scan — {new_count} new series imported")
+                logger.info(f"Sonarr scan complete: {sonarr_stats}")
+            except Exception as e:
+                _rollback(db)
+                logger.error(f"Sonarr scan failed: {e}")
+                log_activity(db, "sonarr_scan", f"Sonarr scan failed: {e}")
 
         # Library folders Radarr/Sonarr don't know about: added as they are,
         # only when "add confident matches automatically" is on (#871)
