@@ -1965,7 +1965,12 @@ _SUBSCRIBER_QUEUE_BYTES = 64 * 1024 * 1024
 # last, so a ghost can't hold the provider connection (one, on many accounts)
 # while every real channel fights it. Every real reader takes something within
 # seconds: Jellyfin copies the stream to its buffer file as it comes, a
-# multi-view tile and a preview's ffmpeg read continuously.
+# multi-view tile and a preview's ffmpeg read continuously. Not a recording,
+# though: Jellyfin stalls for minutes in its nightly task window and its
+# recorder takes nothing meanwhile; letting it go split the game into several
+# files with minutes missing (#930). A recording holds the connection by design
+# while its timer runs, so the limit applies to a shared upstream only while
+# its lease is not a recording (sync_recordings demotes it once the timer ends).
 _IDLE_SUBSCRIBER_SECONDS = 60.0
 # A viewer joining a running MPEG-TS upstream starts inside its last bytes
 # (services/ts_start finds a keyframe with sound in them) instead of waiting
@@ -2350,6 +2355,9 @@ class _SharedUpstream:
         self._backlog = deque()      # (loop time, piece) of the last MPEG-TS pieces
         self._backlog_bytes = 0
         self._is_ts = None
+        # Set by the opener: whether this pull is a recording now (its idle
+        # readers are kept then, see _IDLE_SUBSCRIBER_SECONDS).
+        self.is_recording = None
 
     def subscribe(self, backlog: bool = False) -> "asyncio.Queue":
         q = _ClientQueue()
@@ -2375,8 +2383,10 @@ class _SharedUpstream:
         if item:
             self._keep(item)
         now = time.monotonic()
+        recording = self.is_recording is not None and self.is_recording()
         for q in list(self.subscribers):
-            if q.waiting_since is not None and now - q.waiting_since > _IDLE_SUBSCRIBER_SECONDS:
+            if (not recording and q.waiting_since is not None
+                    and now - q.waiting_since > _IDLE_SUBSCRIBER_SECONDS):
                 self._let_go(q, now - q.waiting_since)
                 continue
             q.put_nowait(item)
@@ -5618,6 +5628,7 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
         shared = _SharedUpstream(channel_id, _release_sem,
                                  close_upstream=getattr(upstream, "close_upstream", None))
         lease.on_preempt = shared.preempt
+        shared.is_recording = lambda: lease.kind == "recording"
         q = shared.subscribe()
         _ensure_recording_refresher()
         async with _get_shared_lock():
