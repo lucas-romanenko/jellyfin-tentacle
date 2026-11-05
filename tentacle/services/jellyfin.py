@@ -1798,6 +1798,9 @@ class JellyfinService:
             "Recursive": "true",
             "UserId": uid,
             "Fields": "ChildCount,ProviderIds",
+            # Per-playlist user data walks every entry for its played state: 16 s for a
+            # user with a 6,000-episode playlist, over _get's 15 s timeout. Nobody reads it.
+            "EnableUserData": "false",
         })
         if data:
             return data.get("Items", [])
@@ -1817,6 +1820,7 @@ class JellyfinService:
                 "Recursive": "true",
                 "UserId": uid,
                 "Fields": "ChildCount,ProviderIds",
+                "EnableUserData": "false",   # see get_playlists()
             })
         except Exception as e:
             logger.warning(f"[Jellyfin] Playlist listing for user {uid} failed: {e}")
