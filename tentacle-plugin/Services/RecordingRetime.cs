@@ -12,7 +12,8 @@ namespace Jellyfin.Plugin.Tentacle.Services;
 /// timestamps: a 3 h 45 min game shows as 21.7 h and seeking past the jump misbehaves.
 ///
 /// The check: the probed length against the file's wall-clock window (from when it began,
-/// see <see cref="Began"/>, to its last write). Far over it, ffmpeg copies the file
+/// see <see cref="Began"/>, to its last write). Far over it, or far too short for the file's
+/// bytes (<see cref="TooShort"/>: a clock that went back), ffmpeg copies the file
 /// (<c>-fflags +genpts+discardcorrupt -c copy</c>: its MPEG-TS input carries on across a
 /// timestamp jump instead of keeping it) into a hidden temp file next to it. The copy
 /// takes the recording's place (one rename) only when its length fits the window, it
@@ -53,6 +54,15 @@ public static class RecordingRetime
 
     /// <summary>True when a probed length is far over its wall-clock window.</summary>
     public static bool TooLong(double duration, double wall) => duration > (wall * Slack) + SlackSeconds;
+
+    /// <summary>
+    /// True when a probed length is far too short for the file's bytes: a clock that went back
+    /// near the end of the file leaves its last timestamp just past its first, so a 4 h game
+    /// probes as seconds and shows 0:00. The wall-clock window can't tell this (a later part of a
+    /// split recording, or one that began late, is short against its programme and right), but
+    /// no recording is sent at <see cref="MaxBitsPerSecond"/>.
+    /// </summary>
+    public static bool TooShort(double duration, long size) => size * 8 / Math.Max(duration, 1) > MaxBitsPerSecond;
 
     /// <summary>
     /// When a recording began (#900): the earliest of Jellyfin's DateCreated, the programme's
@@ -168,7 +178,7 @@ public static class RecordingRetime
             return new Outcome("failed", Wall: wall, Error: "ffprobe gave no duration");
         }
 
-        if (!TooLong(duration.Value, wall))
+        if (!TooLong(duration.Value, wall) && !TooShort(duration.Value, size))
         {
             return new Outcome("ok", duration, wall);
         }
@@ -197,7 +207,7 @@ public static class RecordingRetime
 
             var after = await Probe(ffprobe, temp, cancellationToken).ConfigureAwait(false);
             var copied = new FileInfo(temp).Length;
-            if (after is null || TooLong(after.Value, wall) || copied < size * MinSizeShare)
+            if (after is null || TooLong(after.Value, wall) || TooShort(after.Value, copied) || copied < size * MinSizeShare)
             {
                 logger?.LogWarning(
                     "[Tentacle] Recording {Path}: the copy isn't right ({After} s, {Copied} of {Size} bytes); left as it was",
