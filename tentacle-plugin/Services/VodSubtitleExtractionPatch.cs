@@ -98,6 +98,17 @@ public sealed class VodSubtitleExtractionPatch : IHostedService
     /// <summary>The address in ffmpeg's input argument (<c>"http://…"</c>, quoted).</summary>
     public static string InputUrl(string? inputPath) => (inputPath ?? string.Empty).Trim().Trim('"');
 
+    /// <summary>
+    /// The User-Agent the extraction reads the file with, so Tentacle can tell it from the transcode
+    /// that feeds the player: both come from Jellyfin's address, and with equal turns on the one
+    /// provider connection the extraction starved the player (a TV stopped 5-9 s into a film).
+    /// Tentacle's <c>routers/vod.py</c> <c>WORK_USER_AGENT</c> is the same.
+    /// </summary>
+    public const string WorkUserAgent = "Tentacle-JellyfinWork";
+
+    /// <summary>Jellyfin's arguments with the extraction's User-Agent (an input option, before them all).</summary>
+    public static string WithWorkUserAgent(string args) => "-user_agent \"" + WorkUserAgent + "\" " + args;
+
     /// <summary>Where the extraction writes before it is known to be whole: <c>2.srt</c> -> <c>2.partial.srt</c>.</summary>
     public static string PartialPath(string outputPath)
         => Path.ChangeExtension(outputPath, ".partial" + Path.GetExtension(outputPath));
@@ -143,6 +154,8 @@ public sealed class VodSubtitleExtractionPatch : IHostedService
             {
                 return true;
             }
+
+            partialArgs = WithWorkUserAgent(partialArgs);
 
             __result = ExtractWhole(__instance, ____mediaEncoder.EncoderPath, InputUrl(inputPath), partialArgs, outputPaths, cancellationToken);
             return false;

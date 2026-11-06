@@ -107,6 +107,9 @@ TARGET_SECONDS = 300.0
 # Idle connections to the provider are kept this briefly: long enough for the
 # next range of the same play, short of a connection the provider might count.
 KEEPALIVE_SECONDS = 5.0
+# The User-Agent the plugin's subtitle extraction sends (VodSubtitleExtractionPatch):
+# Jellyfin's own work for a title, which reads while the player's request does not.
+WORK_USER_AGENT = "Tentacle-JellyfinWork"
 _UA_DEFAULT = "TiviMate/4.7.0 (Linux; Android 12)"
 _RANGE_RE = re.compile(r"^bytes=(\d+)-(\d*)$")
 
@@ -182,13 +185,15 @@ class _Reader:
     subtitle extraction next to it, a second transcode, the range a seek
     left. Only the playback's `holder` has a provider connection (`resp`);
     the others wait, parked, for their turn."""
-    __slots__ = ("turn", "resp", "since", "client", "last_chunk", "waiting")
+    __slots__ = ("turn", "resp", "since", "client", "last_chunk", "waiting", "work")
 
-    def __init__(self, client: str = ""):
+    def __init__(self, client: str = "", work: bool = False):
         self.turn = asyncio.Event()
         self.resp = None
         self.since = 0.0
         self.client = client
+        # Marked as Jellyfin's own work (WORK_USER_AGENT): a subtitle extraction.
+        self.work = work
         # When it last passed bytes on (loop time): a holder whose player
         # stopped reading (paused, buffer full) passes nothing.
         self.last_chunk = 0.0
@@ -498,6 +503,17 @@ def _is_viewer(title: str, client: str) -> bool:
     return bool(titles and client and client in (titles.get(title) or ()))
 
 
+def _first(pb: "_Playback", reader: "_Reader") -> bool:
+    """Whether `reader` comes before Jellyfin's work for the title: the
+    viewer's own request (_is_viewer) or, while a request marked as that work
+    shares the playback, any request that is not marked -- Jellyfin's
+    transcode for a player that does not read the file itself (a TV app),
+    which comes from Jellyfin's address like the extraction does."""
+    if _is_viewer(pb.title, reader.client):
+        return True
+    return not reader.work and any(r.work for r in [pb.holder, *pb.waiters] if r is not None)
+
+
 def _next_turn(pb: "_Playback", holder: "_Reader", now: float) -> "Optional[_Reader]":
     """Who the holder hands the connection to now, if anyone: a viewer that
     wants data at once when the holder is Jellyfin's own work; otherwise the
@@ -505,8 +521,8 @@ def _next_turn(pb: "_Playback", holder: "_Reader", now: float) -> "Optional[_Rea
     never timed out for Jellyfin's work (that reads while the player doesn't)."""
     if not pb.waiters:
         return None
-    holder_is_viewer = _is_viewer(pb.title, holder.client)
-    viewers = [r for r in pb.waiters if r.waiting and _is_viewer(pb.title, r.client)]
+    holder_is_viewer = _first(pb, holder)
+    viewers = [r for r in pb.waiters if r.waiting and _first(pb, r)]
     if viewers and not holder_is_viewer:
         return viewers[0]
     if now - holder.since < QUANTUM_SECONDS:
@@ -823,8 +839,8 @@ async def _wait_turn(pb: _Playback, reader: _Reader) -> bool:
             return False
         reader.turn.clear()
         holder = pb.holder
-        me_viewer = _is_viewer(pb.title, reader.client)
-        holder_viewer = holder is not None and _is_viewer(pb.title, holder.client)
+        me_viewer = _first(pb, reader)
+        holder_viewer = holder is not None and _first(pb, holder)
         # Between a viewer and Jellyfin's work, the one waiting looks again
         # soon: a viewer to take over from a holder that cannot hand over (its
         # consumer stopped reading), Jellyfin's work to read while the viewer's
@@ -841,14 +857,14 @@ async def _wait_turn(pb: _Playback, reader: _Reader) -> bool:
                 now = loop.time()
                 if holder is None:
                     pb.take(reader)
-                elif _is_viewer(pb.title, holder.client) and not _is_viewer(pb.title, reader.client):
+                elif _first(pb, holder) and not _first(pb, reader):
                     # The viewer's player has stopped reading for a while (or
                     # was handed the connection and has not asked for it):
                     # read meanwhile. Not while it is (re)opening its connection.
                     idle = now - max(holder.last_chunk, holder.since) >= PREEMPT_GRACE_SECONDS
                     if idle and (holder.resp is not None or not holder.waiting):
                         pb.take(reader)
-                elif _is_viewer(pb.title, reader.client) and not _is_viewer(pb.title, holder.client):
+                elif _first(pb, reader) and not _first(pb, holder):
                     pb.take(reader)         # Jellyfin's work did not hand over: its consumer is stuck
                 elif now - holder.since >= QUANTUM_SECONDS:
                     pb.take(reader)
@@ -967,7 +983,7 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
         except RuntimeError:            # no receive channel (a test, or an unusual server)
             return False
 
-    reader = _Reader(who)
+    reader = _Reader(who, work=(request.headers.get("user-agent") or "").startswith(WORK_USER_AGENT))
     if index is not None:
         resp = None
         cached_to = min(index.end, end + 1)
