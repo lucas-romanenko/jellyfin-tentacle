@@ -165,6 +165,10 @@ def _seen_livetv(db: Session) -> dict:
     from services import livetv_tuners
     st = livetv_tuners.last_status(db)
     if st.get("last_ok") is False and not st.get("running"):
+        if st.get("last_unreachable"):
+            # The last run only found Jellyfin not answering: that says nothing about the
+            # setup. Fail this check so its alerts stay as they are (check()).
+            raise RuntimeError("the last Live TV sync couldn't reach Jellyfin")
         return {"livetv:setup": ("livetv", "Live TV isn't set up in Jellyfin",
                                  st.get("last_message") or "Tentacle couldn't set the tuners up.", True)}
     return {}

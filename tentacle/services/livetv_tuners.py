@@ -603,7 +603,8 @@ def backup(jf: Jellyfin, cfg: dict, users: list, reason: str, db=None) -> Option
 
 # ── The sync ────────────────────────────────────────────────────────────────
 
-status = {"running": False, "last_at": None, "last_ok": None, "last_message": "", "tuners": 0}
+status = {"running": False, "last_at": None, "last_ok": None, "last_message": "", "last_unreachable": False,
+          "tuners": 0}
 
 
 def _tuner_body(name: str, url: str, count: int, template: Optional[dict]) -> dict:
@@ -1109,7 +1110,7 @@ def run_sync(reason: str = "scheduled", refresh: bool = False, check: bool = Fal
         db = SessionLocal()
         try:
             done = sync(db, refresh=refresh)
-            status.update(last_at=datetime.utcnow().isoformat() + "Z", last_ok=True)
+            status.update(last_at=datetime.utcnow().isoformat() + "Z", last_ok=True, last_unreachable=False)
             if done.get("skipped"):
                 status["last_message"] = done["skipped"]
             else:
@@ -1124,14 +1125,17 @@ def run_sync(reason: str = "scheduled", refresh: bool = False, check: bool = Fal
                 tell_clients(db)
             return done
         except Exception as e:
+            # Jellyfin not answering (busy with its nightly tasks, restarting) isn't Live TV
+            # missing: the admin alert leaves "isn't set up" alone for it (_seen_livetv).
             status.update(last_at=datetime.utcnow().isoformat() + "Z", last_ok=False,
-                          last_message=str(e))
+                          last_message=str(e),
+                          last_unreachable=isinstance(e, (requests.ConnectionError, requests.Timeout)))
             logger.warning(f"[LiveTV] Jellyfin sync ({reason}) failed: {e}")
             return {"error": str(e)}
         finally:
             status["running"] = False
             try:
-                set_setting(db, STATUS_KEY, json.dumps({k: status[k] for k in ("last_at", "last_ok", "last_message")}))
+                set_setting(db, STATUS_KEY, json.dumps({k: status[k] for k in ("last_at", "last_ok", "last_message", "last_unreachable")}))
                 db.commit()
             except Exception:
                 db.rollback()
