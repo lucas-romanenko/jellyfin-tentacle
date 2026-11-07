@@ -17,8 +17,10 @@ namespace Jellyfin.Plugin.Tentacle.HomeScreen;
 /// read is not "no home": clients keep what they show instead of tearing it down.
 /// Version is the user's home version from Tentacle (0 from an older server, or
 /// when the read failed): it goes up on every save of the user's home or toolbar.
+/// Refused: the read failed because Tentacle answered 401/403 for this caller's
+/// token, not because it was unreachable (the endpoints word their 503 by it, #951).
 /// </summary>
-public readonly record struct HomeConfigResult(HomeConfig? Config, bool Failed, long Version = 0);
+public readonly record struct HomeConfigResult(HomeConfig? Config, bool Failed, long Version = 0, bool Refused = false);
 
 /// <summary>
 /// Fetches and caches home configuration from the Tentacle API.
@@ -215,7 +217,7 @@ public class HomeScreenManager
                 _logger.LogWarning("Tentacle API returned {Status} for home-config", response.StatusCode);
                 var callerRefused = response.StatusCode is System.Net.HttpStatusCode.Unauthorized
                     or System.Net.HttpStatusCode.Forbidden;
-                return (new HomeConfigResult(null, true), callerRefused);
+                return (new HomeConfigResult(null, true, Refused: callerRefused), callerRefused);
             }
 
             var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);

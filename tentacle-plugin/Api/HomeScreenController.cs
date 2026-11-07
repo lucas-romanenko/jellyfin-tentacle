@@ -168,7 +168,8 @@ public class TentacleHomeController : ControllerBase
             // Could not read the config (backend restarting, slow, 5xx): not "home
             // disabled". An error lets clients keep the rows they show; the web home
             // used to empty them on a live refresh, until the next version change (#257).
-            return StatusCode(503, new { enabled = false, error = "Tentacle did not answer", sections = Array.Empty<object>() });
+            // A refusal (401/403 for this caller's token) keeps the 503 too: only the words differ (#951).
+            return StatusCode(503, new { enabled = false, error = home.Refused ? "Tentacle refused this sign-in" : "Tentacle did not answer", sections = Array.Empty<object>() });
         }
 
         var config = home.Config;
@@ -948,7 +949,7 @@ public class TentacleHomeController : ControllerBase
         if (home.Failed)
         {
             // Not "hero off": the media bar keeps what it shows on an error (#257).
-            return StatusCode(503, new { enabled = false, error = "Tentacle did not answer" });
+            return StatusCode(503, new { enabled = false, error = home.Refused ? "Tentacle refused this sign-in" : "Tentacle did not answer" });
         }
 
         var homeConfig = home.Config;
