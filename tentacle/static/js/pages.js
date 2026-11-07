@@ -5767,7 +5767,7 @@ function renderActivity(data) {
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           ${_actTitle(item, escapeAttr(item.title))}
-          <div class="activity-meta">${item.year || ''} · ${escapeAttr(item.release_date || '')} ${_actFor(item)}</div>
+          <div class="activity-meta">${item.year || ''} · ${escapeAttr(item.release_date || 'No date yet')} ${_actFor(item)}</div>
           ${daysUntil ? `<div class="activity-countdown">${escapeAttr(daysUntil)}</div>` : ''}
         </div>
       </div>`;
@@ -6124,7 +6124,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
     } else if (isInLibrary) {
       actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span>${watchBtn}`;
     } else if (ulInfo) {
-      const ulLabel = (ulInfo.release_type && ulInfo.release_type !== 'TBA') ? `${ulInfo.release_type} release: ${ulInfo.release_date}` : ulInfo.release_date;
+      const ulLabel = (ulInfo.release_type && ulInfo.release_type !== 'TBA' && ulInfo.release_date) ? `${ulInfo.release_type} release: ${ulInfo.release_date}` : (ulInfo.release_date || 'No date yet');
       actionBtn = `<span class="badge badge-amber" style="font-size:12px;padding:4px 10px">⏳ Awaiting Release</span> <span style="font-size:12px;color:var(--text3);margin-left:6px">${escapeAttr(ulLabel)}</span>`;
     } else if (data.requested) {
       actionBtn = `<span class="badge badge-blue" style="font-size:12px;padding:4px 10px">In ${isSeries ? 'Sonarr' : 'Radarr'} — searching for release</span>`;
