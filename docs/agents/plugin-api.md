@@ -41,7 +41,10 @@ Gotchas:
 - When the plugin cannot read the user's home config from the server
   (timeout, refused, 5xx), `/TentacleHome/Sections` and `/HeroConfig`
   answer **503**, never the `enabled: false` that means "home turned off"
-  (#257): clients keep the rows and hero they show. `/TentacleHome/Toolbar`
+  (#257): clients keep the rows and hero they show. Its `error` says
+  "Tentacle refused this sign-in" when the server answered 401/403 for the
+  caller's token, "Tentacle did not answer" otherwise (#951; no client reads
+  it). `/TentacleHome/Toolbar`
   still answers 200 with the default buttons, marked `fallback: true`, so a
   client that already has the user's own toolbar keeps it.
 - **Home version**: `/TentacleHome/Sections`, `/Toolbar` and `/HeroConfig`
