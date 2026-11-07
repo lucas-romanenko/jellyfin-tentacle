@@ -212,7 +212,13 @@ def _fetch_radarr_wanted(url: str, api_key: str) -> dict:
                             release_type = release_labels[field]
                     except (ValueError, TypeError):
                         pass
-            if not release:
+            if not release and not m.get("isAvailable", True):
+                # No date ahead and not available yet: announced with no dates,
+                # or in cinemas with no digital date. Radarr waits for it, so it
+                # is upcoming, its date still to be announced (it used to show
+                # in neither list).
+                release_type = "TBA"
+            elif not release:
                 # Released. Radarr only searches once the movie meets its
                 # minimum availability; before that it is waiting, not looking.
                 if m.get("isAvailable", True):
@@ -244,14 +250,15 @@ def _fetch_radarr_wanted(url: str, api_key: str) -> dict:
                 "overview": m.get("overview", ""),
                 "media_type": "movie",
                 "source": "radarr",
-                "release_date": release.strftime("%Y-%m-%d") if release else "TBA",
+                # No date yet: empty, so no client counts down to it
+                "release_date": release.strftime("%Y-%m-%d") if release else "",
                 "release_type": release_type or "TBA",
                 "all_dates": all_dates,
                 "status": "unreleased",
                 "radarr_poster": _extract_poster(m),
                 "trailer_url": trailer_url,
             })
-        unreleased.sort(key=lambda x: x["release_date"] if x["release_date"] != "TBA" else "9999-99-99")
+        unreleased.sort(key=lambda x: x["release_date"] or "9999-99-99")
         return {"unreleased": unreleased, "searching": searching}
     except Exception as e:
         logger.debug(f"Radarr wanted fetch failed: {e}")
@@ -514,8 +521,9 @@ def _fetch_sonarr_unreleased(url: str, api_key: str, series=None) -> list:
                 except (ValueError, TypeError):
                     pass
 
-            if not release:
-                continue
+            if not release and (next_airing or first_aired):
+                continue    # aired already: Sonarr's Wanted list covers its episodes
+            # (no date at all: announced, its premiere still to be announced)
 
             unreleased.append({
                 "tmdb_id": s.get("tmdbId") or 0,
@@ -525,13 +533,13 @@ def _fetch_sonarr_unreleased(url: str, api_key: str, series=None) -> list:
                 "overview": s.get("overview", ""),
                 "media_type": "series",
                 "source": "sonarr",
-                "release_date": release.strftime("%Y-%m-%d") if release else "TBA",
+                "release_date": release.strftime("%Y-%m-%d") if release else "",
                 "release_type": release_type or "TBA",
                 "all_dates": {release_type: release.strftime("%Y-%m-%d")} if release and release_type else {},
                 "status": "unreleased",
                 "sonarr_poster": _extract_poster(s),
             })
-        unreleased.sort(key=lambda x: x["release_date"] if x["release_date"] != "TBA" else "9999-99-99")
+        unreleased.sort(key=lambda x: x["release_date"] or "9999-99-99")
         return unreleased
     except Exception as e:
         logger.debug(f"Sonarr unreleased fetch failed: {e}")
@@ -833,7 +841,7 @@ def _fetch_wanted(db: Session) -> dict:
                   if not (u.get("media_type") == "series" and _same_title(u, s_tmdb, s_tvdb))]
 
     # Sort all unreleased by release date
-    unreleased.sort(key=lambda x: x["release_date"] if x["release_date"] != "TBA" else "9999-99-99")
+    unreleased.sort(key=lambda x: x["release_date"] or "9999-99-99")
     # The wait counts from the latest search: an episode re-monitored and
     # searched just now reads "searching · 2m", not the years since it aired.
     # Most recent first, so a title re-searched in Radarr/Sonarr jumps to the
