@@ -770,7 +770,7 @@
         '</div>';
     } else if (getUnreleasedInfo(item.tmdb_id)) {
       var ulItem = getUnreleasedInfo(item.tmdb_id);
-      var ulLabel = ulItem.release_type ? ulItem.release_type + ' release: ' + ulItem.release_date : ulItem.release_date;
+      var ulLabel = ulItem.release_date ? (ulItem.release_type && ulItem.release_type !== 'TBA' ? ulItem.release_type + ' release: ' + ulItem.release_date : ulItem.release_date) : 'No date yet';
       downloadSection =
         '<div class="md-inlib-row">' +
           '<div class="md-unreleased-badge">\u23F3 Awaiting Release</div>' +

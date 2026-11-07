@@ -128,7 +128,8 @@ class TestRadarrSplit(unittest.TestCase):
         with mock.patch.object(activity.requests, "get", side_effect=_fake_get()):
             wanted = activity._fetch_radarr_wanted("http://arr:7878", "k")
         self.assertEqual({1, 2}, {m["tmdb_id"] for m in wanted["searching"]})
-        self.assertEqual([3], [m["tmdb_id"] for m in wanted["unreleased"]])
+        # Not available with no date ahead: upcoming, after the dated one (#953).
+        self.assertEqual([3, 6], [m["tmdb_id"] for m in wanted["unreleased"]])
         for m in wanted["searching"]:
             self.assertEqual("searching", m["status"])
             self.assertTrue(m["waiting_since"].endswith("Z"))
@@ -199,7 +200,7 @@ class TestActivityEndpoint(_Base):
         out = self.activity()
         titles = [x["title"] for x in out["searching"]]
         self.assertEqual(["Newer Request", "Show B", "Searching Movie", "Show A"], titles)
-        self.assertEqual(["Coming Soon"], [u["title"] for u in out["unreleased"]])
+        self.assertEqual(["Coming Soon", "Not Yet Available"], [u["title"] for u in out["unreleased"]])
 
     def test_a_grab_moves_it_from_searching_to_downloads(self):
         queue = [{"id": 77, "movie": {"tmdbId": 1, "title": "Searching Movie"},

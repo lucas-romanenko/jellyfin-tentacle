@@ -212,22 +212,23 @@ def _fetch_radarr_wanted(url: str, api_key: str) -> dict:
                             release_type = release_labels[field]
                     except (ValueError, TypeError):
                         pass
-            if not release:
+            if not release and m.get("isAvailable", True):
                 # Released. Radarr only searches once the movie meets its
-                # minimum availability; before that it is waiting, not looking.
-                if m.get("isAvailable", True):
-                    searching.append({
-                        "tmdb_id": m.get("tmdbId"),
-                        "title": m.get("title", ""),
-                        "year": str(m.get("year", "")),
-                        "overview": m.get("overview", ""),
-                        "media_type": "movie",
-                        "source": "radarr",
-                        "status": "searching",
-                        "waiting_since": _iso_date(m.get("added")),
-                        "last_searched": _iso_date(m.get("lastSearchTime")),
-                        "radarr_poster": _extract_poster(m),
-                    })
+                # minimum availability; before that it is waiting, not looking
+                # (below: upcoming, with no date when Radarr has none ahead,
+                # e.g. announced, or in cinemas with no digital date yet).
+                searching.append({
+                    "tmdb_id": m.get("tmdbId"),
+                    "title": m.get("title", ""),
+                    "year": str(m.get("year", "")),
+                    "overview": m.get("overview", ""),
+                    "media_type": "movie",
+                    "source": "radarr",
+                    "status": "searching",
+                    "waiting_since": _iso_date(m.get("added")),
+                    "last_searched": _iso_date(m.get("lastSearchTime")),
+                    "radarr_poster": _extract_poster(m),
+                })
                 continue
 
             # Extract YouTube trailer from Radarr metadata
@@ -244,18 +245,24 @@ def _fetch_radarr_wanted(url: str, api_key: str) -> dict:
                 "overview": m.get("overview", ""),
                 "media_type": "movie",
                 "source": "radarr",
-                "release_date": release.strftime("%Y-%m-%d") if release else "TBA",
+                # No date ahead: "" (clients count down only to a real date).
+                "release_date": release.strftime("%Y-%m-%d") if release else "",
                 "release_type": release_type or "TBA",
                 "all_dates": all_dates,
                 "status": "unreleased",
                 "radarr_poster": _extract_poster(m),
                 "trailer_url": trailer_url,
             })
-        unreleased.sort(key=lambda x: x["release_date"] if x["release_date"] != "TBA" else "9999-99-99")
+        unreleased.sort(key=_release_sort_key)
         return {"unreleased": unreleased, "searching": searching}
     except Exception as e:
         logger.debug(f"Radarr wanted fetch failed: {e}")
         return empty
+
+
+def _release_sort_key(item) -> str:
+    """Soonest first; no date yet ("") last."""
+    return item.get("release_date") or "9999-99-99"
 
 
 def _parse_dt(val) -> Optional[datetime]:
@@ -514,8 +521,8 @@ def _fetch_sonarr_unreleased(url: str, api_key: str, series=None) -> list:
                 except (ValueError, TypeError):
                     pass
 
-            if not release:
-                continue
+            if not release and (next_airing or first_aired):
+                continue  # aired: the Wanted list has it (Searching)
 
             unreleased.append({
                 "tmdb_id": s.get("tmdbId") or 0,
@@ -525,13 +532,13 @@ def _fetch_sonarr_unreleased(url: str, api_key: str, series=None) -> list:
                 "overview": s.get("overview", ""),
                 "media_type": "series",
                 "source": "sonarr",
-                "release_date": release.strftime("%Y-%m-%d") if release else "TBA",
+                "release_date": release.strftime("%Y-%m-%d") if release else "",
                 "release_type": release_type or "TBA",
                 "all_dates": {release_type: release.strftime("%Y-%m-%d")} if release and release_type else {},
                 "status": "unreleased",
                 "sonarr_poster": _extract_poster(s),
             })
-        unreleased.sort(key=lambda x: x["release_date"] if x["release_date"] != "TBA" else "9999-99-99")
+        unreleased.sort(key=_release_sort_key)
         return unreleased
     except Exception as e:
         logger.debug(f"Sonarr unreleased fetch failed: {e}")
@@ -833,7 +840,7 @@ def _fetch_wanted(db: Session) -> dict:
                   if not (u.get("media_type") == "series" and _same_title(u, s_tmdb, s_tvdb))]
 
     # Sort all unreleased by release date
-    unreleased.sort(key=lambda x: x["release_date"] if x["release_date"] != "TBA" else "9999-99-99")
+    unreleased.sort(key=_release_sort_key)
     # The wait counts from the latest search: an episode re-monitored and
     # searched just now reads "searching · 2m", not the years since it aired.
     # Most recent first, so a title re-searched in Radarr/Sonarr jumps to the
