@@ -1266,8 +1266,11 @@ def _scan_sonarr_library(db: Session) -> dict:
                 logger.info("Jellyfin library scan after Sonarr NFO updates left to the nightly job's scan")
             else:
                 try:
-                    jf.trigger_library_scan()
-                    logger.info("Triggered Jellyfin library scan after Sonarr NFO updates")
+                    if jf.scan_library_without_cancelling():
+                        logger.info("Triggered Jellyfin library scan after Sonarr NFO updates")
+                    else:
+                        logger.info("Jellyfin is scanning its library already: not cancelling it, "
+                                    "one scan after it ends")
                 except Exception as e:
                     logger.warning(f"Failed to trigger Jellyfin scan: {e}")
 

@@ -71,6 +71,40 @@ def library_scan_left_to_caller() -> bool:
     return getattr(_scan_later, "on", False)
 
 
+# A Radarr/Sonarr import whose Jellyfin library scan would cancel one already
+# running asks for a single scan after it instead (#961). One follow-up at a
+# time, however many imports come while it waits.
+SCAN_FOLLOWUP_POLL_SECONDS = 15
+SCAN_FOLLOWUP_MAX_SECONDS = 3 * 3600
+_scan_followup_lock = threading.Lock()
+_scan_followup_pending = False
+
+
+def _scan_after_running(jf: "JellyfinService") -> None:
+    global _scan_followup_pending
+    with _scan_followup_lock:
+        if _scan_followup_pending:
+            return
+        _scan_followup_pending = True
+    threading.Thread(target=_run_scan_followup, args=(jf,), daemon=True,
+                     name="jellyfin-scan-followup").start()
+
+
+def _run_scan_followup(jf: "JellyfinService") -> None:
+    global _scan_followup_pending
+    try:
+        deadline = time.monotonic() + SCAN_FOLLOWUP_MAX_SECONDS
+        while jf.library_scan_running() and time.monotonic() < deadline:
+            time.sleep(SCAN_FOLLOWUP_POLL_SECONDS)
+        jf.trigger_library_scan()
+        logger.info("[Jellyfin] Library scan after the one that was running when files were imported")
+    except Exception as e:
+        logger.warning(f"[Jellyfin] Library scan after the running one failed: {e}")
+    finally:
+        with _scan_followup_lock:
+            _scan_followup_pending = False
+
+
 class PartialListing(RuntimeError):
     """A paged Jellyfin listing lost a page after the first: it is incomplete."""
 
@@ -1278,6 +1312,18 @@ class JellyfinService:
                     f"&ReplaceAllMetadata=false&ReplaceAllImages=false")
         return self._post(path)
 
+    def scan_library_without_cancelling(self) -> bool:
+        """trigger_library_scan(), unless Jellyfin is scanning its library
+        already: POST /Library/Refresh cancels the running scan and starts
+        over, so a series imported episode by episode kept the scan restarting
+        and the episodes reached Jellyfin later, not sooner (#961). Then one
+        scan after the running one ends instead, for the files it may have
+        passed. True when a scan was asked for now."""
+        if self.library_scan_running():
+            _scan_after_running(self)
+            return False
+        return self.trigger_library_scan()
+
     def get_item_strict(self, item_id: str) -> Optional[dict]:
         """The item, user-scoped (every field an ItemUpdate has to echo). None
         when Jellyfin says there is no such item; JellyfinUnavailable when it
@@ -1731,18 +1777,26 @@ class JellyfinService:
                                f"{PRUNE_POLL_MAX_SECONDS // 60} min — no longer waiting for it")
                 return None
 
-    def running_library_tasks(self) -> List[str]:
-        """Names of Jellyfin's library scan / guide refresh tasks running now.
+    def _running_tasks(self, keys) -> List[dict]:
+        """Jellyfin's scheduled tasks with one of these keys running now.
         [] when there are none or Jellyfin can't say (never blocks the caller)."""
         try:
             r = self.session.get(f"{self.url}/ScheduledTasks", params={"isHidden": "false"}, timeout=10)
             if r.status_code >= 400:
                 return []
             tasks = r.json()
-            return [t.get("Name") or t.get("Key") for t in tasks or []
-                    if isinstance(t, dict) and t.get("Key") in BUSY_LIBRARY_TASKS and t.get("State") == "Running"]
+            return [t for t in tasks or []
+                    if isinstance(t, dict) and t.get("Key") in keys and t.get("State") == "Running"]
         except Exception:
             return []
+
+    def running_library_tasks(self) -> List[str]:
+        """Names of Jellyfin's library scan / guide refresh tasks running now."""
+        return [t.get("Name") or t.get("Key") for t in self._running_tasks(BUSY_LIBRARY_TASKS)]
+
+    def library_scan_running(self) -> bool:
+        """Jellyfin's "Scan Media Library" runs now (False when it can't say)."""
+        return bool(self._running_tasks(("RefreshLibrary",)))
 
     def get_ownerless_playlists(self) -> Optional[List[dict]]:
         """Playlists with no owner, or whose owner was deleted (ownerGone), from

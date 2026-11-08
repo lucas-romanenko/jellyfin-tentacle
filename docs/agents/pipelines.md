@@ -25,7 +25,12 @@ The code wins where they differ. Internals: [server.md](server.md).
      a time per app (`_scan_lock`, #268). The tag push lists Jellyfin
      *before* the scan asks Jellyfin for a library scan: during a full
      library scan the 10,000-row listing doesn't answer within 15 s and
-     nothing was pushed (#819).
+     nothing was pushed (#819). That scan never cancels one Jellyfin is
+     running (`scan_library_without_cancelling`: POST /Library/Refresh
+     cancels it and starts over, so a season imported episode by episode kept
+     restarting it, #961): it asks for one scan after the running one instead,
+     one however many imports come meanwhile. The webhook's retry re-scan does
+     the same; the nightly job leaves both to its pipeline (#935).
 2. **Tags**: VOD through NFO; downloads through the API
    (`set_item_tags`): "Downloaded Movies", "Recently Added Movies", list
    tags (e.g. "IMDB TOP 250"). Source tags carry the type suffix.

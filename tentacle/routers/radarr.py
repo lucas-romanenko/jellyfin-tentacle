@@ -228,7 +228,7 @@ def write_nfos(db: Session = Depends(get_db)):
                 try:
                     from services.jellyfin import JellyfinService
                     jf = JellyfinService(jellyfin_url, jellyfin_key, jellyfin_uid)
-                    jf.trigger_library_scan()
+                    jf.scan_library_without_cancelling()
                 except Exception:
                     pass
 
@@ -585,7 +585,7 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                             # Re-trigger scan in case it finished before file was ready
                             if attempt == 1:
                                 try:
-                                    jf.trigger_library_scan()
+                                    jf.scan_library_without_cancelling()
                                 except Exception:
                                     pass
 
