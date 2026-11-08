@@ -175,7 +175,7 @@ def write_nfos(db: Session = Depends(get_db)):
             try:
                 from services.jellyfin import JellyfinService
                 jf = JellyfinService(jellyfin_url, jellyfin_key, jellyfin_uid)
-                jf.trigger_library_scan()
+                jf.scan_library_without_cancelling()
             except Exception:
                 pass
 
@@ -398,7 +398,7 @@ def _after_scan(db, tmdb_id, title, event_type, first_episode=None, episode_coun
                     time.sleep(wait)
                     if attempt == 1:
                         try:
-                            jf.trigger_library_scan()
+                            jf.scan_library_without_cancelling()
                         except Exception:
                             pass
 
