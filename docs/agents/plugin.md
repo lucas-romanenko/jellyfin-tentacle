@@ -26,6 +26,7 @@ HomeScreen/                             HomeScreenManager (per-user home config 
 Playlists/, Tasks/                      PlaylistManager, SmartListConfig, PlaylistRefreshTask
 Services/                               LibraryDeleteHandler (Jellyfin ItemRemoved → server, 2 s debounce), MdbListCacheService,
                                         VodNoVideoCopyFilter (Tentacle VOD as HLS: re-encode the video, never copy it),
+                                        VodWebNoDirectPlayFilter (Jellyfin Web plays Tentacle VOD through Jellyfin, never from Tentacle's address),
                                         PublicUsersFilter (/Users/Public is empty outside Jellyfin's local network),
                                         SimilarItemsFilter (/Items/{id}/Similar: TMDB + library score instead of 10.11's random sample, #292),
                                         OneLiveStreamPerDeviceFilter (a device opening a channel closes its previous live stream first),
@@ -249,6 +250,26 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   users without video transcoding permission (their remux is all they can
   play) are untouched. Turning off the user policy "Allow video playback that
   requires conversion without re-encoding" does not stop the copy.
+- **Jellyfin Web plays Tentacle VOD through Jellyfin** (`VodWebNoDirectPlayFilter`,
+  a global MVC action filter): after `/Items/{id}/PlaybackInfo` answered
+  a client that plays with Jellyfin Web's player (client claim
+  `Jellyfin-Client` = Jellyfin Web, Jellyfin Media Player, Jellyfin
+  Desktop, Jellyfin iOS), each Tentacle VOD source (Http, `Path` =
+  Tentacle's signed `/api/vod/` link) offered as direct play, with direct
+  stream offered too, gets `SupportsDirectPlay=false`. Jellyfin Web
+  direct-plays a remote Http source by loading its `Path` in the browser:
+  Tentacle's LAN http address, blocked as mixed content on an https
+  Jellyfin and unreachable away from home, so every film the browser
+  could play as it is (MKV/MP4, H.264 + AAC) sat on a black screen.
+  Without direct play it takes direct stream,
+  `/Videos/{id}/stream.mkv?Static=true`, which Jellyfin passes through
+  from Tentacle (Range forwarded, so seeks work); on an error it asks
+  again without direct play and gets HLS. Jellyfin offers direct stream
+  exactly when it chose direct play (10.11 turns its own direct stream
+  off) and builds no TranscodingUrl then, which is why the Tentacle TV
+  app (plays `Path` on purpose) and native Jellyfin apps (the Android TV
+  one finds no stream with direct play off and no TranscodingUrl; they
+  play direct play through `/Videos/{id}/stream` anyway) are left alone.
 - **One Live TV stream per device** (`OneLiveStreamPerDeviceFilter`, a
   global async MVC action filter): before `PlaybackInfo` or
   `LiveStreams/Open` opens a Live TV channel for a device (the

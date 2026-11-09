@@ -49,6 +49,10 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         // it (a resumed play otherwise skips to the next episode, #17966)
         serviceCollection.AddSingleton<VodNoVideoCopyFilter>();
         serviceCollection.Configure<MvcOptions>(options => options.Filters.AddService<VodNoVideoCopyFilter>());
+        // Jellyfin Web plays Tentacle VOD through Jellyfin, never from
+        // Tentacle's own address (https mixed content, away from home)
+        serviceCollection.AddSingleton<VodWebNoDirectPlayFilter>();
+        serviceCollection.Configure<MvcOptions>(options => options.Filters.AddService<VodWebNoDirectPlayFilter>());
         // Tentacle VOD subtitles are cached only when extracted from the whole
         // file (Tentacle closes a pull nobody watches; Jellyfin would keep the part)
         serviceCollection.AddSingleton<IHostedService, VodSubtitleExtractionPatch>();
