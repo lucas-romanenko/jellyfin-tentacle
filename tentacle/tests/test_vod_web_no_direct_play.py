@@ -47,10 +47,12 @@ class TestVodWebNoDirectPlayFilter(unittest.TestCase):
         clients = re.search(r"WebPlayerClients = new\(StringComparer\.Ordinal\)\s*\{([^}]*)\}", self.src)
         self.assertIsNotNone(clients)
         names = set(re.findall(r'"([^"]+)"', clients.group(1)))
-        self.assertEqual(names, {"Jellyfin Web", "Jellyfin Media Player", "Jellyfin Desktop", "Jellyfin iOS"})
-        for native in ("Tentacle", "Android"):
+        self.assertEqual(names, {"Jellyfin Web", "Jellyfin Media Player", "Jellyfin Desktop",
+                                 "Jellyfin iOS", "Jellyfin iPadOS", "Jellyfin for Android"})
+        for native in ("Tentacle", "Android TV"):
             self.assertFalse(any(native in n for n in names),
-                             f"{native}: the TV app direct-plays Tentacle's address; native apps need a TranscodingUrl without direct play")
+                             f"{native}: the Tentacle TV app direct-plays Tentacle's address; Jellyfin's Android TV app"
+                             " finds no stream without direct play and a TranscodingUrl")
         self.assertRegex(self.src, r'ClientClaim\s*=\s*"Jellyfin-Client"')
         guard = self.executed.index("IsWebPlayer(")
         self.assertLess(guard, self.executed.index("SupportsDirectPlay = false"))

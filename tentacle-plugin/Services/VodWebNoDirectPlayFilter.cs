@@ -31,7 +31,8 @@ namespace Jellyfin.Plugin.Tentacle.Services;
 /// included: it forwards the Range header). Same file, no conversion,
 /// reached at Jellyfin's own address. If that fails, Jellyfin Web asks again
 /// without direct play and gets HLS (re-encoded, VodNoVideoCopyFilter).
-/// Only Jellyfin Web's player is changed: the Tentacle TV app direct-plays
+/// Only apps playing with Jellyfin Web's player (and the Android phone app)
+/// are changed: the Tentacle TV app direct-plays
 /// Tentacle's address on purpose, and native Jellyfin apps already play a
 /// direct-play source through Jellyfin's /Videos/{id}/stream (the Android
 /// TV one would find no stream at all with direct play off and no
@@ -48,13 +49,18 @@ public sealed class VodWebNoDirectPlayFilter : IActionFilter
 
     // The client names of the apps that play with Jellyfin Web's player
     // (playbackmanager.js direct-plays a remote HTTP source from its Path):
-    // the browser, the desktop apps and the iOS app.
+    // the browser, the desktop apps (old and new name), the iOS app
+    // ("Jellyfin " + the OS) and the Android phone app, whose ExoPlayer
+    // also loads Path on direct play and Jellyfin's /Videos/{id}/stream on
+    // direct stream. Not the Android TV apps.
     private static readonly HashSet<string> WebPlayerClients = new(StringComparer.Ordinal)
     {
         "Jellyfin Web",
         "Jellyfin Media Player",
         "Jellyfin Desktop",
         "Jellyfin iOS",
+        "Jellyfin iPadOS",
+        "Jellyfin for Android",
     };
 
     // The claim Jellyfin's authentication puts the caller's client name in

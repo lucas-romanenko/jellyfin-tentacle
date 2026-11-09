@@ -254,7 +254,8 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   a global MVC action filter): after `/Items/{id}/PlaybackInfo` answered
   a client that plays with Jellyfin Web's player (client claim
   `Jellyfin-Client` = Jellyfin Web, Jellyfin Media Player, Jellyfin
-  Desktop, Jellyfin iOS), each Tentacle VOD source (Http, `Path` =
+  Desktop, Jellyfin iOS / iPadOS, and Jellyfin for Android, whose
+  ExoPlayer also loads `Path` on direct play), each Tentacle VOD source (Http, `Path` =
   Tentacle's signed `/api/vod/` link) offered as direct play, with direct
   stream offered too, gets `SupportsDirectPlay=false`. Jellyfin Web
   direct-plays a remote Http source by loading its `Path` in the browser:
@@ -267,7 +268,7 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   again without direct play and gets HLS. Jellyfin offers direct stream
   exactly when it chose direct play (10.11 turns its own direct stream
   off) and builds no TranscodingUrl then, which is why the Tentacle TV
-  app (plays `Path` on purpose) and native Jellyfin apps (the Android TV
+  app (plays `Path` on purpose) and the other native Jellyfin apps (the Android TV
   one finds no stream with direct play off and no TranscodingUrl; they
   play direct play through `/Videos/{id}/stream` anyway) are left alone.
 - **One Live TV stream per device** (`OneLiveStreamPerDeviceFilter`, a
