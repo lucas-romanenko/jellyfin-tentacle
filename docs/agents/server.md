@@ -581,7 +581,14 @@ with `untracked_auto_add` (off by default), which adds the 95 %+ sure ones.
   reconnect budget. Always, whatever the first answer said: the provider
   answers a request from byte 0 with a 200 naming no Accept-Ranges yet
   serves `bytes=N-` with a 206. Only a 206 starting at exactly that byte is
-  spliced in; anything else ends the body (the player asks again). One provider connection per
+  spliced in; anything else ends the body (the player asks again). What
+  the player is told: `Accept-Ranges: bytes` (unless the provider says
+  `none`; some send the file's span, "0-3414635241", no unit), and a 200
+  to `bytes=0-` goes out as `206 bytes 0-<size-1>/<size>`. Jellyfin's
+  `/Videos/{id}/stream?static=true` (how Jellyfin Web plays Tentacle VOD,
+  plugin.md) passes both on as they are, and a browser that gets a 200
+  with no `bytes` unit sees a file it cannot seek in (seekable 0-0: a
+  seek restarts the film). One provider connection per
   playback (title + client address): Jellyfin's parallel requests for it
   (subtitle extraction, transcode restarts, seeks) share it. The newest
   request takes it (`_Playback.take`: the old one closed before the new one

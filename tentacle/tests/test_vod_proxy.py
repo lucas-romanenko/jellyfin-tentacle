@@ -265,6 +265,38 @@ class RangesAndResume(_Base):
         self.assertEqual(b"AAAABBBB", body, "the film stopped at the provider's drop")
         self.assertEqual("bytes=4-", self.log[1][2])
 
+    def test_a_200_to_bytes_0_goes_out_as_a_206_that_says_bytes(self):
+        """The Odyssey's provider answers `bytes=0-` with a 200 whose
+        Accept-Ranges is the file's span ("0-7"), no unit. Through Jellyfin's
+        /Videos/{id}/stream?static=true a browser took that for a file it
+        cannot seek in (seekable 0-0), and a seek restarted the film. The
+        200 holds exactly what `bytes=0-` asked for: it goes out as a 206."""
+        first = _file(200, [b"AAAA", b"BBBB"])
+        first.headers["accept-ranges"] = "0-7"
+        status, headers, body = self._play({self.upstream: [first]}, range_header="bytes=0-")
+        self.assertEqual(206, status)
+        self.assertEqual("bytes 0-7/8", headers.get("content-range"))
+        self.assertEqual("8", headers.get("content-length"))
+        self.assertEqual("bytes", headers.get("accept-ranges"))
+        self.assertEqual(b"AAAABBBB", body)
+
+    def test_a_200_to_a_request_without_range_or_from_later_stays_a_200(self):
+        for range_header in (None, "bytes=100-", "bytes=0-3"):
+            with self.subTest(range_header=range_header):
+                self.log.clear()
+                first = _file(200, [b"AAAA", b"BBBB"])
+                first.headers["accept-ranges"] = "0-7"
+                status, headers, body = self._play({self.upstream: [first]}, range_header=range_header)
+                self.assertEqual(200, status, "the 200 is not what was asked for: the player must know")
+                self.assertNotIn("content-range", headers)
+                self.assertEqual("bytes", headers.get("accept-ranges"))
+
+    def test_a_provider_that_says_it_has_no_ranges_is_believed(self):
+        first = _file(200, [b"AAAA"])
+        first.headers["accept-ranges"] = "none"
+        status, headers, body = self._play({self.upstream: [first]})
+        self.assertEqual("none", headers.get("accept-ranges"))
+
     def test_a_resume_the_provider_answers_from_another_byte_ends_the_stream(self):
         """Never splice in bytes from the wrong offset: a 206 that does not
         start where the body stopped ends it (the player asks again)."""
@@ -917,7 +949,8 @@ class AProviderThatDropsTheConnection(_Base):
                 with self.assertLogs("routers.vod", "INFO") as logs, \
                         mock.patch.object(self.vod, "PROGRESS_RESET_BYTES", 40_000):
                     status, headers, body = self._play_real(provider, range_header)
-                self.assertEqual(200, status)
+                # `bytes=0-` answered with the whole file is the 206 it asked for
+                self.assertEqual(206 if range_header else 200, status)
                 self.assertEqual(self.DATA, body, "the film stopped at a drop")
                 self.assertEqual([range_header] + [f"bytes={n}-" for n in range(40_000, len(self.DATA), 40_000)],
                                  [r for _, r in provider.requests])
