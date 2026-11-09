@@ -302,6 +302,7 @@ Declared on the app in `main.py` (no router, all **none**; listed in
 | GET | `/api/providers/{provider_id}/preview` | admin | providers.py:preview_sync |
 | POST | `/api/providers/{provider_id}/test` | admin | providers.py:test_provider |
 | GET | `/api/requests` | admin | family.py:all_requests |
+| GET | `/api/requests/downloads` | admin | family.py:downloads_by_person |
 | GET | `/api/requests/count` | admin | family.py:waiting_count |
 | GET | `/api/requests/mine` | user | family.py:my_requests |
 | DELETE | `/api/requests/mine/{request_id}` | user | family.py:take_back |

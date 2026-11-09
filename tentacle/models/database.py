@@ -655,6 +655,25 @@ class DownloadRequest(Base):
     )
 
 
+class DownloadHistory(Base):
+    """Every download a person sent to Radarr/Sonarr, straight away or approved
+    (services/download_history.py). Unlike DownloadRequest (one per title,
+    deleted when the download goes) these rows stay: they are the admin's
+    "everything each person has downloaded". Its status is worked out from the
+    library when it's read."""
+    __tablename__ = "download_history"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("tentacle_users.id"), nullable=False, index=True)
+    tmdb_id = Column(Integer, nullable=False, index=True)
+    media_type = Column(String, nullable=False, default="movie")  # movie | series
+    via = Column(String, nullable=False, default="")    # "" straight away | "approved by <admin>" | "list '<name>' ..."
+    title = Column(String, nullable=True)               # kept once known, so a removed title keeps its name
+    year = Column(String, nullable=True)
+    poster_path = Column(String, nullable=True)
+    asked_at = Column(DateTime, default=datetime.utcnow, index=True)   # when the person asked
+    created_at = Column(DateTime, default=datetime.utcnow)             # when it went to Radarr/Sonarr
+
+
 # ─── Requests waiting for an admin (services/approvals.py) ────────────────────
 
 class MediaRequest(Base):

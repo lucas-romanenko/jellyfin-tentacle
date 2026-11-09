@@ -19,7 +19,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from models.database import (
-    AutoPlaylistToggle, DownloadRequest, HomeRowOrder, ListSubscription, LiveUserChannel,
+    AutoPlaylistToggle, DownloadHistory, DownloadRequest, HomeRowOrder, ListSubscription, LiveUserChannel,
     LiveUserLineup, MediaRequest, MusicImport, Notification, TagRule, TentacleUser, YouTubeFollow,
     get_setting, log_activity,
 )
@@ -28,7 +28,7 @@ from services import livetv_lineups as L
 logger = logging.getLogger(__name__)
 
 HOME_CONFIG_DIR = Path("/data/home-configs")
-PER_PERSON = (TagRule, HomeRowOrder, AutoPlaylistToggle, Notification, DownloadRequest,
+PER_PERSON = (TagRule, HomeRowOrder, AutoPlaylistToggle, Notification, DownloadRequest, DownloadHistory,
               MediaRequest, MusicImport)
 
 

@@ -10,6 +10,8 @@ const fam = {
   data: null,          // GET /api/family/people
   requests: null,      // GET /api/requests
   reqTab: 'pending',
+  downloads: null,     // GET /api/requests/downloads (Requests → Downloads)
+  dlPerson: '',        // whose downloads that tab shows ('' = everyone)
   invited: null,       // the last invite: {user, invite}
   tvFor: null,         // person id the TV code is for (null = me)
   kids: null,          // GET /api/family/kids-channels
@@ -161,6 +163,7 @@ function famRenderPeople() {
     const meta = [_famTv(p, d.tv_app && d.tv_app.newest)];
     if (p.last_active) meta.push(`<span class="fam-meta-item">Active ${escHtml(_famAgo(p.last_active))}</span>`);
     if (p.invited_by) meta.push(`<span class="fam-meta-item">Invited by ${escHtml(p.invited_by)}</span>`);
+    if (p.downloads) meta.push(`<a class="fam-meta-item" href="#requests/downloads" onclick="event.preventDefault(); famShowDownloads(${p.id})">${escHtml(String(p.downloads))} download${p.downloads === 1 ? '' : 's'}</a>`);
     const kidsSel = p.is_admin
       ? '<span class="fam-fixed">No limit</span>'
       : `<select class="form-input fam-select" aria-label="Age limit for ${escHtml(p.name)}" onchange="famSetKids(${p.id}, this.value)">
@@ -866,14 +869,111 @@ async function loadRequests() {
   document.getElementById('req-count-pending').textContent = n || '';
   const b = document.getElementById('requests-badge');
   if (b) { b.textContent = n; b.style.display = n ? '' : 'none'; }
-  famRenderRequests();
+  if (fam.reqTab === 'downloads') famLoadDownloads();
+  else famRenderRequests();
 }
 
 function famReqTab(tab) {
   fam.reqTab = tab;
   document.querySelectorAll('[data-reqtab]').forEach(b => b.classList.toggle('active', b.dataset.reqtab === tab));
-  if (fam.requests) famRenderRequests();
+  document.getElementById('req-dl-bar').style.display = tab === 'downloads' ? '' : 'none';
+  if (tab === 'downloads') famLoadDownloads();
+  else if (fam.requests) famRenderRequests();
   setRoute('requests', tab === 'pending' ? null : tab);
+}
+
+// ── Downloads: everything each person has downloaded (admins) ───────────
+
+const FAM_DL_STATUS = {
+  ready: ['badge-green', 'Ready'],
+  downloading: ['badge-blue', 'Downloading'],
+  waiting: ['badge-amber', 'Waiting for you'],
+  failed: ['badge-red', 'Failed'],
+  declined: ['badge-gray', 'Declined'],
+  removed: ['badge-gray', 'Removed'],
+};
+
+// From People: one person's downloads
+function famShowDownloads(id) {
+  fam.dlPerson = String(id);
+  showPage('requests', 'downloads');
+}
+
+function famReqDlPerson(id) {
+  fam.dlPerson = id;
+  famRenderDownloads();
+}
+
+async function famLoadDownloads() {
+  const el = document.getElementById('req-list');
+  if (!fam.downloads) el.innerHTML = '<div class="loading-state"><div class="spinner"></div> Loading&hellip;</div>';
+  try {
+    const [d, people] = await Promise.all([
+      api('/api/requests/downloads'),
+      fam.data ? Promise.resolve(fam.data) : api('/api/family/people').catch(() => null),
+    ]);
+    fam.downloads = d;
+    if (people && !fam.data) fam.data = people;
+  } catch (e) {
+    el.innerHTML = `<div class="fam-error">Couldn't load the downloads: ${escHtml(e.message)}</div>`;
+    return;
+  }
+  if (fam.reqTab === 'downloads') famRenderDownloads();
+}
+
+function _famDlHow(r) {
+  if (r.how === 'approved') return 'Asked first, ' + r.via;
+  if (r.how === 'list') return 'Added by one of their lists';
+  if (r.how === 'ask') return 'Asked first';
+  return 'Straight away';
+}
+
+function famRenderDownloads() {
+  const el = document.getElementById('req-list');
+  const all = fam.downloads.items || [];
+  // Everyone on the server, then anyone with downloads who isn't (gone from Jellyfin)
+  const people = new Map();
+  for (const p of (fam.data?.people || [])) people.set(String(p.id), p.name);
+  for (const r of all) if (!people.has(String(r.user_id))) people.set(String(r.user_id), r.person || 'Someone');
+  // Counted as on People: what was downloaded, not the requests that weren't sent
+  const sent = all.filter(r => r.how !== 'ask');
+  const count = id => sent.filter(r => String(r.user_id) === id).length;
+  if (fam.dlPerson && !people.has(fam.dlPerson)) fam.dlPerson = '';
+  const sel = document.getElementById('req-dl-person');
+  sel.innerHTML = `<option value="">Everyone (${escHtml(String(sent.length))})</option>` +
+    [...people.entries()].sort((a, b) => a[1].localeCompare(b[1]))
+      .map(([id, name]) => `<option value="${escHtml(id)}">${escHtml(name)} (${escHtml(String(count(id)))})</option>`).join('');
+  sel.value = fam.dlPerson;
+  const list = fam.dlPerson ? all.filter(r => String(r.user_id) === fam.dlPerson) : all;
+  const n = s => list.filter(r => r.status === s).length;
+  const parts = [['ready', 'ready'], ['downloading', 'downloading'], ['waiting', 'waiting'], ['failed', 'failed'], ['removed', 'removed']]
+    .filter(([s]) => n(s)).map(([s, w]) => n(s) + ' ' + w);
+  document.getElementById('req-dl-summary').textContent = parts.join(' · ');
+  if (!list.length) {
+    el.innerHTML = '<div class="empty-state"><p>Nothing downloaded yet.</p><p class="fam-hint">Every movie or show someone downloads shows up here, asked straight away or approved by you.</p></div>';
+    return;
+  }
+  el.innerHTML = list.map(r => {
+    const poster = r.poster_path
+      ? `<img class="req-poster" alt="" loading="lazy" src="${escHtml('https://image.tmdb.org/t/p/w154' + r.poster_path)}">`
+      : `<div class="req-poster none">${escHtml((FAM_KIND[r.kind] || '?').charAt(0))}</div>`;
+    const what = [FAM_KIND[r.kind] || r.kind, r.year].filter(Boolean).join(' · ');
+    const [cls, label] = FAM_DL_STATUS[r.status] || ['badge-gray', r.status];
+    const statusWhen = r.status_at && (r.status === 'removed' || r.status === 'declined' || r.status === 'failed')
+      ? `<div class="fam-hint">${escHtml(_famAgo(r.status_at))}</div>` : '';
+    const note = r.status === 'failed' && r.note ? `<div class="req-note bad">${escHtml(r.note)}</div>`
+      : r.status === 'declined' && r.note ? `<div class="req-note">“${escHtml(r.note)}”</div>` : '';
+    return `<div class="card req-item">
+      ${poster}
+      <div class="req-text">
+        <div class="req-title">${escHtml(r.title)}</div>
+        <div class="req-what">${escHtml(what)}</div>
+        <div class="req-who">${fam.dlPerson ? '' : escHtml(r.person) + ' &middot; '}${escHtml(_famAgo(r.asked_at))} <span class="req-dl-how">&middot; ${escHtml(_famDlHow(r))}</span></div>
+        ${note}
+      </div>
+      <div class="req-answer"><span class="badge ${escHtml(cls)}">${escHtml(label)}</span>${statusWhen}</div>
+    </div>`;
+  }).join('');
 }
 
 const FAM_KIND = { movie: 'Movie', series: 'Show', album: 'Album' };

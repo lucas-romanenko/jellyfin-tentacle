@@ -543,18 +543,16 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
     if user_id is not None and toggles.get("builtin:my_downloads"):
         user_name = _user_display_name(db, user_id)
         if user_name:
-            has_requests = db.query(DownloadRequest.id).filter(
-                DownloadRequest.user_id == user_id,
-            ).first()
-            if has_requests:
-                user_tag = downloads_tag(user_name)
-                if user_tag not in existing_tags:
-                    smartlists.append({
-                        "name": user_tag, "tag": user_tag,
-                        "media_type": ["Movie", "Series"], "enabled": True, "source": "auto",
-                        "default_sort": "DateCreated",
-                    })
-                    existing_tags.add(user_tag)
+            # Switched on, it's made before their first download too ("My
+            # Downloads" in the row picker); empty, its row isn't drawn
+            user_tag = downloads_tag(user_name)
+            if user_tag not in existing_tags:
+                smartlists.append({
+                    "name": user_tag, "tag": user_tag,
+                    "media_type": ["Movie", "Series"], "enabled": True, "source": "auto",
+                    "default_sort": "DateCreated",
+                })
+                existing_tags.add(user_tag)
 
     # ── YouTube channel playlists ──
     # Every channel someone follows becomes a playlist of its uploads, for
@@ -738,9 +736,6 @@ def _enabled_toggle_names(db: Session, user_id: int) -> set:
         if key in builtin_names:
             names.add(builtin_names[key])
         elif key == "builtin:my_downloads":
-            # Only "desired" while the user has a DownloadRequest (see
-            # get_desired_smartlists) — deleting their last request must not
-            # delete the enabled playlist.
             user_name = _user_display_name(db, user_id)
             if user_name:
                 names.add(downloads_tag(user_name))

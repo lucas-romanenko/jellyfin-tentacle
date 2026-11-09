@@ -4099,7 +4099,9 @@ async function confirmAddHomeRow() {
       body: JSON.stringify(body),
     });
     if (r.success) {
-      toast('Row added');
+      toast(body.section_id === 'my_downloads'
+        ? 'My Downloads added: what you download shows here once it’s ready to watch'
+        : 'Row added');
       hideAddHomeRow();
       loadHomeScreen();
       pushHomeConfig();

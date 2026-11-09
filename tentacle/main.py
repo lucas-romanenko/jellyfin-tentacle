@@ -1052,6 +1052,14 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Home rows migration failed: {e}")
 
+        # Once: the downloads made before the admins' download history existed
+        try:
+            from services import download_history
+            download_history.backfill_once(db)
+        except Exception as e:
+            db.rollback()
+            logger.warning(f"Download history backfill failed: {e}")
+
         # Everyone but admins locks after a few wrong passwords (Jellyfin's
         # default never does), once Jellyfin answers
         if get_setting(db, "jellyfin_url"):

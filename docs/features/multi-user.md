@@ -125,6 +125,10 @@ Everything about a request shows up on open screens within a second or two, with
 
 Admins see everyone's downloads in their Activity, each marked who it's for ("for Sam"), and get the "ready to watch" message for them too. To see only your own, turn off **Show other people's downloads in my Activity** under My Home Screen → Download notifications. Requests waiting for your answer stay in Requests either way. Everyone else only ever sees their own.
 
+### Everything each person downloaded (admins)
+
+**Requests → Downloads** lists every movie and show anyone downloaded, newest first: who, when they asked, how (straight away, approved by an admin, or added by one of their lists) and where it is now (*Downloading*, *Ready*, *Removed*), plus requests still waiting, declined or failed. Pick a person to see only theirs; on **People**, each person's "N downloads" opens the same list for them. A title removed from the library stays in the list as *Removed*.
+
 ## Problems go to the admin
 
 Every 10 minutes Tentacle checks what can break for the household: an IPTV provider failing, Radarr or Sonarr unreachable, a disk nearly full, downloads stuck, Live TV not set up in Jellyfin, Jellyfin down. Admins get one message when a problem starts and one when it's over. The family never sees error details, only a plain line where it matters, such as "Live TV is unavailable right now. (admin) knows." (Tentacle's pages, Jellyfin's Live TV page and the TV app).

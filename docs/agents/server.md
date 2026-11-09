@@ -114,7 +114,13 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   rules (custom playlists), home layout. Per-user files:
   `/data/smartlists/{jellyfin_user_id}/`, `/data/home-configs/{jellyfin_user_id}.json`.
 - `DownloadRequest` (tmdb_id, media_type, user_id) records who asked for a
-  download; non-admins may delete only what they requested.
+  download; non-admins may delete only what they requested. One per title,
+  deleted when the download goes. `DownloadHistory` (services/download_history.py)
+  keeps every download sent for a person (`media_requests.record_download_request`:
+  straight away, `via` "approved by X" with the day asked, or a list), never
+  deleted with the title, for the admins' Requests → Downloads
+  (`/api/requests/downloads`); its status (downloading / ready / removed) is read
+  from the library and DownloadRequest each time, never stored.
 
 ## Family (Roadmap 1c: `routers/family.py`, `services/family.py`, `approvals.py`, `admin_alerts.py`, `tv_app.py`)
 
@@ -403,7 +409,11 @@ user_id)` computes them every time from source tags, list subscriptions
   shows twice; adding Continue Watching next to a Next Up row turns the switch
   off; poster/wide, default wide), On Now (`onnow`: its own square channel
   card, no shape) and Recordings (`recordings`: the latest recordings,
-  poster/wide, default poster; picker only). The plugin works out Continue
+  poster/wide, default poster; picker only). The picker also offers **My
+  Downloads** (`section_id` `my_downloads`, own homes only): `add_row` switches
+  on the person's `builtin:my_downloads` playlist ("<name>'s Downloads", made
+  before their first download too) and adds it as a playlist row; the default
+  home offers the ready-made "My Downloads" key instead. The plugin works out Continue
   Watching, Next Up and Recordings once (`/TentacleHome/ContinueWatching`,
   `/NextUp`, `/Recordings`) for the web and the TV app, and its `Sections`
   sends no other section. In both next-episode lists a show counts as last
