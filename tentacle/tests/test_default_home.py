@@ -328,8 +328,8 @@ class AdminEditsTheDefault(Base):
         self.assertEqual([r["display_name"] for r in d["rows"]], ["Continue Watching", "Netflix Movies", "My Downloads"])
         self.assertEqual(d["rows"][1]["shape"], "wide")
         self.assertEqual(d["hero"]["playlist_id"], "source:Netflix:movies")
-        self.assertEqual(self.names(2), ["Continue Watching", "Netflix Movies"],
-                         "ethan has no downloads, so no Downloads row")
+        self.assertEqual(self.names(2), ["Continue Watching", "Netflix Movies", "ethan's Downloads"],
+                         "ethan gets his own, before his first download (an empty row isn't drawn)")
 
 
 class ExistingHomes(Base):
@@ -380,7 +380,8 @@ class Picker(Base):
         """Lucas, 2026-10-26: "no Jellyfin built-in rows at all"."""
         rsl.read_home(db=self.db, user=self.user(2))
         offered = [x["section_id"] for x in rsl.list_builtin_sections(db=self.db, user=self.user(2))["sections"]]
-        self.assertEqual(["recordings"], offered, "Continue Watching and On Now are already on the default home")
+        self.assertEqual(["recordings", "my_downloads"], offered,
+                         "Continue Watching and On Now are already on the default home; My Downloads is everyone's")
         for gone in ("nextup", "latestmedia", "activerecordings", "resumeaudio", "smalllibrarytiles", "livetv"):
             r = rsl.add_row(rsl.AddRowRequest(section_id=gone), db=self.db, user=self.user(2))
             self.assertFalse(r["success"], gone)

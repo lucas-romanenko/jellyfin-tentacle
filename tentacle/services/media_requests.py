@@ -140,15 +140,19 @@ def _choose_profile(db: Session, service: str, url: str, key: str,
     return chosen, f"{label} ({'chosen for this request' if override is not None else 'default'})"
 
 
-def record_download_request(db: Session, tmdb_id: int, media_type: str, user_id: int):
-    """Record who requested a download so the scan can attribute it."""
+def record_download_request(db: Session, tmdb_id: int, media_type: str, user_id: int,
+                            via: str = "", asked_at: Optional[datetime] = None):
+    """Record who requested a download so the scan can attribute it, and keep
+    it in their download history (services/download_history.py)."""
+    from services import download_history
     existing = db.query(DownloadRequest).filter(
         DownloadRequest.tmdb_id == tmdb_id,
         DownloadRequest.media_type == media_type,
     ).first()
     if not existing:
         db.add(DownloadRequest(tmdb_id=tmdb_id, media_type=media_type, user_id=user_id))
-        db.commit()
+    download_history.record(db, user_id, tmdb_id, media_type, via=via, asked_at=asked_at)
+    db.commit()
 
 
 def _bust_discover_cache():
@@ -269,7 +273,8 @@ def request_movies(db: Session, tmdb_ids: Iterable[int], *, user_id: Optional[in
                    quality_profile_override: Optional[int] = None,
                    legacy_profile_id: Optional[int] = None,
                    already_owned: Optional[Callable[[int], bool]] = None,
-                   want_release_date: bool = False) -> RequestOutcome:
+                   want_release_date: bool = False,
+                   asked_at: Optional[datetime] = None) -> RequestOutcome:
     """Ask Radarr for these movies with the configured profile and root folder.
 
     `already_owned(tmdb_id)` lets the entry point say which titles it counts as
@@ -294,7 +299,7 @@ def request_movies(db: Session, tmdb_ids: Iterable[int], *, user_id: Optional[in
             continue
         out.added.append(tmdb_id)
         if user_id is not None:
-            record_download_request(db, tmdb_id, "movie", user_id)
+            record_download_request(db, tmdb_id, "movie", user_id, via=via, asked_at=asked_at)
         # An extra round trip purely for UI feedback: only for a single-title add.
         if want_release_date and len(out.added) == 1:
             out.release_date = radarr_upcoming_release(url, key, tmdb_id)
@@ -356,7 +361,7 @@ _NO_VOD_ROOT_USER = (
 
 
 def _series_added(db: Session, out: RequestOutcome, sonarr, added_id: int, request_id: int,
-                  user_id: Optional[int]):
+                  user_id: Optional[int], via: str = "", asked_at: Optional[datetime] = None):
     """Bookkeeping for a series that is now in Sonarr. When its picked
     episodes could not be applied (sonarr.last_error), the request still
     reads as failed, with that reason."""
@@ -366,7 +371,7 @@ def _series_added(db: Session, out: RequestOutcome, sonarr, added_id: int, reque
         out.report.record(ADDED)
     out.added.append(added_id)
     if user_id is not None:
-        record_download_request(db, request_id, "series", user_id)
+        record_download_request(db, request_id, "series", user_id, via=via, asked_at=asked_at)
 
 
 def request_series(db: Session, *, tmdb_ids: Iterable[int] = (), tvdb_ids: Iterable[int] = (),
@@ -375,7 +380,8 @@ def request_series(db: Session, *, tmdb_ids: Iterable[int] = (), tvdb_ids: Itera
                    legacy_profile_id: Optional[int] = None,
                    monitor: str = "all", season_folder: bool = True,
                    selected_episodes: Optional[list] = None, monitor_new: bool = False,
-                   already_owned: Optional[Callable[[int], bool]] = None) -> RequestOutcome:
+                   already_owned: Optional[Callable[[int], bool]] = None,
+                   asked_at: Optional[datetime] = None) -> RequestOutcome:
     """Ask Sonarr for these series with the configured profile and root folder.
 
     Also decides where a hybrid series goes: a VOD (.strm) series that gains
@@ -460,7 +466,7 @@ def request_series(db: Session, *, tmdb_ids: Iterable[int] = (), tvdb_ids: Itera
             # Sonarr already has it — the outcome the user wanted, not a failure.
             out.report.record(EXISTS)
         elif result:
-            _series_added(db, out, sonarr, tmdb_id, tmdb_id, user_id)
+            _series_added(db, out, sonarr, tmdb_id, tmdb_id, user_id, via, asked_at)
             # Mark VOD series with sonarr_path so scan skips duplicate detection
             if existing and (existing.source or "").startswith("provider_") and result.get("path"):
                 existing.sonarr_path = result["path"]
@@ -479,7 +485,7 @@ def request_series(db: Session, *, tmdb_ids: Iterable[int] = (), tvdb_ids: Itera
             out.report.record(EXISTS)
         elif result:
             # Sonarr's tmdbId when it has one, else the negative tvdb id
-            _series_added(db, out, sonarr, -tvdb_id, result.get("tmdbId") or -tvdb_id, user_id)
+            _series_added(db, out, sonarr, -tvdb_id, result.get("tmdbId") or -tvdb_id, user_id, via, asked_at)
         else:
             out.report.record(FAILED, sonarr.last_error)
 

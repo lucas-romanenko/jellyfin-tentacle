@@ -235,7 +235,7 @@ def _replay(db: Session, row: MediaRequest, admin_name: str):
             db, body.get("tmdb_ids") or [], user_id=row.user_id, via=via,
             quality_profile_override=body.get("quality_profile_override"),
             legacy_profile_id=body.get("quality_profile_id"),
-            already_owned=downloaded, want_release_date=True)
+            already_owned=downloaded, want_release_date=True, asked_at=row.created_at)
         return out.as_response()
     if row.kind == "series":
         def downloaded(tmdb_id):
@@ -249,7 +249,7 @@ def _replay(db: Session, row: MediaRequest, admin_name: str):
             monitor=body.get("monitor") or "all",
             season_folder=body.get("season_folder") if body.get("season_folder") is not None else True,
             selected_episodes=body.get("selected_episodes"), monitor_new=body.get("monitor_new") or False,
-            already_owned=downloaded)
+            already_owned=downloaded, asked_at=row.created_at)
         return out.as_response()
     return media_requests.request_album(db, body.get("mbid") or "", user_id=row.user_id, via=via,
                                         choice=body.get("choice"))

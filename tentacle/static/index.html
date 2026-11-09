@@ -1911,6 +1911,11 @@ label.pool-row:hover { background: var(--bg2); }
 .fam-ch span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .req-list { display: flex; flex-direction: column; gap: 10px; }
 .card.my-requests { margin-bottom: 16px; }
+.req-dl-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.req-dl-bar .fam-select { max-width: 260px; }
+.req-dl-how { color: var(--text3); }
+a.fam-meta-item { color: var(--accent-text); text-decoration: none; }
+a.fam-meta-item:hover { text-decoration: underline; }
 .my-req { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); font-size: 13px; }
 .my-req:first-of-type { border-top: none; }
 .my-req-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
@@ -3076,6 +3081,11 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <div class="tabs-bar" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
           <button class="live-tab active" data-reqtab="pending" onclick="famReqTab('pending')">Waiting <span class="mych-count" id="req-count-pending"></span></button>
           <button class="live-tab" data-reqtab="decided" onclick="famReqTab('decided')">Answered</button>
+          <button class="live-tab" data-reqtab="downloads" onclick="famReqTab('downloads')">Downloads</button>
+        </div>
+        <div id="req-dl-bar" class="req-dl-bar" style="display:none">
+          <select id="req-dl-person" class="form-input fam-select" aria-label="Whose downloads" onchange="famReqDlPerson(this.value)"></select>
+          <span class="fam-hint" id="req-dl-summary"></span>
         </div>
         <div id="req-list" class="req-list"><div class="loading-state"><div class="spinner"></div> Loading&hellip;</div></div>
       </div>
@@ -5146,13 +5156,13 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="/static/js/app.js?v=49"></script>
+<script src="/static/js/app.js?v=50"></script>
 <script src="/static/js/sources.js?v=47"></script>
-<script src="/static/js/pages.js?v=54"></script>
+<script src="/static/js/pages.js?v=55"></script>
 <script src="/static/js/music.js?v=46"></script>
 <script src="/static/js/mychannels.js?v=50"></script>
 <script src="/static/js/newgroups.js?v=45"></script>
-<script src="/static/js/family.js?v=47"></script>
+<script src="/static/js/family.js?v=48"></script>
 <script src="/static/js/welcome.js?v=50"></script>
 <script src="/static/js/live.js?v=6"></script>
 <script src="/static/js/myyoutube.js?v=48"></script>

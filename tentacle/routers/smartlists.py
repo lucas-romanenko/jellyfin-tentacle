@@ -728,8 +728,53 @@ def available_playlists(db: Session = Depends(get_db), user: TentacleUser = Depe
     config = home.read()
     current_ids = {r.get("playlist_id") for r in config.get("rows", []) if r.get("type", "playlist") == "playlist"}
     available = [p for p in all_pl if p["playlist_id"] not in current_ids]
+    if not home.is_default:
+        # Offered as "My Downloads" among Tentacle's rows (builtin-sections)
+        mine = _my_downloads_name(user)
+        available = [p for p in available if p["name"] != mine]
     available.sort(key=lambda x: x["name"].lower())
     return {"playlists": available}
+
+
+# "My Downloads" in everyone's row picker (Lucas, 2026-11-09: "each person
+# should get their own my downloads row option"): their own "<name>'s
+# Downloads" playlist, the titles they asked Radarr/Sonarr for that are in the
+# library, newest first. Picking it switches the playlist on (empty until the
+# first download is ready; an empty row isn't drawn). The default home offers
+# it as the ready-made playlist "My Downloads" instead.
+MY_DOWNLOADS = "my_downloads"
+
+
+def _my_downloads_name(user: TentacleUser) -> str:
+    from services.tagger import downloads_tag
+    return downloads_tag(user.display_name)
+
+
+def _my_downloads_playlist(home) -> Optional[dict]:
+    name = _my_downloads_name(home.user)
+    return next((p for p in home.playlists() if p["name"] == name), None)
+
+
+def _switch_on_my_downloads(db: Session, home) -> tuple:
+    """Make sure the person's downloads playlist exists. Returns (playlist, error)."""
+    pl = _my_downloads_playlist(home)
+    if pl:
+        return pl, ""
+    key = "builtin:my_downloads"
+    toggle = db.query(AutoPlaylistToggle).filter(AutoPlaylistToggle.key == key,
+                                                 AutoPlaylistToggle.user_id == home.user.id).first()
+    if toggle:
+        toggle.enabled = True
+    else:
+        db.add(AutoPlaylistToggle(key=key, enabled=True, user_id=home.user.id))
+    db.commit()
+    try:
+        result = toggle_auto_playlist_fast(db, home.user.id, key, True)
+    except Exception as e:
+        logger.warning(f"[Home rows] Could not make {home.user.display_name}'s downloads playlist: {e}")
+        result = {"error": str(e)}
+    pl = _my_downloads_playlist(home)
+    return pl, "" if pl else (result.get("error") or "Jellyfin didn't make the playlist")
 
 
 class AddRowRequest(BaseModel):
@@ -742,6 +787,12 @@ def add_row(req: AddRowRequest, db: Session = Depends(get_db), user: TentacleUse
         scope: Optional[str] = None):
     """Add a playlist or built-in section as a new row to the home config."""
     home = _home_for(db, user, scope)
+    if req.section_id == MY_DOWNLOADS and not home.is_default:
+        # Before the lock: making the playlist writes the home config itself
+        pl, error = _switch_on_my_downloads(db, home)
+        if not pl:
+            return {"success": False, "message": f"Couldn't make your downloads playlist: {error}"}
+        req = AddRowRequest(playlist_id=pl["playlist_id"])
     with home_config_lock:
         config = home.read()
         if not config:
@@ -847,6 +898,12 @@ def list_builtin_sections(db: Session = Depends(get_db), user: TentacleUser = De
     available = [{"section_id": s["section_id"], "display_name": s["display_name"]} for s in TENTACLE_SECTIONS
                  if s["section_id"] not in current_ids
                  and not (s["section_id"] == "nextup" and merges_next_up(config))]
+    if not home.is_default:
+        pl = _my_downloads_playlist(home)
+        on_home = pl is not None and any(r.get("type", "playlist") == "playlist" and r.get("playlist_id") == pl["playlist_id"]
+                                         for r in config.get("rows", []))
+        if not on_home:
+            available.append({"section_id": MY_DOWNLOADS, "display_name": "My Downloads"})
     return {"sections": available}
 
 
@@ -1266,19 +1323,21 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
     if user_id is not None:
         req_user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
         if req_user:
+            # Everyone can have one, before their first download too (it fills
+            # as their downloads arrive), so a default home with "My
+            # Downloads" gives it to everyone
             my_dl_count = db.query(func.count(DownloadRequest.id)).filter(
                 DownloadRequest.user_id == user_id,
             ).scalar() or 0
-            if my_dl_count:
-                user_tag = f"{req_user.display_name}'s Downloads"
-                builtins.append({
-                    "key": "builtin:my_downloads",
-                    "name": f"{req_user.display_name}'s Downloads",
-                    "tag": user_tag,
-                    "origin": f"Requested by {req_user.display_name}",
-                    "media_type": ["Movie", "Series"],
-                    "item_count": my_dl_count,
-                })
+            user_tag = f"{req_user.display_name}'s Downloads"
+            builtins.append({
+                "key": "builtin:my_downloads",
+                "name": f"{req_user.display_name}'s Downloads",
+                "tag": user_tag,
+                "origin": f"Requested by {req_user.display_name}",
+                "media_type": ["Movie", "Series"],
+                "item_count": my_dl_count,
+            })
 
     for b in builtins:
         b["category"] = "builtin"

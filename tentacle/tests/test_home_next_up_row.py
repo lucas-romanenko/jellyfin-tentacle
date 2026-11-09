@@ -35,7 +35,7 @@ class AddRowList(Base):
         self.assertNotIn("nextup", self.offered())
         rsl.set_merge_continue_watching(rsl.MergeContinueRequest(enabled=False), db=self.db, user=self.user(2))
         self.assertIn("nextup", self.offered())
-        self.assertEqual(["Next Up", "On Now", "Recordings"],
+        self.assertEqual(["Next Up", "On Now", "Recordings", "My Downloads"],
                          [s["display_name"] for s in rsl.list_builtin_sections(db=self.db, user=self.user(2))["sections"]])
 
     def test_without_continue_watching_on_the_home_next_up_is_offered(self):

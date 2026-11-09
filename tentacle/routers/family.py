@@ -118,6 +118,10 @@ def people(db: Session = Depends(get_db)):
         favs = None if row.kids_level else _favourites(db, row.jellyfin_user_id, my_lineup(db, row, lineup))
         p["favourite_count"] = len(favs) if favs is not None else None
         out.append(p)
+    from services import download_history
+    downloads = download_history.counts_by_person(db)
+    for p in out:
+        p["downloads"] = downloads.get(p["id"], 0)
     kids_keys = F.kids_channels(db)
     names = {c["key"]: c["name"] for c in pool}
     return {
@@ -421,6 +425,13 @@ def take_back(request_id: int, user: TentacleUser = Depends(get_user_from_reques
 @router.get("/api/requests", dependencies=[Depends(require_admin)])
 def all_requests(db: Session = Depends(get_db)):
     return approvals.listing(db)
+
+
+@router.get("/api/requests/downloads", dependencies=[Depends(require_admin)])
+def downloads_by_person(user_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """Everything each person has downloaded or asked for (Requests → Downloads)."""
+    from services import download_history
+    return download_history.listing(db, user_id=user_id)
 
 
 @router.get("/api/requests/count", dependencies=[Depends(require_admin)])

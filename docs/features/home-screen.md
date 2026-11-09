@@ -54,6 +54,7 @@ Click the dropdown to add a row. Available options include:
 - **Next Up**: the next episodes on a row of their own. It is in the list only while Continue Watching's **Next episodes** is off; switching Next episodes back on takes the Next Up row away, so nothing shows twice.
 - **On Now**: what's on now on your favourite channels.
 - **Recordings**: your latest Live TV recordings.
+- **My Downloads**: the movies and shows you downloaded (asked for straight away, or approved by an admin), newest first, as soon as each one is ready to watch. Everyone has it in their list, kids too (within their age limit). What is still downloading stays in Discover → Activity until it's ready; with nothing ready yet the row isn't shown. On your home it's called "<your name>'s Downloads".
 
 Next episodes come most recently watched first. A show you had caught up on whose new season (or new episode) arrives later jumps to the front from the day it arrived, instead of waiting behind every show you watched since.
 
