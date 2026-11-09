@@ -926,9 +926,26 @@ async def _open_first(pb: _Playback, reader: _Reader, client, url, headers, guar
         if m:
             pb.size = int(m.group(1))
     else:
+        asked_from_zero = "Range" in headers and start == 0 and end is None
         start, end = 0, None
         if length.isdigit():
             pb.size = int(length)
+        # The same provider names its Accept-Ranges as the file's span
+        # ("0-3414635241"), no unit. A browser playing the film through
+        # Jellyfin's /Videos/{id}/stream?static=true (which passes both on
+        # as they are) takes that first answer for a file it cannot seek
+        # in: seekable 0-0, and a seek restarts the film. The 200 holds
+        # exactly what `bytes=0-` asked for, so it goes out as that 206.
+        if asked_from_zero and pb.size:
+            status = 206
+            passthrough = {k: v for k, v in passthrough.items() if k.lower() != "content-range"}
+            passthrough["content-range"] = f"bytes 0-{pb.size - 1}/{pb.size}"
+    # Ranges work (a drop is resumed with one): say so in the unit HTTP
+    # knows, unless the provider says it has none.
+    said = next((v for k, v in passthrough.items() if k.lower() == "accept-ranges"), "")
+    if said.strip().lower() != "none":
+        passthrough = {k: v for k, v in passthrough.items() if k.lower() != "accept-ranges"}
+        passthrough["accept-ranges"] = "bytes"
     pb.content_type = content_type
     # The last byte the provider said this body carries: a body that ends
     # cleanly before it is a drop, not the end of the file.
