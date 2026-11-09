@@ -686,7 +686,7 @@ class AdminAlert(Base):
     __tablename__ = "admin_alerts"
     id = Column(Integer, primary_key=True, autoincrement=True)
     key = Column(String, nullable=False, unique=True)   # e.g. "disk:/media/movies", "livetv:setup"
-    area = Column(String, nullable=False)               # livetv | library | requests | downloads | server
+    area = Column(String, nullable=False)               # livetv | guide | library | requests | downloads | server | storage
     title = Column(String, nullable=False)
     message = Column(String, nullable=False)
     active = Column(Boolean, default=True, index=True)

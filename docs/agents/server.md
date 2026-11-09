@@ -198,11 +198,17 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
 - Problems (`admin_alerts.check`, every 10 min): providers failing (from
   provider_health's state; it sends its own Pushover), Radarr/Sonarr
   unreachable and disk errors (arr_insight), stuck downloads, Live TV set-up
-  failing, Jellyfin down. `AdminAlert` rows: told once when new, once when
-  over. A check that fails itself leaves its alerts alone.
+  failing, Jellyfin down, and (`_seen_storage`, area `storage`) Live TV
+  recordings or a library folder on the disk with Jellyfin's own data while
+  other libraries are on another disk (Jellyfin 10.11 `/System/Info/Storage`:
+  DeviceId is only the path, so one disk = same free + used and free within
+  1 GB of `ProgramDataFolder`'s; one disk for everything, or no endpoint
+  before 10.11, says nothing). `AdminAlert` rows: told once when new, once
+  when over. A check that fails itself leaves its alerts alone.
   `family_messages()` gives one plain line per area for everyone (no app
   names, addresses or codes): `/api/family/status`, the dashboard banner,
-  the plugin's Live TV page and the TV app.
+  the plugin's Live TV page and the TV app; `ADMIN_AREAS` (storage) give
+  the family none.
 - TV app: `GET /tv` redirects to the newest release APK (GitHub API, cached
   6 h); People shows each person's Tentacle TV app version from Jellyfin's
   `/Devices` (`AppName` "Tentacle Android TV", debug builds left out).
