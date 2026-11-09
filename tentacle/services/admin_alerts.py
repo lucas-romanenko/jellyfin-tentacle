@@ -3,7 +3,8 @@
 Every 10 minutes Tentacle looks at what can break for the household: an
 IPTV provider failing, a Live TV guide not updating, Radarr/Sonarr
 unreachable, a disk filling up, downloads stuck, Live TV not set up in
-Jellyfin, Jellyfin itself down. A new
+Jellyfin, Jellyfin itself down, recordings or a library on the disk with
+Jellyfin's own data instead of the media disk. A new
 problem is told to every admin once (a message in Jellyfin, plus Pushover
 when it's set up), and once more when it's over. Nothing goes to the family:
 they see one plain line where it matters ("Live TV is unavailable right now.
@@ -24,6 +25,8 @@ from models.database import AdminAlert, Provider, TentacleUser, create_notificat
 logger = logging.getLogger(__name__)
 
 AREAS = ("livetv", "guide", "library", "requests", "downloads", "server")
+# Areas for the admins only: nothing the family would notice, no plain line for them.
+ADMIN_AREAS = ("storage",)
 
 
 def _admins(db: Session) -> list:
@@ -188,7 +191,74 @@ def _seen_jellyfin(db: Session) -> dict:
                                   "Nobody can watch anything until Jellyfin is back.", True)}
 
 
-CHECKS = (_seen_providers, _seen_guides, _seen_arr, _seen_downloads, _seen_livetv, _seen_jellyfin)
+def _disk_size(f: dict) -> int:
+    """Free + used bytes; 0 when Jellyfin couldn't read the folder (-1s: a
+    missing folder, no permission, a share not mounted)."""
+    free, used = f.get("FreeSpace") or 0, f.get("UsedSpace") or 0
+    return free + used if free >= 0 and used >= 0 else 0
+
+
+def _same_disk(a: dict, b: dict) -> bool:
+    """Two folders of Jellyfin's /System/Info/Storage on one filesystem: the
+    same size (free + used) and, read a moment apart, about the same free space
+    (two equal drives aren't one). DeviceId is only the path there."""
+    size_a, size_b = _disk_size(a), _disk_size(b)
+    if size_a <= 0 or size_b <= 0 or size_a != size_b:
+        return False
+    return abs((a.get("FreeSpace") or 0) - (b.get("FreeSpace") or 0)) < 2 ** 30
+
+
+def _gb(n) -> str:
+    return f"{(n or 0) / 1e9:.0f} GB"
+
+
+def _seen_storage(db: Session) -> dict:
+    """Recordings, or a library folder, on the disk with Jellyfin's own data
+    (config, database, metadata) while other libraries are on another disk:
+    media meant for the media disk is filling the system disk (Lucas,
+    2026-11-09: Live TV recorded into Jellyfin's default folder, its
+    container's disk lost 7 GB a day). One disk for everything says nothing.
+    Jellyfin before 10.11 has no /System/Info/Storage: nothing to say."""
+    import requests
+    from services.livetv_tuners import jellyfin_for
+    jf = jellyfin_for(db)
+    if jf is None:
+        return {}
+    try:
+        st = jf.get("/System/Info/Storage") or {}
+    except requests.HTTPError as e:
+        if e.response is not None and e.response.status_code == 404:
+            return {}
+        raise
+    system = st.get("ProgramDataFolder") or {}
+    folders = [(lib, f) for lib in st.get("Libraries") or [] for f in lib.get("Folders") or []]
+    # another disk = a folder Jellyfin could read that isn't on the system disk
+    if not _disk_size(system) or not any(_disk_size(f) and not _same_disk(system, f) for _, f in folders):
+        return {}
+    cfg = jf.get("/System/Configuration/livetv") or {}
+    rec_paths = {p.rstrip("/\\").casefold() for p in [cfg.get("RecordingPath"), cfg.get("MovieRecordingPath"),
+                                                      cfg.get("SeriesRecordingPath")] + list(cfg.get("MediaLocationsCreated") or []) if p}
+    free = _gb(system.get("FreeSpace"))
+    out = {}
+    for lib, f in folders:
+        if not _same_disk(system, f):
+            continue
+        path = (f.get("Path") or "").rstrip("/\\")
+        if path.casefold() in rec_paths:
+            out["storage:recordings"] = (
+                "storage", "Live TV recordings are filling Jellyfin's system disk",
+                f"Jellyfin records into {path}, on the disk with its own data ({free} free), not on the disk "
+                f"with your other media. In Jellyfin: Dashboard → Live TV → Recording path, choose a folder on "
+                f"the media disk, then move the recordings there.", True)
+        else:
+            out[f"storage:library:{lib.get('Id')}:{path}"] = (
+                "storage", f"“{lib.get('Name') or 'A library'}” is on Jellyfin's system disk",
+                f"Its folder {path} is on the disk with Jellyfin's own data ({free} free), not on the disk with "
+                f"your other media.", True)
+    return out
+
+
+CHECKS = (_seen_providers, _seen_guides, _seen_arr, _seen_downloads, _seen_livetv, _seen_jellyfin, _seen_storage)
 
 
 def check(db: Session) -> dict:
@@ -205,7 +275,7 @@ def check(db: Session) -> dict:
         owned_prefixes.add(fn.__name__)
     raised = sum(raise_alert(db, k, *v) for k, v in seen.items())
     prefix_of = {"_seen_providers": "provider:", "_seen_guides": "guide:", "_seen_arr": "arr:", "_seen_downloads": "downloads:",
-                 "_seen_livetv": "livetv:", "_seen_jellyfin": "jellyfin:"}
+                 "_seen_livetv": "livetv:", "_seen_jellyfin": "jellyfin:", "_seen_storage": "storage:"}
     checked = tuple(prefix_of[n] for n in owned_prefixes)
     cleared = 0
     for row in active(db):
@@ -213,7 +283,8 @@ def check(db: Session) -> dict:
             continue
         if row.key.startswith(checked) or (row.key.startswith("disk:") and "_seen_arr" in owned_prefixes):
             push = not row.key.startswith("provider:")
-            fixed = "It works again." if row.key.startswith("provider:") else ""
+            fixed = "It works again." if row.key.startswith("provider:") else \
+                "It's on the media disk now." if row.key.startswith("storage:") else ""
             cleared += clear_alert(db, row.key, fixed, push=push)
     return {"raised": raised, "cleared": cleared, "active": len(active(db))}
 
@@ -271,6 +342,8 @@ def family_messages(db: Session) -> list:
     for row in active(db):
         if row.key.startswith(("provider:", "provider_expiry:")):
             continue        # said above, in its own words, or over already
+        if row.area in ADMIN_AREAS:
+            continue
         if row.area not in areas:
             areas.append(row.area)
     return out + [{"area": a, "text": _FAMILY_TEXT[a].format(who=who)} for a in AREAS if a in areas]
