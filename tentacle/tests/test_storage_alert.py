@@ -90,6 +90,18 @@ class Seen(unittest.TestCase):
                           {"RecordingPath": "/recordings"})
         self.assertEqual({}, self.seen(jf))
 
+    def test_an_unreadable_folder_is_not_another_disk(self):
+        # Jellyfin gives -1s for a folder it can't read (gone, no permission, share not mounted)
+        gone = {"Path": "/media/old", "FreeSpace": -1, "UsedSpace": -1, "DeviceId": None}
+        jf = FakeJellyfin(storage(("m1", "Movies", [folder("/media/movies", SYSTEM), gone]),
+                                  ("r1", "Recordings", [folder("/config/data/livetv/recordings", SYSTEM)])), DEFAULT_REC)
+        self.assertEqual({}, self.seen(jf))
+
+    def test_the_recordings_folder_in_another_case(self):
+        jf = FakeJellyfin(storage(MOVIES, ("r1", "Recordings", [folder("C:\\ProgramData\\Jellyfin\\Recordings", SYSTEM)])),
+                          {"RecordingPath": "c:\\programdata\\jellyfin\\recordings\\"})
+        self.assertEqual(["storage:recordings"], list(self.seen(jf)))
+
     def test_jellyfin_before_10_11_says_nothing(self):
         self.assertEqual({}, self.seen(FakeJellyfin({}, missing=True)))
 

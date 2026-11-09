@@ -191,12 +191,18 @@ def _seen_jellyfin(db: Session) -> dict:
                                   "Nobody can watch anything until Jellyfin is back.", True)}
 
 
+def _disk_size(f: dict) -> int:
+    """Free + used bytes; 0 when Jellyfin couldn't read the folder (-1s: a
+    missing folder, no permission, a share not mounted)."""
+    free, used = f.get("FreeSpace") or 0, f.get("UsedSpace") or 0
+    return free + used if free >= 0 and used >= 0 else 0
+
+
 def _same_disk(a: dict, b: dict) -> bool:
     """Two folders of Jellyfin's /System/Info/Storage on one filesystem: the
     same size (free + used) and, read a moment apart, about the same free space
     (two equal drives aren't one). DeviceId is only the path there."""
-    size_a = (a.get("FreeSpace") or 0) + (a.get("UsedSpace") or 0)
-    size_b = (b.get("FreeSpace") or 0) + (b.get("UsedSpace") or 0)
+    size_a, size_b = _disk_size(a), _disk_size(b)
     if size_a <= 0 or size_b <= 0 or size_a != size_b:
         return False
     return abs((a.get("FreeSpace") or 0) - (b.get("FreeSpace") or 0)) < 2 ** 30
@@ -226,18 +232,19 @@ def _seen_storage(db: Session) -> dict:
         raise
     system = st.get("ProgramDataFolder") or {}
     folders = [(lib, f) for lib in st.get("Libraries") or [] for f in lib.get("Folders") or []]
-    if not system or not any(not _same_disk(system, f) for _, f in folders):
+    # another disk = a folder Jellyfin could read that isn't on the system disk
+    if not _disk_size(system) or not any(_disk_size(f) and not _same_disk(system, f) for _, f in folders):
         return {}
     cfg = jf.get("/System/Configuration/livetv") or {}
-    rec_paths = {p.rstrip("/\\") for p in [cfg.get("RecordingPath"), cfg.get("MovieRecordingPath"),
-                                            cfg.get("SeriesRecordingPath")] + list(cfg.get("MediaLocationsCreated") or []) if p}
+    rec_paths = {p.rstrip("/\\").casefold() for p in [cfg.get("RecordingPath"), cfg.get("MovieRecordingPath"),
+                                                      cfg.get("SeriesRecordingPath")] + list(cfg.get("MediaLocationsCreated") or []) if p}
     free = _gb(system.get("FreeSpace"))
     out = {}
     for lib, f in folders:
         if not _same_disk(system, f):
             continue
         path = (f.get("Path") or "").rstrip("/\\")
-        if path in rec_paths:
+        if path.casefold() in rec_paths:
             out["storage:recordings"] = (
                 "storage", "Live TV recordings are filling Jellyfin's system disk",
                 f"Jellyfin records into {path}, on the disk with its own data ({free} free), not on the disk "
