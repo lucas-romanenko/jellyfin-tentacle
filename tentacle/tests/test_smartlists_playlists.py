@@ -177,3 +177,52 @@ class _FakeDb:
 
     def first(self):
         return None
+
+
+class MergedSeriesJellyfin(FakeJellyfin):
+    """A show that exists as two Series items with one provider id: Jellyfin
+    expands the leftover item into the real item's episodes."""
+    def __init__(self, merged, **kw):
+        super().__init__(**kw)
+        self.merged = merged          # leftover id -> real id (None = unknown)
+        self.probed = []
+
+    def episode_series_id(self, series_id):
+        self.probed.append(series_id)
+        return self.merged.get(series_id, series_id)
+
+
+class TestMergedSeriesItems(unittest.TestCase):
+    """A leftover Series item whose episodes carry another item's SeriesId used
+    to be re-added (and the real one removed) on every refresh."""
+
+    def test_leftover_of_a_present_series_changes_nothing(self):
+        jf, stats = MergedSeriesJellyfin({"leftover": "real"}), new_stats()
+        _update_episode_playlist(jf, "P", "Kids", ["s1", "leftover"],
+                                 episodes_of(["s1", "real"]), stats)
+        self.assertEqual(jf.added, [])
+        self.assertEqual(jf.removed, [])
+
+    def test_settles_after_one_refresh(self):
+        jf, stats = MergedSeriesJellyfin({"leftover": "real"}), new_stats()
+        _update_episode_playlist(jf, "P", "Kids", ["s1", "leftover"], episodes_of(["s1"]), stats)
+        self.assertEqual(jf.added, [["real"]])
+        jf2 = MergedSeriesJellyfin({"leftover": "real"})
+        _update_episode_playlist(jf2, "P", "Kids", ["s1", "leftover"],
+                                 episodes_of(["s1", "real"]), new_stats())
+        self.assertEqual((jf2.added, jf2.removed), ([], []))
+
+    def test_both_items_desired_are_one_series(self):
+        jf, stats = MergedSeriesJellyfin({"leftover": "real"}), new_stats()
+        _update_episode_playlist(jf, "P", "Kids", ["real", "leftover"], episodes_of(["real"]), stats)
+        self.assertEqual((jf.added, jf.removed), ([], []))
+
+    def test_unknown_answer_keeps_the_old_behaviour(self):
+        jf, stats = MergedSeriesJellyfin({"s3": None}), new_stats()
+        _update_episode_playlist(jf, "P", "TV", ["s1", "s3"], episodes_of(["s1"]), stats)
+        self.assertEqual(jf.added, [["s3"]])
+
+    def test_only_missing_series_are_probed(self):
+        jf, stats = MergedSeriesJellyfin({}), new_stats()
+        _update_episode_playlist(jf, "P", "TV", ["s1", "s2", "s3"], episodes_of(["s1", "s2"]), stats)
+        self.assertEqual(jf.probed, ["s3"])

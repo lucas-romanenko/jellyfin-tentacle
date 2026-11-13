@@ -2045,6 +2045,25 @@ def _update_episode_playlist(jf, playlist_id: str, name: str, item_ids: list,
         if empty:
             logger.info(f"[SmartLists] '{name}': {len(empty)} desired series have no episodes yet — skipped")
             desired = [s for s in desired if s not in empty]
+
+    # A desired series can be the second Jellyfin item of a show (a leftover
+    # folder with the same provider id): adding it expands to the OTHER item's
+    # episodes, whose SeriesId never matches, so it was added again on every
+    # refresh and the playlist never settled. Count such an id as the series
+    # its episodes carry. Only series not already present are probed, and an
+    # unknown answer (None) changes nothing.
+    resolver = getattr(jf, "episode_series_id", None)
+    if resolver is not None:
+        mapped = {}
+        for sid in desired:
+            if sid in current_set or (series_ids is not None and sid not in series_ids):
+                continue
+            real = resolver(sid)
+            if real and real != sid:
+                mapped[sid] = real
+        if mapped:
+            logger.info(f"[SmartLists] '{name}': {len(mapped)} desired series are another item's episodes — counted as that series")
+            desired = list(dict.fromkeys(mapped.get(s, s) for s in desired))
     desired_set = set(desired)
 
     def _done(message: str, changed: bool = False):

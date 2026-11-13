@@ -1603,6 +1603,23 @@ class JellyfinService:
             return None
         return data.get("TotalRecordCount")
 
+    def episode_series_id(self, series_id: str) -> Optional[str]:
+        """The SeriesId Jellyfin's episodes of this Series carry. It differs from
+        series_id when the show exists as two Series items with the same
+        provider id (e.g. a leftover folder without the year): Jellyfin expands
+        either item into the other one's episodes. None = no episodes or
+        unknown (request failed)."""
+        params = {"ParentId": series_id, "IncludeItemTypes": "Episode",
+                  "Recursive": "true", "Limit": 1}
+        if self.user_id:
+            params["UserId"] = self.user_id
+        try:
+            data = self._get("/Items", params=params)
+        except Exception:
+            return None
+        items = (data or {}).get("Items") or []
+        return items[0].get("SeriesId") if items else None
+
     def add_to_playlist(self, playlist_id: str, item_ids: List[str]) -> bool:
         """Add items to an existing playlist in chunks of 25.
 
