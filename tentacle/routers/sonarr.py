@@ -281,12 +281,15 @@ def get_root_folders(db: Session = Depends(get_db)):
     sonarr_key = get_setting(db, "sonarr_api_key")
     if not sonarr_url or not sonarr_key:
         raise HTTPException(400, "Sonarr not configured")
-    r = requests.get(
-        f"{sonarr_url.rstrip('/')}/api/v3/rootfolder",
-        headers={"X-Api-Key": sonarr_key},
-        timeout=10,
-    )
-    r.raise_for_status()
+    try:
+        r = requests.get(
+            f"{sonarr_url.rstrip('/')}/api/v3/rootfolder",
+            headers={"X-Api-Key": sonarr_key},
+            timeout=10,
+        )
+        r.raise_for_status()
+    except requests.RequestException as e:
+        raise HTTPException(502, f"Failed to fetch Sonarr root folders ({type(e).__name__})")
     return [{"path": f["path"], "freeSpace": f["freeSpace"]} for f in r.json()]
 
 

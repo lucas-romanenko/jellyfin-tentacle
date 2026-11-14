@@ -5,6 +5,8 @@ provider health, stream health. Admin-only.
 """
 
 import logging
+
+import requests
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -152,7 +154,10 @@ def missing_movies(db: Session = Depends(get_db)):
     url, key = _arr_conn(db, "radarr")
     if not url or not key:
         return []
-    movies = _arr_get(url, key, "movie")
+    try:
+        movies = _arr_get(url, key, "movie")
+    except requests.RequestException as e:
+        raise HTTPException(502, f"Radarr can't be reached ({type(e).__name__})")
     out = []
     for m in movies:
         if not m.get("monitored") or m.get("hasFile"):
@@ -181,9 +186,12 @@ def missing_episodes(limit: int = 300, db: Session = Depends(get_db)):
     out, page = [], 1
     page_size = min(limit, 200)
     while len(out) < limit:
-        data = _arr_get(url, key, "wanted/missing", page=page, pageSize=page_size,
-                        sortKey="series.sortTitle", sortDirection="ascending",
-                        includeSeries="true")
+        try:
+            data = _arr_get(url, key, "wanted/missing", page=page, pageSize=page_size,
+                            sortKey="series.sortTitle", sortDirection="ascending",
+                            includeSeries="true")
+        except requests.RequestException as e:
+            raise HTTPException(502, f"Sonarr can't be reached ({type(e).__name__})")
         records = data.get("records", [])
         for ep in records:
             series = ep.get("series") or {}

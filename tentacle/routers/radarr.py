@@ -726,12 +726,15 @@ def get_root_folders(db: Session = Depends(get_db)):
     radarr_key = get_setting(db, "radarr_api_key")
     if not radarr_url or not radarr_key:
         raise HTTPException(400, "Radarr not configured")
-    r = requests.get(
-        f"{radarr_url.rstrip('/')}/api/v3/rootfolder",
-        headers={"X-Api-Key": radarr_key},
-        timeout=10,
-    )
-    r.raise_for_status()
+    try:
+        r = requests.get(
+            f"{radarr_url.rstrip('/')}/api/v3/rootfolder",
+            headers={"X-Api-Key": radarr_key},
+            timeout=10,
+        )
+        r.raise_for_status()
+    except requests.RequestException as e:
+        raise HTTPException(502, f"Failed to fetch Radarr root folders ({type(e).__name__})")
     return [{"path": f["path"], "freeSpace": f["freeSpace"]} for f in r.json()]
 
 
