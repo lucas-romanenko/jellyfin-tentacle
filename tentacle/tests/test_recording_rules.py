@@ -127,6 +127,19 @@ class Teams(unittest.TestCase):
         h = self.hit("Live: Hockey LNH", "En provenance du Centre Bell à Montréal.", team="mtl")
         self.assertEqual((True, True), (h.matched, h.home))
 
+    def test_a_letter_nickname_is_not_the_word_it_folds_to(self):
+        # #973: "A's" folded to "as", so any description with "as" named the
+        # Athletics and let "Toronto" count for the Blue Jays
+        bt = ("Breakfast Television Toronto", "The latest in local news, weather and traffic, "
+              "as well as celebrity interviews and lifestyle trends.")
+        self.assertFalse(self.hit(*bt, team="tor", league="mlb").matched)
+        for nick, team in (("A's", "ath"), ("O's", "bal")):
+            self.assertFalse(M.has(M.fold("as well as os ms bs cs"), nick))
+            self.assertTrue(self.hit("MLB Baseball", f"Blue Jays host the {nick}", team="tor", league="mlb").matched)
+            self.assertTrue(M.has(M.fold(f"The {nick.replace(chr(39), chr(8217))} visit Toronto"), nick))
+        self.assertTrue(self.hit("Live: MLB Baseball", "Toronto vs A's", team="tor", league="mlb").matched)
+        self.assertTrue(M.has(M.fold("Canadiens d'Ottawa"), "dOttawa"))
+
     def test_codes_only_in_capitals(self):
         self.assertTrue(self.hit("NHL: PIT @ TOR").matched)
         self.assertFalse(self.hit("Ancient tor of Dartmoor").matched)
