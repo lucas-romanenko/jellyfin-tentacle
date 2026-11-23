@@ -29,7 +29,8 @@ class _Base(unittest.TestCase):
     def setUp(self):
         self.fired = getattr(livetv, "_fired_timers", {})   # {} on a build without it
         self.starts = getattr(livetv, "_fired_starts", {})
-        for d in (self.fired, self.starts):
+        self.channels = getattr(livetv, "_fired_channels", {})
+        for d in (self.fired, self.starts, self.channels):
             d.clear()
             self.addCleanup(d.clear)
         self.now = datetime.utcnow().replace(microsecond=0)

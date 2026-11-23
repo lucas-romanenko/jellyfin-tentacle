@@ -25,7 +25,9 @@ class _Base(unittest.TestCase):
         self.livetv = livetv
         livetv._recording_cache.update(at=-1e9, sids=set(), pending=None, failures=0, retry_at=-1e9)
         livetv._reserved_channels.clear()
-        livetv._fired_timers.clear()
+        for d in (livetv._fired_timers, livetv._fired_channels):
+            d.clear()
+            self.addCleanup(d.clear)
         livetv._tentacle_m3u.update(at=-1e9, ids={})
         self.addCleanup(livetv._tentacle_m3u.update, at=-1e9, ids={})
         self.db = _fresh_db()

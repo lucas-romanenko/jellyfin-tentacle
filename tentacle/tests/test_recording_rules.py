@@ -424,6 +424,27 @@ class Booking(unittest.TestCase):
         self.scan(now=at(2, 40, 25))
         self.assertEqual("ended", self.rows()[0].state)
 
+    def test_a_timer_deleted_in_its_post_padding_is_recorded_not_stopped(self):
+        # The guide drops the game once it ends; Jellyfin's guide refresh then
+        # deletes its timer while the recording runs on through the padding
+        self.scan()
+        self.jf.timers[0]["Status"] = "InProgress"
+        self.scan(now=at(23, 10))
+        self.jf.timers.clear()
+        self.scan(now=at(1, 45, 25))            # programme ended 01:30, padding to 02:30
+        self.assertEqual("recording", self.rows()[0].state)
+        self.scan(now=at(2, 31, 25))
+        self.assertEqual(("ended", "Recorded"), (self.rows()[0].state, self.rows()[0].reason))
+
+    def test_a_timer_deleted_while_its_programme_is_on_stopped_it(self):
+        self.scan()
+        self.jf.timers[0]["Status"] = "InProgress"
+        self.scan(now=at(23, 10))
+        self.jf.timers.clear()                  # cancelled in Jellyfin mid-game
+        self.scan(now=at(0, 30, 25))
+        self.assertEqual(("ended", "Stopped before its end in Jellyfin"),
+                         (self.rows()[0].state, self.rows()[0].reason))
+
     def test_putting_the_rule_back_in_preview_cancels_its_own_upcoming_timer(self):
         self.scan()
         self.rule.mode = "preview"

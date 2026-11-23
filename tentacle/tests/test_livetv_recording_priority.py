@@ -299,6 +299,9 @@ class KnowingWhatIsRecording(unittest.IsolatedAsyncioTestCase):
         self.livetv = livetv
         livetv._recording_cache.update(at=-1e9, sids=set(), pending=None, failures=0, retry_at=-1e9)
         livetv._reserved_channels.clear()
+        for d in (livetv._fired_timers, livetv._fired_starts, livetv._fired_channels):
+            d.clear()      # timers another module's tests fired would still count
+            self.addCleanup(d.clear)
         self.db = _fresh_db()
         from models.database import LiveChannel, Provider, set_setting
         prov = Provider(name="P", server_url="http://provider.test", username="u", password="p")

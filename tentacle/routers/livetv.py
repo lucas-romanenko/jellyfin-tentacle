@@ -1586,6 +1586,7 @@ class _RecordingAnswer(set):
     def __init__(self, *args):
         super().__init__(*args)
         self.phases: "dict[str, tuple]" = {}
+        self.held: "set[str]" = set()      # counted only for a timer Jellyfin deleted in its post-padding
 
 
 _PHASE_ORDER = {"programme": 0, "pre": 1, "post": 2}
@@ -1636,6 +1637,8 @@ def _recording_stream_ids_from_jellyfin(url: str, key: str, m3u_ids=None) -> "se
             continue
         if status == "InProgress":
             _remember_fired_timer(timer, now)
+            if timer.get("Id") in _fired_timers:
+                _fired_channels[timer["Id"]] = (number, _parse_timer_date(timer.get("EndDate")))
             out.add(number)
             _add_phase(out.phases, number, _timer_phase(timer, now))
         elif _timer_counts(timer, now):
@@ -1648,9 +1651,23 @@ def _recording_stream_ids_from_jellyfin(url: str, key: str, m3u_ids=None) -> "se
             _add_phase(out.phases, number, _timer_phase(timer, now))
     present = {t.get("Id") for t in items}
     for tid, expiry in list(_fired_timers.items()):
+        number, end = _fired_channels.get(tid) or (None, None)
+        if tid not in present and now < expiry and number is not None and end is not None and now > end:
+            # A guide refresh deletes a timer whose programme has left the
+            # guide (Jellyfin's RefreshTimers) -- the guide drops a programme
+            # once it ends -- while the recording runs on through its
+            # post-padding: still a recording until its padded end, as long
+            # as its pull is still running (_recording_lookup_done).
+            if number not in out:
+                out.add(number)
+                out.held.add(number)
+                grace = timedelta(seconds=_PHASE_GRACE_SECONDS)
+                _add_phase(out.phases, number, ("programme" if now <= end + grace else "post", end))
+            continue
         if tid not in present or now >= expiry:
             del _fired_timers[tid]
             _fired_starts.pop(tid, None)
+            _fired_channels.pop(tid, None)
     return out
 
 
@@ -1671,8 +1688,12 @@ def _recording_stream_ids_from_jellyfin(url: str, key: str, m3u_ids=None) -> "se
 # programme moved later, the timer must not keep counting. So a remembered
 # timer counts only while it still starts by the programme start seen when
 # it fired (_fired_starts) plus the imminent window.
+#
+# _fired_channels: the GuideNumber and programme end (EndDate) of each, so a
+# timer Jellyfin deletes in its post-padding still counts until its padded end.
 _fired_timers: "dict[str, datetime]" = {}
 _fired_starts: "dict[str, datetime]" = {}
+_fired_channels: "dict[str, tuple]" = {}
 _FIRED_GRACE_SECONDS = 30.0
 
 
@@ -1913,8 +1934,13 @@ def _recording_lookup_done(task):
         cache["failures"], cache["retry_at"] = 0, -1e9
     if sids is not None:
         cache["ok_at"] = cache["at"]     # a lookup Jellyfin actually answered
-        cache["sids"] = set(sids)
-        cache["phases"] = dict(getattr(sids, "phases", None) or {})
+        # A channel held after Jellyfin deleted its timer counts only while
+        # its pull still runs: a recording cancelled, failed or cut by a
+        # Jellyfin restart in its post-padding is no recording any more.
+        running = {l.stream_key for l in _stream_slots.leases.values() if not l.preempted}
+        gone = (getattr(sids, "held", None) or set()) - running
+        cache["sids"] = set(sids) - gone
+        cache["phases"] = {k: v for k, v in (getattr(sids, "phases", None) or {}).items() if k not in gone}
         cache["answer_issued_at"] = issued if issued is not None else now
         reserved_keys = {r["stream_key"] for r in _reserved_channels.values() if r.get("stream_key")}
         _stream_slots.sync_recordings(cache["sids"] | reserved_keys, issued_at=cache["answer_issued_at"],
