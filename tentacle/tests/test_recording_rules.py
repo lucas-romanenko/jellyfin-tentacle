@@ -71,6 +71,14 @@ class Folding(unittest.TestCase):
         self.assertFalse(M.has(M.fold("Maple Leaf Pro Wrestling"), "Maple Leafs"))
         self.assertFalse(M.has(M.fold("Kingston Frontenacs"), "Kings"))
 
+    def test_a_nickname_fold_takes_a_letter_and_any_apostrophe(self):
+        # #973's nickname token is for letters only: a typed "7s" still finds "Rugby 7's"
+        self.assertTrue(M.has(M.fold("World Rugby 7's: Dubai"), "7s"))
+        self.assertTrue(M.has(M.fold("World Rugby 7's: Dubai"), "7's"))
+        # guides also write the modifier letter apostrophe (U+02BC) for ’
+        self.assertTrue(M.has(M.fold("Blue Jays at A\u02bcs"), "A's"))
+        self.assertFalse(M.has(M.fold("as well as"), "A\u02bcs"))
+
     def test_live_and_new_are_not_part_of_the_title(self):
         self.assertEqual("NHL Hockey", M.strip_prefix("Live: NHL Hockey"))
         self.assertEqual(M.identity("Live: NHL Hockey", "From Ball Arena"), M.identity("NHL Hockey", "From Ball Arena"))
