@@ -25,8 +25,51 @@ class Phases(unittest.TestCase):
     def setUp(self):
         from routers import livetv
         self.livetv = livetv
-        livetv._fired_timers.clear()
-        livetv._fired_starts.clear()
+        for d in (livetv._fired_timers, livetv._fired_starts, livetv._fired_channels):
+            d.clear()
+            self.addCleanup(d.clear)
+
+    def _lookup(self, items):
+        with mock.patch.object(self.livetv, "_jellyfin_timers", lambda u, k: {"Items": items}):
+            return self.livetv._recording_stream_ids_from_jellyfin("http://jf.test", "k")
+
+    def test_a_timer_jellyfin_deletes_in_its_post_padding_still_counts_until_its_padded_end(self):
+        # A guide refresh after the programme ended: Jellyfin's RefreshTimers
+        # deletes the timer while the recording runs on (a live install: an
+        # IIHF game ended 20:30 UTC, guide refresh 20:32, recording to 22:00)
+        now = datetime.utcnow()
+        game = {"Id": "t1", "Status": "InProgress", "ExternalChannelId": "hdhr_7",
+                "StartDate": _fmt(now - timedelta(hours=2)), "EndDate": _fmt(now - timedelta(minutes=2)),
+                "PostPaddingSeconds": 5400}
+        self.assertEqual({"7"}, self._lookup([game]))
+        answer = self._lookup([])
+        self.assertEqual(({"7"}, {"7"}), (answer, answer.held))
+        self.assertEqual("post", answer.phases["7"][0], "it still gives way to a recording that is starting (#300)")
+        # its padded end: gone
+        self.livetv._fired_timers["t1"] = datetime.utcnow() - timedelta(seconds=1)
+        self.assertEqual(set(), self._lookup([]))
+        self.assertEqual({}, self.livetv._fired_channels)
+
+    def test_the_next_programme_on_the_same_channel_is_not_a_held_one(self):
+        now = datetime.utcnow()
+        game = {"Id": "t1", "Status": "InProgress", "ExternalChannelId": "hdhr_7",
+                "StartDate": _fmt(now - timedelta(hours=2)), "EndDate": _fmt(now - timedelta(minutes=2)),
+                "PostPaddingSeconds": 5400}
+        show = {"Id": "t3", "Status": "InProgress", "ExternalChannelId": "hdhr_7",
+                "StartDate": _fmt(now - timedelta(minutes=2)), "EndDate": _fmt(now + timedelta(hours=1))}
+        self._lookup([game, show])
+        answer = self._lookup([show])
+        self.assertEqual(({"7"}, set(), "programme"), (answer, answer.held, answer.phases["7"][0]))
+
+    def test_a_timer_deleted_inside_its_programme_stops_counting(self):
+        # cancelled while its programme is on: Jellyfin stops the recording too
+        now = datetime.utcnow()
+        game = {"Id": "t2", "Status": "InProgress", "ExternalChannelId": "hdhr_8",
+                "StartDate": _fmt(now - timedelta(minutes=30)), "EndDate": _fmt(now + timedelta(minutes=30)),
+                "PostPaddingSeconds": 5400}
+        self.assertEqual({"8"}, self._lookup([game]))
+        self.assertEqual(set(), self._lookup([]))
+        self.assertEqual({}, self.livetv._fired_timers)
 
     def test_each_recording_is_in_its_programme_or_its_padding(self):
         now = datetime.utcnow()
@@ -56,6 +99,34 @@ class Phases(unittest.TestCase):
                          {k: v[0] for k, v in answer.phases.items()})
         self.assertEqual(datetime.strptime(_fmt(now - timedelta(minutes=5))[:19], "%Y-%m-%dT%H:%M:%S"),
                          answer.phases["2"][1])
+
+
+class HeldOnlyWhileItRuns(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        from routers import livetv
+        self.livetv = livetv
+        self.cache = dict(livetv._recording_cache)
+        self.addCleanup(lambda: (livetv._recording_cache.clear(), livetv._recording_cache.update(self.cache)))
+        pt = mock.patch.object(livetv, "_stream_slots", livetv._StreamSlots())
+        pt.start()
+        self.addCleanup(pt.stop)
+
+    async def test_a_held_channel_counts_only_while_its_pull_runs(self):
+        # 7: the recording's pull still runs in its padding; 9: cancelled,
+        # failed or cut by a Jellyfin restart -- its pull is gone
+        s = self.livetv._stream_slots
+        lease = await s.acquire_lease(6, 0.01, "recording", "channel:7", stream_key="7")
+        answer = self.livetv._RecordingAnswer({"7", "9", "3"})
+        answer.held |= {"7", "9"}
+        answer.phases.update({"7": ("post", datetime.utcnow()), "9": ("post", datetime.utcnow()),
+                              "3": ("programme", None)})
+        done = asyncio.get_running_loop().create_future()
+        done.set_result(answer)
+        self.livetv._recording_cache.update(pending=done, pending_issued=asyncio.get_running_loop().time())
+        self.livetv._recording_lookup_done(done)
+        self.assertEqual({"7", "3"}, self.livetv._recording_cache["sids"])
+        self.assertNotIn("9", self.livetv._recording_cache["phases"])
+        self.assertEqual(("recording", "post"), (lease.kind, lease.phase))
 
 
 class Handover(unittest.IsolatedAsyncioTestCase):

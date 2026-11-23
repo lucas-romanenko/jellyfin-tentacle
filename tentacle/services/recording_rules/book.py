@@ -464,6 +464,11 @@ def _reconcile(db: Session, timers: list, now: datetime, summary: dict) -> None:
         elif row.start - pre > now:
             journal(db, row, "scan", "lost", f"timer {row.jellyfin_timer_id} is gone before its start")
             row.state, row.reason, row.jellyfin_timer_id = "lost", "Its Jellyfin recording went away; booking it again", None
+        elif row.state == "recording" and row.stop <= now:
+            # A guide refresh deletes the timer once its programme has left the
+            # guide (Jellyfin's RefreshTimers), while the recording runs on
+            # through its post-padding: "Recorded" at the padded end.
+            continue
         else:
             row.state, row.reason = "ended", "Stopped before its end in Jellyfin"
         if row.state != before:
