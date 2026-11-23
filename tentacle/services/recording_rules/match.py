@@ -47,10 +47,11 @@ def fold(text: Optional[str]) -> str:
         return " "
     t = unicodedata.normalize("NFKD", str(text))
     t = "".join(c for c in t if not unicodedata.combining(c)).casefold()
-    t = t.replace("&", " and ").replace("@", " @ ").replace("’", "'")
+    t = t.replace("&", " and ").replace("@", " @ ").replace("’", "'").replace("ʼ", "'")
     t = re.sub(r"[^\w@']+", " ", t)
-    # one letter + 's is a nickname ("A's", "O's"), never the word "as"/"os" (#973)
-    t = re.sub(r"(?<!\w)(\w)'s(?!\w)", r"\1_s", t)
+    # one letter + 's is a nickname ("A's", "O's"), never the word "as"/"os" (#973);
+    # letters only: "Rugby 7's" stays "7s"
+    t = re.sub(r"(?<!\w)([^\W\d_])'s(?!\w)", r"\1_s", t)
     t = t.replace("'", "")   # d'Ottawa -> dottawa on both sides; "Saint-Laurent" -> saint laurent
     return " " + re.sub(r"\s+", " ", t).strip() + " "
 
