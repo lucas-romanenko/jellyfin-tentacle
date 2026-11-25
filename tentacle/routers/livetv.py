@@ -686,8 +686,13 @@ def _media_segments(playlist_text: str, base_url: str) -> list:
 
 # What an upstream pull is for. Lower number = more important. A recording
 # outranks a viewer (tvheadend: 300 vs 100): a viewer who is cut off changes
-# channel; a recording that is cut off is gone for good.
-_LEASE_PRIORITY = {"recording": 0, "live": 10, "vod": 20}
+# channel; a recording that is cut off is gone for good. A title being
+# downloaded to watch offline ("download", routers.vod) comes last: it takes
+# a slot only when one is free, and anyone who wants to watch takes it back
+# (the download waits and carries on from where it stopped).
+_LEASE_PRIORITY = {"recording": 0, "live": 10, "vod": 20, "download": 30}
+# Pulls of a provider's film or episode file (played, or downloaded): never a recording.
+_FILM_KINDS = ("vod", "download")
 
 # Where a recording is in its timer (#300), from the Jellyfin timer the
 # recording lookup reads anyway: "pre" (its pre-padding), "programme"
@@ -868,7 +873,7 @@ class _StreamSlots:
         know about a pull (maybe a recording) that opened after it."""
         victims = [l for l in self.leases.values()
                    if l.kind != "recording" and not l.preempted
-                   and (l.kind == "vod" or (not films_only and (live_before is None or l.started < live_before)))]
+                   and (l.kind in _FILM_KINDS or (not films_only and (live_before is None or l.started < live_before)))]
         for victim in victims:
             victim.preempted = True
             self.leases.pop(victim.id, None)
@@ -1129,7 +1134,7 @@ class _StreamSlots:
                 if lease is not None:
                     lease.provider_id = pid
                     return lease
-            elif self.recording_active() and (certain or kind == "vod"):
+            elif self.recording_active() and (certain or kind in _FILM_KINDS):
                 self._refuse_protected(kind, owner)
         if limit <= 0 and (pid is None or plimit <= 0):
             return self._grant(kind, owner, stream_key, pid)
@@ -1162,7 +1167,7 @@ class _StreamSlots:
             while True:
                 freed = self._freed          # before checking: a set after this is not missed
                 if self.protect and kind != "recording" and self.recording_active() \
-                        and (certain or kind == "vod"):
+                        and (certain or kind in _FILM_KINDS):
                     self._refuse_protected(kind, owner)     # a recording started while we waited
                 if self._fits(limit, pid, plimit) and self._first_in_line(me):
                     return self._grant(kind, owner, stream_key, pid)
@@ -1896,7 +1901,7 @@ async def _recording_refresh_loop():
 def _live_leases_exist() -> bool:
     """Only live pulls can be recordings; a film playing through /api/vod
     on its own is no reason to keep asking Jellyfin for its timers."""
-    return any(lease.kind != "vod" for lease in list(_stream_slots.leases.values()))
+    return any(lease.kind not in _FILM_KINDS for lease in list(_stream_slots.leases.values()))
 
 
 def _ensure_recording_refresher():
@@ -2786,6 +2791,20 @@ def _stream_snapshot(db) -> list:
                 "open_seconds": round(max(0.0, now - pb.started), 1),
                 "last_error": None,
                 "subscribers": pb.active_bodies,
+            })
+        # Titles being downloaded to watch offline: a slot while they pull
+        for dl in list(_vod._downloads):
+            out.append({
+                "channel_id": None,
+                "channel": dl.owner,
+                "client": dl.client,
+                "stream_id": None,
+                "kind": "download",
+                "state": "waiting for a free connection" if dl.lease is None else "streaming",
+                "for_seconds": round(max(0.0, now - dl.last_used), 1),
+                "open_seconds": round(max(0.0, now - dl.started), 1),
+                "last_error": None,
+                "subscribers": 1,
             })
     except Exception as e:   # the live list must never fail because of VOD bookkeeping
         logger.debug(f"[LiveTV] VOD snapshot failed: {e}")

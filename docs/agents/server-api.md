@@ -285,6 +285,11 @@ Declared on the app in `main.py` (no router, all **none**; listed in
 | PUT | `/api/notifications/others` | user (admins only, 403 otherwise) | notifications.py:show_others_downloads (`{"show": bool}`: other people's downloads in my Activity and messages) |
 | POST | `/api/notifications/toggle` | user | notifications.py:toggle_notifications |
 | POST | `/api/notifications/{notification_id}/dismiss` | user | notifications.py:dismiss_notification |
+| GET | `/api/offline/where` | user | offline.py:where (for Jellyfin's pages through the plugin: the Offline page's address, can_download) |
+| GET | `/api/offline/items/{item_id}` | user | offline.py:item (may this person download it: Can download, visible to them, not still recording; what the page keeps) |
+| GET | `/api/offline/items/{item_id}/poster` | user | offline.py:poster |
+| GET | `/api/offline/items/{item_id}/video` | user | offline.py:video (Jellyfin's Download of the item, ranges passed through) |
+| POST | `/api/offline/progress` | user | offline.py:progress (where they stopped offline → Jellyfin, unless Jellyfin's is newer) |
 | GET | `/api/providers` | admin | providers.py:list_providers |
 | POST | `/api/providers` | admin | providers.py:create_provider |
 | DELETE | `/api/providers/{provider_id}` | admin | providers.py:delete_provider |
@@ -392,7 +397,8 @@ Declared on the app in `main.py` (no router, all **none**; listed in
 | DELETE | `/api/tags/rules/{rule_id}` | user | tags.py:delete_rule |
 | PUT | `/api/tags/rules/{rule_id}` | user | tags.py:update_rule |
 | GET | `/api/updates` | user | updates.py:updates (server-sent events: the dashboard's live channel, services/live_updates.py) |
-| GET | `/api/vod/{kind}/{token_file}` | none | vod.py:vod_stream |
+| GET | `/api/vod/{kind}/{token_file}` | none | vod.py:vod_stream (with `X-Tentacle-Offline: 1`: a download to watch offline, its own "download" lease) |
+| POST | `/api/vod/link` | none (the body must carry a provider's own login) | vod.py:vod_link (the plugin's Download hook: a direct-provider `.strm` → the relay's path) |
 | GET | `/api/widget/status` | none | widget.py:widget_status |
 | GET | `/api/youtube/channels` | admin | youtube.py:list_channels |
 | POST | `/api/youtube/channels` | admin | youtube.py:add_channel |

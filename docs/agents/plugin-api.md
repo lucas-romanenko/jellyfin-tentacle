@@ -88,6 +88,7 @@ Gotchas:
 | GET | `/Tentacle/Config` | user | GetConfig |  |
 | POST | `/Tentacle/Deletions/{mediaType}/{tmdbId}/Confirm` | admin | ConfirmDeletion |  |
 | GET | `/Tentacle/HomeConfig` | admin | GetHomeConfig |  |
+| GET | `/Tentacle/Offline` | user | GetOffline (asks Tentacle's `/api/offline/where` with the caller's own token: the Offline page's address, can_download) |  |
 | GET | `/Tentacle/MdbList/Ratings` | user | GetRatings |  |
 | POST | `/Tentacle/Notify` | admin | Notify |  |
 | GET | `/Tentacle/TimerCancelled/{timerId}` | admin | TimerCancelled (Tentacle confirms a cancel the plugin passed on) |  |

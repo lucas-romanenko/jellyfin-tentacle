@@ -2528,6 +2528,45 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 @media (pointer: coarse) {
   input, select, textarea { font-size: 16px !important; }
 }
+
+/* ── Offline (offline.js) ── */
+.off-status { color: var(--text2); font-size: 14px; margin: 4px 2px 14px; }
+.off-head { color: var(--text); }
+.off-list { display: flex; flex-direction: column; gap: 10px; max-width: 860px; }
+.off-item { display: flex; align-items: center; gap: 14px; padding: 10px 12px; background: var(--bg2);
+  border: 1px solid var(--border); border-radius: var(--radius); }
+.off-item.off-ready { cursor: pointer; }
+.off-item.off-ready:hover, .off-item.off-ready:focus { border-color: var(--border2); background: var(--bg3); outline: none; }
+.off-pic { width: 64px; height: 96px; object-fit: cover; border-radius: var(--radius-sm); flex-shrink: 0; background: var(--bg3); }
+.off-text { flex: 1; min-width: 0; }
+.off-name { font-size: 15px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.off-sub { font-size: 13px; color: var(--text2); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.off-meta { font-size: 12px; color: var(--text3); margin-top: 6px; }
+.off-bar { height: 4px; background: var(--bg3); border-radius: 2px; margin-top: 8px; overflow: hidden; }
+.off-bar-fill { height: 100%; background: var(--accent); width: 0; transition: width .4s ease; }
+.off-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.off-remove { background: none; border: 1px solid transparent; color: var(--text3); font-size: 14px; cursor: pointer;
+  border-radius: var(--radius-sm); padding: 6px 9px; min-width: 34px; min-height: 34px; }
+.off-remove:hover, .off-remove:focus { color: var(--text); border-color: var(--border2); }
+.off-remove.armed { color: var(--red); border-color: var(--red); font-size: 12px; }
+.off-player { position: fixed; inset: 0; z-index: 3000; background: #000; display: flex; flex-direction: column; }
+.off-player-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px;
+  padding-top: max(10px, env(safe-area-inset-top)); color: #fff; }
+.off-player-name { font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.off-player-name span { font-weight: 400; color: rgba(255,255,255,.7); }
+.off-player-close { background: rgba(255,255,255,.12); border: none; color: #fff; font-size: 16px; border-radius: 50%;
+  width: 40px; height: 40px; cursor: pointer; flex-shrink: 0; }
+.off-player video { flex: 1; width: 100%; min-height: 0; background: #000; }
+.off-player-note { color: #fff; text-align: center; padding: 14px; font-size: 14px; }
+/* Opened with no internet: only Offline */
+body.offline-mode .sidebar-nav .nav-item:not([data-page="offline"]),
+body.offline-mode .nav-section[data-admin-only],
+body.offline-mode #sidebar-last-sync-box,
+body.offline-mode .sidebar-footer button { display: none !important; }
+@media (max-width: 768px) {
+  .off-pic { width: 54px; height: 81px; }
+  .off-item { gap: 12px; padding: 9px 10px; }
+}
 </style>
 </head>
 <body>
@@ -2561,6 +2600,11 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <!-- Teams and rules that record from the guide (recordings.js); shown with My Channels -->
         <button class="nav-item" data-page="recordings" id="nav-recordings" style="display:none">
           <span class="icon">●</span> Recordings
+        </button>
+        <!-- Movies and episodes saved on this device to watch with no internet (offline.js) -->
+        <button class="nav-item" data-page="offline">
+          <span class="icon">⤓</span> Offline
+          <span class="nav-badge nav-badge-accent" id="offline-badge" style="display:none" title="Downloading now">0</span>
         </button>
         <!-- Everyone's own YouTube channels (myyoutube.js) -->
         <button class="nav-item" data-page="myyoutube">
@@ -2987,6 +3031,18 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         <div class="rec-panel" id="rec-panel-teams" style="display:none"></div>
         <div class="rec-panel" id="rec-panel-rules" style="display:none"></div>
         <div class="rec-panel" id="rec-panel-history" style="display:none"></div>
+      </div>
+
+      <!-- ── OFFLINE: what is saved on this device to watch with no internet (offline.js) ── -->
+      <div class="page" id="page-offline">
+        <div class="card mych-head">
+          <div class="mych-head-text">
+            <div class="mych-title">Offline</div>
+            <p class="mych-sub">Movies and episodes saved on this device. They play with no internet; where you stop goes back to Jellyfin when you’re online.</p>
+          </div>
+        </div>
+        <p class="off-status off-head" id="offline-status" role="status" aria-live="polite" style="display:none"></p>
+        <div class="off-list" id="offline-list"></div>
       </div>
 
       <!-- ── MY YOUTUBE: everyone's own YouTube channels, theirs alone in Jellyfin (myyoutube.js) ── -->
@@ -5157,19 +5213,20 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="/static/js/app.js?v=50"></script>
+<script src="/static/js/app.js?v=51"></script>
 <script src="/static/js/sources.js?v=47"></script>
-<script src="/static/js/pages.js?v=55"></script>
+<script src="/static/js/pages.js?v=56"></script>
 <script src="/static/js/music.js?v=46"></script>
 <script src="/static/js/mychannels.js?v=50"></script>
 <script src="/static/js/newgroups.js?v=45"></script>
-<script src="/static/js/family.js?v=48"></script>
+<script src="/static/js/family.js?v=49"></script>
 <script src="/static/js/welcome.js?v=50"></script>
 <script src="/static/js/live.js?v=6"></script>
 <script src="/static/js/myyoutube.js?v=48"></script>
 <script src="/static/js/recordings.js?v=7"></script>
 <script src="/static/js/untracked.js?v=2"></script>
 <script src="/static/js/backup.js?v=1"></script>
+<script src="/static/js/offline.js?v=1"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {

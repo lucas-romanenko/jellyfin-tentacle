@@ -568,3 +568,25 @@ body.moonfin-navbar-active .cardOverlayContainer {
         bottom: -2px;
     }
 }
+
+/* Offline (a link to Tentacle's Offline page): looks like the other buttons */
+a.moonfin-nav-btn.moonfin-nav-offline {
+    text-decoration: none;
+    box-sizing: border-box;
+}
+
+/* A phone with the back button showing: seven buttons fit with less padding */
+@media (max-width: 440px) {
+    .moonfin-nav-pill:has(.moonfin-nav-offline) .moonfin-nav-btn {
+        min-width: 34px;
+        padding-left: 6px;
+        padding-right: 6px;
+    }
+}
+@media (max-width: 370px) {
+    .moonfin-nav-pill:has(.moonfin-nav-offline) .moonfin-nav-btn {
+        min-width: 30px;
+        padding-left: 4px;
+        padding-right: 4px;
+    }
+}

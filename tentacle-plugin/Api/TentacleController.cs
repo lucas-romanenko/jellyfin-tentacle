@@ -694,6 +694,50 @@ public class TentacleController : ControllerBase
     }
 
     /// <summary>
+    /// For Jellyfin's pages (the Offline link and Download menu): where the
+    /// caller's Offline page is (Tentacle's address for a browser) and whether
+    /// they may download. Asked of Tentacle as the caller (their own token),
+    /// which asks Jellyfin; {"url": "", "can_download": false} when Tentacle
+    /// can't say.
+    /// </summary>
+    [HttpGet("Offline")]
+    [Authorize]
+    public async Task<ActionResult> GetOffline()
+    {
+        var info = await _authContext.GetAuthorizationInfo(HttpContext).ConfigureAwait(false);
+        var tentacle = Plugin.Instance?.Configuration?.TentacleUrl?.TrimEnd('/');
+        var none = new ContentResult { Content = "{\"url\":\"\",\"can_download\":false}", ContentType = "application/json", StatusCode = 200 };
+        if (info.IsApiKey || info.UserId.Equals(default) || string.IsNullOrEmpty(info.Token) || string.IsNullOrEmpty(tentacle))
+        {
+            return none;
+        }
+
+        var client = _httpClientFactory.CreateClient();
+        client.Timeout = TimeSpan.FromSeconds(10);
+        try
+        {
+            using var response = await client.GetAsync(
+                $"{tentacle}/api/offline/where?api_key={Uri.EscapeDataString(info.Token)}", HttpContext.RequestAborted).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return none;
+            }
+
+            var text = await response.Content.ReadAsStringAsync(HttpContext.RequestAborted).ConfigureAwait(false);
+            return new ContentResult { Content = text, ContentType = "application/json", StatusCode = 200 };
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            if (HttpContext.RequestAborted.IsCancellationRequested)
+            {
+                throw;
+            }
+
+            return none;
+        }
+    }
+
+    /// <summary>
     /// Returns the current home config for preview/debugging.
     /// </summary>
     [HttpGet("HomeConfig")]

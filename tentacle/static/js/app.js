@@ -26,6 +26,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 async function checkAuth() {
+  // No internet (the home-screen app in airplane mode): straight to what is
+  // saved on this device (offline.js).
+  const offlineOk = typeof offlineOnly === 'function' && typeof offSupported === 'function' && offSupported();
+  if (!navigator.onLine && offlineOk) { offlineOnly(); return false; }
   try {
     const me = await fetch('/api/auth/me');
     if (me.ok) {
@@ -33,7 +37,10 @@ async function checkAuth() {
       applyUserRole();
       return true;
     }
-  } catch (e) {}
+  } catch (e) {
+    // Tentacle can't be reached at all: the same.
+    if (offlineOk) { offlineOnly(); return false; }
+  }
   // Not authenticated — show login
   showLoginOverlay();
   return false;
@@ -583,6 +590,7 @@ const PAGE_TITLES = {
   mychannels: ['My Channels', 'Your favourite Live TV channels'],
   myyoutube: ['My YouTube', 'Your YouTube channels'],
   recordings: ['Recordings', 'Your teams and what will record'],
+  offline: ['Offline', 'Saved on this device to watch with no internet'],
   people: ['People', 'Your household: accounts, age limits and TVs'],
   requests: ['Requests', 'What your household asked for'],
   sources: ['Sources', 'Where the library comes from'],
@@ -652,6 +660,7 @@ function showPage(name, tab) {
     if (name === 'mychannels' && typeof loadMyChannels === 'function') loadMyChannels();
     if (name === 'myyoutube' && typeof loadMyYouTube === 'function') loadMyYouTube();
     if (name === 'recordings' && typeof loadRecordings === 'function') loadRecordings();
+    if (name === 'offline' && typeof loadOffline === 'function') loadOffline(tab);
     if (name === 'people') loadPeople();
     if (name === 'requests') { fam.focus = /^\d+$/.test(tab || '') ? +tab : null; loadRequests(); famReqTab(tab === 'decided' || tab === 'downloads' ? tab : 'pending'); }
     if (name === 'sources') showSourcesTab(tab || state.sourcesTab || 'providers');
@@ -660,7 +669,7 @@ function showPage(name, tab) {
     _routing = false;
   }
   setRoute(name, name === 'settings' ? state.currentSettingsSection
-    : name === 'sources' ? state.sourcesTab : tab);
+    : name === 'sources' ? state.sourcesTab : name === 'offline' ? null : tab);
 }
 
 window.addEventListener('popstate', () => { if (state.currentUser) showRouteFromHash(); });

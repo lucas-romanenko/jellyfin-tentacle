@@ -27,6 +27,7 @@ Playlists/, Tasks/                      PlaylistManager, SmartListConfig, Playli
 Services/                               LibraryDeleteHandler (Jellyfin ItemRemoved → server, 2 s debounce), MdbListCacheService,
                                         VodNoVideoCopyFilter (Tentacle VOD as HLS: re-encode the video, never copy it),
                                         VodWebNoDirectPlayFilter (Jellyfin Web plays Tentacle VOD through Jellyfin, never from Tentacle's address),
+                                        StrmDownloadFilter (/Items/{id}/Download of a .strm sends the video through Tentacle's relay, not the .strm text),
                                         PublicUsersFilter (/Users/Public is empty outside Jellyfin's local network),
                                         SimilarItemsFilter (/Items/{id}/Similar: TMDB + library score instead of 10.11's random sample, #292),
                                         OneLiveStreamPerDeviceFilter (a device opening a channel closes its previous live stream first),
@@ -250,6 +251,30 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   users without video transcoding permission (their remux is all they can
   play) are untouched. Turning off the user policy "Allow video playback that
   requires conversion without re-encoding" does not stop the copy.
+- **Download of a provider's title sends the video** (`StrmDownloadFilter`, a
+  global async action filter on `Library.GetDownload`). Jellyfin's
+  `/Items/{id}/Download` serves `item.Path` as it is: for a `.strm` that is the
+  text line, which the phone apps used to keep in their Downloads tab. The
+  filter lets Jellyfin decide first (signed in, `Policies.Download` =
+  EnableContentDownloading, the user can see the item, its CanDownload) and
+  replaces only an answer that is a `PhysicalFileResult` ending `.strm`: it
+  pulls the address in the `.strm` (`ShortcutPath`) and passes the body on
+  with Content-Length, Range/Content-Range (a broken-off download asks for the
+  rest), an ETag `"strm-<item>-<size>"` (a resume with another If-Range starts
+  over), the type and a video file name (`<strm name>.<stream's extension>`,
+  Content-Disposition). Tentacle's signed `/api/vod/` address is pulled with
+  `X-Tentacle-Offline: 1` (server.md "Downloads to watch offline"); a
+  direct-provider address is first offered to Tentacle's `POST /api/vod/link`
+  and pulled straight only when Tentacle doesn't know it. A body that ends
+  short aborts the connection, so the client sees an interrupted download, not
+  a finished one. No timeout on the pull (the relay holds a download while
+  someone watches). The official Android app (2.7.3) ignores the URL the page
+  hands it and fetches `getDownloadUrl` by item id, naming the file after
+  `item.Path` (`… .strm`): its ExoPlayer has no forced MIME type for a
+  download, so DefaultExtractorsFactory sniffs the content (not confirmed on a
+  phone). The iOS app (jellyfin-expo 1.8.1) fetches the URL and file name
+  `NativeShell.downloadFile` gets (tentacle-details.js `_downloadName`: the
+  stream's extension).
 - **Jellyfin Web plays Tentacle VOD through Jellyfin** (`VodWebNoDirectPlayFilter`,
   a global MVC action filter): after `/Items/{id}/PlaybackInfo` answered
   a client that plays with Jellyfin Web's player (client claim

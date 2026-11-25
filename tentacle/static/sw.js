@@ -4,22 +4,41 @@
  *   - API / dynamic / SSE routes: never intercepted (always live network).
  *   - Navigations ("/"): network-first with cached shell fallback (offline UI).
  *   - /static/* assets: cache-first (URLs are version-busted, so safe).
+ *   - The Offline page's videos are not here: they are files in the
+ *     browser's own storage (OPFS), played from there (offline.js).
  * Bump CACHE to force all clients to re-fetch the shell after a deploy.
  */
-const CACHE = 'tentacle-shell-v3';
+const CACHE = 'tentacle-shell-v4';
 const SHELL = [
   '/',
+  // The Offline page's download worker (static/js/offline.js); the page's
+  // own scripts are read from it at install (precache)
+  '/static/js/offline-worker.js?v=1',
   '/static/site.webmanifest',
   '/static/brand/mark-small.svg',
   '/static/web-app-manifest-192x192.png',
   '/static/web-app-manifest-512x512.png',
 ];
 
+// The page and every script and stylesheet it loads (their ?v= as the page
+// names them now): the app opens with no internet even if it was opened only
+// once since this worker came (a page's first load isn't served through it).
+async function precache() {
+  const c = await caches.open(CACHE);
+  await c.addAll(SHELL).catch(() => {});
+  try {
+    const res = await fetch('/', { cache: 'no-store' });
+    if (!res.ok) return;
+    const html = await res.clone().text();
+    await c.put('/', res);
+    const urls = new Set([...html.matchAll(/(?:src|href)="(\/static\/[^"]+)"/g)].map((m) => m[1]));
+    await Promise.all([...urls].map((u) => c.add(u).catch(() => {})));
+  } catch (e) { /* offline while installing: the shell list is there */ }
+}
+
 self.addEventListener('install', (event) => {
   self.skipWaiting();
-  event.waitUntil(
-    caches.open(CACHE).then((c) => c.addAll(SHELL).catch(() => {}))
-  );
+  event.waitUntil(precache());
 });
 
 self.addEventListener('activate', (event) => {

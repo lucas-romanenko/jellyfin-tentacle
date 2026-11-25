@@ -778,6 +778,7 @@ async function fetchLibraryPage() {
 // on a computer a new tab, so Tentacle stays open. Play starts it in
 // Jellyfin (where the person stopped, or a show's next episode).
 const _WATCH_ICON_PLAY = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 5.5v13a1 1 0 0 0 1.5.86l10.4-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>';
+const _WATCH_ICON_DOWNLOAD = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>';
 const _WATCH_ICON_OPEN = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>';
 function _watchTarget() {
   const touch = window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
@@ -1674,7 +1675,9 @@ async function showMediaDetail(tmdbId, mediaType) {
         ${data.poster_path ? `<img alt="" src="${escapeAttr(_imgUrl(data.poster_path, 'w185'))}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
           <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(data.year || '—')} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${escapeAttr(data.rating || '—')}</div>
-          ${_watchOk(data.jellyfin) ? `<div class="watch-row">${watchButtons(data.jellyfin)}</div>` : ''}
+          ${_watchOk(data.jellyfin) ? `<div class="watch-row">${watchButtons(data.jellyfin)}${!isSeries && data.jellyfin.item
+            ? ` <span class="watch-btns"><button class="btn btn-sm btn-secondary off-dl" style="display:none" title="Save it on this device to watch with no internet (Offline)"
+                onclick="offlineSave('${escapeJS(data.jellyfin.item)}', this)">${_WATCH_ICON_DOWNLOAD}<span>Download</span></button></span>` : ''}</div>` : ''}
           <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${escapeAttr(data.overview || 'No overview available.')}</p>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
             ${(data.genres||[]).map(g => `<span class="badge badge-gray">${escapeAttr(g)}</span>`).join('')}
@@ -1698,6 +1701,8 @@ async function showMediaDetail(tmdbId, mediaType) {
       </div>
       ${isSeries ? '<div id="detail-episodes" style="margin-top:20px"><div class="loading-state" style="padding:16px 0"><div class="spinner"></div></div></div>' : ''}`;
 
+    // Download (Offline) for people who may download (offline.js)
+    if (typeof offShowDownloadButtons === 'function') offShowDownloadButtons(document.getElementById('detail-body'));
     // For series, load episode breakdown
     if (isSeries) _loadSeriesEpisodes(tmdbId, data, seq);
 
@@ -2145,6 +2150,8 @@ async function detailToggleSeason(sn) {
         ${badges.join('')}
         ${isDl && !isVod ? `<button class="ep-replace-btn" title="Bad copy? Get another one" aria-label="Bad copy? Get another one"
           onclick="replaceCopy('series', ${epState.tmdbId}, ${sn}, ${epNum}, this)">↻</button>` : ''}
+        ${links && links.item ? `<button class="ep-replace-btn off-dl" style="display:none" title="Download episode ${epNum} to watch offline"
+          aria-label="Download episode ${epNum} to watch offline" onclick="offlineSave('${escapeJS(links.item)}', this)">⤓</button>` : ''}
       </div>`;
     }
 
@@ -2162,6 +2169,7 @@ async function detailToggleSeason(sn) {
       }
     }
     list.innerHTML = rows;
+    if (typeof offShowDownloadButtons === 'function') offShowDownloadButtons(list);
   } catch {
     if (seq !== _detailSeq) return;
     list.innerHTML = '<div style="padding:8px 12px;color:var(--text3);font-size:12px">Failed to load</div>';
@@ -2183,7 +2191,9 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
         ${data.poster_path ? `<img alt="" src="${escapeAttr(_imgUrl(data.poster_path, 'w185'))}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
           <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(data.year || '—')} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${escapeAttr(data.rating || '—')}</div>
-          ${_watchOk(data.jellyfin) ? `<div class="watch-row">${watchButtons(data.jellyfin)}</div>` : ''}
+          ${_watchOk(data.jellyfin) ? `<div class="watch-row">${watchButtons(data.jellyfin)}${!isSeries && data.jellyfin.item
+            ? ` <span class="watch-btns"><button class="btn btn-sm btn-secondary off-dl" style="display:none" title="Save it on this device to watch with no internet (Offline)"
+                onclick="offlineSave('${escapeJS(data.jellyfin.item)}', this)">${_WATCH_ICON_DOWNLOAD}<span>Download</span></button></span>` : ''}</div>` : ''}
           <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${escapeAttr(data.overview || 'No overview available.')}</p>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
             ${(data.genres||[]).map(g => `<span class="badge badge-gray">${escapeAttr(g)}</span>`).join('')}

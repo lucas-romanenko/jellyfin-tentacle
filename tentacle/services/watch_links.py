@@ -68,7 +68,8 @@ def _server_id(db: Session) -> Optional[str]:
 def urls(base: str, item_id: str, server_id: Optional[str]) -> dict:
     suffix = f"&serverId={server_id}" if server_id else ""
     open_url = f"{base}/web/#/details?id={item_id}{suffix}"
-    return {"play": f"{open_url}&{PLAY_FLAG}", "open": open_url}
+    # item: the Jellyfin item itself, for Download (the Offline page, routers/offline.py)
+    return {"play": f"{open_url}&{PLAY_FLAG}", "open": open_url, "item": item_id}
 
 
 class Linker:
