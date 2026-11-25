@@ -33,6 +33,15 @@ stopped (`_watch_viewers`). Within a playback the viewer's own requests
 come first: a client Jellyfin lists as the session's address (a browser or
 TV playing the file itself) takes the connection back whenever it wants
 data, and Jellyfin's work for the title reads while the player does not.
+
+A title downloaded to watch offline (Jellyfin's Download through the
+plugin, Tentacle's Offline page: the request carries OFFLINE_HEADER) is not
+a playback: it is one request, one provider connection on a "download"
+lease, the lowest rank. It starts only on a free slot, and when someone
+wants to watch, their play takes that slot: the download keeps its client's
+connection open, sending nothing, until a slot is free again, then carries
+on from the byte it stopped at (`_download_body`). A client that gives up
+meanwhile asks again with a Range from where it got to.
 """
 import asyncio
 import logging
@@ -44,6 +53,7 @@ from typing import Optional
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from models.database import Provider, get_db, get_setting
@@ -110,6 +120,17 @@ KEEPALIVE_SECONDS = 5.0
 # The User-Agent the plugin's subtitle extraction sends (VodSubtitleExtractionPatch):
 # Jellyfin's own work for a title, which reads while the player's request does not.
 WORK_USER_AGENT = "Tentacle-JellyfinWork"
+# Marks a request as a download to watch offline (the plugin's Download hook,
+# routers.offline): its own "download" lease, never part of a playback.
+OFFLINE_HEADER = "x-tentacle-offline"
+# How long a download whose slot someone took to watch waits for one to be
+# free again (the client's connection stays open meanwhile), and how often
+# it asks the broker while it waits.
+DOWNLOAD_HOLD_SECONDS = 4 * 3600.0
+DOWNLOAD_RETRY_SECONDS = 5.0
+# A playback that nobody has asked anything of for this long (its film ended,
+# the player closed) gives its slot to a download that waits for one.
+DOWNLOAD_RECLAIM_SECONDS = 8.0
 _UA_DEFAULT = "TiviMate/4.7.0 (Linux; Android 12)"
 _RANGE_RE = re.compile(r"^bytes=(\d+)-(\d*)$")
 
@@ -789,6 +810,45 @@ async def _resolve_checked(db, kind: str, token_file: str):
     return url, guard, ua, owner
 
 
+class _DirectLink(BaseModel):
+    url: str
+
+
+_DIRECT_RE = re.compile(r"^(https?://[^/]+(?:/[^?#]*?)?)/(movie|series)/([^/]+)/([^/]+)/(\d+)\.([A-Za-z0-9]+)$")
+
+
+def relay_path_for(db, url: str) -> Optional[str]:
+    """The relay's path (`/api/vod/{kind}/{token}.{ext}`) for a .strm that
+    points straight at a provider (`{server}/{movie|series}/{user}/{pass}/
+    {id}.{ext}`), or None when it is not one of this install's providers'.
+    Its account's login must be in the address: whoever has it could open
+    the title at the provider anyway; through here it counts and gives way."""
+    from urllib.parse import unquote, urlsplit
+    m = _DIRECT_RE.match((url or "").strip())
+    if not m:
+        return None
+    base, kind, user, password, stream_id, ext = m.groups()
+    host = (urlsplit(base).hostname or "").lower()
+    for provider in db.query(Provider).filter(Provider.server_url.isnot(None)).all():
+        if (urlsplit(provider.server_url).hostname or "").lower() != host:
+            continue
+        if unquote(user) == (provider.username or "") and unquote(password) == (provider.password or ""):
+            secret = vod_tokens.token_secret(db)
+            token = vod_tokens.mint(secret, provider.id, kind, int(stream_id), ext.lower())
+            return f"/api/vod/{kind}/{token}.{ext.lower()}"
+    return None
+
+
+@router.post("/api/vod/link")
+def vod_link(body: _DirectLink, db: Session = Depends(get_db)):
+    """For the plugin's Download hook: a .strm with a provider's own address
+    is downloaded through the relay instead (relay_path_for)."""
+    path = relay_path_for(db, body.url)
+    if path is None:
+        raise HTTPException(404, "Not a provider address Tentacle knows")
+    return {"path": path}
+
+
 @router.head("/api/vod/{kind}/{token_file}")
 async def vod_head(kind: str, token_file: str, request: Request, db: Session = Depends(get_db)):
     """Headers only; no lease -- a probe, not a play. Still a provider
@@ -965,6 +1025,8 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
     or ends short, counted and ranked against live TV and recordings, and
     one provider connection per playback however many requests share it."""
     url, guard, ua, owner = await _resolve_checked(db, kind, token_file)
+    if request.headers.get(OFFLINE_HEADER) == "1":
+        return await _download(db, request, kind, token_file, url, guard, ua, owner)
     # One playback per title per PERSON: two TVs on the same film are two
     # playbacks (two provider connections, two slots), not one that they
     # keep taking from each other; a second client of a title only one
@@ -1225,3 +1287,241 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
 
     return _VodResponse(body(), status_code=status, media_type=content_type, headers=passthrough,
                         finish=finish)
+
+
+class _Download:
+    """One title being downloaded to watch offline: one request, its own
+    provider connection on a "download" lease (`lease` None while someone
+    watching has the slot and it waits for another)."""
+    __slots__ = ("owner", "client", "lease", "resp", "lost", "started", "last_used", "waits")
+
+    def __init__(self, owner: str, client: str):
+        self.owner = owner
+        self.client = client
+        self.lease = None
+        self.resp = None
+        # The slot was taken (someone wants to watch): stop pulling, wait for another.
+        self.lost = False
+        self.started = self.last_used = asyncio.get_running_loop().time()
+        self.waits = 0
+
+    def preempt(self):
+        """The broker gave this download's slot to someone who watches. Its
+        provider connection is closed before theirs opens (the broker awaits
+        what this returns): a provider counts a connection for a moment after
+        it closed, and two at once is what makes it refuse."""
+        self.lost = True
+        self.lease = None
+        resp, self.resp = self.resp, None
+        return _close_within(resp) if resp is not None else None
+
+
+async def _close_within(resp) -> None:
+    try:
+        await asyncio.wait_for(resp.aclose(), CLOSE_SETTLE_SECONDS)
+    except Exception:       # closing is all it is for: never fail the newcomer
+        pass
+
+
+def _reclaim_idle_playback(provider_id) -> bool:
+    """A download waiting for a connection takes back the slot of a playback
+    on its provider that nobody has asked anything of for DOWNLOAD_RECLAIM_SECONDS
+    (the film ended or the player was closed: a playback keeps its slot for
+    `vod_lease_idle_seconds` in case of a seek). If that viewer comes back,
+    their play outranks the download and takes the slot again at once."""
+    now = asyncio.get_running_loop().time()
+    for pb in list(_playbacks.values()):
+        if pb.active_bodies or pb.opening or pb.stopped.is_set():
+            continue
+        if now - pb.last_used < DOWNLOAD_RECLAIM_SECONDS:
+            continue
+        if provider_id is not None and pb.lease is not None and pb.lease.provider_id not in (None, provider_id):
+            continue
+        logger.info(f"[VOD] {pb.owner}: its idle slot goes to a download waiting for one")
+        _release(pb)
+        return True
+    return False
+
+
+# The downloads running now (for the live streams list and the tests).
+_downloads: "list[_Download]" = []
+
+
+async def _download_slot(dl: _Download, limit: int, provider_id, provider_limit: int, protect: bool,
+                         wait: float):
+    """A "download" lease for `dl`, or None if no slot came free within `wait`."""
+    slots = livetv._stream_slots
+    slots.set_protect(protect)
+    try:
+        lease = await slots.acquire_lease(limit, wait, "download", dl.owner, provider_id=provider_id,
+                                          provider_limit=provider_limit)
+    except livetv.RecordingProtected:
+        await asyncio.sleep(wait)
+        return None
+    if lease is not None:
+        dl.lost = False
+        dl.lease = lease
+        lease.on_preempt = dl.preempt
+    return lease
+
+
+async def _download(db, request: Request, kind: str, token_file: str, url: str, guard, ua: str, owner: str):
+    """A title downloaded to watch offline: see the module's doc."""
+    who = request.client.host if request.client else "unknown"
+    try:
+        provider_id = int(owner.split(":")[2])
+    except (IndexError, ValueError):
+        provider_id = None
+    provider = db.get(livetv.Provider, provider_id) if provider_id is not None else None
+    limit = livetv.overall_stream_limit(db)
+    provider_limit = livetv.provider_stream_limit(db, provider) if provider is not None else 0
+    protect = livetv._protect_recordings(db)
+    pid = provider.id if provider else None
+    dl = _Download(owner, who)
+    if await _download_slot(dl, limit, pid, provider_limit, protect, livetv._SLOT_WAIT_SECONDS) is None:
+        logger.info(f"[VOD] {owner}: download not started — every connection is in use for watching or recording")
+        raise HTTPException(503, "Every connection to the provider is in use for watching right now. "
+                                 "The download can start when one is free.")
+    range_header = request.headers.get("range")
+    start, end = _range_bounds(range_header)
+    headers = {"User-Agent": ua}
+    if range_header:
+        headers["Range"] = range_header
+    client = _client()
+    try:
+        resp = await _open_with_retry(client, "GET", url, headers, guard, owner, stopped=lambda: dl.lost)
+    except BaseException:
+        livetv._stream_slots.release_lease(dl.lease)
+        raise
+    dl.resp = resp
+    status = resp.status_code
+    passthrough = {k: v for k, v in resp.headers.items() if k.lower() in ("content-length", "content-range")}
+    content_type = resp.headers.get("content-type") or "video/mp4"
+    length = resp.headers.get("content-length", "")
+    size = None
+    if status == 206:
+        cr_start, cr_end = _content_range(resp.headers.get("content-range"))
+        start = cr_start if cr_start is not None else start
+        end = cr_end if cr_end is not None else end
+        m = _SIZE_RE.search(resp.headers.get("content-range") or "")
+        size = int(m.group(1)) if m else None
+    else:
+        asked_from_zero = "Range" in headers and start == 0 and end is None
+        start, end = 0, None
+        size = int(length) if length.isdigit() else None
+        if asked_from_zero and size:
+            status = 206
+            passthrough["content-range"] = f"bytes 0-{size - 1}/{size}"
+    passthrough["accept-ranges"] = "bytes"
+    last = end
+    if last is None and length.isdigit():
+        last = start + int(length) - 1
+    _downloads.append(dl)
+    logger.info(f"[VOD] {owner}: downloading to watch offline from byte {start}"
+                + (f" of {size}" if size else ""))
+    state = {"done": False}
+
+    def finish():
+        if state["done"]:
+            return
+        state["done"] = True
+        if dl in _downloads:
+            _downloads.remove(dl)
+        if dl.resp is not None:
+            task = asyncio.get_running_loop().create_task(dl.resp.aclose())
+            _pending_releases.add(task)
+            task.add_done_callback(_pending_releases.discard)
+            dl.resp = None
+        if dl.lease is not None:
+            livetv._stream_slots.release_lease(dl.lease)
+            dl.lease = None
+
+    return _VodResponse(_download_body(dl, client, url, guard, headers, start, end, last,
+                                       (limit, pid, provider_limit, protect), finish),
+                        status_code=status, media_type=content_type, headers=passthrough, finish=finish)
+
+
+async def _download_body(dl: _Download, client, url, guard, headers, start, end, last, slot_args, finish):
+    sent = 0
+    attempts = 0
+    loop = asyncio.get_running_loop()
+    opened_at = loop.time()
+    since_open = 0
+    try:
+        while True:
+            if dl.resp is None:
+                if dl.lease is None:
+                    # Someone wants to watch: wait, the client's connection
+                    # open, for a slot to be free again.
+                    logger.info(f"[VOD] {dl.owner}: download waits at byte {start + sent} — "
+                                f"its connection is needed for watching")
+                    dl.waits += 1
+                    held = loop.time()
+                    while dl.lease is None:
+                        if loop.time() - held > DOWNLOAD_HOLD_SECONDS:
+                            logger.warning(f"[VOD] {dl.owner}: download gave up waiting for a free connection")
+                            return
+                        if await _download_slot(dl, *slot_args, DOWNLOAD_RETRY_SECONDS) is None:
+                            _reclaim_idle_playback(slot_args[1])
+                    logger.info(f"[VOD] {dl.owner}: download carries on from byte {start + sent} "
+                                f"after {loop.time() - held:.0f}s")
+                    attempts = 0
+                resume = f"bytes={start + sent}-" + (str(end) if end is not None else "")
+                try:
+                    again = await _open_with_retry(client, "GET", url, dict(headers, Range=resume), guard,
+                                                   dl.owner, stopped=lambda: dl.lost)
+                except HTTPException as e:
+                    if dl.lost:
+                        continue                    # taken again while opening: wait once more
+                    logger.error(f"[VOD] {dl.owner}: download could not resume: {e.detail}")
+                    return
+                got = _content_range(again.headers.get("content-range"))[0]
+                if again.status_code != 206 or got not in (None, start + sent):
+                    await again.aclose()
+                    logger.error(f"[VOD] {dl.owner}: the provider would not resume the download from byte "
+                                 f"{start + sent} (answered {again.status_code})")
+                    return
+                if dl.lost:
+                    await again.aclose()
+                    continue
+                dl.resp = again
+                opened_at, since_open = loop.time(), 0
+            resp = dl.resp
+            reason = "the provider closed the connection early"
+            try:
+                async for chunk in resp.aiter_bytes():
+                    if dl.lost or dl.resp is not resp:
+                        break
+                    sent += len(chunk)
+                    since_open += len(chunk)
+                    dl.last_used = loop.time()
+                    yield chunk
+                else:
+                    if last is None or start + sent > last:
+                        logger.info(f"[VOD] {dl.owner}: download finished ({sent} bytes sent)")
+                        return
+                    reason = f"the body ended at byte {start + sent}, before byte {last}"
+            except (httpx.HTTPError, httpx.StreamError) as e:
+                reason = str(e) or type(e).__name__
+            except Exception:
+                if not dl.lost:
+                    raise                           # closed from outside only when pre-empted
+            if dl.resp is resp:
+                dl.resp = None
+                await resp.aclose()
+            if dl.lost:
+                continue                            # pre-empted: wait for a slot (top of the loop)
+            if end is not None and start + sent > end:
+                return
+            if since_open >= PROGRESS_RESET_BYTES or loop.time() - opened_at >= 30.0:
+                attempts = 0
+            if attempts >= RECONNECT_ATTEMPTS:
+                logger.error(f"[VOD] {dl.owner}: download lost after {sent} bytes, giving up: {reason}")
+                return
+            attempts += 1
+            delay = min(5.0, RESUME_FIRST_DELAY * 2 ** (attempts - 1)) * (0.8 + random.random() * 0.4)
+            logger.warning(f"[VOD] {dl.owner}: download dropped after {sent} bytes; resuming from byte "
+                           f"{start + sent} in {delay:.1f}s: {reason}")
+            await asyncio.sleep(delay)
+    finally:
+        finish()

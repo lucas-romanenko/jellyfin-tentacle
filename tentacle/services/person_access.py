@@ -14,6 +14,9 @@ server's admin actually changes per person live here, in plain words:
   every day on the server's clock. Jellyfin checks a range as
   start <= now <= end with no wrap past midnight, so an evening that runs
   past midnight is stored as two ranges (start-24 and 0-end).
+- **Can download** = "Allow media downloading" (EnableContentDownloading):
+  Download in Jellyfin's apps and browsers, and saving titles on Tentacle's
+  Offline page (routers/offline.py).
 - **Live TV** = "Allow Live TV access" (EnableLiveTvAccess). A kid's also
   follows the kids channels (none picked: no Live TV), so the admin's choice
   is kept on the person too (TentacleUser.live_tv_off).
@@ -103,6 +106,7 @@ def access_of(policy: dict) -> dict:
         "hours": hours_of(p.get("AccessSchedules")),
         "disabled": bool(p.get("IsDisabled")),
         "live_tv": p.get("EnableLiveTvAccess") is not False,
+        "can_download": p.get("EnableContentDownloading") is not False,
     }
 
 
@@ -140,6 +144,8 @@ def changed_policy(policy: dict, change: dict, user_id: str, library_ids=None) -
         p["EnableLiveTvManagement"] = bool(change["can_record"])
     if "away" in change:
         p["EnableRemoteAccess"] = bool(change["away"])
+    if "can_download" in change:
+        p["EnableContentDownloading"] = bool(change["can_download"])
     if "live_tv" in change:
         p["EnableLiveTvAccess"] = bool(change["live_tv"])
     if "libraries" in change:

@@ -52,6 +52,7 @@ ALLOW = {
     ("GET", "/api/live/multiview/{session_id}/web.mp4"): "the same picture for a browser (fMP4); the session id is the secret",
     ("GET", "/api/vod/{kind}/{token_file}"): ".strm playback; signed token (services.vod_tokens)",
     ("HEAD", "/api/vod/{kind}/{token_file}"): ".strm probe; signed token",
+    ("POST", "/api/vod/link"): "the plugin's Download hook; answers only for an address carrying a provider's own login",
     ("HEAD", "/api/youtube/v/{video_id}/master.m3u8"): ".strm probe",
     ("HEAD", "/api/youtube/live/{channel_id}/stream.ts"): "tuner probe",
     ("HEAD", "/api/youtube/live/{channel_id}/master.m3u8"): "tuner probe",
@@ -145,6 +146,10 @@ class MainAppRoutes(unittest.TestCase):
             ("POST", "/api/music/webhook"),
             ("POST", "/api/radarr/webhook"),
             ("POST", "/api/sonarr/webhook"),
+            # Writes nothing but the VOD signing secret, made once; answers only
+            # for an address that carries a provider's own login (a POST so
+            # that login stays out of the access log)
+            ("POST", "/api/vod/link"),
         ]))
 
 

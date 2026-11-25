@@ -295,6 +295,11 @@ function _famAccessPanel(p) {
       <div class="fam-hint">${kid ? 'Only the kids channels you picked.' : 'The guide and every channel; they star their favourites.'}</div>
     </div>
     <div class="fam-access-item">
+      <label class="fam-check"><input type="checkbox"${a.can_download !== false ? ' checked' : ''}
+        onchange="famSetAccess(${p.id}, {can_download: this.checked})"> <strong>Can download</strong></label>
+      <div class="fam-hint">Save movies and episodes on a phone or computer to watch without internet.</div>
+    </div>
+    <div class="fam-access-item">
       <label class="fam-check"><input type="checkbox"${a.away ? ' checked' : ''}
         onchange="famSetAccess(${p.id}, {away: this.checked})"> <strong>Can watch away from home</strong></label>
       <div class="fam-hint">Off: only on your home network.</div>
@@ -356,6 +361,7 @@ async function famSetAccess(id, change, done) {
 function _famAccessToast(name, c) {
   if ('live_tv' in c) return c.live_tv ? `${name} has Live TV` : `${name} has no Live TV now`;
   if ('can_record' in c) return c.can_record ? `${name} can record shows` : `${name} can’t record shows now`;
+  if ('can_download' in c) return c.can_download ? `${name} can download` : `${name} can’t download now`;
   if ('away' in c) return c.away ? `${name} can watch away from home` : `${name} can watch only at home now`;
   if ('disabled' in c) return c.disabled ? `${name}’s account is off` : `${name}’s account is on again`;
   if ('libraries' in c) return c.libraries ? `${name} sees ${c.libraries.length === 1 ? 'one library' : c.libraries.length + ' libraries'}` : `${name} sees every library`;

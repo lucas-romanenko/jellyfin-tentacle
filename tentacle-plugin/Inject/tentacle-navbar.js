@@ -230,6 +230,7 @@
             }).then(function () {
                 self.createNavbar();
                 self.loadUserData();
+                self.addOfflineButton();
                 self.setupEventListeners();
                 self.startClock();
                 self.initialized = true;
@@ -473,6 +474,42 @@
             this.librariesDropdown = document.createElement('div');
             this.librariesDropdown.className = 'moonfin-libraries-list';
             document.body.appendChild(this.librariesDropdown);
+        },
+
+        // Offline, next to Favorites: Tentacle's Offline page (titles saved on
+        // this device to watch with no internet). In a browser, for people who
+        // may download; Jellyfin's phone apps have their own Downloads.
+        addOfflineButton: function () {
+            var self = this;
+            if (window.NativeShell && typeof window.NativeShell.downloadFile === 'function') return;
+            var api = window.ApiClient;
+            if (!api) return;
+            var serverUrl = typeof api.serverAddress === 'function' ? api.serverAddress() : (api._serverAddress || '');
+            var token = typeof api.accessToken === 'function' ? api.accessToken() : (api._accessToken || '');
+            fetch(serverUrl + '/Tentacle/Offline', { headers: token ? { 'Authorization': 'MediaBrowser Token="' + token + '"' } : {} })
+                .then(function (r) { return r.ok ? r.json() : null; })
+                .then(function (info) {
+                    if (!info || !info.url || !info.can_download || !self.container) return;
+                    if (self.container.querySelector('.moonfin-nav-offline')) return;
+                    var pill = self.container.querySelector('.moonfin-nav-pill');
+                    if (!pill) return;
+                    var a = document.createElement('a');
+                    a.className = 'moonfin-nav-btn moonfin-expandable-btn moonfin-nav-offline';
+                    a.href = info.url;
+                    a.target = '_blank';
+                    a.rel = 'noopener';
+                    a.title = 'Offline: what you saved to watch with no internet';
+                    a.innerHTML = '<svg class="moonfin-nav-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 5h2v6.17l2.59-2.58L17 12l-5 5-5-5 1.41-1.41L11 13.17V7z"/></svg>' +
+                        '<span class="moonfin-expand-label">Offline</span>';
+                    var fav = pill.querySelector('.moonfin-nav-favorites');
+                    if (fav && fav.nextSibling) pill.insertBefore(a, fav.nextSibling);
+                    else if (fav) pill.appendChild(a);
+                    else {
+                        var libs = pill.querySelector('.moonfin-libraries-group');
+                        if (libs) pill.insertBefore(a, libs); else pill.appendChild(a);
+                    }
+                })
+                .catch(function () {});
         },
 
         loadUserData: function () {

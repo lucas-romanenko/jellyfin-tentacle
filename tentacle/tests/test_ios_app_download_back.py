@@ -54,7 +54,7 @@ def _method(src: str, name: str) -> str:
 
 def _details_harness(shell: str, item: dict, body: str) -> str:
     src = DETAILS_JS.read_text(encoding="utf-8")
-    methods = [m for m in ("handleMoreAction", "_buildMoreMenu", "_isStrm", "_appCanDownload")
+    methods = [m for m in ("handleMoreAction", "_buildMoreMenu", "_isStrm", "_appCanDownload", "_downloadName")
                if ("    " + m + ": function(") in src]
     return r"""
 var log = { shell: [], clicked: [], menu: null };
@@ -68,11 +68,13 @@ var document = { body: { appendChild: function () {}, removeChild: function () {
   createElement: _el, querySelector: function () { return null; }, addEventListener: function () {} };
 window.ApiClient = { accessToken: function () { return 'TOKEN'; }, serverId: function () { return 'S1'; },
   getCurrentUserId: function () { return 'u1'; } };
+window.open = function (url) { log.opened = (log.opened || []).concat([url]); };
 var Details = {
 %METHODS%,
   getServerUrl: function () { return 'http://jf'; },
   getAuthHeaders: function () { return {}; },
-  closeMoreMenu: function () {}, showToast: function () {}, esc: function (t) { return String(t); }
+  closeMoreMenu: function () {}, showToast: function () {}, esc: function (t) { return String(t); },
+  hide: function () {}
 };
 var item = %ITEM%;
 %BODY%
@@ -91,7 +93,9 @@ def _run(script: str):
 APP_SHELL = "{ downloadFile: function (info) { log.shell.push(info); } }"
 MOVIE = {"Id": "i1", "ServerId": "S1", "Name": "Movie", "Type": "Movie", "CanDownload": True,
          "Path": "/data/movies/Movie (2020)/Movie (2020).mkv"}
-VOD = dict(MOVIE, Path="/data/vod/Movie (2020)/Movie (2020).strm")
+VOD = dict(MOVIE, Path="/data/vod/Movie (2020)/Movie (2020).strm",
+           MediaSources=[{"Path": "http://tentacle:8888/api/vod/movie/1.52300.0123456789abcdef0123.mkv",
+                          "Container": "strm"}])
 
 
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
@@ -115,6 +119,17 @@ class DownloadInJellyfinApps(unittest.TestCase):
         self.assertEqual(["http://jf/Items/i1/Download?api_key=TOKEN"], log["clicked"])
         self.assertEqual([], log["shell"])
 
+    def test_a_vod_title_is_saved_as_the_video_it_is_not_as_a_strm(self):
+        # The plugin's Download hook sends the video (StrmDownloadFilter); the
+        # iOS app names the file after what it is given, and plays it by that name.
+        info = self.download(APP_SHELL, VOD)["shell"][0]
+        self.assertEqual("http://jf/Items/i1/Download?api_key=TOKEN", info["url"])
+        self.assertEqual("Movie (2020).mkv", info["filename"])
+
+    def test_a_vod_title_whose_address_names_no_type_is_an_mp4(self):
+        item = dict(VOD, MediaSources=[{"Path": "http://provider.example/play?id=1", "Container": "strm"}])
+        self.assertEqual("Movie (2020).mp4", self.download(APP_SHELL, item)["shell"][0]["filename"])
+
 
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class DownloadOfferedOnlyWhereItWorks(unittest.TestCase):
@@ -124,8 +139,9 @@ class DownloadOfferedOnlyWhereItWorks(unittest.TestCase):
                 " function (_, a) { log.menu.push(a); }); });\n")
         return _run(_details_harness(shell, item, body))
 
-    def test_a_browser_is_not_offered_a_vod_titles_strm_text(self):
-        self.assertNotIn("download", self.menu("undefined", VOD)["menu"])
+    def test_a_browser_is_offered_a_vod_title_too(self):
+        # Its Download sends the video now (the plugin's StrmDownloadFilter), not the .strm text.
+        self.assertIn("download", self.menu("undefined", VOD)["menu"])
 
     def test_a_browser_is_offered_a_real_file(self):
         self.assertIn("download", self.menu("undefined", MOVIE)["menu"])
@@ -140,6 +156,40 @@ class DownloadOfferedOnlyWhereItWorks(unittest.TestCase):
 
     def test_a_finished_recording_is(self):
         self.assertIn("download", self.menu(APP_SHELL, dict(MOVIE, Status="Completed"))["menu"])
+
+
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
+class SaveForOffline(unittest.TestCase):
+    """More → Save for offline: Tentacle's Offline page keeps the title on
+    this device. In a browser only (Jellyfin's apps have their own
+    Downloads), for people who may download, movies and episodes."""
+    OFFLINE = "Details._offline = { url: 'https://tentacle.example/#offline', can_download: %s };\n"
+
+    def menu(self, shell, item, can=True, user_may=True):
+        body = (self.OFFLINE % ("true" if can else "false")
+                + "Details._buildMoreMenu(item, { Policy: { EnableContentDownloading: %s } }, false, false, false);\n"
+                % ("true" if user_may else "false")
+                + "log.menu = []; made.forEach(function (e) { e.innerHTML.replace(/data-more-action=\"([^\"]+)\"/g,"
+                " function (_, a) { log.menu.push(a); }); });\n")
+        return _run(_details_harness(shell, item, body))["menu"]
+
+    def test_a_browser_is_offered_it_for_a_movie_and_a_vod_title(self):
+        self.assertIn("saveoffline", self.menu("undefined", dict(MOVIE, MediaType="Video")))
+        self.assertIn("saveoffline", self.menu("undefined", dict(VOD, MediaType="Video")))
+
+    def test_the_apps_are_not(self):
+        self.assertNotIn("saveoffline", self.menu(APP_SHELL, dict(MOVIE, MediaType="Video")))
+
+    def test_not_without_permission_or_for_what_is_not_a_film_or_episode(self):
+        self.assertNotIn("saveoffline", self.menu("undefined", dict(MOVIE, MediaType="Video"), can=False))
+        self.assertNotIn("saveoffline", self.menu("undefined", dict(MOVIE, MediaType="Video"), user_may=False))
+        self.assertNotIn("saveoffline", self.menu("undefined", dict(MOVIE, MediaType="Audio", Type="Audio")))
+        self.assertNotIn("saveoffline", self.menu("undefined", dict(MOVIE, MediaType="Video", Status="InProgress")))
+
+    def test_it_opens_the_offline_page_saving_the_title(self):
+        body = (self.OFFLINE % "true") + "Details.handleMoreAction('saveoffline', item);"
+        log = _run(_details_harness("undefined", dict(MOVIE, Id="0123456789abcdef0123456789abcdef"), body))
+        self.assertEqual(["https://tentacle.example/#offline/save-0123456789abcdef0123456789abcdef"], log["opened"])
 
 
 def _navbar_method(src: str, name: str) -> str:

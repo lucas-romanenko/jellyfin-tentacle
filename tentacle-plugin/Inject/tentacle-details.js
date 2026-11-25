@@ -2100,10 +2100,41 @@ var Details = {
     },
 
 
+    // Where this person's Offline page is (Tentacle's address) and whether they
+    // may download: {url, can_download}, asked once (the plugin asks Tentacle).
+    _loadOffline: function() {
+        var self = this;
+        if (!this._offlinePromise) {
+            this._offlinePromise = fetch(this.getServerUrl() + '/Tentacle/Offline', { headers: this.getAuthHeaders() })
+                .then(function(r) { return r.ok ? r.json() : null; })
+                .catch(function() { return null; })
+                .then(function(info) { self._offline = info || { url: '', can_download: false }; return self._offline; });
+        }
+        return this._offlinePromise;
+    },
+
+    // The file name a download is saved under: a provider's title (.strm) is
+    // saved as the video it is (its stream's extension), not as a .strm.
+    _downloadName: function(item) {
+        var name = (item.Path || item.Name || 'download').replace(/^.*[\\/]/, '');
+        if (!this._isStrm(item)) return name;
+        var src = (item.MediaSources && item.MediaSources[0]) || {};
+        var ext = ((src.Path || '').split('?')[0].match(/\.([A-Za-z0-9]{2,5})$/) || [])[1] || '';
+        ext = ext.toLowerCase();
+        if (!ext || ext === 'strm') ext = ((src.Container || '').split(',')[0] || '').toLowerCase();
+        if (!/^[a-z0-9]{2,5}$/.test(ext) || ext === 'strm') ext = 'mp4';
+        return name.replace(/\.strm$/i, '') + '.' + ext;
+    },
+
     showMoreMenu: function(item) {
         var self = this;
 
         this.closeMoreMenu();
+        this._loadOffline().then(function() { self._showMoreMenu(item); });
+    },
+
+    _showMoreMenu: function(item) {
+        var self = this;
 
         window.ApiClient.getCurrentUser().then(function(user) {
             // For Movie/Series: fetch Tentacle can_delete to control delete button visibility
@@ -2185,12 +2216,20 @@ var Details = {
         }
 
         // Download — requires EnableContentDownloading permission and CanDownload on item.
-        // A VOD title's file is its .strm text: a browser would save that, only a
-        // Jellyfin app (its own download queue, transcoded downloads) gets the video.
+        // A provider's title (.strm) downloads as its video too: the plugin's
+        // Download hook (StrmDownloadFilter) sends the video, not the .strm text.
         // A recording still recording isn't offered: its file isn't finished (#877).
-        if (policy.EnableContentDownloading && item.CanDownload && item.Status !== 'InProgress' &&
-            (!this._isStrm(item) || this._appCanDownload())) {
+        var canDownload = policy.EnableContentDownloading && item.CanDownload && item.Status !== 'InProgress';
+        if (canDownload) {
             menuItems.push({ id: 'download', name: 'Download', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M480-320 280-520l56-58 104 104v-326h80v326l104-104 56 58-200 200ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z"/></svg>' });
+        }
+        // Save for offline — in a browser (Jellyfin's apps have their own
+        // Downloads): keeps a movie or episode on Tentacle's Offline page, to
+        // watch with no internet. Opens that page, which saves it.
+        var offline = this._offline || {};
+        if (canDownload && !this._appCanDownload() && offline.url && offline.can_download &&
+            item.MediaType === 'Video' && (item.Type === 'Movie' || item.Type === 'Episode')) {
+            menuItems.push({ id: 'saveoffline', name: 'Save for offline', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M480-80q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm-40-260 220-220-56-56-124 124v-268h-80v268L276-616l-56 56 220 220Z"/></svg>' });
         }
 
         // Delete — only for downloaded content (Tentacle-controlled permission)
@@ -2365,16 +2404,22 @@ var Details = {
                         itemId: item.Id,
                         serverId: item.ServerId || (api.serverId && api.serverId()),
                         title: item.Name,
-                        filename: (item.Path || item.Name || 'download').replace(/^.*[\\/]/, '')
+                        filename: this._downloadName(item)
                     });
                     break;
                 }
                 var a = document.createElement('a');
                 a.href = downloadUrl;
-                a.download = item.Name || 'download';
+                a.download = this._downloadName(item);
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
+                break;
+
+            case 'saveoffline':
+                this.hide(true);
+                var off = (this._offline && this._offline.url) || '';
+                if (off) window.open(off + '/save-' + String(item.Id).replace(/-/g, ''), '_blank', 'noopener');
                 break;
 
             case 'editmetadata':

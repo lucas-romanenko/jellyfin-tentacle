@@ -663,6 +663,56 @@ with `untracked_auto_add` (off by default), which adds the 95 %+ sure ones.
   error), is left alone. The plugin keeps a cut extraction out of
   Jellyfin's subtitle cache (plugin.md).
 
+## Downloads to watch offline (`routers/vod.py` `_download`, `routers/offline.py`, `services/offline.py`, `static/js/offline.js`)
+
+- **The relay's download mode.** A request to `/api/vod/...` with
+  `X-Tentacle-Offline: 1` (the plugin's StrmDownloadFilter, so also the
+  Offline page through Jellyfin's Download) is not a playback: one request,
+  one provider connection, a lease of kind "download", rank 30 below "vod"
+  (`livetv._LEASE_PRIORITY`; `_FILM_KINDS` = vod + download for recording
+  protection). It starts only on a free slot (503 otherwise, words for a
+  person) and never takes one. Someone watching takes its slot
+  (`_Download.preempt`: the broker awaits its provider connection's close
+  before theirs opens, never two at once); the download then keeps its
+  client's connection open sending nothing and asks the broker every
+  `DOWNLOAD_RETRY_SECONDS` (`DOWNLOAD_HOLD_SECONDS`, 4 h, at most), taking
+  back the slot of a playback nobody has asked anything of for
+  `DOWNLOAD_RECLAIM_SECONDS` (a playback keeps its slot 45 s for a seek; the
+  viewer coming back outranks the download). It carries on with
+  `Range: bytes=<where it stopped>-`. A drop is resumed like a playback's.
+  Clients that give up meanwhile ask again with a Range (Android app after
+  OkHttp's 10 s read timeout, the Offline page); the iOS app fails a cut
+  download (no resume) and keeps waiting 60 s. Listed by `/api/live/streams`
+  as kind "download".
+- **Direct-provider `.strm`** (no `vod_base_url`, VOD through Tentacle off):
+  `POST /api/vod/link {url}` answers the relay path only when the address
+  holds one of the providers' own host and login (`relay_path_for`).
+- **The Offline page** (`services/offline.py`): Jellyfin decides per person
+  (`check`): `/Users/{id}` Policy EnableContentDownloading (People → "Can
+  download", `person_access`), the item asked AS the person (`/Items?ids=&userId=`:
+  libraries, age limit), MediaType Video, not `Status == InProgress`, its
+  CanDownload; kept `CHECK_SECONDS` per person and item (a resumed download
+  asks again). The video is Jellyfin's own `/Items/{id}/Download` with the
+  server key (`routers/offline.py:video`, Range/If-Range passed, no read
+  timeout), so a stream goes through the plugin's hook and the relay's
+  download mode. Progress: `POST /api/offline/progress` writes
+  `/UserItems/{id}/UserData?userId=` (position, Played, LastPlayedDate) unless
+  Jellyfin's LastPlayedDate is later.
+- **The browser side** (`static/js/offline.js`, `offline-worker.js`): metadata
+  in IndexedDB `tentacle-offline`, files in OPFS `offline/<item>.<ext>`
+  written by a dedicated worker through a sync access handle at the byte they
+  belong to; a break waits 5 s → 2 min (`OFF_RETRY_MS`) and asks
+  `bytes=<file size>-`; free space checked first (`storage.estimate`), a
+  wake lock while it runs, `storage.persist()`. Playback: a blob URL of the
+  OPFS File (never the film in memory). iPhone Safari (not standalone) saves
+  nothing and says to use the home-screen app; an MKV on an iPhone is refused
+  before downloading (Safari plays none). No internet at start (`checkAuth`):
+  `offlineOnly()` shows only Offline. `sw.js` caches the page and every
+  `/static/` script and stylesheet it names at install (the server stamps its
+  own `?v=` into index.html, so the list is read from the page).
+- A secure context is needed (https, or localhost): on Tentacle's plain
+  http LAN address the page says to open the https address.
+
 ## Provider health (`services/provider_health.py`)
 
 - Hourly (job `provider_health`, plus once 2 min after start unless the
@@ -789,6 +839,9 @@ The UI says "Playlist" everywhere; the code says SmartList, TagRule,
 output_tag. Never "Collection" (a different Jellyfin thing) or "Tag" in the
 UI; "TV guide", never "EPG" (`plainWords()` in `sources.js` rewords server
 messages that still say EPG or SmartList).
+"Downloads" means titles someone asked for (My Downloads row, Requests →
+Downloads); what is saved on a device to watch without internet is
+"Offline" (the page) and its button is "Download" / "Save for offline".
 
 Dashboard layout (`static/js/sources.js` holds the Sources page):
 

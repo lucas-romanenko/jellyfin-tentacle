@@ -226,6 +226,7 @@ class AccessBody(BaseModel):
     libraries: Optional[List[str]] = None
     hours: Optional[dict] = None
     disabled: Optional[bool] = None
+    can_download: Optional[bool] = None
 
 
 @router.put("/api/family/people/{user_id}/access", dependencies=[Depends(_people_changed)])
@@ -235,7 +236,7 @@ def update_access(user_id: int, body: AccessBody, admin: TentacleUser = Depends(
     has them afterwards."""
     row = _row(db, user_id)
     change = body.model_dump(exclude_unset=True)
-    for k in ("can_record", "away", "disabled", "live_tv"):
+    for k in ("can_record", "away", "disabled", "live_tv", "can_download"):
         if k in change and change[k] is None:
             raise HTTPException(400, f"{k} needs true or false.")
     if len(change.get("libraries") or []) > 500:

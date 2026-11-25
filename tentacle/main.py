@@ -1197,7 +1197,9 @@ app.include_router(family_router.tv_router)
 # body as if it were the stream (#140).
 app.add_exception_handler(livetv_router._TunerRefusal, livetv_router.tuner_refusal_handler)
 from routers import vod as vod_router
+from routers import offline as offline_router
 app.include_router(vod_router.router)
+app.include_router(offline_router.router)
 # A VOD range ended on purpose (a seek) closes its connection through an
 # exception uvicorn would log as a crash (#285).
 logging.getLogger("uvicorn.error").addFilter(vod_router.EarlyRangeEndFilter())

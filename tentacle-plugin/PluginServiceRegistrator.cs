@@ -58,6 +58,11 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<IHostedService, VodSubtitleExtractionPatch>();
         serviceCollection.AddSingleton<IHostedService, VodProbeOncePatch>();
 
+        // Jellyfin's Download of a provider's title (.strm) sends the video,
+        // pulled through Tentacle as a download that gives way to viewers
+        serviceCollection.AddSingleton<StrmDownloadFilter>();
+        serviceCollection.Configure<MvcOptions>(options => options.Filters.AddService<StrmDownloadFilter>());
+
         // One Live TV stream per device: opening a channel closes the one it
         // had open (one-connection IPTV accounts, Jellyfin Web's retries)
         serviceCollection.AddSingleton<OneLiveStreamPerDeviceFilter>();
