@@ -35,7 +35,7 @@ def _admins(db: Session) -> list:
 
 def _tell_admins(db: Session, title: str, message: str, push: bool) -> None:
     from services import live_updates, pushover
-    from services.approvals import _link
+    from services.approvals import requests_link as _link
     live_updates.publish("health", admins=True)
     for admin in _admins(db):
         try:

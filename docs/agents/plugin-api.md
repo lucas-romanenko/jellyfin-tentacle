@@ -167,6 +167,8 @@ Gotchas:
 | POST | `/TentacleDiscover/Notifications/{notificationId}/Dismiss` | user | DismissNotification | yes |
 | GET | `/TentacleDiscover/Providers` | user | GetStreamingProviders | yes |
 | GET | `/TentacleDiscover/RequestMode` | user | GetRequestMode | yes |
+| POST | `/TentacleDiscover/Requests/{requestId}/Approve` | admin | ApproveRequest (`/api/requests/{id}/approve`, caller's token passed on: Tentacle checks again; long client, it can wait on Radarr/Sonarr): the web request toast | no (web) |
+| POST | `/TentacleDiscover/Requests/{requestId}/Decline` | admin | DeclineRequest (`/api/requests/{id}/decline`, no reason) | no (web) |
 | GET | `/TentacleDiscover/RadarrFolders` | user | GetRadarrFolders |  |
 | GET | `/TentacleDiscover/RadarrProfiles` | user | GetRadarrProfiles | yes |
 | POST | `/TentacleDiscover/ReplaceCopy/{mediaType}/{tmdbId}` | user | ReplaceCopy | yes |

@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from datetime import datetime
 
-from models.database import get_db, Notification, TentacleUser
+from models.database import get_db, MediaRequest, Notification, TentacleUser
 from routers.auth import get_user_from_request
 from services import live_updates
 
@@ -32,6 +32,7 @@ def get_notifications(db: Session = Depends(get_db), user: TentacleUser = Depend
     for_ids = {n.for_user_id for n in notifs if n.for_user_id}
     if for_ids:
         names = dict(db.query(TentacleUser.id, TentacleUser.display_name).filter(TentacleUser.id.in_(for_ids)).all())
+    asks = _asks(db, user, notifs)
     return {
         "notifications": [
             {
@@ -49,12 +50,37 @@ def get_notifications(db: Session = Depends(get_db), user: TentacleUser = Depend
                 # Whose download it is ("for Sam"), on an admin's message about
                 # someone else's; absent for the reader's own.
                 **({"for": names[n.for_user_id]} if n.for_user_id in names else {}),
+                # An admin's "asked for this" message: the request it's about,
+                # whether it still waits, and Tentacle → Requests with it in view.
+                **asks.get(n.id, {}),
             }
             for n in notifs
         ],
         "notifications_enabled": user.notifications_enabled if user.notifications_enabled is not None else True,
         **({"show_others_downloads": user.show_others_downloads is not False} if user.is_admin else {}),
     }
+
+
+def _asks(db: Session, user: TentacleUser, notifs: list) -> dict:
+    """{notification id: {"request_id", "request_status", "requested_by",
+    "requests_url"}} for an admin's messages about someone's request. Never
+    for anyone else: only an admin may answer, and the server checks that
+    again on the answer."""
+    mine = [n for n in notifs if n.kind == "request" and n.request_id] if user.is_admin else []
+    if not mine:
+        return {}
+    from services import approvals
+    rows = {r.id: r for r in db.query(MediaRequest).filter(MediaRequest.id.in_({n.request_id for n in mine}))}
+    who = dict(db.query(TentacleUser.id, TentacleUser.display_name)
+               .filter(TentacleUser.id.in_({r.user_id for r in rows.values()})).all())
+    link = approvals.requests_link(db)
+    out = {}
+    for n in mine:
+        row = rows.get(n.request_id)
+        out[n.id] = {"request_id": n.request_id, "request_status": row.status if row else "gone",
+                     "requested_by": who.get(row.user_id, "") if row else "",
+                     "requests_url": f"{link}/{n.request_id}" if link else ""}
+    return out
 
 
 @router.post("/{notification_id}/dismiss")

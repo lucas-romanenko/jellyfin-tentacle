@@ -1737,6 +1737,50 @@ public class TentacleDiscoverController : ControllerBase
     }
 
     /// <summary>
+    /// An admin approves a waiting request from its toast (Tentacle's own
+    /// approve, the same as Tentacle → Requests). Jellyfin admins only here,
+    /// and Tentacle checks again that the caller is one of its admins.
+    /// Approving can wait on Radarr/Sonarr, hence the long client.
+    /// </summary>
+    [HttpPost("Requests/{requestId}/Approve")]
+    [Authorize(Policy = "RequiresElevation")]
+    public Task<ActionResult> ApproveRequest(int requestId) =>
+        AnswerRequest(requestId, "approve");
+
+    /// <summary>
+    /// An admin declines a waiting request from its toast (no reason given).
+    /// </summary>
+    [HttpPost("Requests/{requestId}/Decline")]
+    [Authorize(Policy = "RequiresElevation")]
+    public Task<ActionResult> DeclineRequest(int requestId) =>
+        AnswerRequest(requestId, "decline");
+
+    private async Task<ActionResult> AnswerRequest(int requestId, string answer)
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            var (_, message) = DescribeFailure(null);
+            return StatusCode(503, new { detail = message });
+        }
+
+        try
+        {
+            var response = await AddClient.PostAsync(
+                AppendUserId($"{baseUrl}/api/requests/{requestId}/{answer}"),
+                new StringContent("{}", System.Text.Encoding.UTF8, "application/json"));
+            var body = await response.Content.ReadAsStringAsync();
+            return new ContentResult { Content = body, ContentType = "application/json", StatusCode = (int)response.StatusCode };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Request {Answer} failed: {Error}", answer, ex.Message);
+            var (_, message) = DescribeFailure(ex);
+            return StatusCode(502, new { detail = message });
+        }
+    }
+
+    /// <summary>
     /// Undo any extra layer(s) of percent-encoding on a forwarded image URL.
     /// Clients differ in how many times they encode the query value, so decode
     /// until the string stops changing (bounded) or parses as an absolute URI.

@@ -21,7 +21,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from models.database import (
-    MediaRequest, Movie, Series, TentacleUser, create_notification, get_setting,
+    MediaRequest, Movie, Notification, Series, TentacleUser, create_notification, get_setting,
 )
 
 logger = logging.getLogger(__name__)
@@ -160,10 +160,13 @@ def _fallback_title(kind: str, id_kind: str, value) -> str:
     return f"{noun} {value}" if id_kind != "mbid" else noun
 
 
-def _link(db: Session) -> str:
+def requests_link(db: Session, request_id: Optional[int] = None) -> str:
+    """Tentacle → Requests, with that request in view when there's an id."""
     from models.database import tentacle_address
     base = (get_setting(db, "external_url", "") or "").strip().rstrip("/") or tentacle_address(db)
-    return f"{base}/#requests" if base else ""
+    if not base:
+        return ""
+    return f"{base}/#requests/{request_id}" if request_id else f"{base}/#requests"
 
 
 def _tell_admins_new(db: Session, user: TentacleUser, row: MediaRequest) -> None:
@@ -173,12 +176,27 @@ def _tell_admins_new(db: Session, user: TentacleUser, row: MediaRequest) -> None
         try:
             create_notification(db, admin.id, row.tmdb_id or 0, _media_type(row.kind), row.title,
                                 f"{user.display_name} asked for this. Approve or decline it in Tentacle → Requests.",
-                                poster_path=row.poster_path, kind="request", force=True)
+                                poster_path=row.poster_path, kind="request", force=True,
+                                request_id=row.id)
         except Exception as e:
             db.rollback()
             logger.warning(f"[Requests] Could not tell {admin.display_name}: {e}")
     pushover.send(db, f"{user.display_name} asked for {what}",
-                  "Approve or decline it in Tentacle → Requests.", _link(db))
+                  "Approve or decline it in Tentacle → Requests.", requests_link(db, row.id))
+
+
+def _answered(db: Session, request_id: int) -> None:
+    """The request is answered (or taken back): the admins' "asked for this"
+    messages about it go away, wherever it was answered."""
+    q = db.query(Notification).filter(Notification.request_id == request_id,
+                                      Notification.dismissed_at == None)  # noqa: E711
+    admin_ids = sorted({n.user_id for n in q.all()})
+    if not admin_ids:
+        return
+    q.update({"dismissed_at": datetime.utcnow()}, synchronize_session=False)
+    db.commit()
+    from services import live_updates
+    live_updates.changed("notifications", user_ids=admin_ids, clients=True)
 
 
 def _media_type(kind: str) -> str:
@@ -297,6 +315,7 @@ def approve(db: Session, request_id: int, admin: TentacleUser) -> dict:
     _live(row.user_id, activity=ok)
     if ok:
         logger.info(f"[Requests] {admin.display_name} approved '{row.title}' for user {row.user_id}")
+        _answered(db, row.id)
         _tell_owner(db, row, yes_message(db, row, admin.display_name))
     else:
         logger.warning(f"[Requests] Approved '{row.title}' but it wasn't added: {row.note}")
@@ -337,6 +356,7 @@ def decline(db: Session, request_id: int, admin: TentacleUser, note: str = "") -
         db.commit()
     _live(row.user_id)
     logger.info(f"[Requests] {admin.display_name} declined '{row.title}' for user {row.user_id}")
+    _answered(db, row.id)
     msg = f"{admin.display_name} said no this time."
     if row.note:
         msg += f' "{row.note}"'
@@ -350,8 +370,10 @@ def cancel(db: Session, request_id: int, user: TentacleUser) -> bool:
                                         MediaRequest.status == "pending").first()
     if row is None:
         return False
+    rid = row.id
     db.delete(row)
     db.commit()
+    _answered(db, rid)
     _live(user.id)
     return True
 

@@ -10,6 +10,7 @@ const fam = {
   data: null,          // GET /api/family/people
   requests: null,      // GET /api/requests
   reqTab: 'pending',
+  focus: null,         // the request a link opened (#requests/<id>: Jellyfin's toast, Pushover)
   downloads: null,     // GET /api/requests/downloads (Requests → Downloads)
   dlPerson: '',        // whose downloads that tab shows ('' = everyone)
   invited: null,       // the last invite: {user, invite}
@@ -963,7 +964,7 @@ function famRenderDownloads() {
       ? `<div class="fam-hint">${escHtml(_famAgo(r.status_at))}</div>` : '';
     const note = r.status === 'failed' && r.note ? `<div class="req-note bad">${escHtml(r.note)}</div>`
       : r.status === 'declined' && r.note ? `<div class="req-note">“${escHtml(r.note)}”</div>` : '';
-    return `<div class="card req-item">
+    return `<div class="card req-item${r.id === fam.focus ? ' req-focus' : ''}" data-req="${r.id}">
       ${poster}
       <div class="req-text">
         <div class="req-title">${escHtml(r.title)}</div>
@@ -983,6 +984,9 @@ function famRenderRequests() {
   const list = fam.reqTab === 'pending'
     ? fam.requests.pending.concat(fam.requests.decided.filter(r => r.status === 'failed'))
     : fam.requests.decided.filter(r => r.status !== 'failed');
+  // A link to a request someone already answered: show it among the answers
+  if (fam.focus && fam.reqTab === 'pending' && !list.some(r => r.id === fam.focus)
+      && fam.requests.decided.some(r => r.id === fam.focus)) return famReqTab('decided');
   if (!list.length) {
     el.innerHTML = fam.reqTab === 'pending'
       ? '<div class="empty-state"><p>Nothing waiting.</p><p class="fam-hint">When someone asks for a movie or show, it shows up here and you get a message.</p></div>'
@@ -1006,7 +1010,7 @@ function famRenderRequests() {
     const note = r.status === 'failed'
       ? `<div class="req-note bad">Approved, but it didn’t go through: ${escHtml(r.note)}</div>`
       : r.note ? `<div class="req-note">“${escHtml(r.note)}”</div>` : '';
-    return `<div class="card req-item">
+    return `<div class="card req-item${r.id === fam.focus ? ' req-focus' : ''}" data-req="${r.id}">
       ${poster}
       <div class="req-text">
         <div class="req-title">${escHtml(r.title)}</div>
@@ -1017,6 +1021,8 @@ function famRenderRequests() {
       ${side}
     </div>`;
   }).join('');
+  const focused = fam.focus && [...el.querySelectorAll('[data-req]')].find(x => +x.dataset.req === fam.focus);
+  if (focused) { focused.scrollIntoView({ block: 'center' }); fam.focus = null; }
 }
 
 async function famApprove(id) {

@@ -634,6 +634,9 @@ class Notification(Base):
     # Whose download it is, when the message went to an admin about someone
     # else's ("for Sam"); None = the reader's own.
     for_user_id = Column(Integer, nullable=True)
+    # The MediaRequest an admin's "asked for this" message is about (its
+    # Approve / Decline buttons); None on every other message.
+    request_id = Column(Integer, nullable=True)
 
     user = relationship("TentacleUser", backref="notifications")
 
@@ -1398,7 +1401,7 @@ def log_deletion(db, kind: str, name: str, media_type: str = None,
 def create_notification(db, user_id: int, tmdb_id: int, media_type: str,
                         title: str, message: str, poster_path: str = None,
                         jellyfin_item_id: str = None, kind: str = "download",
-                        force: bool = False, for_user_id: int = None):
+                        force: bool = False, for_user_id: int = None, request_id: int = None):
     """Create a notification for a user if they have notifications enabled.
     `force`: an admin's request or problem message, which their own
     "download notifications" switch doesn't turn off."""
@@ -1409,6 +1412,7 @@ def create_notification(db, user_id: int, tmdb_id: int, media_type: str,
         user_id=user_id, tmdb_id=tmdb_id, media_type=media_type,
         title=title, message=message, poster_path=poster_path,
         jellyfin_item_id=jellyfin_item_id, kind=kind, for_user_id=for_user_id,
+        request_id=request_id,
     )
     db.add(notif)
     db.commit()

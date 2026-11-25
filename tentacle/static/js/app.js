@@ -653,7 +653,7 @@ function showPage(name, tab) {
     if (name === 'myyoutube' && typeof loadMyYouTube === 'function') loadMyYouTube();
     if (name === 'recordings' && typeof loadRecordings === 'function') loadRecordings();
     if (name === 'people') loadPeople();
-    if (name === 'requests') { loadRequests(); famReqTab(tab === 'decided' || tab === 'downloads' ? tab : 'pending'); }
+    if (name === 'requests') { fam.focus = /^\d+$/.test(tab || '') ? +tab : null; loadRequests(); famReqTab(tab === 'decided' || tab === 'downloads' ? tab : 'pending'); }
     if (name === 'sources') showSourcesTab(tab || state.sourcesTab || 'providers');
     if (name === 'health') loadHealthPage();
   } finally {

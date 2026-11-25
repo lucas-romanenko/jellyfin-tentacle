@@ -24,6 +24,7 @@
     knownIds: new Set(),  // Track IDs we've already shown toasts for
     toastQueue: [],
     isShowingToast: false,
+    asks: {},             // notification id -> its request toast (an admin's, with buttons)
   };
 
   function init() {
@@ -98,15 +99,24 @@
 
     var url = TN.apiClient.getUrl('TentacleDiscover/Notifications?userId=' + TN.userId);
     TN.apiClient.getJSON(url).then(function (data) {
-      if (!data || !data.notifications || !data.notifications.length) return;
-      if (!data.notifications_enabled) return;
+      if (!data || !data.notifications) return;
+      // A request answered anywhere else (Tentacle → Requests, another tab)
+      // is gone from the list: its toast goes too.
+      var live = {};
+      data.notifications.forEach(function (n) { live[n.id] = n; });
+      Object.keys(TN.asks).forEach(function (id) {
+        if (!live[id] || !canAnswer(live[id])) closeAsk(id, false);
+      });
+      if (!data.notifications.length || !data.notifications_enabled) return;
 
-      // Show toasts for new notifications we haven't seen
+      // Show toasts for new notifications we haven't seen. A request an admin
+      // can answer gets its own toast at once and stays until it's dealt with.
       for (var i = 0; i < data.notifications.length; i++) {
         var notif = data.notifications[i];
         if (!TN.knownIds.has(notif.id)) {
           TN.knownIds.add(notif.id);
-          TN.toastQueue.push(notif);
+          if (canAnswer(notif)) showAsk(notif);
+          else TN.toastQueue.push(notif);
         }
       }
       processQueue();
@@ -190,6 +200,139 @@
       }
     }, 8000);
   }
+
+  // ── An admin's request toast: Approve / Decline right there ─────────
+  // Only an admin's message about a waiting request carries request_id
+  // (Tentacle sends it to no one else, and both Jellyfin and Tentacle refuse
+  // anyone else's answer). Top right, under Jellyfin's header: the player's
+  // controls are along the bottom.
+  function canAnswer(notif) {
+    return !!(notif && notif.kind === 'request' && notif.request_id &&
+      (notif.request_status === 'pending' || notif.request_status === 'failed'));
+  }
+
+  function asksBox() {
+    var box = document.querySelector('.tentacle-asks');
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'tentacle-asks';
+      document.body.appendChild(box);
+    }
+    return box;
+  }
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function showAsk(notif) {
+    var toast = el('div', 'tentacle-toast tentacle-toast-ask');
+    var inner = el('div', 'tentacle-toast-inner');
+    if (notif.poster_path) {
+      var img = el('img', 'tentacle-toast-poster');
+      img.alt = '';
+      img.src = 'https://image.tmdb.org/t/p/w154' + notif.poster_path;
+      inner.appendChild(img);
+    }
+    var content = el('div', 'tentacle-toast-content');
+    content.appendChild(el('div', 'tentacle-toast-label', 'Request'));
+    content.appendChild(el('div', 'tentacle-toast-title', notif.title || ''));
+    content.appendChild(el('div', 'tentacle-toast-who',
+      notif.requested_by ? notif.requested_by + ' asked for this' : 'Someone asked for this'));
+    var buttons = el('div', 'tentacle-toast-actions');
+    var yes = el('button', 'tentacle-toast-btn tentacle-toast-approve',
+      notif.request_status === 'failed' ? 'Try again' : 'Approve');
+    var no = el('button', 'tentacle-toast-btn tentacle-toast-decline', 'Decline');
+    buttons.appendChild(yes);
+    buttons.appendChild(no);
+    content.appendChild(buttons);
+    var result = el('div', 'tentacle-toast-result');
+    content.appendChild(result);
+    inner.appendChild(content);
+    var close = el('button', 'tentacle-toast-close', '\u00d7');
+    close.setAttribute('aria-label', 'Close');
+    inner.appendChild(close);
+    toast.appendChild(inner);
+
+    // The toast itself opens Tentacle → Requests with this request in view.
+    if (notif.requests_url) {
+      inner.style.cursor = 'pointer';
+      inner.title = 'Open in Tentacle \u2192 Requests';
+    }
+    inner.addEventListener('click', function (e) {
+      var t = e.target;
+      if (t === yes || t === no || t === close || !notif.requests_url) return;
+      window.open(notif.requests_url, '_blank', 'noopener');
+    });
+    close.addEventListener('click', function () { closeAsk(notif.id, true); });
+    yes.addEventListener('click', function () { answer(notif, 'Approve', toast); });
+    no.addEventListener('click', function () { answer(notif, 'Decline', toast); });
+
+    TN.asks[notif.id] = toast;
+    asksBox().appendChild(toast);
+    requestAnimationFrame(function () { toast.classList.add('tentacle-toast-show'); });
+    return toast;
+  }
+
+  function closeAsk(id, dismiss) {
+    var toast = TN.asks[id];
+    if (!toast) return;
+    delete TN.asks[id];
+    if (dismiss) dismissNotification(id);
+    removeToast(toast);
+  }
+
+  // What an answer came back as, in plain words.
+  function answerLine(what, status, body) {
+    var detail = body && body.detail;
+    if (status === 409) return detail || 'Someone already answered this request.';
+    if (status === 401 || status === 403) return 'Only an admin can answer requests.';
+    if (status && status >= 400) return detail || 'Tentacle didn\u2019t answer (HTTP ' + status + '). Try again in a moment.';
+    if (what === 'Decline') return 'Declined';
+    if (body && body.ok) return 'Approved, downloading';
+    return 'It didn\u2019t go through: ' + (detail || 'Radarr/Sonarr didn\u2019t take it') + '.';
+  }
+
+  function answer(notif, what, toast) {
+    var buttons = toast.querySelector('.tentacle-toast-actions');
+    var result = toast.querySelector('.tentacle-toast-result');
+    var yes = toast.querySelector('.tentacle-toast-approve');
+    buttons.classList.add('tentacle-toast-busy');
+    result.className = 'tentacle-toast-result';
+    result.textContent = what === 'Approve' ? 'Approving\u2026' : 'Declining\u2026';
+    var url = TN.apiClient.getUrl('TentacleDiscover/Requests/' + notif.request_id + '/' + what +
+      '?userId=' + TN.userId);
+    var done = function (status, body) {
+      var line = answerLine(what, status, body);
+      var good = status < 400 && (what === 'Decline' || (body && body.ok));
+      buttons.classList.remove('tentacle-toast-busy');
+      result.textContent = line;
+      result.classList.add(good ? 'tentacle-toast-good' : 'tentacle-toast-bad');
+      if (good || status === 409) {
+        // Answered: the line stays a moment, then the toast goes.
+        buttons.style.display = 'none';
+        delete TN.asks[notif.id];
+        setTimeout(function () { dismissNotification(notif.id); removeToast(toast); }, 3000);
+      } else if (what === 'Approve' && yes) {
+        yes.textContent = 'Try again';
+      }
+    };
+    return TN.apiClient.fetch({ url: url, type: 'POST', dataType: 'json', headers: { accept: 'application/json' } })
+      .then(function (body) { done(200, body); }, function (err) {
+        if (err && typeof err.json === 'function') {
+          return err.json().catch(function () { return null; }).then(function (b) { done(err.status || 500, b); });
+        }
+        done(503, { detail: 'Can\u2019t reach Jellyfin. Try again in a moment.' });
+      });
+  }
+
+  TN.showAsk = showAsk;
+  TN.answer = answer;
+  TN.answerLine = answerLine;
+  TN.canAnswer = canAnswer;
 
   function removeToast(toast, onDone) {
     if (!toast.parentNode) {
