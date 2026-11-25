@@ -201,6 +201,11 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   auto-add never runs for someone whose requests wait.
 - Notifications: `Notification.kind` download | request | problem; `force`
   sends requests and problems to admins whatever their download switch says.
+  An admin's "asked for this" message keeps its `request_id`: Jellyfin web's
+  toast gets Approve / Decline (plugin `Requests/{id}/Approve|Decline`) and
+  opens `#requests/<id>` (the Pushover link too). Once the request is
+  answered anywhere, or taken back, `approvals._answered` dismisses the
+  admins' messages about it; a failed approve keeps them for another try.
 - Problems (`admin_alerts.check`, every 10 min): providers failing (from
   provider_health's state; it sends its own Pushover), Radarr/Sonarr
   unreachable and disk errors (arr_insight), stuck downloads, Live TV set-up

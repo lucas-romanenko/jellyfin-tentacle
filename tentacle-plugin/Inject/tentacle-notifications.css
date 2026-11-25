@@ -87,3 +87,129 @@
 .tentacle-toast-close:hover {
   color: rgba(255, 255, 255, 0.8);
 }
+
+/* An admin's request toast (Approve / Decline): top right under Jellyfin's
+   header, clear of the player's controls along the bottom; stays until
+   answered or closed. Several stack. */
+.tentacle-asks {
+  position: fixed;
+  top: 72px;
+  right: 20px;
+  z-index: 999999;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: calc(100% - 40px);
+  max-width: 420px;
+  pointer-events: none;
+}
+
+.tentacle-asks .tentacle-toast {
+  position: relative;
+  top: auto;
+  bottom: auto;
+  right: auto;
+  width: 100%;
+  max-width: none;
+}
+
+.tentacle-toast-ask .tentacle-toast-inner {
+  align-items: flex-start;
+}
+
+.tentacle-toast-ask .tentacle-toast-title {
+  font-weight: 600;
+  -webkit-line-clamp: 1;
+}
+
+.tentacle-toast-who {
+  font-size: 13px;
+  color: #94a3b8;
+  margin-top: 2px;
+}
+
+.tentacle-toast-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.tentacle-toast-btn {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 8px;
+  padding: 6px 16px;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  color: #e2e8f0;
+}
+
+.tentacle-toast-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.tentacle-toast-approve {
+  background: #8b5cf6;
+  border-color: #8b5cf6;
+  color: #fff;
+}
+
+.tentacle-toast-approve:hover {
+  background: #7c3aed;
+}
+
+.tentacle-toast-busy .tentacle-toast-btn {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.tentacle-toast-result {
+  font-size: 13px;
+  color: #cbd5e1;
+  margin-top: 8px;
+}
+
+.tentacle-toast-result:empty {
+  display: none;
+}
+
+.tentacle-toast-result.tentacle-toast-good {
+  color: #4ade80;
+}
+
+.tentacle-toast-result.tentacle-toast-bad {
+  color: #f87171;
+}
+
+@media (max-width: 600px) {
+  .tentacle-asks {
+    top: 68px;
+    right: 10px;
+    width: calc(100% - 20px);
+    gap: 8px;
+  }
+
+  .tentacle-toast-ask .tentacle-toast-inner {
+    padding: 10px 12px;
+    gap: 10px;
+  }
+
+  .tentacle-toast-ask .tentacle-toast-poster {
+    width: 36px;
+    height: 54px;
+  }
+
+  .tentacle-toast-ask .tentacle-toast-label {
+    display: none;
+  }
+
+  .tentacle-toast-actions {
+    margin-top: 6px;
+  }
+
+  .tentacle-toast-btn {
+    padding: 4px 14px;
+  }
+}

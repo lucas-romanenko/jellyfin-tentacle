@@ -280,7 +280,7 @@ Declared on the app in `main.py` (no router, all **none**; listed in
 | GET | `/api/my/channels` | user | my_livetv.py:my_channels |
 | PUT | `/api/my/channels/favourite` | user | my_livetv.py:set_my_favourite |
 | PUT | `/api/my/channels/favourites` | user | my_livetv.py:set_my_favourites |
-| GET | `/api/notifications` | user | notifications.py:get_notifications |
+| GET | `/api/notifications` | user | notifications.py:get_notifications (an admin's "asked for this" message also has `request_id`, `request_status`, `requested_by`, `requests_url`; nobody else's) |
 | POST | `/api/notifications/dismiss-all` | user | notifications.py:dismiss_all |
 | PUT | `/api/notifications/others` | user (admins only, 403 otherwise) | notifications.py:show_others_downloads (`{"show": bool}`: other people's downloads in my Activity and messages) |
 | POST | `/api/notifications/toggle` | user | notifications.py:toggle_notifications |
