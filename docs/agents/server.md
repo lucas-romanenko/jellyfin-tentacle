@@ -777,6 +777,45 @@ with `untracked_auto_add` (off by default), which adds the 95 %+ sure ones.
   person's languages as WebVTT; it keeps them with the saved title and its
   player adds them as tracks.
 
+## Skip intro / Skip credits (`services/segments.py`, `segment_detect.py`)
+
+- **Why.** Nothing found them (no intro plugin; Jellyfin's MediaSegments
+  table was empty), so no app offered Skip intro. The open-source Intro
+  Skipper plugin was read for its approach only: it is GPL-3.0-only, this
+  repo MIT, so none of its code is here.
+- **Queue** (`segment_jobs`): a play (the plugin's `/api/subtitles/playing`)
+  queues the episode, the one before it (a partner to compare with) and the
+  next 6 of its season. One worker, one title at a time, 3 tries.
+- **Per title:** ffprobe (chapters, duration). Chapters named like an
+  intro/credits (`from_chapters`) are used as they are and never overwritten
+  by a guess. Otherwise the first min(25%, 6 min) and last min(25%, 6 min)
+  are fingerprinted with ffmpeg's chromaprint (one 32-bit point per
+  ~0.124 s), and the last minutes' keyframes measured for darkness
+  (`blackframe`, `-skip_frame nokey`). A provider title is read on the
+  background slot with `-t` (head) and `-ss` (tail: a Range request), so
+  roughly half of a 12-min film, a quarter or less of an episode. ffmpeg's
+  seek opens the new range before it closes the old: the relay closes the
+  older background read of the same title first (`_Download.superseded`),
+  so one provider connection. Fingerprints stay in `/data/cache/fingerprints`.
+- **Season** (`work_out_season`, after each read): each episode against the
+  others (nearest first). Two fingerprints are lined up by the shift their
+  identical points (and points with an identical top half) vote for; the
+  shared part is the longest stretch where the bit difference averaged over
+  ~1 s stays ≤ 3 (unrelated sound sits ~6 bits apart point by point, so
+  single points can't be trusted), gaps < 3.5 s bridged, edges tightened to
+  points ≤ 1 bit apart, start moved 1.5 s later (a point hears ~1-2 s around
+  it). Intro 15-120 s (one starting in the first 3 s starts at 0), credits
+  15-450 s, in the episode's own time, running to the end when they stop
+  within 5 s of it. Credits on black only when nothing else was found.
+- **Kept** in `media_segments` per Jellyfin item (a stream and a download of
+  one episode are two items: per copy). Tentacle POSTs
+  `/Tentacle/Segments/Refresh?itemIds=` to the plugin, whose
+  IMediaSegmentProvider ("Tentacle") reads `GET /api/segments/{item}`
+  (public: times only, Jellyfin asks with no person) and Jellyfin keeps them
+  in its MediaSegments, which Jellyfin Web, the phone apps and the TV app
+  read. Jellyfin Web's skip action per type is per device: the plugin's
+  tentacle-subs.js writes each person's choice into it.
+
 ## Provider health (`services/provider_health.py`)
 
 - Hourly (job `provider_health`, plus once 2 min after start unless the

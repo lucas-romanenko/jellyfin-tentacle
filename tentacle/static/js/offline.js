@@ -612,9 +612,11 @@ async function offPlay(id) {
   const video = wrap.querySelector('video');
   if (!rec.subtitles_ready && navigator.onLine) {
     const got = await _offSubtitles(id);
-    if (got) Object.assign(rec, { subtitles: got.tracks, subtitle_mode: got.mode, subtitles_ready: got.ready });
+    if (got) Object.assign(rec, { subtitles: got.tracks, subtitle_mode: got.mode, subtitles_ready: got.ready,
+                                  segments: got.segments || [], skip: got.skip || {} });
   }
   _offAddTracks(video, rec);
+  _offSkips(wrap, video, rec);
   off.player = { id, video, url, saveTimer: null };
   video.addEventListener('loadedmetadata', () => {
     const at = rec.played ? 0 : (rec.position_ticks || 0) / 1e7;
@@ -642,7 +644,8 @@ async function _offSubtitles(id) {
     const r = await fetch(`/api/offline/items/${id}/subtitles`, { credentials: 'same-origin' });
     if (!r.ok) return null;
     const got = await r.json();
-    await _offUpdate(id, { subtitles: got.tracks, subtitle_mode: got.mode, subtitles_ready: !!got.ready });
+    await _offUpdate(id, { subtitles: got.tracks, subtitle_mode: got.mode, subtitles_ready: !!got.ready,
+                           segments: got.segments || [], skip: got.skip || {} });
     // Still being read on the server: ask again while this page is open.
     if (!got.ready) setTimeout(() => _offSubtitles(id), 30000);
     return got;
@@ -660,6 +663,36 @@ function _offAddTracks(video, rec) {
     track.src = URL.createObjectURL(new Blob([t.vtt], { type: 'text/vtt' }));
     if (i === 0 && rec.subtitle_mode === 'always') track.default = true;
     video.appendChild(track);
+  });
+}
+
+// Skip intro / Skip credits in the Offline player, as the person chose
+// (button / by itself / off), from the times saved with the title.
+function _offSkips(wrap, video, rec) {
+  const segs = (rec.segments || []).filter(s => (rec.skip || {})[s.type] !== 'off');
+  if (!segs.length) return;
+  const btn = document.createElement('button');
+  btn.className = 'off-skip';
+  btn.style.display = 'none';
+  wrap.appendChild(btn);
+  let current = null;
+  const done = new Set();
+  video.addEventListener('timeupdate', () => {
+    const t = video.currentTime * 1000;
+    const s = segs.find(x => t >= x.start_ms && t < x.end_ms - 1000);
+    if (s && (rec.skip || {})[s.type] === 'auto' && !done.has(s)) {
+      done.add(s);
+      video.currentTime = s.end_ms / 1000;
+      return;
+    }
+    if (s !== current) {
+      current = s;
+      btn.textContent = s ? (s.type === 'Intro' ? 'Skip intro' : 'Skip credits') : '';
+      btn.style.display = s ? '' : 'none';
+    }
+  });
+  btn.addEventListener('click', () => {
+    if (current) video.currentTime = current.end_ms / 1000;
   });
 }
 

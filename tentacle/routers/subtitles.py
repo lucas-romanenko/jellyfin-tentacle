@@ -119,7 +119,7 @@ async def embedded_tracks(item_id: str, wait: int = 0, db: Session = Depends(get
     doesn't have: which of its tracks (stream indexes) Tentacle has a copy
     of. A title not read yet goes first in line and is waited for (at most
     `wait` seconds)."""
-    item_id = item_id.replace("-", "")
+    item_id = item_id.replace("-", "").lower()
 
     def tracks():
         return sorted(int(f.source_ref) for f in db.query(SubtitleFile).filter(
@@ -141,7 +141,7 @@ async def embedded(item_id: str, index: int, wait: int = 0, db: Session = Depend
     title: Tentacle's copy of that track, first in line if it isn't ready
     (waiting up to `wait` seconds). 404 when the title has no such text track
     in the household's languages, 503 while it is still being read."""
-    item_id = item_id.replace("-", "")
+    item_id = item_id.replace("-", "").lower()
 
     def found():
         return (db.query(SubtitleFile).filter(SubtitleFile.jellyfin_item_id == item_id,
@@ -191,3 +191,13 @@ def queue_list(db: Session = Depends(get_db)):
     return [{"item_id": j.jellyfin_item_id, "name": j.name, "state": j.state, "priority": j.priority,
              "method": j.method, "error": j.error, "languages": j.languages,
              "finished_at": j.finished_at.isoformat() if j.finished_at else None} for j in rows]
+
+
+# ── Skip intro / Skip credits (services/segments.py) ────────────────────────
+
+@router.get("/api/segments/{item_id}")
+def segments_for(item_id: str, db: Session = Depends(get_db)):
+    """The plugin's media segment provider (Jellyfin calls it with no person
+    behind it): where this item's intro and end credits are. Times only."""
+    from services import segments
+    return {"segments": segments.for_item(db, item_id)}

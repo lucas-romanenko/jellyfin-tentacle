@@ -1305,12 +1305,15 @@ class _Download:
     the background: `kind`): one request, its own provider connection on a
     lease of that kind (`lease` None while someone watching has the slot and
     it waits for another)."""
-    __slots__ = ("owner", "client", "lease", "resp", "lost", "started", "last_used", "waits", "kind")
+    __slots__ = ("owner", "client", "lease", "resp", "lost", "started", "last_used", "waits", "kind", "superseded")
 
     def __init__(self, owner: str, client: str, kind: str = "download"):
         self.owner = owner
         self.client = client
         self.kind = kind
+        # A newer background read of the same title took over (ffmpeg seeking
+        # opens the new range before it closes the old one): this one ends.
+        self.superseded = False
         self.lease = None
         self.resp = None
         # The slot was taken (someone wants to watch): stop pulling, wait for another.
@@ -1393,6 +1396,17 @@ async def _download(db, request: Request, kind: str, token_file: str, url: str, 
     protect = livetv._protect_recordings(db)
     pid = provider.id if provider else None
     dl = _Download(owner, who, lease_kind)
+    if lease_kind == "background":
+        # One provider connection per title for Tentacle's own reads: the
+        # range ffmpeg is leaving is closed before the new one opens.
+        for old in [d for d in _downloads if d.kind == "background" and d.owner == owner]:
+            old.superseded = True
+            resp, old.resp = old.resp, None
+            if resp is not None:
+                await _close_within(resp)
+            if old.lease is not None:
+                livetv._stream_slots.release_lease(old.lease)
+                old.lease = None
     if await _download_slot(dl, limit, pid, provider_limit, protect, livetv._SLOT_WAIT_SECONDS) is None:
         logger.info(f"[VOD] {owner}: download not started — every connection is in use for watching or recording")
         raise HTTPException(503, "Every connection to the provider is in use for watching right now. "
@@ -1464,6 +1478,8 @@ async def _download_body(dl: _Download, client, url, guard, headers, start, end,
     since_open = 0
     try:
         while True:
+            if dl.superseded:
+                return
             if dl.resp is None:
                 if dl.lease is None:
                     # Someone wants to watch: wait, the client's connection
@@ -1505,7 +1521,7 @@ async def _download_body(dl: _Download, client, url, guard, headers, start, end,
             reason = "the provider closed the connection early"
             try:
                 async for chunk in resp.aiter_bytes():
-                    if dl.lost or dl.resp is not resp:
+                    if dl.lost or dl.superseded or dl.resp is not resp:
                         break
                     sent += len(chunk)
                     since_open += len(chunk)
@@ -1520,11 +1536,13 @@ async def _download_body(dl: _Download, client, url, guard, headers, start, end,
             except (httpx.HTTPError, httpx.StreamError) as e:
                 reason = str(e) or type(e).__name__
             except Exception:
-                if not dl.lost:
-                    raise                           # closed from outside only when pre-empted
+                if not (dl.lost or dl.superseded):
+                    raise                           # closed from outside only when pre-empted or superseded
             if dl.resp is resp:
                 dl.resp = None
                 await resp.aclose()
+            if dl.superseded:
+                return                              # a newer read of the title took over
             if dl.lost:
                 continue                            # pre-empted: wait for a slot (top of the loop)
             if end is not None and start + sent > end:

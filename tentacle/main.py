@@ -1106,6 +1106,9 @@ async def lifespan(app: FastAPI):
     # Subtitles got ready ahead of time, one title at a time (services/subtitles.py)
     from services import subtitles as _subtitles
     _subtitles.start()
+    # Skip intro / Skip credits found ahead of time (services/segments.py)
+    from services import segments as _segments
+    _segments.start()
     # An image without a release stamp asks GitHub which release it follows
     from services import versions
     versions.derive_in_background(BUILD_COMMIT)

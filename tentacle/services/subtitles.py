@@ -274,7 +274,7 @@ async def extract(source: str, background: bool, picks: list, workdir: Path, spe
 def queue(db, item_id: str, priority: int, name: str = "", force: bool = False) -> SubtitleJob:
     """Put a title in line (or move it up). A title already done for the
     household's languages isn't read again unless `force`."""
-    item_id = item_id.replace("-", "")
+    item_id = item_id.replace("-", "").lower()
     job = db.query(SubtitleJob).filter(SubtitleJob.jellyfin_item_id == item_id).first()
     langs = watch_prefs.household_languages(db)
     if job is None:
@@ -311,7 +311,8 @@ def _episode_name(item: dict) -> str:
 
 def on_play(db, item_id: str) -> int:
     """Someone started a title: it first, then the next episodes of its
-    season. Returns how many titles were queued."""
+    season (subtitles); and its season's intros and credits
+    (services/segments.py). Returns how many titles were queued."""
     import requests
     items = jellyfin_items(db, [item_id])
     if not items:
@@ -334,6 +335,8 @@ def on_play(db, item_id: str) -> int:
         for e in eps[at + 1:at + 1 + SEASON_AHEAD]:
             queue(db, e["Id"], SEASON, _episode_name(e))
             n += 1
+        from services import segments
+        segments.on_play(db, item, eps)
     return n
 
 
@@ -529,7 +532,7 @@ def start() -> None:
 
 async def wait_for(db, item_id: str, timeout: float) -> Optional[SubtitleJob]:
     """Put the title first in line and wait (at most `timeout`) until its job ends."""
-    item_id = item_id.replace("-", "")
+    item_id = item_id.replace("-", "").lower()
     job = queue(db, item_id, ASKED)
     if job.state == "done":
         return job
@@ -544,7 +547,7 @@ async def wait_for(db, item_id: str, timeout: float) -> Optional[SubtitleJob]:
 
 def status(db, item_id: str) -> dict:
     """Where a title's subtitles are: for the player's "getting subtitles" note."""
-    item_id = item_id.replace("-", "")
+    item_id = item_id.replace("-", "").lower()
     job = db.query(SubtitleJob).filter(SubtitleJob.jellyfin_item_id == item_id).first()
     files = db.query(SubtitleFile).filter(SubtitleFile.jellyfin_item_id == item_id).all()
     out = {"state": job.state if job else "none", "files": [
@@ -573,7 +576,7 @@ async def get_another(db, item_id: str, lang: str) -> Optional[str]:
     site, lined up with the sound. A provider title whose speech pattern
     isn't kept yet is read for it first (background slot)."""
     from services import subtitle_fetch, subtitle_sync
-    item_id = item_id.replace("-", "")
+    item_id = item_id.replace("-", "").lower()
     items = await asyncio.to_thread(jellyfin_items, db, [item_id])
     if not items:
         return None
