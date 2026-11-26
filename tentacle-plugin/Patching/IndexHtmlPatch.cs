@@ -176,10 +176,11 @@ public static class IndexHtmlPatch
             var loginCssTag = $"<link rel=\"stylesheet\" href=\"/Tentacle/login.css?v={cacheBust}\" />";
             var loginJsTag = $"<script src=\"/Tentacle/login.js?v={cacheBust}\" defer></script>";
             var playJsTag = $"<script src=\"/Tentacle/play.js?v={cacheBust}\" defer></script>";
+            var subsJsTag = $"<script src=\"/Tentacle/subs.js?v={cacheBust}\" defer></script>";
 
             content = content
                 .Replace("</head>", $"{cssTag}{discoverCssTag}{detailsCssTag}{mdblistCssTag}{navbarCssTag}{mediabarCssTag}{searchCssTag}{livetvCssTag}{recordingsCssTag}{favoritesCssTag}{notifCssTag}{loginCssTag}</head>")
-                .Replace("</body>", $"{mdblistJsTag}{tmdbJsTag}{navbarJsTag}{mediabarJsTag}{jsTag}{discoverJsTag}{searchJsTag}{livetvJsTag}{recordingsJsTag}{favoritesJsTag}{detailsJsTag}{notifJsTag}{playJsTag}{loginJsTag}</body>");
+                .Replace("</body>", $"{mdblistJsTag}{tmdbJsTag}{navbarJsTag}{mediabarJsTag}{jsTag}{discoverJsTag}{searchJsTag}{livetvJsTag}{recordingsJsTag}{favoritesJsTag}{detailsJsTag}{notifJsTag}{playJsTag}{subsJsTag}{loginJsTag}</body>");
 
             var bytes = System.Text.Encoding.UTF8.GetBytes(content);
             lock (_transformLock)

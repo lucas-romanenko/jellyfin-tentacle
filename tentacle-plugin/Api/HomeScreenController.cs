@@ -1140,6 +1140,9 @@ public class TentacleHomeController : ControllerBase
     [HttpGet("/Tentacle/play.js")]
     public ActionResult GetPlayJs() => ServeAsset("tentacle-play.js", "application/javascript");
 
+    [HttpGet("/Tentacle/subs.js")]
+    public ActionResult GetSubsJs() => ServeAsset("tentacle-subs.js", "application/javascript");
+
     /// <summary>
     /// Returns an embedded CSS/JS resource. A request carrying the current boot
     /// stamp (?v=) is cacheable for a long time — the stamp changes on every plugin

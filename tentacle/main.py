@@ -969,6 +969,10 @@ def setup_scheduler(db):
                       id="recording_space", replace_existing=True, max_instances=1, coalesce=True)
     # Save offline's MP4s on the server (services/offline_convert): ones left
     # from before a restart are deleted hours after they last changed.
+    # Downloaded titles that arrived: their subtitles read from disk (services/subtitles.py)
+    from services import subtitles as _subs
+    scheduler.add_job(_subs.queue_added_job, IntervalTrigger(minutes=30), id="subtitles_added",
+                      replace_existing=True, max_instances=1, coalesce=True)
     from services import offline_convert as _offline_convert
     scheduler.add_job(_offline_convert.sweep_left_files, IntervalTrigger(minutes=_offline_convert.SWEEP_MINUTES,
                                                                          start_date=datetime.now() + timedelta(seconds=600)),
@@ -1099,6 +1103,9 @@ async def lifespan(app: FastAPI):
     live_updates.start()
     from services import provider_status
     provider_status.start()
+    # Subtitles got ready ahead of time, one title at a time (services/subtitles.py)
+    from services import subtitles as _subtitles
+    _subtitles.start()
     # An image without a release stamp asks GitHub which release it follows
     from services import versions
     versions.derive_in_background(BUILD_COMMIT)
@@ -1206,6 +1213,8 @@ from routers import vod as vod_router
 from routers import offline as offline_router
 app.include_router(vod_router.router)
 app.include_router(offline_router.router)
+from routers import subtitles as subtitles_router  # noqa: E402
+app.include_router(subtitles_router.router)
 # A VOD range ended on purpose (a seek) closes its connection through an
 # exception uvicorn would log as a crash (#285).
 logging.getLogger("uvicorn.error").addFilter(vod_router.EarlyRangeEndFilter())

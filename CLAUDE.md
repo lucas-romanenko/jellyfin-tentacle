@@ -74,7 +74,7 @@ Server (details in server.md, pipelines.md, jellyfin-notes.md):
 - UI says "Playlist", never "Tag" or "Collection".
 - Admin/server things go under Server (People, Requests, Sources, Health,
   Settings), never on family pages (Library, Discover, My Home Screen, My
-  Channels, Recordings, My YouTube, the TV app): hiding them from non-admins
+  Channels, Recordings, My YouTube, Subtitles & skipping, the TV app): hiding them from non-admins
   isn't enough. Every feature request (Rob's or anyone's) is split this way:
   server.md "UI words".
 - Lidarr: one request at a time, pageSize 50 or less, no `include*`;

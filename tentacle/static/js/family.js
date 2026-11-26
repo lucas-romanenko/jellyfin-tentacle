@@ -100,6 +100,7 @@ async function loadPeople() {
   fam.seen = JSON.stringify(fam.data);
   famRenderPeople();
   _famWatch();
+  if (typeof famRenderWatchDefaults === 'function') famRenderWatchDefaults();
 }
 
 // Live while People is open: someone locked out, added or changed by another

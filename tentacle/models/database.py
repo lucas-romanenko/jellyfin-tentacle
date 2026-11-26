@@ -612,6 +612,67 @@ class TentacleUser(Base):
     # Admins: other people's downloads in their Activity and messages ("for
     # Sam"). Off = only their own (and what nobody in Tentacle asked for).
     show_others_downloads = Column(Boolean, default=True)
+    # What they watch with (services/watch_prefs.py, their Subtitles & skipping
+    # page). None = what the household starts people with (Server → People).
+    # Subtitle languages: ISO 639-2 codes, comma-separated ("eng,fre").
+    subtitle_languages = Column(String, nullable=True)
+    subtitle_mode = Column(String, nullable=True)      # off | always | foreign
+    skip_intro = Column(String, nullable=True)         # button | auto | off
+    skip_credits = Column(String, nullable=True)       # button | auto | off
+
+
+# ─── Subtitles (services/subtitles.py) ──────────────────────────────────────
+
+class SubtitleJob(Base):
+    """One title whose subtitles Tentacle gets ready ahead of time: the
+    household's languages read out of the file (in the background, on the
+    lowest-ranked provider slot), the missing ones fetched from a subtitle
+    site, written beside the title."""
+    __tablename__ = "subtitle_jobs"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    jellyfin_item_id = Column(String, nullable=False, unique=True, index=True)
+    name = Column(String, nullable=True)               # "Show S01E02" / "Film (2020)", for the log and the page
+    # queued | running | done | failed. A done job runs again when the
+    # household wants a language it didn't cover (`languages`).
+    state = Column(String, nullable=False, default="queued", index=True)
+    # Lower first: 0 someone is watching it and asked, 1 someone is watching
+    # it, 2 the rest of their season, 3 a title just added.
+    priority = Column(Integer, nullable=False, default=3)
+    languages = Column(String, nullable=True)          # what it covered, "eng,fre"
+    method = Column(String, nullable=True)             # file (local read) | stream (background read) | none
+    bytes_read = Column(Integer, nullable=True)
+    attempts = Column(Integer, default=0)
+    error = Column(String, nullable=True)
+    queued_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+
+class SubtitleFile(Base):
+    """A subtitle file Tentacle wrote beside a title."""
+    __tablename__ = "subtitle_files"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    jellyfin_item_id = Column(String, nullable=False, index=True)
+    path = Column(String, nullable=False, unique=True)
+    language = Column(String, nullable=False)          # ISO 639-2/B ("eng")
+    hearing_impaired = Column(Boolean, default=False)
+    forced = Column(Boolean, default=False)
+    source = Column(String, nullable=False)            # embedded | opensubtitles
+    # embedded: the file's stream index; a site's: its subtitle id (a
+    # "Get another" skips the ones already tried).
+    source_ref = Column(String, nullable=True)
+    shifted_ms = Column(Integer, nullable=True)        # how far it was moved to line up with the sound
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SubtitleTried(Base):
+    """A site subtitle someone said was wrong: "Get another" never brings it back."""
+    __tablename__ = "subtitle_tried"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    jellyfin_item_id = Column(String, nullable=False, index=True)
+    language = Column(String, nullable=False)
+    source_ref = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 # ─── Notifications ───────────────────────────────────────────────────────────

@@ -1442,6 +1442,28 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 .home-scope-actions:empty { display: none; }
 #jf-tab-home.home-scope-default .home-personal { display: none; }
 
+/* ── Subtitles & skipping (watching.js) ── */
+.wch-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; align-items: start; max-width: 980px; }
+.wch-label { margin-top: 16px; margin-bottom: 8px; }
+.wch-langs { display: flex; flex-wrap: wrap; gap: 8px; }
+.wch-lang { display: inline-flex; align-items: center; gap: 6px; padding: 6px 6px 6px 12px; font-size: 13px; background: var(--accent-dim); color: var(--text); border-radius: 999px; }
+.wch-lang .wch-first { font-size: 11px; color: var(--accent-text); }
+.wch-lang button { background: none; border: 0; color: var(--text2); cursor: pointer; font-size: 15px; line-height: 1; padding: 2px 6px; border-radius: 999px; }
+.wch-lang button:hover, .wch-lang button:focus-visible { color: var(--text); background: rgba(255,255,255,0.08); }
+.wch-add { margin-top: 10px; max-width: 260px; }
+.wch-choices { display: flex; flex-direction: column; gap: 6px; }
+.wch-choices label { display: flex; align-items: center; gap: 10px; padding: 9px 12px; font-size: 13px; border: 1px solid var(--border2); border-radius: var(--radius-sm); cursor: pointer; color: var(--text2); }
+.wch-choices label b { color: var(--text); font-weight: 500; }
+.wch-choices input { accent-color: var(--accent); margin: 0; }
+.wch-choices label:has(input:checked) { border-color: var(--accent); background: var(--accent-dim); }
+.wch-foot { grid-column: 1 / -1; font-size: 13px; color: var(--text2); display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+#fam-watch-box { grid-column: span 2; }
+@media (max-width: 700px) { #fam-watch-box { grid-column: auto; } }
+.wch-defaults { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0 16px; }
+.wch-defaults .wch-col { min-width: 0; }
+.wch-defaults .form-group { margin-bottom: 10px; }
+.wch-defaults .wch-who { font-size: 12px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: .04em; margin: 12px 0 6px; }
+
 /* ── My channels ── */
 .card.mych-head { display: flex; align-items: center; gap: 8px 20px; flex-wrap: wrap; margin-bottom: 16px; }
 .mych-head-text { flex: 1; min-width: 240px; }
@@ -2608,6 +2630,10 @@ body.offline-mode .sidebar-footer button { display: none !important; }
           <span class="icon">⤓</span> Offline
           <span class="nav-badge nav-badge-accent" id="offline-badge" style="display:none" title="Downloading now">0</span>
         </button>
+        <!-- Everyone's subtitles and Skip intro / Skip credits (watching.js) -->
+        <button class="nav-item" data-page="watching">
+          <span class="icon">≡</span> Subtitles &amp; skipping
+        </button>
         <!-- Everyone's own YouTube channels (myyoutube.js) -->
         <button class="nav-item" data-page="myyoutube">
           <span class="icon">▶</span> My YouTube
@@ -2960,6 +2986,50 @@ body.offline-mode .sidebar-footer button { display: none !important; }
       </div>
 
       <!-- ── SOURCES (admins): where the library comes from ── -->
+      <!-- ── SUBTITLES & SKIPPING: each person's own, on every device (watching.js) ── -->
+      <div class="page" id="page-watching">
+        <div class="card mych-head">
+          <div class="mych-head-text">
+            <div class="mych-title">Subtitles &amp; skipping</div>
+            <p class="mych-sub">Yours only. They follow you to every device: Jellyfin on the web and on phones, and the Tentacle TV app.</p>
+          </div>
+          <div class="mych-status" id="wch-status" aria-live="polite"></div>
+        </div>
+        <div id="wch-body" class="wch-grid" style="display:none">
+          <div class="card wch-card">
+            <div class="mych-step-title">Subtitles</div>
+            <div class="form-label wch-label" id="wch-langs-label">In these languages</div>
+            <div class="wch-langs" id="wch-langs" aria-labelledby="wch-langs-label"></div>
+            <div class="wch-add">
+              <select class="form-input" id="wch-add-lang" aria-label="Add a language" onchange="wchAddLanguage(this.value)"></select>
+            </div>
+            <p class="fam-hint">The first is your language. Subtitle menus show only these.</p>
+            <div class="form-label wch-label" id="wch-mode-label">When</div>
+            <div class="wch-choices" role="radiogroup" aria-labelledby="wch-mode-label" id="wch-mode">
+              <label><input type="radio" name="wch-mode" value="off" onchange="wchSave({subtitle_mode: this.value})"> <span><b>Off</b> until I turn them on</span></label>
+              <label><input type="radio" name="wch-mode" value="always" onchange="wchSave({subtitle_mode: this.value})"> <span><b>Always</b></span></label>
+              <label><input type="radio" name="wch-mode" value="foreign" onchange="wchSave({subtitle_mode: this.value})"> <span><b>Only when the sound isn&rsquo;t in my language</b></span></label>
+            </div>
+          </div>
+          <div class="card wch-card">
+            <div class="mych-step-title">Skipping</div>
+            <div class="form-label wch-label" id="wch-intro-label">Intros</div>
+            <div class="wch-choices" role="radiogroup" aria-labelledby="wch-intro-label">
+              <label><input type="radio" name="wch-intro" value="button" onchange="wchSave({skip_intro: this.value})"> <span><b>Show a Skip intro button</b></span></label>
+              <label><input type="radio" name="wch-intro" value="auto" onchange="wchSave({skip_intro: this.value})"> <span><b>Skip by itself</b></span></label>
+              <label><input type="radio" name="wch-intro" value="off" onchange="wchSave({skip_intro: this.value})"> <span><b>Off</b> (watch the intro)</span></label>
+            </div>
+            <div class="form-label wch-label" id="wch-credits-label">End credits</div>
+            <div class="wch-choices" role="radiogroup" aria-labelledby="wch-credits-label">
+              <label><input type="radio" name="wch-credits" value="button" onchange="wchSave({skip_credits: this.value})"> <span><b>Show a Skip credits button</b></span></label>
+              <label><input type="radio" name="wch-credits" value="auto" onchange="wchSave({skip_credits: this.value})"> <span><b>Skip by itself</b> (on to the next episode)</span></label>
+              <label><input type="radio" name="wch-credits" value="off" onchange="wchSave({skip_credits: this.value})"> <span><b>Off</b> (watch the credits)</span></label>
+            </div>
+          </div>
+          <div class="wch-foot" id="wch-foot"></div>
+        </div>
+      </div>
+
       <!-- ── MY CHANNELS: everyone stars their favourites from the household's lineup (mychannels.js) ── -->
       <div class="page" id="page-mychannels">
         <div class="card mych-head">
@@ -3121,6 +3191,11 @@ body.offline-mode .sidebar-footer button { display: none !important; }
                 <option value="none">None yet (they star their own)</option>
               </select>
             </div>
+          </div>
+          <div class="card fam-box" id="fam-watch-box">
+            <div class="card-title">Subtitles &amp; skipping to start with</div>
+            <p class="fam-hint">For everyone who hasn&rsquo;t picked their own (they can, on their Subtitles &amp; skipping page).</p>
+            <div class="wch-defaults" id="fam-watch-defaults"></div>
           </div>
           <div class="card fam-box" id="fam-kids-box">
             <div class="card-title">Kids channels</div>
@@ -5229,7 +5304,8 @@ body.offline-mode .sidebar-footer button { display: none !important; }
 <script src="/static/js/recordings.js?v=7"></script>
 <script src="/static/js/untracked.js?v=2"></script>
 <script src="/static/js/backup.js?v=1"></script>
-<script src="/static/js/offline.js?v=3"></script>
+<script src="/static/js/offline.js?v=4"></script>
+<script src="/static/js/watching.js?v=1"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {

@@ -189,6 +189,11 @@ async function loadOffline(tab) {
   await offRefresh();
   offResume();
   offSyncProgress();
+  // Saved before their subtitles were ready (or saved before subtitles came
+  // with titles): get them while there is internet.
+  if (navigator.onLine) {
+    off.titles.filter(r => r.state === 'done' && !r.subtitles_ready).forEach(r => _offSubtitles(r.id));
+  }
 }
 
 async function offRefresh() {
@@ -495,6 +500,7 @@ async function _offMessage(msg) {
     delete off.live[id];
     const rec = off.titles.find(r => r.id === id);
     if (rec) toast(`${_offTitle(rec).main} is ready to watch offline.`);
+    _offSubtitles(id);
   } else if (msg.type === 'failed') {
     await _offFailed(id, msg);
   }
@@ -604,6 +610,11 @@ async function offPlay(id) {
     <div class="off-player-note" id="off-player-note" style="display:none"></div>`;
   document.body.appendChild(wrap);
   const video = wrap.querySelector('video');
+  if (!rec.subtitles_ready && navigator.onLine) {
+    const got = await _offSubtitles(id);
+    if (got) Object.assign(rec, { subtitles: got.tracks, subtitle_mode: got.mode, subtitles_ready: got.ready });
+  }
+  _offAddTracks(video, rec);
   off.player = { id, video, url, saveTimer: null };
   video.addEventListener('loadedmetadata', () => {
     const at = rec.played ? 0 : (rec.position_ticks || 0) / 1e7;
@@ -621,6 +632,35 @@ async function offPlay(id) {
   off.player.saveTimer = setInterval(() => _offSavePosition(false), 10000);
   video.src = url;
   video.play().catch(() => { /* the person taps play */ });
+}
+
+// The subtitles a saved title takes with it (the person's languages, as
+// WebVTT: GET /api/offline/items/{id}/subtitles). Kept in its record; asked
+// again while online until the server says they are all ready.
+async function _offSubtitles(id) {
+  try {
+    const r = await fetch(`/api/offline/items/${id}/subtitles`, { credentials: 'same-origin' });
+    if (!r.ok) return null;
+    const got = await r.json();
+    await _offUpdate(id, { subtitles: got.tracks, subtitle_mode: got.mode, subtitles_ready: !!got.ready });
+    // Still being read on the server: ask again while this page is open.
+    if (!got.ready) setTimeout(() => _offSubtitles(id), 30000);
+    return got;
+  } catch (e) {
+    return null;     // offline: what was kept stays
+  }
+}
+
+function _offAddTracks(video, rec) {
+  (rec.subtitles || []).forEach((t, i) => {
+    const track = document.createElement('track');
+    track.kind = 'subtitles';
+    track.label = t.label;
+    track.srclang = t.language;
+    track.src = URL.createObjectURL(new Blob([t.vtt], { type: 'text/vtt' }));
+    if (i === 0 && rec.subtitle_mode === 'always') track.default = true;
+    video.appendChild(track);
+  });
 }
 
 async function _offSavePosition(ended) {

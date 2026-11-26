@@ -288,8 +288,14 @@ Declared on the app in `main.py` (no router, all **none**; listed in
 | GET | `/api/offline/where` | user | offline.py:where (for Jellyfin's pages through the plugin: the Offline page's address, can_download) |
 | GET | `/api/offline/items/{item_id}` | user | offline.py:item (may this person save it: Can save offline, visible to them, not still recording; what the page keeps. A show or a season (`?season=N`: that season of a show): `{kind, name, episodes: [...]}`) |
 | GET | `/api/offline/items/{item_id}/poster` | user | offline.py:poster |
+| GET | `/api/offline/items/{item_id}/subtitles` | user | offline.py:subtitles (the files beside the title in the person's languages as WebVTT, their mode, `ready`; queues the title) |
 | GET | `/api/offline/items/{item_id}/video` | user | offline.py:video (`?can=hevc`: what the browser plays besides H.264/AAC. An MP4 that fits: Jellyfin's Download, ranges passed through; anything else: the MP4 Tentacle makes (services/offline_convert.py), read as it grows: `X-Offline-Job`, `X-Offline-From`, `X-Offline-Estimate`; a normal file with its size once made) |
 | POST | `/api/offline/progress` | user | offline.py:progress (where they stopped offline → Jellyfin, unless Jellyfin's is newer) |
+| GET | `/api/watch/prefs` | user | subtitles.py:my_prefs (their languages, mode, skip intro/credits, `own`, `kid`, the language list) |
+| PUT | `/api/watch/prefs` | user | subtitles.py:save_my_prefs (also written to their Jellyfin user configuration; topic "watch" to their clients) |
+| POST | `/api/watch/prefs/reset` | user | subtitles.py:reset_my_prefs (back to the household's) |
+| GET | `/api/watch/defaults` | admin | subtitles.py:get_defaults (grown-ups' and kids' starting point) |
+| PUT | `/api/watch/defaults` | admin | subtitles.py:save_defaults |
 | GET | `/api/providers` | admin | providers.py:list_providers |
 | POST | `/api/providers` | admin | providers.py:create_provider |
 | DELETE | `/api/providers/{provider_id}` | admin | providers.py:delete_provider |
@@ -334,6 +340,12 @@ Declared on the app in `main.py` (no router, all **none**; listed in
 | GET | `/api/settings/jellyfin-music/libraries` | admin | settings.py:jellyfin_music_libraries |
 | GET | `/api/settings/paths` | admin | settings.py:check_paths |
 | GET | `/api/settings/plugin-keys` | user | settings.py:get_plugin_keys |
+| POST | `/api/subtitles/playing/{item_id}` | user | subtitles.py:playing (the plugin: someone started it; it and its season's next 6 episodes are queued) |
+| GET | `/api/subtitles/queue` | admin | subtitles.py:queue_list |
+| GET | `/api/subtitles/{item_id}/status` | user | subtitles.py:status (state, files, place in line, % read and seconds left) |
+| GET | `/api/subtitles/{item_id}/embedded` | user | subtitles.py:embedded_tracks (the plugin's extraction patch: stream indexes Tentacle has a copy of; `?wait=` puts it first in line and waits, at most 20 min) |
+| GET | `/api/subtitles/{item_id}/stream/{index}.srt` | user | subtitles.py:embedded (Tentacle's copy of one embedded track) |
+| POST | `/api/subtitles/{item_id}/another` | user | subtitles.py:another (`{"language"}`: "Subtitles wrong? Get another") |
 | GET | `/api/similar/{media_type}/{tmdb_id}` | user | similar.py:related (TMDB collection / recommendations / similar ids for the plugin's More Like This, kept 7 days, plus `tentacle_tags` and `library`: the Jellyfin ids of those in the library, from Discover's cached library map (`_get_jellyfin_tmdb_items`, refreshed in the background, never waited for) and Tentacle's rows; #292) |
 | GET | `/api/settings/raw` | admin | settings.py:get_settings_raw |
 | GET | `/api/settings/schedule-info` | admin | settings.py:schedule_info |

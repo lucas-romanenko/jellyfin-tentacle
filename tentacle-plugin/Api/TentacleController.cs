@@ -176,7 +176,7 @@ public class TentacleController : ControllerBase
     /// LibraryChanged: older TV apps reload Home on every one of those.
     /// </summary>
     /// <param name="userIds">Jellyfin user ids, comma separated (dashes optional).</param>
-    /// <param name="topics">"requests", "activity", "notifications", "recordings", comma separated.</param>
+    /// <param name="topics">"requests", "activity", "notifications", "recordings", "status", "watch", comma separated.</param>
     [HttpPost("Notify")]
     [Authorize(Policy = "RequiresElevation")]
     public async Task<ActionResult> Notify([FromQuery] string? userIds = null, [FromQuery] string? topics = null)
@@ -187,7 +187,7 @@ public class TentacleController : ControllerBase
             .Where(g => g != Guid.Empty)
             .Distinct()
             .ToList();
-        var known = new HashSet<string>(StringComparer.Ordinal) { "requests", "activity", "notifications", "recordings", "status" };
+        var known = new HashSet<string>(StringComparer.Ordinal) { "requests", "activity", "notifications", "recordings", "status", "watch" };
         var what = string.Join(",", (topics ?? string.Empty)
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(known.Contains)
@@ -195,6 +195,12 @@ public class TentacleController : ControllerBase
         if (ids.Count == 0 || what.Length == 0)
         {
             return BadRequest(new { error = "userIds and topics are required" });
+        }
+
+        // Their subtitle and skip choices changed: the menus read them again.
+        if (what.Split(',').Contains("watch"))
+        {
+            Services.WatchPrefs.Forget(ids);
         }
 
         var connected = _sessionManager.Sessions

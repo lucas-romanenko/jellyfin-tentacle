@@ -61,10 +61,12 @@ Gotchas:
   connected user an empty LibraryChanged with `tentacle-livetv:<v>` in
   `CollectionFolders`; open guides read their channel list again.
 - **Requests, activity, notifications changed**: `POST
-  /Tentacle/Notify?userIds=<ids>&topics=<requests,activity,notifications,recordings,status>`
+  /Tentacle/Notify?userIds=<ids>&topics=<requests,activity,notifications,recordings,status,watch>`
   (Tentacle, services/live_updates.py) sends those users' sessions a
   `RefreshProgress` message with Data `{"ItemId": "tentacle", "Progress":
-  "0", "Tentacle": "<topics>"}` (only to users with a session). Not a
+  "0", "Tentacle": "<topics>"}` (only to users with a session). "watch"
+  (their subtitle or skip choices changed) also drops the plugin's copy of
+  those people's choices (WatchPrefs) before the menus are built again. Not a
   LibraryChanged: TV builds up to 1.25 reload Home on every one; no item
   has the id "tentacle", so Jellyfin's own pages ignore it. Jellyfin Web's
   tentacle-notifications.js and the TV app read again at once. An older
@@ -174,6 +176,9 @@ Gotchas:
 | GET | `/TentacleDiscover/RadarrProfiles` | user | GetRadarrProfiles | yes |
 | POST | `/TentacleDiscover/ReplaceCopy/{mediaType}/{tmdbId}` | user | ReplaceCopy | yes |
 | GET | `/TentacleDiscover/Search` | user | SearchDiscover | yes |
+| GET | `/TentacleSubs/Prefs` | user | SubtitlesController.Prefs (`/api/watch/prefs`, caller's token: their languages, when, skip intro/credits) | web |
+| GET | `/TentacleSubs/Status/{itemId}` | user | SubtitlesController.Status (`/api/subtitles/{id}/status`: being read / ready, % and time left) | web |
+| POST | `/TentacleSubs/Another/{itemId}` | user | SubtitlesController.Another (body `{"language"}`; `/api/subtitles/{id}/another`, 20-min client: may read the title's sound first) | web |
 | GET | `/TentacleDiscover/Season/{tmdbId}/{seasonNumber}` | user | GetSeasonEpisodes | yes |
 | GET | `/TentacleDiscover/SeasonTvdb/{tvdbId}/{seasonNumber}` | user | GetSeasonEpisodesTvdb | yes |
 | GET | `/TentacleDiscover/Seasons/{tmdbId}` | user | GetSeasons | yes |

@@ -660,8 +660,9 @@ with `untracked_auto_add` (off by default), which adds the 95 %+ sure ones.
   shows a viewer again (`_refuse_continuation`); a player (re)starting the
   title reads byte 0 first, which lifts it. A playback no session has
   reported yet, and everything while Jellyfin can't say (not set up, an
-  error), is left alone. The plugin keeps a cut extraction out of
-  Jellyfin's subtitle cache (plugin.md).
+  error), is left alone. Subtitles no longer ride on a playback: Tentacle
+  reads them itself on a background slot ("Subtitles" below); a cut
+  extraction by Jellyfin is still kept out of its cache (plugin.md).
 
 ## Downloads to watch offline (`routers/vod.py` `_download`, `routers/offline.py`, `services/offline.py`, `static/js/offline.js`)
 
@@ -712,6 +713,69 @@ with `untracked_auto_add` (off by default), which adds the 95 %+ sure ones.
   own `?v=` into index.html, so the list is read from the page).
 - A secure context is needed (https, or localhost): on Tentacle's plain
   http LAN address the page says to open the https address.
+
+## Subtitles (`services/subtitles.py`, `subtitle_sync.py`, `subtitle_fetch.py`, `watch_prefs.py`, `routers/subtitles.py`)
+
+- **Why Tentacle reads them.** Jellyfin extracts a title's embedded text
+  subtitles with one ffmpeg over the whole file, all tracks (up to 48 on the
+  provider's episodes), started at PlaybackInfo in the background or when one
+  is picked. For a provider title that read rode on the viewer's playback
+  (the player first, the extraction only while it didn't want the
+  connection) and was cut with it when the episode ended or the player moved
+  on: minutes of reading thrown away, "fetching", then no subtitles (25 Nov
+  2026). An index-only fetch was measured and dropped: in his MP4s a cue sits
+  every ~0.6 MB, so a track is 800-1400 range requests (the whole episode
+  reads in ~25 s at the provider's pace).
+- **The queue** (`subtitle_jobs`, one row per Jellyfin item; priority 0 asked
+  in the player, 1 being watched, 2 the rest of its season (6 ahead), 3 a
+  downloaded title just added (`queue_added`, every 30 min; the first run only
+  notes the time)). The plugin reports plays (`/api/subtitles/playing`). One
+  worker, one title at a time; a read cut by a restart starts over; 3 tries.
+  A title done for the household's languages isn't read again until someone
+  picks a new language.
+- **The read.** ffprobe, then one ffmpeg: per household language
+  (`watch_prefs.household_languages`, the union of everyone's) the first text
+  track of each kind (plain, SDH, forced) not already beside the title, plus,
+  when a language is missing, the voice band's power (100/s) for lining up.
+  A provider title goes through the relay with `X-Tentacle-Background`
+  (`routers/vod.py` BACKGROUND_HEADER): a "background" lease, rank 40 under
+  downloads, a viewer takes its slot and it waits and resumes like a download;
+  it belongs to no playback, so the viewer check never cuts it. It is left out
+  of `/api/live/streams` on purpose (the deploy guard counts that list; a
+  deploy only restarts the read). A downloaded file is read from disk.
+- **Files beside the title**: `<name>.<2-letter>[.sdh][.forced].srt` (as
+  Bazarr and Jellyfin name them), 644, through a temp name; rows in
+  `subtitle_files`; Jellyfin is asked to refresh the item (no images, no
+  replace) and lists them as external streams, for .strm items too. Tentacle
+  sees the media at other paths than Jellyfin (`local_path`: the last 4/3/2
+  path parts under its roots).
+- **A language the file lacks**: Jellyfin's remote subtitle search
+  (`/Items/{id}/RemoteSearch/Subtitles/{lang}`, the Open Subtitles plugin,
+  which needs a login even to search) and `/Providers/Subtitles/Subtitles/{id}`
+  for the file. Best first: SRT, not tried (`subtitle_tried`), not forced,
+  hash match, most downloaded; one that runs past the film's end is skipped.
+  Lined up (`subtitle_sync.fit`): every shift within 90 s at 7 frame-rate
+  ratios, scored by how much of the subtitle lands on speech (bit counts on
+  ints), applied only when it beats the timing as it came by 8 points AND
+  stands 6 standard deviations above all other shifts (a matching subtitle
+  measured 12, a wrong one 1.6). "Get another" remembers the wrong one.
+- **The player** (plugin): menus show only the person's languages; picking a
+  track Tentacle hasn't read yet makes Jellyfin's extraction ask Tentacle
+  (first in line, waits up to 20 min) and Jellyfin Web shows "Getting the
+  subtitles ready (34%) — about 3 minutes left" until it appears (plugin.md).
+- **Per person** (`watch_prefs`, columns on `tentacle_users`, None = the
+  starting point; starting points in settings `watch_defaults_*` and
+  `watch_defaults_kids_*`): languages (several; the first is theirs), when
+  (off / always / foreign), skip intro and skip credits (button / auto / off).
+  Defaults: English, off, buttons (kids: intros skip by themselves). Saved
+  ones go to Jellyfin's user configuration (SubtitleLanguagePreference = the
+  first, SubtitleMode None/Always/Smart; Smart gets AudioLanguagePreference
+  when it had none) so every Jellyfin app obeys; topic "watch" reaches the
+  plugin and open pages. Family page Subtitles & skipping (`static/js/watching.js`);
+  Server → People "Subtitles & skipping to start with".
+- **Offline**: `/api/offline/items/{id}/subtitles` gives the Offline page the
+  person's languages as WebVTT; it keeps them with the saved title and its
+  player adds them as tracks.
 
 ## Provider health (`services/provider_health.py`)
 

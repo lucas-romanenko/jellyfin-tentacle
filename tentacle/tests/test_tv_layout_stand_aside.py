@@ -71,6 +71,7 @@ class TestTvLayoutStandAside(unittest.TestCase):
             "tentacle-notifications.js",                   # a toast is layout-independent
             "tentacle-login.js",     # restyles Jellyfin's own login page, whose controls stay Jellyfin's
             "tentacle-play.js",      # plays a Play link from Tentacle's dashboard, mounts nothing
+            "tentacle-subs.js",      # Jellyfin's own subtitle menu and a note in its player, layout-independent
         }
         unknown = {p.name for p in INJECT.glob("*.js")} - set(ENTRY_POINTS) - exempt
         self.assertEqual(unknown, set(), f"decide whether these stand aside under the TV layout: {unknown}")

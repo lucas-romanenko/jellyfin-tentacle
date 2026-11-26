@@ -588,6 +588,7 @@ const PAGE_TITLES = {
   discover: ['Discover', 'Find something new and add it'],
   jellyfin: ['My Home Screen', 'Your Jellyfin home rows and playlists'],
   mychannels: ['My Channels', 'Your favourite Live TV channels'],
+  watching: ['Subtitles & skipping', 'Your subtitles and Skip intro, on every device'],
   myyoutube: ['My YouTube', 'Your YouTube channels'],
   recordings: ['Recordings', 'Your teams and what will record'],
   offline: ['Offline', 'Saved on this device to watch with no internet'],
@@ -658,6 +659,7 @@ function showPage(name, tab) {
     if (name === 'discover') { loadDiscoverPage(); if (tab) showDiscoverTab(tab); }
     if (name === 'jellyfin') { loadJellyfinPage(); if (tab) showJellyfinTab(tab); }
     if (name === 'mychannels' && typeof loadMyChannels === 'function') loadMyChannels();
+    if (name === 'watching' && typeof loadWatching === 'function') loadWatching();
     if (name === 'myyoutube' && typeof loadMyYouTube === 'function') loadMyYouTube();
     if (name === 'recordings' && typeof loadRecordings === 'function') loadRecordings();
     if (name === 'offline' && typeof loadOffline === 'function') loadOffline(tab);
