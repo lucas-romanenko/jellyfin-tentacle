@@ -196,6 +196,52 @@ class ADownloadIsTheLowestRank(_DownloadBase):
         self.assertEqual((False, True), asyncio.run(go()))
 
 
+class TentaclesOwnReads(_DownloadBase):
+    """Tentacle's background reads (subtitles, skip times: X-Tentacle-Background)
+    are the "background" kind, and one title is one provider connection: a
+    newer range (ffmpeg seeking) closes the older one before it opens."""
+
+    def test_a_newer_range_of_the_same_title_closes_the_older_first(self):
+        held = _Held([b"HEAD"])
+        first = httpx.Response(200, headers={"content-length": "1000", "content-type": "video/x-matroska"},
+                               stream=held, request=httpx.Request("GET", self.upstream))
+        script = {self.upstream: [first, _file(206, [b"TAIL"], start=996, total=1000)]}
+        order = []
+
+        def background(range_header=None):
+            req = _download_request(range_header)
+            req.scope["headers"] = [(k, v) for k, v in req.scope["headers"] if k != b"x-tentacle-offline"] + \
+                [(b"x-tentacle-background", b"subtitles")]
+            return req
+
+        async def go():
+            vod = self.vod
+            with mock.patch("httpx.AsyncClient", lambda **kw: _Client(script, self.log, **kw)), \
+                    mock.patch("routers.vod.lan_origin_guard", lambda *a, **k: (lambda u: True)):
+                one = await vod.vod_stream("movie", self.token_file, background(), self.db)
+                it = one.body_iterator
+                got_one = await it.__anext__()
+                kinds = [l.kind for l in self.livetv._stream_slots.leases.values()]
+                original = held.aclose
+
+                async def closing():
+                    order.append("old closed")
+                    await original()
+                held.aclose = closing
+                two = await vod.vod_stream("movie", self.token_file, background("bytes=996-"), self.db)
+                order.append("new opened")
+                rest_one = b"".join([p async for p in it])
+                got_two = b"".join([p async for p in two.body_iterator])
+                return kinds, got_one + rest_one, got_two
+        kinds, one, two = asyncio.run(go())
+        self.assertEqual(["background"], kinds)
+        self.assertEqual(["old closed", "new opened"], order)
+        self.assertEqual(b"HEAD", one, "the older read ends where it was (ffmpeg has moved on)")
+        self.assertEqual(b"TAIL", two)
+        self.assertEqual({}, self.livetv._stream_slots.leases)
+        self.assertEqual([], [d for d in self.vod._downloads])
+
+
 class RangesAndDrops(_DownloadBase):
     def test_a_dropped_provider_connection_is_resumed_from_its_byte(self):
         script = {self.upstream: [_file(200, [b"AAAA"], then=_dropped(), total=8),
