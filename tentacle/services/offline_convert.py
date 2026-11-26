@@ -472,6 +472,7 @@ class Job:
         self.readers = 0
         self.proc = None
         self.task = None
+        self.stalled = False       # killed for getting nowhere (started again)
         # Set once it has looked inside the title (a better estimate) or failed
         self.probed = asyncio.Event()
 
@@ -656,9 +657,67 @@ async def _make(job: Job, caps: frozenset, url: str, token: str, label: str):
                                f"its colours will be off")
             # One picture converted at a time (the GPU is shared with Jellyfin)
             async with _gpu_semaphore():
-                await _ffmpeg(job, p, url, token, label, enc)
+                await _ffmpeg_until_made(job, p, url, token, label, enc)
         else:
-            await _ffmpeg(job, p, url, token, label, enc)
+            await _ffmpeg_until_made(job, p, url, token, label, enc)
+
+
+STALL_S = 300           # no progress this long, with nobody watching: started again
+STALL_RESTARTS = 3
+
+
+def _someone_watching() -> bool:
+    """Someone watches or records (then a provider title's making waits for them)."""
+    from models.database import SessionLocal
+    from services import provider_activity
+    db = SessionLocal()
+    try:
+        return (provider_activity.live_streams_active() or provider_activity.recording_protected(db)
+                or provider_activity.jellyfin_playing(db))
+    finally:
+        db.close()
+
+
+async def _ffmpeg_until_made(job: Job, p: dict, url: str, token: str, label: str, enc: str):
+    """ffmpeg, started again (from the start: it can't carry on) when it got
+    stuck: no progress for STALL_S while nobody was watching (a stalled read
+    sends nothing, and ffmpeg waits for ever: it must, as a making held back
+    for a viewer also gets nothing)."""
+    for attempt in range(STALL_RESTARTS + 1):
+        job.stalled = False
+        await _ffmpeg(job, p, url, token, label, enc)
+        if not job.stalled:
+            return
+        if attempt == STALL_RESTARTS:
+            logger.warning(f"[Offline] Making {job.item_id} got stuck {attempt + 1} times: given up")
+            job.error, job.finished = BROKE, time.time()
+            return
+        logger.warning(f"[Offline] Making {job.item_id} got stuck: started again ({attempt + 1} of {STALL_RESTARTS})")
+        job.error, job.done, job.fraction = "", False, 0.0
+        job.gen = uuid.uuid4().hex[:12]
+
+
+async def _watch_stall(job: Job):
+    """Kills a making that got nowhere for STALL_S while nobody watched."""
+    seen, since = None, time.monotonic()
+    while job.proc is not None and job.proc.returncode is None:
+        await asyncio.sleep(min(60, STALL_S / 5))
+        now = (round(job.fraction, 5), job.written())
+        if now != seen:
+            seen, since = now, time.monotonic()
+            continue
+        if time.monotonic() - since < STALL_S:
+            continue
+        try:
+            watching = await asyncio.to_thread(_someone_watching)
+        except Exception:
+            watching = True
+        if watching:
+            since = time.monotonic()        # held back for a viewer: fine
+            continue
+        job.stalled = True
+        _kill(job)
+        return
 
 
 async def _ffmpeg(job: Job, p: dict, url: str, token: str, label: str, enc: str):
@@ -690,11 +749,14 @@ async def _ffmpeg(job: Job, p: dict, url: str, token: str, label: str, enc: str)
                 except ValueError:
                     pass
 
+    watchdog = asyncio.get_running_loop().create_task(_watch_stall(job))
     try:
         await asyncio.gather(read_err(), read_progress(), job.proc.wait())
     except asyncio.CancelledError:
         _kill(job)
         raise
+    finally:
+        watchdog.cancel()
     rc = job.proc.returncode
     secs = time.monotonic() - t0
     if rc == 0 and job.path.exists():
@@ -704,6 +766,8 @@ async def _ffmpeg(job: Job, p: dict, url: str, token: str, label: str, enc: str)
         job.marker.write_text(json.dumps({"gen": job.gen, "size": job.size}))
         logger.info(f"[Offline] {job.item_id} ready: {job.size >> 20} MB in {secs:.0f} s "
                     f"(ffmpeg CPU {_children_cpu() - cpu0:.0f} s)")
+    elif getattr(job, "stalled", False):
+        _delete(job)                        # started again by _ffmpeg_until_made
     else:
         logger.warning(f"[Offline] Making {job.item_id} into an MP4 failed (ffmpeg {rc}) after {secs:.0f} s: "
                        f"{err_tail.decode(errors='replace').strip()[-300:]}")

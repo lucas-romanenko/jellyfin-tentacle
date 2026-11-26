@@ -443,6 +443,53 @@ class TheServerGetsItReadyFirst(_Saves):
         self.assertEqual([{"id": ITEM, "state": "unknown"}], self.S.status(self.db, other, [ITEM], False, frozenset()))
 
 
+@unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg (in the image)")
+class AMakingThatGetsStuck(unittest.TestCase):
+    def C_BROKE(self):
+        from services import offline_convert as C
+        return C.BROKE
+
+    """A read that goes silent (ffmpeg waits for ever) with nobody watching:
+    the making is started again; held back for a viewer, it waits."""
+
+    def run_with(self, watching, stall_s=0.3):
+        import asyncio
+        from services import offline_convert as C
+        d = temp_dir(self)
+        job = C.Job(f"{ITEM}-base", ITEM, 0)
+        job.path = __import__("pathlib").Path(d) / "x.mp4"
+        runs = []
+
+        async def fake_ffmpeg(job, p, url, token, label, enc):
+            runs.append(1)
+            # a "process" that never ends by itself, writes nothing
+            job.proc = await asyncio.create_subprocess_exec("sleep", "30")
+            watchdog = asyncio.get_running_loop().create_task(C._watch_stall(job))
+            await job.proc.wait()
+            watchdog.cancel()
+
+        async def go():
+            with mock.patch.object(C, "_ffmpeg", fake_ffmpeg), mock.patch.object(C, "STALL_S", stall_s), \
+                    mock.patch.object(C, "_someone_watching", lambda: watching):
+                try:
+                    await asyncio.wait_for(C._ffmpeg_until_made(job, {}, "u", "t", "Roman", "x264"), 3)
+                except asyncio.TimeoutError:
+                    job.proc.kill()
+        asyncio.run(go())
+        return runs, job
+
+    def test_stuck_with_nobody_watching_is_started_again_then_given_up(self):
+        runs, job = self.run_with(False)
+        self.assertEqual(1 + 3, len(runs))
+        self.assertTrue(job.stalled)
+        self.assertEqual(self.C_BROKE(), job.error)         # said plainly, the page offers Try again
+
+    def test_held_back_for_a_viewer_it_just_waits(self):
+        runs, job = self.run_with(True)
+        self.assertEqual(1, len(runs))
+        self.assertFalse(job.stalled)
+
+
 class StartedFromARoutesThread(unittest.TestCase):
     def test_the_making_runs_on_tentacles_own_loop(self):
         import asyncio
