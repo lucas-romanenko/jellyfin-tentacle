@@ -22,6 +22,7 @@ from routers.auth import get_user_from_request
 from routers.vod import _VodResponse, _pending_releases
 from services import family as F
 from services import offline
+from services import offline_convert as C
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -43,10 +44,16 @@ def where(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_f
 
 
 @router.get("/api/offline/items/{item_id}")
-def item(item_id: str, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
-    """What the Offline page keeps about a title, if this person may download it."""
+def item(item_id: str, season: Optional[int] = None, db: Session = Depends(get_db),
+         user: TentacleUser = Depends(get_user_from_request)):
+    """What the Offline page keeps about a title, if this person may save it.
+    A show or a season: {"kind": "show", "name", "episodes": [...]}, every
+    episode they may save (`season`: only that season of the show)."""
     try:
-        return offline.summary(offline.check(db, user, item_id, fresh=True))
+        got = offline.check(db, user, item_id, fresh=True, folders=True)
+        if got.get("IsFolder"):
+            return offline.episodes(db, user, got, season)
+        return offline.summary(got)
     except F.FamilyError as e:
         raise _refusal(e)
 
@@ -63,17 +70,43 @@ def poster(item_id: str, db: Session = Depends(get_db), user: TentacleUser = Dep
 
 
 @router.get("/api/offline/items/{item_id}/video")
-async def video(item_id: str, request: Request, db: Session = Depends(get_db),
+async def video(item_id: str, request: Request, can: str = "", db: Session = Depends(get_db),
                 user: TentacleUser = Depends(get_user_from_request)):
-    """The title's video, byte ranges passed through (Jellyfin's Download)."""
+    """The title's video as this browser plays it (`can`: the optional codecs
+    it said it plays). An MP4 that fits: Jellyfin's Download, byte ranges
+    passed through. Anything else: the MP4 Tentacle makes of it
+    (services/offline_convert.py), read as it grows."""
     try:
-        await asyncio.to_thread(offline.check, db, user, item_id)
+        got = await asyncio.to_thread(offline.check, db, user, item_id)
     except F.FamilyError as e:
         raise _refusal(e)
     url = (get_setting(db, "jellyfin_url", "") or "").strip().rstrip("/")
     key = (get_setting(db, "jellyfin_api_key", "") or "").strip()
     if not url or not key:
         raise HTTPException(409, "Jellyfin isn't connected yet.")
+    iid = offline.norm_item_id(item_id)
+    caps = C.caps_of(can)
+    info = offline.summary(got)
+    as_is = C.fits(info["source_container"], C.streams_from_item(got), caps)
+    source = f"{url}/Items/{iid}/Download"
+    try:
+        if as_is is None:
+            # An MP4 Jellyfin hasn't looked inside: look once (kept a while).
+            p = C.plan(await C.probe(source, key, iid), caps)
+            as_is = p["video"] == "copy" and p["audio"] in (None, "copy")
+        if not as_is:
+            job = C.get_or_start(iid, caps, source, key, _estimate(info), user.display_name)
+            if not job.done:
+                # Its size once it has looked inside (the page shows "of about ...")
+                try:
+                    await asyncio.wait_for(job.probed.wait(), 60)
+                except asyncio.TimeoutError:
+                    pass
+            return _made(job, request)
+    except F.FamilyError as e:
+        raise _refusal(e)
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(502, C.BROKE)
     headers = {"X-Emby-Token": key}
     for name in ("range", "if-range"):
         if request.headers.get(name):
@@ -81,7 +114,6 @@ async def video(item_id: str, request: Request, db: Session = Depends(get_db),
     # No read timeout: a provider's title waits, sending nothing, while
     # someone watching has its connection (routers/vod.py).
     client = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0))
-    iid = offline.norm_item_id(item_id)
     try:
         resp = await client.send(client.build_request("GET", f"{url}/Items/{iid}/Download", headers=headers),
                                  stream=True)
@@ -130,6 +162,59 @@ async def video(item_id: str, request: Request, db: Session = Depends(get_db),
             logger.info(f"[Offline] {user.display_name}: {iid} broke off: {type(e).__name__}")
 
     return _VodResponse(body(), status_code=resp.status_code, headers=passthrough, finish=finish)
+
+
+def _estimate(info: dict) -> int:
+    """About how big the title is: Jellyfin's size of it, else ~1 MB a second."""
+    size = info.get("size") or 0
+    if size > (50 << 20):
+        return int(size)
+    return int((info.get("runtime_ticks") or 0) / 1e7 * (1 << 20))
+
+
+def _made(job: C.Job, request: Request):
+    """The MP4 Tentacle is making (or made): finished, a normal file with
+    its size and byte ranges; still being made, from the byte asked for to
+    as far as it gets, with no size (X-Offline-From says where it starts).
+    X-Offline-Job: which making this is (a browser holding part of another
+    one starts again); X-Offline-Estimate: about how big it will be."""
+    start, end = 0, None
+    rng = (request.headers.get("range") or "").strip().lower()
+    if rng.startswith("bytes="):
+        a, _, b = rng[6:].split(",")[0].partition("-")
+        try:
+            start = int(a) if a else 0
+            end = int(b) if b else None
+        except ValueError:
+            start, end = 0, None
+    if job.error:
+        raise HTTPException(502, job.error)
+    headers = {"x-offline-job": job.gen, "x-offline-estimate": str(job.guess_total()),
+               "accept-ranges": "bytes", "cache-control": "no-store"}
+    if job.done:
+        total = job.size
+        if start >= total:
+            raise HTTPException(416, "Nothing more to save.")
+        last = total - 1 if end is None else min(end, total - 1)
+        headers["content-length"] = str(last - start + 1)
+        status = 200
+        if rng:
+            status = 206
+            headers["content-range"] = f"bytes {start}-{last}/{total}"
+        body = C.read(job, start, last)
+    else:
+        status = 206 if start else 200
+        headers["x-offline-from"] = str(start)
+        body = C.read(job, start, end)
+
+    def finish():
+        # Closed with the response, even when the browser went away before
+        # the body began (its reader count must come down).
+        task = asyncio.get_running_loop().create_task(body.aclose())
+        _pending_releases.add(task)
+        task.add_done_callback(_pending_releases.discard)
+
+    return _VodResponse(body, status_code=status, media_type="video/mp4", headers=headers, finish=finish)
 
 
 async def _close(resp, client):

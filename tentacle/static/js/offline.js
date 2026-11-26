@@ -1,22 +1,25 @@
 // Tentacle — Offline: movies and episodes saved on this device to watch with
 // no internet (Nov 2026).
 //
-// Saved from Library (a title's Download) or from Jellyfin in a browser (More
-// → Save for offline opens #offline/save-<item>). The video is the person's
-// own download link (/api/offline/items/<id>/video: Jellyfin's Download,
-// a provider's title through Tentacle's relay), written into the browser's
-// storage for this address by offline-worker.js, resumed from the byte it
-// has after any interruption. What is known about each title (name, picture,
+// Saved from Library (a title's Save offline, a show's or a season's: every
+// episode) or from Jellyfin in a browser (More → Save offline opens
+// #offline/save-<item>). The video is the person's own link
+// (/api/offline/items/<id>/video: Jellyfin's Download, a provider's title
+// through Tentacle's relay; anything this browser can't play as it is, an
+// MKV say, made into an MP4 by the server as it sends it), written into the
+// browser's storage for this address by offline-worker.js, resumed from the
+// byte it has after any interruption. What is known about each title (name, picture,
 // where they stopped) is in IndexedDB; the files in OPFS ('offline/<id>.<ext>').
 //
 // With no internet the app opens straight to this page (app.js), and a title
 // plays from the file. Where they stopped goes back to Jellyfin when the
 // device is online again (/api/offline/progress).
 //
-// iPhone: Safari and the home-screen app keep separate storage, and a web
-// app only downloads while it is open with the screen on — so on an iPhone
-// downloads start only in the home-screen app, the screen is kept awake
-// while one runs, and it carries on when the app is opened again.
+// iPhone: a browser tab (Safari, Chrome) saves as well as the home-screen app
+// (each keeps its own), only while it is open with the screen on: the screen
+// is kept awake while one runs, and it carries on when it is opened again.
+// iOS may clear what a site saved if it isn't opened for about a week (the
+// page says so).
 'use strict';
 
 const OFF_DB = 'tentacle-offline';
@@ -28,9 +31,10 @@ const off = {
   db: null,
   titles: [],          // this person's, newest first
   worker: null,
-  current: null,       // id being downloaded now
+  current: null,       // id being saved now
   live: {},            // id -> {received, total, at, rate}
   retries: {},         // id -> attempts since the last progress
+  jobs: {},            // id -> which making of the server's MP4 its file holds
   retryAt: {},         // id -> when it may try again (ms): a broken one waits
   retryTimer: null,
   wakeLock: null,
@@ -128,9 +132,16 @@ function _offStandalone() {
   return !!(navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
 }
 
-// iPhone Safari: its storage is not the home-screen app's.
+// An iPhone browser tab (not the home-screen app): iOS may clear its storage.
 function _offIosBrowser() {
   return _offIsIos() && !_offStandalone();
+}
+
+// What this browser plays besides H.264 and AAC (HEVC, an iPhone does): the
+// server makes the rest into what it plays (services/offline_convert.py).
+function _offCaps() {
+  const v = document.createElement('video');
+  return v.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"') ? 'hevc' : '';
 }
 
 // ── Words ──────────────────────────────────────────────────────────────────
@@ -171,7 +182,7 @@ async function loadOffline(tab) {
     return;
   }
   if (tab && /^save-[0-9a-f-]{32,36}$/i.test(tab)) {
-    // From Jellyfin's "Save for offline": save it, then show the list.
+    // From Jellyfin's "Save offline": save it, then show the list.
     try { history.replaceState(null, '', '#offline'); } catch (e) { /* sandboxed */ }
     offlineSave(tab.slice(5));
   }
@@ -192,7 +203,7 @@ async function offRefresh() {
 function _offNavCount() {
   const badge = document.getElementById('offline-badge');
   if (!badge) return;
-  const busy = off.titles.filter(r => r.state === 'downloading' || r.state === 'waiting').length;
+  const busy = off.titles.filter(r => r.state === 'saving' || r.state === 'downloading' || r.state === 'waiting').length;
   badge.textContent = busy;
   badge.style.display = busy ? '' : 'none';
 }
@@ -206,14 +217,18 @@ function offRender() {
   if (head) {
     let line = '';
     if (off.offlineMode || !navigator.onLine) line = 'No internet. What you saved here plays.';
-    else if (_offIosBrowser() && !titles.length) line = OFF_IOS_WORDS;
-    else if (busy.length) line = busy.length === 1 ? 'Downloading 1 title. Keep this page open.' : `Downloading ${busy.length} titles. Keep this page open.`;
+    else if (busy.length) line = busy.length === 1 ? 'Saving 1 title. Keep this page open.' : `Saving ${busy.length} titles. Keep this page open.`;
     head.textContent = line;
     head.style.display = line ? '' : 'none';
   }
+  const note = document.getElementById('offline-note');
+  if (note) {
+    // iPhone browser tab: iOS clears a site's storage it hasn't seen for a while.
+    note.textContent = _offIosBrowser() && titles.length ? OFF_IOS_WORDS : '';
+    note.style.display = note.textContent ? '' : 'none';
+  }
   if (!titles.length) {
-    if (_offIosBrowser()) { el.innerHTML = ''; return; }   // the line above says where
-    el.innerHTML = `<p class="off-status">Nothing saved on this ${_offIsIos() || window.innerWidth <= 768 ? 'phone' : 'device'} yet. In Library, open a movie or episode and tap <strong>Download</strong>.</p>`;
+    el.innerHTML = `<p class="off-status">Nothing saved on this ${_offIsIos() || window.innerWidth <= 768 ? 'phone' : 'device'} yet. In Library, open a movie or show and tap <strong>Save offline</strong>.</p>`;
     return;
   }
   el.innerHTML = titles.map(rec => {
@@ -226,11 +241,10 @@ function offRender() {
     } else {
       const live = off.live[rec.id] || {};
       const got = live.received ?? rec.received ?? 0;
-      const total = live.total || rec.size || 0;
-      const pct = total ? Math.min(100, Math.floor(got * 100 / total)) : 0;
+      const pct = _offPct(rec, live, got);
       const words = rec.state === 'failed' ? (rec.error || 'Stopped')
         : rec.state === 'waiting' ? (rec.error || 'Waiting to carry on')
-        : off.current === rec.id ? (total ? `${pct}% · ${_offSize(got)} of ${_offSize(total)}` : 'Starting…')
+        : off.current === rec.id ? _offProgressWords(rec, live, got)
         : 'Waiting its turn';
       meta = words;
       bar = `<div class="off-bar"><div class="off-bar-fill" style="width:${pct}%"></div></div>`;
@@ -254,22 +268,38 @@ function offRender() {
   }).join('');
 }
 
+// How far it got: of its size, or (an MP4 the server is still making) of
+// about how big it will be, never 100% before it has finished.
+function _offPct(rec, live, got) {
+  const total = live.total || 0;
+  if (total) return Math.min(100, Math.floor(got * 100 / total));
+  const about = live.estimate || rec.size || 0;
+  return about ? Math.min(99, Math.floor(got * 100 / about)) : 0;
+}
+
+function _offProgressWords(rec, live, got) {
+  const total = live.total || 0;
+  const about = live.estimate || rec.size || 0;
+  if (!got && !total) return 'Starting…';
+  if (total) return `${_offPct(rec, live, got)}% · ${_offSize(got)} of ${_offSize(total)}`;
+  if (about) return `${_offPct(rec, live, got)}% · ${_offSize(got)} of about ${_offSize(Math.max(about, got))}`;
+  return `${_offSize(got)} so far`;
+}
+
 function _offShowProgress(id) {
   const rec = off.titles.find(r => r.id === id);
   const live = off.live[id];
   const row = document.querySelector(`.off-item[data-id="${id}"]`);
   if (!rec || !live || !row) return;
-  const total = live.total || rec.size || 0;
-  const pct = total ? Math.min(100, Math.floor(live.received * 100 / total)) : 0;
   const meta = row.querySelector('.off-meta');
   const fill = row.querySelector('.off-bar-fill');
-  if (meta) meta.textContent = total ? `${pct}% · ${_offSize(live.received)} of ${_offSize(total)}` : 'Starting…';
-  if (fill) fill.style.width = `${pct}%`;
+  if (meta) meta.textContent = _offProgressWords(rec, live, live.received || 0);
+  if (fill) fill.style.width = `${_offPct(rec, live, live.received || 0)}%`;
 }
 
 // ── Saving ─────────────────────────────────────────────────────────────────
 
-// Whether this person may download (asked once a page load).
+// Whether this person may save offline (asked once a page load).
 let _offWhere = null;
 function offCanDownload() {
   if (!_offWhere) {
@@ -279,7 +309,7 @@ function offCanDownload() {
   return _offWhere;
 }
 
-// The Download buttons under `root` show for people who may download.
+// The Save offline buttons under `root` show for people who may save offline.
 async function offShowDownloadButtons(root) {
   if (!root || !offSupported()) return;
   const where = await offCanDownload();
@@ -287,51 +317,90 @@ async function offShowDownloadButtons(root) {
   root.querySelectorAll('.off-dl').forEach(b => { b.style.display = ''; });
 }
 
-// Save a Jellyfin movie or episode on this device (Library's Download,
-// Jellyfin's Save for offline).
-async function offlineSave(itemId, btn) {
+// Save a Jellyfin movie, episode, show or season on this device (Library's
+// Save offline, Jellyfin's Save offline). A show or a season: every episode
+// of it not saved here yet (`season`: that season of the show).
+async function offlineSave(itemId, btn, season) {
   const id = String(itemId || '').replace(/-/g, '').toLowerCase();
   if (!/^[0-9a-f]{32}$/.test(id)) return;
   if (!offSupported()) { toast('This browser can’t keep videos to watch offline.', 'error', 6000); return; }
-  if (_offIosBrowser()) {
-    _offIosNotice();
-    return;
-  }
   const have = await _offGet(id).catch(() => null);
   if (have) {
-    toast(have.state === 'done' ? 'It’s already on this device (Offline).' : 'It’s already downloading (Offline).');
+    toast(have.state === 'done' ? 'It’s already saved on this device (Offline).' : 'It’s already saving (Offline).');
     if (state.currentPage !== 'offline') showPage('offline');
     return;
   }
   if (btn) btn.disabled = true;
   let info;
   try {
-    info = await api(`/api/offline/items/${id}`);
+    info = await api(`/api/offline/items/${id}${season != null ? `?season=${encodeURIComponent(season)}` : ''}`);
   } catch (e) {
     if (btn) btn.disabled = false;
-    toast(e.message || 'It can’t be downloaded right now.', 'error', 7000);
-    return;
-  }
-  if (_offIsIos() && info.container === 'mkv') {
-    // Safari plays no MKV files; the Jellyfin app's Download converts it.
-    if (btn) btn.disabled = false;
-    toast('An iPhone can’t play this one here (it’s an MKV file). Use Download in the Jellyfin app for it.', 'error', 9000);
+    toast(e.message || 'It can’t be saved right now.', 'error', 7000);
     return;
   }
   try { if (navigator.storage.persist) await navigator.storage.persist(); } catch (e) { /* asked once */ }
-  let poster = '';
-  try {
-    const r = await fetch(`/api/offline/items/${id}/poster`, { credentials: 'same-origin' });
-    if (r.ok) poster = await _offDataUrl(await r.blob());
-  } catch (e) { /* no picture */ }
-  await _offPut({
-    ...info, id, user: _offUser(), state: 'waiting', error: '', received: 0, fatal: false,
-    poster_url: poster, added_at: Date.now(), watched_at: 0, synced_at: 0,
-  });
-  if (btn) { btn.disabled = false; btn.textContent = 'Downloading'; }
-  toast(`Downloading ${info.kind === 'episode' ? (info.series || info.name) : info.name}. It’s on the Offline page.`);
+  const can = _offCaps();
+  const user = _offUser();
+  let added = 0;
+  let name;
+  if (info.episodes) {
+    // A show or a season: each episode not on this device yet, in order.
+    const all = await _offAll().catch(() => []);
+    const here = new Set(all.map(r => r.id));
+    const todo = info.episodes.filter(ep => !here.has(ep.id));
+    if (!todo.length) {
+      if (btn) btn.disabled = false;
+      toast(`${info.name || 'They'}: every episode is already on this device (Offline).`);
+      return;
+    }
+    if (!await _offRoomFor(todo)) { if (btn) btn.disabled = false; return; }
+    const now = Date.now();
+    for (let i = 0; i < todo.length; i++) {
+      await _offPut({ ..._offNewRecord(todo[i], user, can, '', now - i), batch: now, order: i });
+    }
+    added = todo.length;
+    name = info.season != null ? `${info.name} season ${info.season}` : info.name;
+  } else {
+    let poster = '';
+    try {
+      const r = await fetch(`/api/offline/items/${id}/poster`, { credentials: 'same-origin' });
+      if (r.ok) poster = await _offDataUrl(await r.blob());
+    } catch (e) { /* no picture */ }
+    await _offPut(_offNewRecord({ ...info, id }, user, can, poster, Date.now()));
+    added = 1;
+    name = info.kind === 'episode' ? (info.series || info.name) : info.name;
+  }
+  if (btn) {
+    btn.disabled = false;
+    const label = btn.querySelector('span');
+    if (label) label.textContent = 'Saving';
+  }
+  toast(added === 1 ? `Saving ${name}. It’s on the Offline page.`
+    : `Saving ${added} episodes of ${name}. They’re on the Offline page.`);
   await offRefresh();
   offResume();
+}
+
+function _offNewRecord(info, user, can, poster, added) {
+  return {
+    ...info, user, can, state: 'waiting', error: '', received: 0, fatal: false, job: '',
+    poster_url: poster, added_at: added, watched_at: 0, synced_at: 0,
+  };
+}
+
+// Room on this device for a show's episodes? Said plainly before starting.
+async function _offRoomFor(eps) {
+  const need = eps.reduce((n, ep) => n + (ep.size || (ep.runtime_ticks || 0) / 1e7 * (1 << 20)), 0);
+  try {
+    const est = await navigator.storage.estimate();
+    const free = (est.quota || 0) - (est.usage || 0);
+    if (est.quota && need > free) {
+      toast(`Not enough space on this device: ${eps.length} episodes need about ${_offSize(need)}, ${_offSize(Math.max(0, free))} is free.`, 'error', 9000);
+      return false;
+    }
+  } catch (e) { /* no estimate: go ahead */ }
+  return true;
 }
 
 function _offDataUrl(blob) {
@@ -344,21 +413,15 @@ function _offDataUrl(blob) {
   });
 }
 
-const OFF_IOS_WORDS = 'On iPhone, downloads go in the Tentacle app on your home screen: Safari keeps its own separate storage. '
-  + 'In Safari tap Share → Add to Home Screen, open Tentacle from there and tap Download. '
-  + 'Or use Download in the Jellyfin app.';
-
-function _offIosNotice() {
-  // On the Offline page its line says it; elsewhere (a Download button) a message.
-  if (typeof state !== 'undefined' && state.currentPage === 'offline') { offRender(); return; }
-  if (typeof toast === 'function') toast(OFF_IOS_WORDS, 'info', 12000);
-}
+const OFF_IOS_WORDS = 'On iPhone, what you save in a browser can be cleared by iOS if you don’t open Tentacle for about a week.';
 
 // The next title waiting, one at a time.
 async function offResume() {
-  if (!offSupported() || off.current || _offIosBrowser() || !navigator.onLine) return;
+  if (!offSupported() || off.current || !navigator.onLine) return;
   const now = Date.now();
-  const due = off.titles.slice().reverse().filter(r => r.state === 'waiting' || r.state === 'downloading');
+  // Oldest first; a show's episodes in their order
+  const due = off.titles.filter(r => r.state === 'waiting' || r.state === 'saving' || r.state === 'downloading')
+    .sort((a, b) => ((a.batch ?? a.added_at) - (b.batch ?? b.added_at)) || ((a.order || 0) - (b.order || 0)));
   const next = due.find(r => !(off.retryAt[r.id] > now));
   if (!next) {
     if (!due.length) _offWake(false);
@@ -369,7 +432,7 @@ async function offResume() {
 
 function _offWorker() {
   if (!off.worker) {
-    off.worker = new Worker('/static/js/offline-worker.js?v=1');
+    off.worker = new Worker('/static/js/offline-worker.js?v=2');
     off.worker.onmessage = ev => _offMessage(ev.data || {});
   }
   return off.worker;
@@ -377,25 +440,49 @@ function _offWorker() {
 
 async function _offStart(rec) {
   off.current = rec.id;
-  await _offUpdate(rec.id, { state: 'downloading', error: '' });
-  rec.state = 'downloading';
+  await _offUpdate(rec.id, { state: 'saving', error: '' });
+  rec.state = 'saving';
   _offWake(true);
-  off.live[rec.id] = { received: rec.received || 0, total: rec.size || 0 };
+  off.live[rec.id] = { received: rec.received || 0, total: 0, estimate: rec.size || 0 };
   offRender();
-  _offWorker().postMessage({ cmd: 'start', id: rec.id, url: `/api/offline/items/${rec.id}/video`, file: _offFile(rec) });
+  if (!rec.poster_url) _offPoster(rec);
+  const can = rec.can != null ? rec.can : _offCaps();
+  _offWorker().postMessage({ cmd: 'start', id: rec.id, job: rec.job || '', file: _offFile(rec),
+    url: `/api/offline/items/${rec.id}/video${can ? `?can=${encodeURIComponent(can)}` : ''}` });
+}
+
+// An episode saved with its show gets its picture when its turn comes.
+async function _offPoster(rec) {
+  try {
+    const r = await fetch(`/api/offline/items/${rec.id}/poster`, { credentials: 'same-origin' });
+    if (!r.ok) return;
+    const poster = await _offDataUrl(await r.blob());
+    await _offUpdate(rec.id, { poster_url: poster });
+    const t = off.titles.find(x => x.id === rec.id);
+    if (t) t.poster_url = poster;
+    const img = document.querySelector(`.off-item[data-id="${rec.id}"] .off-pic`);
+    if (img && img.tagName !== 'IMG') offRender();
+  } catch (e) { /* no picture */ }
 }
 
 async function _offMessage(msg) {
   const id = msg.id;
+  if (msg.type === 'job') {
+    // Which making of the server's MP4 this file holds (offline-worker.js);
+    // written with every update below too (they read and write the whole record).
+    off.jobs[id] = msg.job;
+    _offUpdate(id, { job: msg.job }).catch(() => {});
+    return;
+  }
   if (msg.type === 'progress') {
     const before = off.live[id] || {};
-    off.live[id] = { received: msg.received, total: msg.total || before.total || 0 };
+    off.live[id] = { received: msg.received, total: msg.total || 0, estimate: msg.estimate || before.estimate || 0 };
     if (msg.received > (before.received || 0)) off.retries[id] = 0;
     _offShowProgress(id);
     // Kept now and then, for the list after the app was closed.
     if (!before.saved || Date.now() - before.saved > 5000) {
       off.live[id].saved = Date.now();
-      _offUpdate(id, msg.total ? { received: msg.received, size: msg.total } : { received: msg.received }).catch(() => {});
+      _offUpdate(id, _offWithJob(id, msg.total || msg.estimate ? { received: msg.received, size: msg.total || msg.estimate } : { received: msg.received })).catch(() => {});
     } else {
       off.live[id].saved = before.saved;
     }
@@ -404,7 +491,7 @@ async function _offMessage(msg) {
   if (msg.type === 'removed') return;
   if (off.current === id) off.current = null;
   if (msg.type === 'done') {
-    await _offUpdate(id, { state: 'done', received: msg.received, size: msg.total || msg.received, error: '' });
+    await _offUpdate(id, _offWithJob(id, { state: 'done', received: msg.received, size: msg.total || msg.received, error: '' }));
     delete off.live[id];
     const rec = off.titles.find(r => r.id === id);
     if (rec) toast(`${_offTitle(rec).main} is ready to watch offline.`);
@@ -427,7 +514,7 @@ async function _offFailed(id, msg) {
     Object.assign(change, { state: 'failed', fatal: false,
       error: `Not enough space on this device: it needs ${_offSize(msg.need)}, ${_offSize(Math.max(0, msg.free))} is free.` });
   } else if (msg.status === 403 || msg.status === 404 || msg.status === 400 || msg.status === 409) {
-    Object.assign(change, { state: 'failed', fatal: msg.status !== 409, error: msg.detail || 'It can’t be downloaded.' });
+    Object.assign(change, { state: 'failed', fatal: msg.status !== 409, error: msg.detail || 'It can’t be saved.' });
   } else if (msg.status === 401) {
     Object.assign(change, { state: 'failed', fatal: false, error: 'Sign in again, then tap Try again.' });
   } else {
@@ -436,14 +523,21 @@ async function _offFailed(id, msg) {
     off.retries[id] = n;
     const wait = OFF_RETRY_MS[Math.min(n - 1, OFF_RETRY_MS.length - 1)];
     const busy = msg.status === 503;
-    Object.assign(change, { state: 'waiting', error: busy
-      ? 'The server is busy (someone is watching). It carries on by itself.'
-      : (navigator.onLine ? 'The connection broke. It carries on by itself.' : 'No internet. It carries on when you’re back online.') });
+    const words = busy ? 'The server is busy (someone is watching). It carries on by itself.'
+      : !navigator.onLine ? 'No internet. It carries on when you’re back online.'
+      : msg.reason === 'short' ? ''
+      : (msg.status >= 500 && msg.detail) ? `${msg.detail} It tries again by itself.`
+      : 'The connection broke. It carries on by itself.';
+    Object.assign(change, { state: 'waiting', error: words });
     off.retryAt[id] = Date.now() + wait;
     clearTimeout(off.retryTimer);
     off.retryTimer = setTimeout(() => offResume(), wait + 50);
   }
-  await _offUpdate(id, change);
+  await _offUpdate(id, _offWithJob(id, change));
+}
+
+function _offWithJob(id, change) {
+  return off.jobs[id] != null ? { ...change, job: off.jobs[id] } : change;
 }
 
 async function offRetry(id) {
@@ -473,8 +567,8 @@ async function offRemove(id, btn) {
   offResume();
 }
 
-// Keep the screen on while a download runs (an iPhone web app downloads
-// only while it is open with the screen on).
+// Keep the screen on while a title saves (an iPhone saves only while the
+// page is open with the screen on).
 async function _offWake(on) {
   try {
     if (on && !off.wakeLock && navigator.wakeLock && document.visibilityState === 'visible') {
@@ -494,7 +588,7 @@ async function offPlay(id) {
   if (!rec || rec.state !== 'done') return;
   let file;
   try { file = await (await _offFileHandle(rec)).getFile(); } catch (e) {
-    toast('That download is missing from this device. Remove it and download it again.', 'error', 8000);
+    toast('That title is missing from this device. Remove it and save it again.', 'error', 8000);
     return;
   }
   offClosePlayer();
@@ -517,9 +611,7 @@ async function offPlay(id) {
   video.addEventListener('error', () => {
     const note = document.getElementById('off-player-note');
     if (note) {
-      note.textContent = rec.container === 'mkv'
-        ? 'This device can’t play this file here (it’s an MKV file). Watch it in the Jellyfin app.'
-        : 'This device can’t play this file here.';
+      note.textContent = 'This device can’t play this file. Remove it and save it again.';
       note.style.display = '';
     }
   });
@@ -608,7 +700,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && off.current) _offWake(true);
 });
 
-// Downloads carry on whenever Tentacle is open, whatever page is showing.
+// Saving carries on whenever Tentacle is open, whatever page is showing.
 document.addEventListener('DOMContentLoaded', () => {
   if (!offSupported()) return;
   setTimeout(async () => {
@@ -626,8 +718,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }, 3000);
 });
 
-// Offline in the sidebar: for people who may download, or who have
-// something saved here (it plays whatever "Can download" says now).
+// Offline in the sidebar: for people who may save offline, or who have
+// something saved here (it plays whatever "Can save offline" says now).
 async function _offNavShown() {
   const nav = document.querySelector('.nav-item[data-page="offline"]');
   if (!nav || off.offlineMode || !navigator.onLine) return;

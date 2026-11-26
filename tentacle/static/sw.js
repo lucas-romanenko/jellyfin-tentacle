@@ -8,12 +8,12 @@
  *     browser's own storage (OPFS), played from there (offline.js).
  * Bump CACHE to force all clients to re-fetch the shell after a deploy.
  */
-const CACHE = 'tentacle-shell-v4';
+const CACHE = 'tentacle-shell-v5';
 const SHELL = [
   '/',
   // The Offline page's download worker (static/js/offline.js); the page's
   // own scripts are read from it at install (precache)
-  '/static/js/offline-worker.js?v=1',
+  '/static/js/offline-worker.js?v=2',
   '/static/site.webmanifest',
   '/static/brand/mark-small.svg',
   '/static/web-app-manifest-192x192.png',

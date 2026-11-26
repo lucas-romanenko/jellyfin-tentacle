@@ -296,8 +296,8 @@ function _famAccessPanel(p) {
     </div>
     <div class="fam-access-item">
       <label class="fam-check"><input type="checkbox"${a.can_download !== false ? ' checked' : ''}
-        onchange="famSetAccess(${p.id}, {can_download: this.checked})"> <strong>Can download</strong></label>
-      <div class="fam-hint">Save movies and episodes on a phone or computer to watch without internet.</div>
+        onchange="famSetAccess(${p.id}, {can_download: this.checked})"> <strong>Can save offline</strong></label>
+      <div class="fam-hint">Save movies and shows on a phone or computer to watch without internet (also Download in the Jellyfin apps).</div>
     </div>
     <div class="fam-access-item">
       <label class="fam-check"><input type="checkbox"${a.away ? ' checked' : ''}
