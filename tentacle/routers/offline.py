@@ -69,6 +69,40 @@ def poster(item_id: str, db: Session = Depends(get_db), user: TentacleUser = Dep
     return Response(content=got[0], media_type=got[1], headers={"cache-control": "private, max-age=86400"})
 
 
+@router.get("/api/offline/items/{item_id}/subtitles")
+def subtitles(item_id: str, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    """The subtitles a saved title takes with it: the files beside it in this
+    person's languages, as WebVTT (what a browser's player shows), and whether
+    they show by themselves. A title whose subtitles aren't ready yet is put in
+    line ("ready": false; the Offline page asks again later)."""
+    from services import subtitles as S, watch_prefs
+    try:
+        offline.check(db, user, item_id)
+    except F.FamilyError as e:
+        raise _refusal(e)
+    prefs = watch_prefs.for_person(db, user)
+    try:
+        items = S.jellyfin_items(db, [item_id])
+    except Exception:
+        items = []
+    media = S.local_path(items[0].get("Path") or "") if items else None
+    tracks = []
+    if media is not None:
+        found = S.sidecars(media)
+        for lang in prefs["subtitle_languages"]:
+            for (code, hi, forced), path in sorted(found.items(), key=lambda kv: (kv[0][1], kv[0][2])):
+                if code != lang or path.suffix.lower() != ".srt":
+                    continue
+                try:
+                    text = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                tracks.append({"language": code, "label": watch_prefs.name(code) + (" SDH" if hi else "")
+                               + (" (forced)" if forced else ""), "vtt": S.srt_to_vtt(text)})
+    job = S.queue(db, item_id, S.WATCHING) if items else None
+    return {"tracks": tracks, "ready": job is None or job.state == "done", "mode": prefs["subtitle_mode"]}
+
+
 @router.get("/api/offline/items/{item_id}/video")
 async def video(item_id: str, request: Request, can: str = "", db: Session = Depends(get_db),
                 user: TentacleUser = Depends(get_user_from_request)):

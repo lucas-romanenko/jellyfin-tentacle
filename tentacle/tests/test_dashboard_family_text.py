@@ -81,7 +81,7 @@ class ProviderStatusReachesEveryScreen(unittest.TestCase):
 
     def test_the_plugin_passes_status_on(self):
         ctl = (ROOT / "tentacle-plugin" / "Api" / "TentacleController.cs").read_text(encoding="utf-8")
-        self.assertIn('"recordings", "status" }', ctl)
+        self.assertIn('"recordings", "status", "watch" }', ctl)
 
     def test_the_dashboard_redraws_on_status(self):
         live = (ROOT / "tentacle" / "static" / "js" / "live.js").read_text(encoding="utf-8")

@@ -689,10 +689,13 @@ def _media_segments(playlist_text: str, base_url: str) -> list:
 # channel; a recording that is cut off is gone for good. A title being
 # downloaded to watch offline ("download", routers.vod) comes last: it takes
 # a slot only when one is free, and anyone who wants to watch takes it back
-# (the download waits and carries on from where it stopped).
-_LEASE_PRIORITY = {"recording": 0, "live": 10, "vod": 20, "download": 30}
-# Pulls of a provider's film or episode file (played, or downloaded): never a recording.
-_FILM_KINDS = ("vod", "download")
+# (the download waits and carries on from where it stopped). Tentacle's own
+# work on a title ahead of time ("background": reading a film's subtitles,
+# services.subtitles) comes after that, on the same terms.
+_LEASE_PRIORITY = {"recording": 0, "live": 10, "vod": 20, "download": 30, "background": 40}
+# Pulls of a provider's film or episode file (played, downloaded, read in the
+# background): never a recording.
+_FILM_KINDS = ("vod", "download", "background")
 
 # Where a recording is in its timer (#300), from the Jellyfin timer the
 # recording lookup reads anyway: "pre" (its pre-padding), "programme"
@@ -2794,6 +2797,8 @@ def _stream_snapshot(db) -> list:
             })
         # Titles being downloaded to watch offline: a slot while they pull
         for dl in list(_vod._downloads):
+            if dl.kind != "download":
+                continue        # Tentacle's own background reads: cut by a restart, they carry on later
             out.append({
                 "channel_id": None,
                 "channel": dl.owner,

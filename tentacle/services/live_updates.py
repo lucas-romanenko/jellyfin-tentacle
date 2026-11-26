@@ -25,6 +25,8 @@ Topics:
                  recordings are the household's)
   status         what's wrong with Live TV's provider changed (everyone: the
                  plain words of services/provider_status, GET /api/family/status)
+  watch          this person's subtitle and skip choices changed, or the
+                 household's starting point (everyone)
 
 Jellyfin Web and the Tentacle TV app hear about requests, activity and
 notifications through the plugin (POST /Tentacle/Notify, one Jellyfin
@@ -153,7 +155,7 @@ async def stream(user_id: int, is_admin: bool, is_disconnected=None):
 
 # ── Jellyfin Web and the TV app, through the plugin ───────────────────────────
 
-CLIENT_TOPICS = ("requests", "activity", "notifications", "recordings", "status")
+CLIENT_TOPICS = ("requests", "activity", "notifications", "recordings", "status", "watch")
 CLIENT_DELAY = 0.3   # gathers a burst (approve = requests + notifications + activity)
 _client_lock = threading.Lock()
 _client_pending: "list[tuple]" = []        # (topic, Tentacle user ids, admins too, everyone)

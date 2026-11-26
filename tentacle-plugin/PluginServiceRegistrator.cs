@@ -53,8 +53,15 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         // Tentacle's own address (https mixed content, away from home)
         serviceCollection.AddSingleton<VodWebNoDirectPlayFilter>();
         serviceCollection.Configure<MvcOptions>(options => options.Filters.AddService<VodWebNoDirectPlayFilter>());
-        // Tentacle VOD subtitles are cached only when extracted from the whole
-        // file (Tentacle closes a pull nobody watches; Jellyfin would keep the part)
+        // Each person sees only the subtitles in their languages; a play tells
+        // Tentacle to get the title's subtitles ready (services/subtitles.py)
+        serviceCollection.AddSingleton<SubtitleMenuFilter>();
+        serviceCollection.Configure<MvcOptions>(options => options.Filters.AddService<SubtitleMenuFilter>());
+        // A Tentacle VOD subtitle Jellyfin is asked for comes from Tentacle's
+        // own copy (read in the background); else Jellyfin's read is kept only
+        // when it read the whole file
+        serviceCollection.AddSingleton<SubtitleCallerFilter>();
+        serviceCollection.Configure<MvcOptions>(options => options.Filters.AddService<SubtitleCallerFilter>());
         serviceCollection.AddSingleton<IHostedService, VodSubtitleExtractionPatch>();
         serviceCollection.AddSingleton<IHostedService, VodProbeOncePatch>();
 

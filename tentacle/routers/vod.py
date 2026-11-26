@@ -42,6 +42,12 @@ wants to watch, their play takes that slot: the download keeps its client's
 connection open, sending nothing, until a slot is free again, then carries
 on from the byte it stopped at (`_download_body`). A client that gives up
 meanwhile asks again with a Range from where it got to.
+
+Tentacle's own reads of a title ahead of time (its subtitles, read by
+services.subtitles: the request carries BACKGROUND_HEADER) work the same
+way on a "background" lease, below downloads. They are not tied to anyone
+watching: someone starting to play takes the slot, the read waits and
+carries on from its byte.
 """
 import asyncio
 import logging
@@ -123,6 +129,9 @@ WORK_USER_AGENT = "Tentacle-JellyfinWork"
 # Marks a request as a download to watch offline (the plugin's Download hook,
 # routers.offline): its own "download" lease, never part of a playback.
 OFFLINE_HEADER = "x-tentacle-offline"
+# Marks Tentacle's own read of a title (services.subtitles): a "background"
+# lease, the lowest rank, never part of a playback.
+BACKGROUND_HEADER = "x-tentacle-background"
 # How long a download whose slot someone took to watch waits for one to be
 # free again (the client's connection stays open meanwhile), and how often
 # it asks the broker while it waits.
@@ -1027,6 +1036,8 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
     url, guard, ua, owner = await _resolve_checked(db, kind, token_file)
     if request.headers.get(OFFLINE_HEADER) == "1":
         return await _download(db, request, kind, token_file, url, guard, ua, owner)
+    if request.headers.get(BACKGROUND_HEADER):
+        return await _download(db, request, kind, token_file, url, guard, ua, owner, lease_kind="background")
     # One playback per title per PERSON: two TVs on the same film are two
     # playbacks (two provider connections, two slots), not one that they
     # keep taking from each other; a second client of a title only one
@@ -1290,14 +1301,16 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
 
 
 class _Download:
-    """One title being downloaded to watch offline: one request, its own
-    provider connection on a "download" lease (`lease` None while someone
-    watching has the slot and it waits for another)."""
-    __slots__ = ("owner", "client", "lease", "resp", "lost", "started", "last_used", "waits")
+    """One title being downloaded to watch offline (or read by Tentacle in
+    the background: `kind`): one request, its own provider connection on a
+    lease of that kind (`lease` None while someone watching has the slot and
+    it waits for another)."""
+    __slots__ = ("owner", "client", "lease", "resp", "lost", "started", "last_used", "waits", "kind")
 
-    def __init__(self, owner: str, client: str):
+    def __init__(self, owner: str, client: str, kind: str = "download"):
         self.owner = owner
         self.client = client
+        self.kind = kind
         self.lease = None
         self.resp = None
         # The slot was taken (someone wants to watch): stop pulling, wait for another.
@@ -1353,7 +1366,7 @@ async def _download_slot(dl: _Download, limit: int, provider_id, provider_limit:
     slots = livetv._stream_slots
     slots.set_protect(protect)
     try:
-        lease = await slots.acquire_lease(limit, wait, "download", dl.owner, provider_id=provider_id,
+        lease = await slots.acquire_lease(limit, wait, dl.kind, dl.owner, provider_id=provider_id,
                                           provider_limit=provider_limit)
     except livetv.RecordingProtected:
         await asyncio.sleep(wait)
@@ -1365,8 +1378,10 @@ async def _download_slot(dl: _Download, limit: int, provider_id, provider_limit:
     return lease
 
 
-async def _download(db, request: Request, kind: str, token_file: str, url: str, guard, ua: str, owner: str):
-    """A title downloaded to watch offline: see the module's doc."""
+async def _download(db, request: Request, kind: str, token_file: str, url: str, guard, ua: str, owner: str,
+                    lease_kind: str = "download"):
+    """A title downloaded to watch offline, or read by Tentacle in the
+    background (`lease_kind`): see the module's doc."""
     who = request.client.host if request.client else "unknown"
     try:
         provider_id = int(owner.split(":")[2])
@@ -1377,7 +1392,7 @@ async def _download(db, request: Request, kind: str, token_file: str, url: str, 
     provider_limit = livetv.provider_stream_limit(db, provider) if provider is not None else 0
     protect = livetv._protect_recordings(db)
     pid = provider.id if provider else None
-    dl = _Download(owner, who)
+    dl = _Download(owner, who, lease_kind)
     if await _download_slot(dl, limit, pid, provider_limit, protect, livetv._SLOT_WAIT_SECONDS) is None:
         logger.info(f"[VOD] {owner}: download not started — every connection is in use for watching or recording")
         raise HTTPException(503, "Every connection to the provider is in use for watching right now. "
@@ -1417,8 +1432,8 @@ async def _download(db, request: Request, kind: str, token_file: str, url: str, 
     if last is None and length.isdigit():
         last = start + int(length) - 1
     _downloads.append(dl)
-    logger.info(f"[VOD] {owner}: downloading to watch offline from byte {start}"
-                + (f" of {size}" if size else ""))
+    what = "downloading to watch offline" if lease_kind == "download" else "read in the background"
+    logger.info(f"[VOD] {owner}: {what} from byte {start}" + (f" of {size}" if size else ""))
     state = {"done": False}
 
     def finish():
@@ -1498,7 +1513,8 @@ async def _download_body(dl: _Download, client, url, guard, headers, start, end,
                     yield chunk
                 else:
                     if last is None or start + sent > last:
-                        logger.info(f"[VOD] {dl.owner}: download finished ({sent} bytes sent)")
+                        logger.info(f"[VOD] {dl.owner}: {'download' if dl.kind == 'download' else 'background read'} "
+                                    f"finished ({sent} bytes sent)")
                         return
                     reason = f"the body ended at byte {start + sent}, before byte {last}"
             except (httpx.HTTPError, httpx.StreamError) as e:

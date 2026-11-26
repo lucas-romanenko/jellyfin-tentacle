@@ -35,7 +35,7 @@ public static class PluginKeysClient
     /// request — from ?api_key=, the X-Emby-Token / X-MediaBrowser-Token headers, or the
     /// Authorization / X-Emby-Authorization header's Token="..." field.
     /// </summary>
-    private static string ExtractToken(HttpRequest req)
+    public static string ExtractToken(HttpRequest req)
     {
         var token = req.Query["api_key"].FirstOrDefault();
         if (string.IsNullOrEmpty(token))
