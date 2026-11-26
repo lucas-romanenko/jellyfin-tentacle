@@ -183,6 +183,24 @@ def phone_bps(codec: str, width: int, height: int, source_bps: int) -> int:
     return int(max(800_000, base))
 
 
+def dolby_vision_only(stream: dict) -> bool:
+    """Dolby Vision with no HDR10/SDR picture underneath (profile 5): played
+    as plain HEVC its colours are green and purple (pure)."""
+    for side in stream.get("side_data_list") or []:
+        if "DOVI" in (side.get("side_data_type") or "") or "Dolby Vision" in (side.get("side_data_type") or ""):
+            compat = side.get("dv_bl_signal_compatibility_id")
+            return _int(side.get("dv_profile")) == 5 or (compat is not None and _int(compat) == 0)
+    return False
+
+
+def _full_bps(codec: str, width: int, height: int, source_bps: int) -> int:
+    """A computer's converted copy: PHONE_BPS scaled to its picture size, never above the source's."""
+    base = PHONE_BPS[codec] * max(1.0, (width * height) / float(PHONE_LONG * PHONE_SHORT))
+    if source_bps:
+        base = min(base, source_bps * 0.9)
+    return int(max(800_000, base))
+
+
 def plan(probe: dict, caps: frozenset, phone: bool = False) -> dict:
     """What ffmpeg does with each stream (pure). `probe` is ffprobe's JSON.
     `phone`: a smaller copy (at most 1080p, see the module's words)."""
@@ -210,6 +228,20 @@ def plan(probe: dict, caps: frozenset, phone: bool = False) -> dict:
     }
     w, h = _int(v.get("width")), _int(v.get("height"))
     hdr = (v.get("color_transfer") or "") in HDR_TRANSFERS
+    if dolby_vision_only(v):
+        # Its colours are only right through its Dolby Vision data: always
+        # converted (libplacebo applies it), HDR10 in HEVC where it plays, else
+        # normal colours in H.264; a computer keeps the full picture size.
+        codec = "hevc" if "hevc" in caps else "h264"
+        tw, th = phone_size(w, h) if phone else (_even(w) if w else 0, _even(h) if h else 0)
+        out.update({"video": "encode", "codec": codec, "width": tw, "height": th,
+                    "bps": phone_bps(codec, tw or PHONE_LONG, th or PHONE_SHORT, _video_bps(probe, v)) if phone
+                    else _full_bps(codec, tw, th, _video_bps(probe, v)),
+                    "hdr": codec == "hevc", "tonemap": codec == "h264", "transfer": "smpte2084",
+                    "dovi": True, "gpu_decode": True})
+        if phone and a is not None and not (acodec == "aac" and _int(a.get("channels")) <= 2):
+            out["audio"] = "aac"
+        return out
     if phone:
         source_bps = _video_bps(probe, v)
         too_big = max(w, h) > PHONE_LONG or min(w, h) > PHONE_SHORT or source_bps > PHONE_COPY_MAX_BPS
@@ -326,12 +358,73 @@ def _cpu_video(p: dict) -> list:
     return args
 
 
+def _placebo_video(p: dict, gpu: bool) -> list:
+    """Dolby Vision-only: libplacebo applies its data, to HDR10 (HEVC) or
+    normal colours (H.264), at the copy's size; encoded on the GPU when
+    there is one."""
+    hdr = p.get("hdr")
+    size = f"w={p['width']}:h={p['height']}:" if p.get("width") else ""
+    colours = ("colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084" if hdr
+               else "colorspace=bt709:color_primaries=bt709:color_trc=bt709")
+    vf = f"libplacebo={size}format={'p010' if hdr else 'nv12'}:{colours}:range=tv:apply_dolbyvision=1"
+    codec = p.get("codec") or "h264"
+    bps = p.get("bps") or 0
+    rate = ["-b:v", str(bps), "-maxrate", str(int(bps * 1.5)), "-bufsize", str(bps * 2)] if bps else []
+    if gpu:
+        args = ["-vf", vf + ",hwupload", "-c:v", f"{codec}_vaapi"] + (["-rc_mode", "VBR"] + rate if bps else ["-qp", "22"])
+    elif codec == "hevc":
+        args = ["-vf", vf.replace("format=p010", "format=yuv420p10le"), "-c:v", "libx265", "-preset", "fast"] + rate
+    else:
+        args = ["-vf", vf.replace("format=nv12", "format=yuv420p"), "-c:v", "libx264", "-preset", "veryfast"] + rate
+    if codec == "hevc":
+        args += ["-tag:v", "hvc1"] + (["-profile:v", "main10"] if gpu and hdr else [])
+    if hdr:
+        args += ["-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc"]
+    return args
+
+
+# Whether this ffmpeg can run libplacebo (Vulkan): asked once (placebo()).
+placebo_ok = False
+_placebo_asked = False
+
+
+async def placebo() -> bool:
+    """libplacebo on Vulkan works here (a one-frame test), remembered."""
+    global placebo_ok, _placebo_asked
+    if _placebo_asked:
+        return placebo_ok
+    _placebo_asked = True
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-init_hw_device", "vulkan=vk",
+                "-filter_hw_device", "vk", "-f", "lavfi", "-i", "color=c=black:s=64x64", "-frames:v", "1",
+                "-vf", "libplacebo=format=yuv420p", "-f", "null", "-",
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+            _, err = await asyncio.wait_for(proc.communicate(), timeout=30)
+            placebo_ok = proc.returncode == 0
+            if not placebo_ok:
+                logger.info(f"[Offline] No libplacebo here (Dolby Vision-only films keep the provider's colours): "
+                            f"{(err or b'').decode(errors='replace').strip()[-200:]}")
+        except Exception as e:
+            logger.info(f"[Offline] libplacebo test failed: {e}")
+    return placebo_ok
+
+
 def ffmpeg_args(p: dict, url: str, token: str, out: str, encoder: str) -> list:
     """The ffmpeg that makes the MP4 (pure apart from its inputs)."""
     args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-nostats",
             "-progress", "pipe:1", "-y"]
     gpu = p["video"] == "encode" and encoder == "vaapi"
-    if gpu:
+    if p.get("dovi") and placebo_ok:
+        # Decoded on the GPU, its Dolby Vision data applied by libplacebo (Vulkan)
+        if gpu:
+            args += ["-init_hw_device", "vaapi=va:/dev/dri/renderD128", "-init_hw_device", "vulkan=vk@va",
+                     "-filter_hw_device", "va", "-hwaccel", "vaapi", "-hwaccel_device", "va"]
+        else:
+            args += ["-init_hw_device", "vulkan=vk", "-filter_hw_device", "vk"]
+    elif gpu:
         if p.get("gpu_decode"):
             args += ["-hwaccel", "vaapi", "-hwaccel_device", "/dev/dri/renderD128",
                      "-hwaccel_output_format", "vaapi"]
@@ -343,6 +436,8 @@ def ffmpeg_args(p: dict, url: str, token: str, out: str, encoder: str) -> list:
         args += ["-map", f"0:{p['audio_index']}"]
     if p["video"] == "copy":
         args += ["-c:v", "copy"] + (["-tag:v", "hvc1"] if p["hevc"] else [])
+    elif p.get("dovi") and placebo_ok:
+        args += _placebo_video(p, gpu)
     elif gpu:
         args += _vaapi_video(p)
     else:
@@ -556,6 +651,9 @@ async def _make(job: Job, caps: frozenset, url: str, token: str, label: str):
         if p["video"] == "encode":
             from services import multiview
             enc = await multiview.encoder()
+            if p.get("dovi") and not await placebo():
+                logger.warning(f"[Offline] {job.item_id} is Dolby Vision only and this server has no libplacebo: "
+                               f"its colours will be off")
             # One picture converted at a time (the GPU is shared with Jellyfin)
             async with _gpu_semaphore():
                 await _ffmpeg(job, p, url, token, label, enc)

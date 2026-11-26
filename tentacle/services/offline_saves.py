@@ -74,6 +74,10 @@ def as_is(item: dict, phone: bool, caps: frozenset) -> bool:
     small enough). A provider's title never: the server gets it first."""
     if is_remote(item):
         return False
+    sources = item.get("MediaSources") or []
+    video = next((m for m in (sources[0].get("MediaStreams") if sources else None) or [] if m.get("Type") == "Video"), {})
+    if video.get("DvProfile") == 5 or video.get("DvBlSignalCompatibilityId") == 0:
+        return False        # Dolby Vision only: its colours need converting (offline_convert)
     info = offline.summary(item)
     if C.fits(info["source_container"], C.streams_from_item(item), caps) is not True:
         return False

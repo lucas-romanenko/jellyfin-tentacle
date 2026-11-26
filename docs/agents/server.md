@@ -737,6 +737,12 @@ with `untracked_auto_add` (off by default), which adds the 95 %+ sure ones.
   add a CPU scaler the GPU frames can't enter), VBR ~6 / 4 Mb/s at 1080p
   scaled by picture size and ≤ 90% of the source, AAC 160k stereo; one GPU
   making at a time (`_gpu`), ffmpeg at nice 19; x264/x265 without a GPU.
+- **Dolby Vision only** (profile 5, `dolby_vision_only`: no HDR10/SDR base,
+  colours untagged; plain HEVC decoding makes it green and purple): always
+  converted, phone or computer, with libplacebo applying the DV data
+  (`apply_dolbyvision`, Vulkan derived from the VAAPI device; the image
+  carries mesa-vulkan-drivers; `placebo()` checks it once) to HDR10 HEVC or
+  BT.709 H.264. About 1.3x real time on an Intel UHD 770 at 4K in.
 - **Background Fetch** (Chrome): only a page may start one (a service
   worker gets "not allowed in service worker environments"), so a push
   marks the record `waiting` and shows the message; the page started from

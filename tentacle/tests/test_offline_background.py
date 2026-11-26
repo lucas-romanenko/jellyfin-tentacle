@@ -115,6 +115,56 @@ class APhonesCopy(unittest.TestCase):
         self.assertEqual(f"{ITEM}-base", self.C.job_key(ITEM, frozenset()))
 
 
+def _dovi(w=3840, h=2160, profile=5, compat=0):
+    probe = _probe(w, h, "hevc", vbps=20_000_000)
+    probe["streams"][0]["pix_fmt"] = "yuv420p10le"
+    probe["streams"][0]["side_data_list"] = [{"side_data_type": "DOVI configuration record", "dv_profile": profile,
+                                              "dv_bl_signal_compatibility_id": compat}]
+    return probe
+
+
+class DolbyVisionOnly(unittest.TestCase):
+    """Madden (2026) is Dolby Vision profile 5: decoded as plain HEVC it is green
+    and purple. Its colours come right only through its Dolby Vision data."""
+
+    def setUp(self):
+        from services import offline_convert as C
+        self.C = C
+
+    def test_profile_5_is_told_from_8(self):
+        self.assertTrue(self.C.dolby_vision_only(_dovi()["streams"][0]))
+        self.assertFalse(self.C.dolby_vision_only(_dovi(profile=8, compat=1)["streams"][0]))
+        self.assertFalse(self.C.dolby_vision_only(_probe()["streams"][0]))
+
+    def test_always_converted_even_for_a_computer_that_plays_hevc(self):
+        pc = self.C.plan(_dovi(), frozenset({"hevc"}))
+        self.assertEqual(("encode", "hevc", 3840, 2160, True), (pc["video"], pc["codec"], pc["width"], pc["height"], pc["hdr"]))
+        phone = self.C.plan(_dovi(), frozenset(), phone=True)
+        self.assertEqual(("encode", "h264", 1920, 1080, True, False), (phone["video"], phone["codec"], phone["width"],
+                                                                      phone["height"], phone["tonemap"], phone["hdr"]))
+
+    def test_libplacebo_applies_it_on_the_gpu(self):
+        p = self.C.plan(_dovi(), frozenset({"hevc"}), phone=True)
+        with mock.patch.object(self.C, "placebo_ok", True):
+            a = " ".join(self.C.ffmpeg_args(p, "http://jf/x", "t", "/o.mp4", "vaapi"))
+        for part in ("-init_hw_device vaapi=va:/dev/dri/renderD128 -init_hw_device vulkan=vk@va", "-hwaccel vaapi -hwaccel_device va",
+                     "libplacebo=w=1920:h=1080:format=p010:colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084"
+                     ":range=tv:apply_dolbyvision=1,hwupload", "-c:v hevc_vaapi", "-profile:v main10", "-color_trc smpte2084"):
+            self.assertIn(part, a)
+        p = self.C.plan(_dovi(), frozenset(), phone=True)
+        with mock.patch.object(self.C, "placebo_ok", True):
+            a = " ".join(self.C.ffmpeg_args(p, "http://jf/x", "t", "/o.mp4", "x264"))
+        self.assertIn("libplacebo=w=1920:h=1080:format=yuv420p:colorspace=bt709", a)
+        self.assertIn("-c:v libx264", a)
+
+    def test_a_local_dolby_vision_file_is_never_taken_as_it_is(self):
+        from services import offline_saves as S
+        item = _item(path="/media/movies/F/F.mp4", container="mp4", w=1920, h=1080, bps=5_000_000, vcodec="h264", acodec="aac")
+        self.assertTrue(S.as_is(item, False, frozenset()))
+        item["MediaSources"][0]["MediaStreams"][0]["DvProfile"] = 5
+        self.assertFalse(S.as_is(item, False, frozenset()))
+
+
 class OnTheGpu(unittest.TestCase):
     def setUp(self):
         from services import offline_convert as C
