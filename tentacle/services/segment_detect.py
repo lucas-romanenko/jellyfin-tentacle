@@ -36,7 +36,10 @@ START_PAD_S = 1.5
 JOIN_GAP_S = 10.0
 JOIN_SHARE = 0.5
 INTRO_MIN_S, INTRO_MAX_S = 15.0, 120.0
-CREDITS_MIN_S, CREDITS_MAX_S = 15.0, 450.0
+# An episode's credits run 30 s to 2-3 min; two episodes whose last minutes
+# are the same for longer share more than credits (seen: a season with one
+# episode's ending on another's file, 316 s alike).
+CREDITS_MIN_S, CREDITS_MAX_S = 15.0, 240.0
 # Shifts tried per pair: the best few by votes.
 SHIFT_CANDIDATES = 6
 # The share of a keyframe's pixels that must be dark for it to count as black (credits on black).

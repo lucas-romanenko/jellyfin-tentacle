@@ -112,6 +112,11 @@ class SharedSound(unittest.TestCase):
         self.assertEqual(self.D.credits_end((start, 2497.0), 2500.0), (start, 2500.0))
         self.assertEqual(self.D.credits_end((start, 2480.0), 2500.0), (start, 2480.0))   # a scene after the credits
 
+    def test_two_endings_alike_for_minutes_are_not_credits(self):
+        per_s = 1 / self.D.POINT_S
+        same = _noise(int(316 * per_s), 30)
+        self.assertIsNone(self.D.credits_between(_noise(200, 31) + same, 1000.0, _noise(300, 32) + same))
+
     def test_credits_on_black(self):
         frames = [(t, 10) for t in range(2300, 2440, 4)] + [(t, 97) for t in range(2440, 2500, 4)]
         self.assertEqual(self.D.credits_from_black(frames, 2500.0), (2440, 2500.0))
