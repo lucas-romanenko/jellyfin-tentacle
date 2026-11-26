@@ -108,7 +108,23 @@ def on_play(db, item: dict, season_items: list) -> int:
 _BLACK = re.compile(r"pblack:(\d+).*?\bt:([\d.]+)")
 
 
-async def read_ends(source: str, background: bool, duration: float, item_id: str) -> tuple:
+def audio_track(streams: list, languages: list) -> str:
+    """The audio track to fingerprint, the same kind in every episode: the
+    first in the household's languages, else the default one, else the first
+    (an episode whose first track is a dub would share nothing with the rest)."""
+    from services import watch_prefs
+    audio = [s for s in streams if s.get("codec_type") == "audio"]
+    if not audio:
+        return "0:a:0"
+    for lang in languages:
+        for s in audio:
+            if watch_prefs.normalize((s.get("tags") or {}).get("language")) == lang:
+                return f"0:{s['index']}"
+    default = next((s for s in audio if (s.get("disposition") or {}).get("default")), audio[0])
+    return f"0:{default['index']}"
+
+
+async def read_ends(source: str, background: bool, duration: float, item_id: str, audio: str = "0:a:0") -> tuple:
     """Fingerprint the first and last minutes (and how dark the last
     minutes' keyframes are). (head points, tail points, tail start s, [(t, dark %)])."""
     from services.subtitles import _input_args
@@ -121,12 +137,12 @@ async def read_ends(source: str, background: bool, duration: float, item_id: str
     try:
         cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-t", f"{head_s:.1f}"]
         cmd += _input_args(source, background)
-        cmd += ["-map", "0:a:0", "-ac", "2", "-f", "chromaprint", "-fp_format", "raw", str(head)]
+        cmd += ["-map", audio, "-ac", "2", "-f", "chromaprint", "-fp_format", "raw", str(head)]
         await _ffmpeg(cmd)
         cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "info", "-y", "-ss", f"{tail_start:.1f}",
                "-skip_frame", "nokey"]
         cmd += _input_args(source, background)
-        cmd += ["-map", "0:a:0", "-ac", "2", "-f", "chromaprint", "-fp_format", "raw", str(tail),
+        cmd += ["-map", audio, "-ac", "2", "-f", "chromaprint", "-fp_format", "raw", str(tail),
                 "-map", "0:v:0?", "-vf", "blackframe=amount=0:threshold=32", "-f", "null", "-"]
         log = await _ffmpeg(cmd)
         frames = [(tail_start + float(m.group(2)), int(m.group(1))) for m in _BLACK.finditer(log)]
@@ -160,9 +176,9 @@ async def _ffmpeg(cmd: list) -> str:
 
 
 async def probe(source: str, background: bool) -> tuple:
-    """(duration s, chapters [(start, end, title)])."""
+    """(duration s, chapters [(start, end, title)], streams)."""
     from services.subtitles import _input_args, _run
-    code, out, err = await _run(["ffprobe", "-v", "error", "-show_format", "-show_chapters", "-of", "json"]
+    code, out, err = await _run(["ffprobe", "-v", "error", "-show_format", "-show_chapters", "-show_streams", "-of", "json"]
                                 + _input_args(source, background), 600)
     if code != 0:
         raise RuntimeError(f"ffprobe failed: {(err or b'').decode(errors='replace').strip()[-200:]}")
@@ -170,7 +186,7 @@ async def probe(source: str, background: bool) -> tuple:
     duration = float((data.get("format") or {}).get("duration") or 0)
     chapters = [(float(c.get("start_time") or 0), float(c.get("end_time") or 0), (c.get("tags") or {}).get("title") or "")
                 for c in data.get("chapters") or []]
-    return duration, chapters
+    return duration, chapters, data.get("streams") or []
 
 
 def _save(db, item_id: str, kind: str, span: Optional[tuple], source: str) -> bool:
@@ -245,7 +261,7 @@ async def run_job(job_id: int) -> list:
             if media.suffix.lower() == ".strm" and title is None:
                 raise RuntimeError("a .strm that doesn't play through Tentacle")
             source = f"{S.RELAY_BASE}/api/vod/{title}" if title else str(media)
-            duration, chapters = await probe(source, title is not None)
+            duration, chapters, streams = await probe(source, title is not None)
             if duration <= 0:
                 raise RuntimeError("its length is unknown")
             job.duration_s = int(duration)
@@ -254,7 +270,9 @@ async def run_job(job_id: int) -> list:
                 if _save(db, me, kind, D.credits_end(span, duration) if kind == "credits" else span, "chapters"):
                     changed.append(me)
             if not ({"intro", "credits"} <= set(marks)):
-                head, tail, tail_start, frames = await read_ends(source, title is not None, duration, me)
+                from services import watch_prefs
+                audio = audio_track(streams, watch_prefs.household_languages(db))
+                head, tail, tail_start, frames = await read_ends(source, title is not None, duration, me, audio)
                 _save_points(_dir() / f"{me}.head", head)
                 _save_points(_dir() / f"{me}.tail", tail)
                 job.tail_start_s = int(tail_start)

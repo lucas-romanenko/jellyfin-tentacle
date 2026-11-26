@@ -30,6 +30,11 @@ EDGE_BIT_DIFF = 1           # where a shared stretch starts and ends: points thi
 # A point hears ~1-2 s around it, so a shared stretch shows up early: its
 # start moves this much later (measured 0.7-1.8 s early on the test season).
 START_PAD_S = 1.5
+# Pieces of a shared stretch with a varying middle (a different gag or solo
+# each week) are one intro when the gap between them is at most this, and
+# what matched fills at least JOIN_SHARE of the joined stretch.
+JOIN_GAP_S = 10.0
+JOIN_SHARE = 0.5
 INTRO_MIN_S, INTRO_MAX_S = 15.0, 120.0
 CREDITS_MIN_S, CREDITS_MAX_S = 15.0, 450.0
 # Shifts tried per pair: the best few by votes.
@@ -99,7 +104,7 @@ def _longest_alike(a: list, b: list, shift: int) -> Optional[tuple]:
         return None
     diffs = [bin(a[i] ^ b[i + shift]).count("1") for i in range(lo, hi)]
     half = SMOOTH // 2
-    best, start, last = None, None, None
+    runs, start, last = [], None, None
     running = sum(diffs[:SMOOTH])
     for k in range(len(diffs)):
         w0, w1 = max(0, k - half), min(len(diffs), k + half + 1)
@@ -109,12 +114,23 @@ def _longest_alike(a: list, b: list, shift: int) -> Optional[tuple]:
         if mean <= MEAN_BIT_DIFF and diffs[k] <= MAX_BIT_DIFF:
             i = lo + k
             if start is None or i - last > gap_max:
-                if start is not None and (best is None or last - start > best[1] - best[0]):
-                    best = (start, last)
+                if start is not None:
+                    runs.append((start, last))
                 start = i
             last = i
-    if start is not None and (best is None or last - start > best[1] - best[0]):
-        best = (start, last)
+    if start is not None:
+        runs.append((start, last))
+    # Join pieces across a varying middle.
+    join_gap = int(JOIN_GAP_S / POINT_S)
+    joined = []
+    for r in runs:
+        if joined:
+            j0, j1, got = joined[-1]
+            if r[0] - j1 <= join_gap and (got + r[1] - r[0]) / (r[1] - j0) >= JOIN_SHARE:
+                joined[-1] = (j0, r[1], got + r[1] - r[0])
+                continue
+        joined.append((r[0], r[1], r[1] - r[0]))
+    best = max(((j0, j1) for j0, j1, _ in joined), key=lambda r: r[1] - r[0], default=None)
     if best is None:
         return None
     # The averaging blurs the edges by up to half a window, and a point

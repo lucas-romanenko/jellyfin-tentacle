@@ -121,6 +121,17 @@ class SharedSound(unittest.TestCase):
                                                     + [(t, 10) for t in range(2340, 2500, 4)], 2500.0))
 
 
+class WhichSound(unittest.TestCase):
+    def test_the_households_language_not_a_dub_first(self):
+        from services.segments import audio_track
+        streams = [{"index": 0, "codec_type": "video"},
+                   {"index": 1, "codec_type": "audio", "tags": {"language": "fre"}, "disposition": {"default": 1}},
+                   {"index": 2, "codec_type": "audio", "tags": {"language": "eng"}, "disposition": {"default": 0}}]
+        self.assertEqual(audio_track(streams, ["eng"]), "0:2")
+        self.assertEqual(audio_track(streams, ["spa"]), "0:1")        # nobody's language: the default
+        self.assertEqual(audio_track(streams[:1], ["eng"]), "0:a:0")
+
+
 class Queue(unittest.TestCase):
     def test_a_play_queues_the_one_before_and_the_next(self):
         from models.database import SegmentJob
