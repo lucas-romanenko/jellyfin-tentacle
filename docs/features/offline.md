@@ -58,6 +58,10 @@ app on your home screen.
   made on the server's graphics chip (HEVC with HDR kept on an iPhone,
   H.264 elsewhere), with stereo sound. A 4K film is a few GB instead of
   15+. Computers get the full picture.
+- **Dolby Vision films** whose picture only has the right colours through
+  Dolby Vision (profile 5) are always converted, with those colours applied,
+  so they don't play green and purple in a browser. This takes longer
+  (about as long as the film itself).
 - **The page** shows what is saved here, what is still saving (with how far
   it got), and ✕ to remove a title from this device. Tap a title to play it.
 - **With no internet** the Tentacle app opens straight to Offline.

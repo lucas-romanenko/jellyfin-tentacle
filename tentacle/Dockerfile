@@ -28,11 +28,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Intel's VAAPI driver (Quick Sync), so multi-view's picture is made on the
 # GPU when the container is given /dev/dri (docs: Docker Compose). Without
 # the device, or on another CPU, ffmpeg encodes on the CPU instead.
+# Mesa's Vulkan drivers: Save offline's copies of Dolby Vision-only films
+# (profile 5) get their right colours from libplacebo, which runs on Vulkan
+# (the GPU's, else Mesa's CPU one).
 RUN set -eux; \
     if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
       sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources; \
       apt-get update; \
-      apt-get install -y --no-install-recommends intel-media-va-driver-non-free; \
+      apt-get install -y --no-install-recommends intel-media-va-driver-non-free mesa-vulkan-drivers; \
       rm -rf /var/lib/apt/lists/*; \
     fi
 
