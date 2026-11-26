@@ -841,7 +841,10 @@ UI; "TV guide", never "EPG" (`plainWords()` in `sources.js` rewords server
 messages that still say EPG or SmartList).
 "Downloads" means titles someone asked for (My Downloads row, Requests →
 Downloads); what is saved on a device to watch without internet is
-"Offline" (the page) and its button is "Download" / "Save for offline".
+"Offline" (the page) and its button is "Save offline" everywhere (Library,
+Jellyfin's More menu, toasts): never "Download" for it (Lucas, 25 Nov 2026).
+Jellyfin's own More → Download (a file, or the apps' Downloads tab) keeps
+Jellyfin's word.
 
 Dashboard layout (`static/js/sources.js` holds the Sources page):
 

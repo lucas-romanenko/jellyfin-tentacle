@@ -2223,13 +2223,15 @@ var Details = {
         if (canDownload) {
             menuItems.push({ id: 'download', name: 'Download', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M480-320 280-520l56-58 104 104v-326h80v326l104-104 56 58-200 200ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z"/></svg>' });
         }
-        // Save for offline — in a browser (Jellyfin's apps have their own
-        // Downloads): keeps a movie or episode on Tentacle's Offline page, to
-        // watch with no internet. Opens that page, which saves it.
+        // Save offline — in a browser (Jellyfin's apps have their own
+        // Downloads): keeps a movie or an episode, or every episode of a show
+        // or a season, on Tentacle's Offline page, to watch with no internet.
+        // Opens that page, which saves it.
         var offline = this._offline || {};
-        if (canDownload && !this._appCanDownload() && offline.url && offline.can_download &&
-            item.MediaType === 'Video' && (item.Type === 'Movie' || item.Type === 'Episode')) {
-            menuItems.push({ id: 'saveoffline', name: 'Save for offline', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M480-80q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm-40-260 220-220-56-56-124 124v-268h-80v268L276-616l-56 56 220 220Z"/></svg>' });
+        var savable = (canDownload && item.MediaType === 'Video' && (item.Type === 'Movie' || item.Type === 'Episode')) ||
+            (policy.EnableContentDownloading && (item.Type === 'Series' || item.Type === 'Season'));
+        if (savable && !this._appCanDownload() && offline.url && offline.can_download) {
+            menuItems.push({ id: 'saveoffline', name: 'Save offline', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M480-80q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm-40-260 220-220-56-56-124 124v-268h-80v268L276-616l-56 56 220 220Z"/></svg>' });
         }
 
         // Delete — only for downloaded content (Tentacle-controlled permission)

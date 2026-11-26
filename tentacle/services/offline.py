@@ -9,7 +9,7 @@ asks first: may this person download this title, and what is it.
 Jellyfin decides, as for everything a person may watch:
 
 - the person's "Allow media downloading" (EnableContentDownloading, set on
-  Server → People as "Can download", services/person_access.py);
+  Server → People as "Can save offline", services/person_access.py);
 - the title is one they can open (their libraries, their age limit): it is
   asked for AS them (`userId`), so Jellyfin leaves out what they may not see;
 - Jellyfin's own CanDownload for the title, and a recording still being
@@ -45,11 +45,12 @@ _checked: dict = {}     # (jellyfin user id, item id) -> (time, item)
 _lock = threading.Lock()
 
 # Words for a person (never Jellyfin's own error text).
-NOT_ALLOWED = ("Downloading isn't turned on for you. Ask whoever runs your server to turn on "
-               "“Can download” for you.")
+NOT_ALLOWED = ("Saving offline isn't turned on for you. Ask whoever runs your server to turn on "
+               "“Can save offline” for you.")
 NOT_FOUND = "That title isn't available to you."
-STILL_RECORDING = "It's still recording. Download it once it has finished."
-NOT_VIDEO = "Only movies and episodes can be downloaded."
+STILL_RECORDING = "It's still recording. Save it once it has finished."
+NOT_VIDEO = "Only movies, shows and episodes can be saved offline."
+NO_EPISODES = "There are no episodes here to save."
 _FIELDS = "Path,MediaSources,CanDownload,Overview,ProductionYear,RunTimeTicks"
 
 
@@ -74,7 +75,7 @@ def forget(user_id: Optional[str] = None) -> None:
 
 
 def can_download(db: Session, user: TentacleUser) -> bool:
-    """The person's own "Can download" in Jellyfin; False when Jellyfin can't say."""
+    """The person's own "Can save offline" (Jellyfin's "Allow media downloading"); False when Jellyfin can't say."""
     try:
         jf_user = jellyfin(db).get(f"/Users/{dashed(user.jellyfin_user_id)}") or {}
     except (FamilyError, requests.RequestException):
@@ -113,17 +114,22 @@ def summary(item: dict) -> dict:
         "year": item.get("ProductionYear"),
         "runtime_ticks": item.get("RunTimeTicks"),
         "overview": (item.get("Overview") or "")[:600],
-        "container": container,
-        # A provider's title has no size until the relay says it
-        "size": src.get("Size") or None,
+        # What the Offline page saves: an MP4 (Tentacle makes one of
+        # anything else, services/offline_convert.py)
+        "container": container if container in ("mp4", "m4v") else "mp4",
+        "source_container": container,
+        # A provider's title has no size until the relay says it (Jellyfin's is the .strm's)
+        "size": src.get("Size") if (src.get("Size") or 0) > (1 << 20) else None,
         "position_ticks": user_data.get("PlaybackPositionTicks") or 0,
         "played": bool(user_data.get("Played")),
     }
 
 
-def check(db: Session, user: TentacleUser, item_id: str, fresh: bool = False) -> dict:
-    """The title, if this person may download it; FamilyError with words
-    for them otherwise. Kept CHECK_SECONDS (a resumed download asks again)."""
+def check(db: Session, user: TentacleUser, item_id: str, fresh: bool = False, folders: bool = False) -> dict:
+    """The title, if this person may save it; FamilyError with words for
+    them otherwise. Kept CHECK_SECONDS (a resumed download asks again).
+    `folders`: a show or a season is answered too (its episodes are
+    checked one by one, episodes())."""
     iid = norm_item_id(item_id)
     if not iid or not user or not user.jellyfin_user_id:
         raise FamilyError(NOT_FOUND, 404)
@@ -141,6 +147,8 @@ def check(db: Session, user: TentacleUser, item_id: str, fresh: bool = False) ->
         raise _family._jf_error(e, "answer")
     if not item:
         raise FamilyError(NOT_FOUND, 404)
+    if folders and item.get("Type") in ("Series", "Season"):
+        return item
     if item.get("MediaType") != "Video" or item.get("IsFolder"):
         raise FamilyError(NOT_VIDEO, 400)
     if item.get("Status") == "InProgress":
@@ -152,6 +160,38 @@ def check(db: Session, user: TentacleUser, item_id: str, fresh: bool = False) ->
             _checked.clear()
         _checked[key] = (now, item)
     return item
+
+
+def episodes(db: Session, user: TentacleUser, folder: dict, season: Optional[int] = None) -> dict:
+    """A show's (or one season's) episodes this person may save, in order:
+    {"kind": "show"|"season", "name", "series", "season", "episodes": [summary...]}.
+    Asked AS them (their libraries and age limit); episodes Jellyfin only
+    knows of (missing, not yet aired), still recording or not downloadable
+    are left out."""
+    is_season = folder.get("Type") == "Season"
+    series_id = folder.get("SeriesId") if is_season else folder.get("Id")
+    params = {"userId": dashed(user.jellyfin_user_id), "Fields": _FIELDS, "EnableUserData": "true",
+              "EnableImages": "false"}
+    if is_season:
+        params["seasonId"] = folder.get("Id")
+    elif season is not None:
+        params["season"] = int(season)
+    try:
+        res = jellyfin(db).get(f"/Shows/{series_id}/Episodes", **params) or {}
+    except requests.RequestException as e:
+        raise _family._jf_error(e, "answer")
+    eps = []
+    for ep in res.get("Items") or []:
+        if (ep.get("LocationType") == "Virtual" or ep.get("IsMissing") or ep.get("Status") == "InProgress"
+                or ep.get("CanDownload") is False or ep.get("MediaType") != "Video"):
+            continue
+        eps.append(summary(ep))
+    eps.sort(key=lambda e: (e["season"] if e["season"] is not None else 999, e["episode"] or 0))
+    if not eps:
+        raise FamilyError(NO_EPISODES, 404)
+    name = folder.get("SeriesName") if is_season else folder.get("Name")
+    return {"kind": "season" if is_season or season is not None else "show", "name": name or "",
+            "series": name or "", "season": folder.get("IndexNumber") if is_season else season, "episodes": eps}
 
 
 def poster_of(item: dict) -> Optional[tuple]:

@@ -160,7 +160,7 @@ class DownloadOfferedOnlyWhereItWorks(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class SaveForOffline(unittest.TestCase):
-    """More → Save for offline: Tentacle's Offline page keeps the title on
+    """More → Save offline: Tentacle's Offline page keeps the title on
     this device. In a browser only (Jellyfin's apps have their own
     Downloads), for people who may download, movies and episodes."""
     OFFLINE = "Details._offline = { url: 'https://tentacle.example/#offline', can_download: %s };\n"

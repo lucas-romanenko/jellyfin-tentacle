@@ -2199,6 +2199,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 .ep-replace-btn { margin-left: 6px; background: none; border: 1px solid var(--border, rgba(255,255,255,.12)); color: var(--text2);
   border-radius: 6px; font-size: 12px; padding: 0 6px; cursor: pointer; line-height: 18px; }
 .ep-replace-btn:hover { color: var(--text); }
+.detail-ep-season-hdr .off-season { margin-left: auto; }
 .ep-replace-btn.armed, .btn.armed { background: var(--red); border-color: var(--red); color: #fff; }
 .coming-day { font-size: 12px; color: var(--accent, #8b80ff); }
 .sm-intro { font-size: 13px; color: var(--text2); line-height: 1.5; margin: 0 0 12px; }
@@ -2532,6 +2533,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 /* ── Offline (offline.js) ── */
 .off-status { color: var(--text2); font-size: 14px; margin: 4px 2px 14px; }
 .off-head { color: var(--text); }
+.off-note { color: var(--text3); font-size: 12px; margin: 14px 2px 0; max-width: 860px; }
 .off-list { display: flex; flex-direction: column; gap: 10px; max-width: 860px; }
 .off-item { display: flex; align-items: center; gap: 14px; padding: 10px 12px; background: var(--bg2);
   border: 1px solid var(--border); border-radius: var(--radius); }
@@ -3038,11 +3040,12 @@ body.offline-mode .sidebar-footer button { display: none !important; }
         <div class="card mych-head">
           <div class="mych-head-text">
             <div class="mych-title">Offline</div>
-            <p class="mych-sub">Movies and episodes saved on this device. They play with no internet; where you stop goes back to Jellyfin when you’re online.</p>
+            <p class="mych-sub">Movies and shows saved on this device. They play with no internet; where you stop goes back to Jellyfin when you’re online.</p>
           </div>
         </div>
         <p class="off-status off-head" id="offline-status" role="status" aria-live="polite" style="display:none"></p>
         <div class="off-list" id="offline-list"></div>
+        <p class="off-note" id="offline-note" style="display:none"></p>
       </div>
 
       <!-- ── MY YOUTUBE: everyone's own YouTube channels, theirs alone in Jellyfin (myyoutube.js) ── -->
@@ -5215,18 +5218,18 @@ body.offline-mode .sidebar-footer button { display: none !important; }
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="/static/js/app.js?v=51"></script>
 <script src="/static/js/sources.js?v=47"></script>
-<script src="/static/js/pages.js?v=56"></script>
+<script src="/static/js/pages.js?v=57"></script>
 <script src="/static/js/music.js?v=46"></script>
 <script src="/static/js/mychannels.js?v=50"></script>
 <script src="/static/js/newgroups.js?v=45"></script>
-<script src="/static/js/family.js?v=49"></script>
+<script src="/static/js/family.js?v=50"></script>
 <script src="/static/js/welcome.js?v=50"></script>
 <script src="/static/js/live.js?v=6"></script>
 <script src="/static/js/myyoutube.js?v=48"></script>
 <script src="/static/js/recordings.js?v=7"></script>
 <script src="/static/js/untracked.js?v=2"></script>
 <script src="/static/js/backup.js?v=1"></script>
-<script src="/static/js/offline.js?v=1"></script>
+<script src="/static/js/offline.js?v=2"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {

@@ -28,32 +28,41 @@ Tentacle's **Offline** page (in the sidebar, next to Library and Discover)
 keeps titles inside Tentacle on this device: the browser, or the Tentacle
 app on your home screen.
 
-- **To save something:** in Tentacle's Library open a movie and tap
-  **Download** (for a show, the ⤓ next to each episode); or in Jellyfin in a
-  browser, **More → Save for offline**. Jellyfin's top bar has an
-  **Offline** button next to Favorites that opens the page.
-- **The page** shows what is saved here, what is still downloading (with
-  how far it got), and ✕ to remove a title from this device. Tap a title to
-  play it.
+- **To save something:** in Tentacle's Library open a movie or a show and
+  tap **Save offline** (a show saves every episode; the ⤓ next to a season
+  saves that season, next to an episode that episode); or in Jellyfin in a
+  browser, **More → Save offline** on a movie, an episode, a show or a
+  season. Jellyfin's top bar has an **Offline** button next to Favorites
+  that opens the page.
+- **Everything plays:** a title the device can't play as it is (an MKV
+  file, surround sound a computer's browser doesn't play, an old video
+  format) is turned into an MP4 by Tentacle while it sends it: the picture
+  is copied as it is whenever the device plays it, and only what must be is
+  converted (the sound to AAC stereo; an old video format to H.264, on the
+  server's graphics chip when it has one). The server needs room for the
+  title while it does this; it keeps the copy for a few hours so a second
+  device or a resume doesn't make it again.
+- **The page** shows what is saved here, what is still saving (with how far
+  it got), and ✕ to remove a title from this device. Tap a title to play it.
 - **With no internet** the Tentacle app opens straight to Offline.
 - **Where you stopped** goes back to Jellyfin when the device is online
   again, so the TV carries on from there.
 
 ### iPhone
 
-- Save titles from the **Tentacle app on your home screen** (in Safari tap
-  Share → Add to Home Screen, then open Tentacle from there). Safari and the
-  home-screen app keep separate storage, so something saved in Safari would
-  not be in the app.
-- An iPhone downloads only while the app is open with the screen on.
-  Tentacle keeps the screen awake while a download runs, and when you open
-  the app again it carries on from where it stopped.
-- An iPhone can't play MKV files on this page: for those, use Download in
-  the Jellyfin app.
+- Save right where you are: in Safari, in Chrome or in the Tentacle app on
+  your home screen. Each keeps its own saved titles (something saved in
+  Safari isn't in the home-screen app).
+- iOS may clear what a browser saved if you don't open Tentacle there for
+  about a week; the home-screen app keeps it.
+- An iPhone saves only while the page is open with the screen on. Tentacle
+  keeps the screen awake while a title saves, and when you open it again it
+  carries on from where it stopped.
 
-## Who can download
+## Who can save offline
 
-**Server → People → Can download** turns it on or off for each person
-(it is Jellyfin's "Allow media downloading"). A person only ever downloads
-what they can watch: their libraries and their age limit apply. A recording
-that is still recording can't be downloaded until it has finished.
+**Server → People → Can save offline** turns it on or off for each person
+(it is Jellyfin's "Allow media downloading", so it is also Download in
+Jellyfin's apps). A person only ever saves what they can watch: their
+libraries and their age limit apply. A recording that is still recording
+can't be saved until it has finished.

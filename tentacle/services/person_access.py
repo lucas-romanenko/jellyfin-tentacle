@@ -14,7 +14,7 @@ server's admin actually changes per person live here, in plain words:
   every day on the server's clock. Jellyfin checks a range as
   start <= now <= end with no wrap past midnight, so an evening that runs
   past midnight is stored as two ranges (start-24 and 0-end).
-- **Can download** = "Allow media downloading" (EnableContentDownloading):
+- **Can save offline** = "Allow media downloading" (EnableContentDownloading):
   Download in Jellyfin's apps and browsers, and saving titles on Tentacle's
   Offline page (routers/offline.py).
 - **Live TV** = "Allow Live TV access" (EnableLiveTvAccess). A kid's also

@@ -310,12 +310,13 @@ class MayThisPersonDownloadIt(unittest.TestCase):
         self.assertEqual("Paddington", item["Name"])
         self.assertEqual("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", jf.asked_as, "Jellyfin was not asked as them")
         s = self.offline.summary(item)
-        self.assertEqual(("movie", "mkv", ITEM), (s["kind"], s["container"], s["id"]))
+        # An MKV is saved as the MP4 the server makes of it
+        self.assertEqual(("movie", "mp4", "mkv", ITEM), (s["kind"], s["container"], s["source_container"], s["id"]))
 
     def test_can_download_off(self):
         e = self.refusal(_FakeJellyfin(policy={"EnableContentDownloading": False}, items={ITEM: FILM}))
         self.assertEqual(403, e.status)
-        self.assertIn("Can download", e.message)
+        self.assertIn("Can save offline", e.message)
 
     def test_a_title_outside_their_libraries_or_age_limit(self):
         e = self.refusal(_FakeJellyfin(items={}))
@@ -334,9 +335,9 @@ class MayThisPersonDownloadIt(unittest.TestCase):
 
     def test_an_episode_is_named_by_its_show(self):
         ep = dict(FILM, Type="Episode", Name="Pilot", SeriesName="Bluey", ParentIndexNumber=1, IndexNumber=2,
-                  MediaSources=[{"Path": "/media/tv/Bluey/S01E02.mp4", "Container": "mp4", "Size": 123}])
+                  MediaSources=[{"Path": "/media/tv/Bluey/S01E02.mp4", "Container": "mp4", "Size": 123_000_000}])
         s = self.offline.summary(ep)
-        self.assertEqual(("episode", "Bluey", 1, 2, "mp4", 123), (s["kind"], s["series"], s["season"],
+        self.assertEqual(("episode", "Bluey", 1, 2, "mp4", 123_000_000), (s["kind"], s["series"], s["season"],
                                                                   s["episode"], s["container"], s["size"]))
 
 
@@ -386,9 +387,15 @@ if __name__ == "__main__":
     unittest.main()
 
 
+# An MP4 a browser plays as it is (Jellyfin looked inside it)
+MP4_FILM = dict(FILM, MediaSources=[{"Path": "/media/movies/Paddington.mp4", "Container": "mp4", "Size": 8,
+                                     "MediaStreams": [{"Type": "Video", "Codec": "h264"},
+                                                      {"Type": "Audio", "Codec": "aac"}]}])
+
+
 class TheVideoIsJellyfinsDownload(unittest.TestCase):
-    """GET /api/offline/items/<id>/video passes Jellyfin's Download on, byte
-    ranges and all; a .strm text (a plugin older than the Download hook) is
+    """GET /api/offline/items/<id>/video of an MP4 that plays as it is passes
+    Jellyfin's Download on, byte ranges and all; a .strm text (a plugin older than the Download hook) is
     refused in words instead of being saved as a film."""
 
     def setUp(self):
@@ -425,9 +432,9 @@ class TheVideoIsJellyfinsDownload(unittest.TestCase):
                        "scheme": "http", "server": ("tentacle", 8888), "client": ("10.0.0.7", 1)}, receive)
 
         async def go():
-            with mock.patch.object(R.offline, "check", lambda db, user, item_id: FILM), \
+            with mock.patch.object(R.offline, "check", lambda db, user, item_id: MP4_FILM), \
                     mock.patch("httpx.AsyncClient", _JF):
-                resp = await R.video(ITEM, req, self.db, self.user)
+                resp = await R.video(ITEM, req, can="", db=self.db, user=self.user)
                 body = b"".join([c async for c in resp.body_iterator])
                 return resp.status_code, dict(resp.headers), body
         return asyncio.run(go())

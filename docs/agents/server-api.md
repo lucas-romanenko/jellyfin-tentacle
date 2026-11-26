@@ -286,9 +286,9 @@ Declared on the app in `main.py` (no router, all **none**; listed in
 | POST | `/api/notifications/toggle` | user | notifications.py:toggle_notifications |
 | POST | `/api/notifications/{notification_id}/dismiss` | user | notifications.py:dismiss_notification |
 | GET | `/api/offline/where` | user | offline.py:where (for Jellyfin's pages through the plugin: the Offline page's address, can_download) |
-| GET | `/api/offline/items/{item_id}` | user | offline.py:item (may this person download it: Can download, visible to them, not still recording; what the page keeps) |
+| GET | `/api/offline/items/{item_id}` | user | offline.py:item (may this person save it: Can save offline, visible to them, not still recording; what the page keeps. A show or a season (`?season=N`: that season of a show): `{kind, name, episodes: [...]}`) |
 | GET | `/api/offline/items/{item_id}/poster` | user | offline.py:poster |
-| GET | `/api/offline/items/{item_id}/video` | user | offline.py:video (Jellyfin's Download of the item, ranges passed through) |
+| GET | `/api/offline/items/{item_id}/video` | user | offline.py:video (`?can=hevc`: what the browser plays besides H.264/AAC. An MP4 that fits: Jellyfin's Download, ranges passed through; anything else: the MP4 Tentacle makes (services/offline_convert.py), read as it grows: `X-Offline-Job`, `X-Offline-From`, `X-Offline-Estimate`; a normal file with its size once made) |
 | POST | `/api/offline/progress` | user | offline.py:progress (where they stopped offline → Jellyfin, unless Jellyfin's is newer) |
 | GET | `/api/providers` | admin | providers.py:list_providers |
 | POST | `/api/providers` | admin | providers.py:create_provider |
