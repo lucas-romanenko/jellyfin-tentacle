@@ -442,14 +442,33 @@ def sweep(now: Optional[float] = None):
                 job.task.cancel()
             _delete(job)
             del _jobs[key]
-    # Files left from before a restart that nobody asked for since.
+    sweep_left_files()
+
+
+SWEEP_MINUTES = 30
+
+
+def sweep_left_files() -> int:
+    """Deletes files no job knows of (left from before Tentacle restarted)
+    that haven't changed for KEEP_DONE_S. Also run by the scheduler
+    (main.py, every SWEEP_MINUTES): after a restart nothing else would.
+    Returns how many files went."""
     try:
-        known = {j.path.name for j in _jobs.values()} | {j.marker.name for j in _jobs.values()}
+        jobs = list(_jobs.values())
+    except RuntimeError:        # changed while read (another thread): next time
+        return 0
+    known = {j.path.name for j in jobs} | {j.marker.name for j in jobs}
+    gone = 0
+    try:
         for f in spool_dir().iterdir():
             if f.name not in known and time.time() - f.stat().st_mtime > KEEP_DONE_S:
                 f.unlink()
+                gone += 1
     except OSError:
         pass
+    if gone:
+        logger.info(f"[Offline] Deleted {gone} file(s) made for Save offline that nobody read any more")
+    return gone
 
 
 async def read(job: Job, start: int, end: Optional[int] = None, chunk: int = 1 << 20):

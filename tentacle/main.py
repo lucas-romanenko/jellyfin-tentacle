@@ -967,6 +967,12 @@ def setup_scheduler(db):
     scheduler.add_job(_rec_space.run_scheduled, IntervalTrigger(minutes=_rec_space.PASS_MINUTES,
                                                                 start_date=datetime.now() + timedelta(seconds=420)),
                       id="recording_space", replace_existing=True, max_instances=1, coalesce=True)
+    # Save offline's MP4s on the server (services/offline_convert): ones left
+    # from before a restart are deleted hours after they last changed.
+    from services import offline_convert as _offline_convert
+    scheduler.add_job(_offline_convert.sweep_left_files, IntervalTrigger(minutes=_offline_convert.SWEEP_MINUTES,
+                                                                         start_date=datetime.now() + timedelta(seconds=600)),
+                      id="offline_sweep", replace_existing=True, max_instances=1, coalesce=True)
     # Live TV channel logos (services/channel_logos): the fallback chain and
     # the logo cache, a few logos checked per pass.
     from services import channel_logos as _logos
