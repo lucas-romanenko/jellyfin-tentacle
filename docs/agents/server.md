@@ -804,7 +804,10 @@ with `untracked_auto_add` (off by default), which adds the 95 %+ sure ones.
   ~1 s stays ≤ 3 (unrelated sound sits ~6 bits apart point by point, so
   single points can't be trusted), gaps < 3.5 s bridged, edges tightened to
   points ≤ 1 bit apart, start moved 1.5 s later (a point hears ~1-2 s around
-  it). Intro 15-120 s (one starting in the first 3 s starts at 0), credits
+  it); pieces across a varying middle (a different gag each week) join when
+  the gap is ≤ 10 s and matched sound fills ≥ half. The track fingerprinted
+  is the first in the household's languages, else the default (a dub first
+  shares nothing). Intro 15-120 s (one starting in the first 3 s starts at 0), credits
   15-450 s, in the episode's own time, running to the end when they stop
   within 5 s of it. Credits on black only when nothing else was found.
 - **Kept** in `media_segments` per Jellyfin item (a stream and a download of
