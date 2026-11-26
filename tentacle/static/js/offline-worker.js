@@ -138,6 +138,13 @@ async function start(msg) {
   } catch (e) {
     try { if (handle) handle.flush(); } catch (_) { /* closed */ }
     const size = (() => { try { return handle ? handle.getSize() : 0; } catch (_) { return 0; } })();
+    if (e && e.name === 'QuotaExceededError') {
+      // The device filled up part way
+      let free = 0;
+      try { const est = await navigator.storage.estimate(); free = (est.quota || 0) - (est.usage || 0); } catch (_) { /* none */ }
+      postMessage({ type: 'failed', id, fatal: true, reason: 'space', received: size, need: 0, free });
+      return;
+    }
     postMessage({ type: 'failed', id, received: size, reason: controller.signal.aborted ? 'stopped' : 'network',
                   detail: String(e && e.name || e) });
   } finally {

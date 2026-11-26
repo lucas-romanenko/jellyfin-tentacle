@@ -131,6 +131,39 @@ def plan(probe: dict, caps: frozenset) -> dict:
     }
 
 
+def _int(v) -> int:
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return 0
+
+
+def output_estimate(probe: dict, p: dict) -> int:
+    """About how big the MP4 will be, from the bit rates of what it keeps
+    (an MKV's other sound tracks, often lossless and large, are left out);
+    0 when the source doesn't say (pure)."""
+    if not p.get("duration"):
+        return 0
+    streams = {s.get("index"): s for s in probe.get("streams") or []}
+
+    def bps(i):
+        s = streams.get(i) or {}
+        tags = s.get("tags") or {}
+        return _int(s.get("bit_rate") or tags.get("BPS") or tags.get("BPS-eng"))
+
+    if p["video"] != "copy":
+        return 0
+    video = bps(p["video_index"])
+    if not video:
+        return 0
+    audio = 0
+    if p["audio"] == "aac":
+        audio = 192000
+    elif p["audio"] == "copy":
+        audio = bps(p["audio_index"])
+    return int((video + audio) * p["duration"] / 8 * 1.02)
+
+
 def input_args(url: str, token: str, matroska: bool) -> list:
     """Reading Jellyfin's Download: resumes after a break, waits through a
     pause (no read timeout: a provider's title sends nothing while someone
@@ -309,10 +342,7 @@ async def _run(job: Job, caps: frozenset, url: str, token: str, label: str):
             return
         finally:
             job.probed.set()
-        try:
-            job.estimate = max(job.estimate, int((info.get("format") or {}).get("size") or 0))
-        except (TypeError, ValueError):
-            pass
+        job.estimate = output_estimate(info, p) or max(job.estimate, _int((info.get("format") or {}).get("size")))
         enc = "x264"
         if p["video"] == "encode":
             from services import multiview

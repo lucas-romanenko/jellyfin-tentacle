@@ -213,7 +213,7 @@ function offRender() {
   const head = document.getElementById('offline-status');
   if (!el) return;
   const titles = off.titles;
-  const busy = titles.filter(r => r.state !== 'done');
+  const busy = titles.filter(r => r.state === 'saving' || r.state === 'waiting' || r.state === 'downloading');
   if (head) {
     let line = '';
     if (off.offlineMode || !navigator.onLine) line = 'No internet. What you saved here plays.';
@@ -432,7 +432,7 @@ async function offResume() {
 
 function _offWorker() {
   if (!off.worker) {
-    off.worker = new Worker('/static/js/offline-worker.js?v=2');
+    off.worker = new Worker('/static/js/offline-worker.js?v=3');
     off.worker.onmessage = ev => _offMessage(ev.data || {});
   }
   return off.worker;
@@ -512,7 +512,8 @@ async function _offFailed(id, msg) {
     Object.assign(change, { state: 'failed', fatal: true, error: 'This browser can’t save videos. Update it, or use another browser.' });
   } else if (msg.reason === 'space') {
     Object.assign(change, { state: 'failed', fatal: false,
-      error: `Not enough space on this device: it needs ${_offSize(msg.need)}, ${_offSize(Math.max(0, msg.free))} is free.` });
+      error: msg.need ? `Not enough space on this device: it needs ${_offSize(msg.need)}, ${_offSize(Math.max(0, msg.free))} is free.`
+        : 'This device is full. Make some room, then tap Try again.' });
   } else if (msg.status === 403 || msg.status === 404 || msg.status === 400 || msg.status === 409) {
     Object.assign(change, { state: 'failed', fatal: msg.status !== 409, error: msg.detail || 'It can’t be saved.' });
   } else if (msg.status === 401) {
