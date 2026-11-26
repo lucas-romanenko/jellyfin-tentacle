@@ -223,6 +223,19 @@ class Cleaning(_Spool):
                 self.C.get_or_start(ITEM, frozenset(), "http://jf/x", "t", 0, "Roman")
         self.assertEqual(409, cm.exception.status)
 
+    def test_files_left_from_before_a_restart_go_hours_later(self):
+        self.C.spool_dir().mkdir(parents=True, exist_ok=True)
+        old = self.C.spool_dir() / f"{'e' * 32}-hevc.mp4"
+        new = self.C.spool_dir() / f"{'f' * 32}-base.mp4"
+        old.write_bytes(b"x")
+        new.write_bytes(b"y")
+        past = time.time() - self.C.KEEP_DONE_S - 60
+        os.utime(old, (past, past))
+        kept = self.job(done=True, size=10)                     # a job knows of this one
+        os.utime(kept.path, (past, past))
+        self.assertEqual(1, self.C.sweep_left_files())
+        self.assertEqual((False, True, True), (old.exists(), new.exists(), kept.path.exists()))
+
     def test_finished_before_a_restart_is_used_again(self):
         job = self.C.Job(f"{ITEM}-base", ITEM, 0)
         self.C.spool_dir().mkdir(parents=True, exist_ok=True)
