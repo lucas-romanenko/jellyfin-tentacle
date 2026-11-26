@@ -705,14 +705,47 @@ with `untracked_auto_add` (off by default), which adds the 95 %+ sure ones.
   belong to; a break waits 5 s → 2 min (`OFF_RETRY_MS`) and asks
   `bytes=<file size>-`; free space checked first (`storage.estimate`), a
   wake lock while it runs, `storage.persist()`. Playback: a blob URL of the
-  OPFS File (never the film in memory). iPhone Safari (not standalone) saves
-  nothing and says to use the home-screen app; an MKV on an iPhone is refused
-  before downloading (Safari plays none). No internet at start (`checkAuth`):
+  OPFS File (never the film in memory). An iPhone browser tab saves too
+  (with a line that iOS may clear it after about a week unopened); anything
+  a browser can't play is made into an MP4 by the server. No internet at start (`checkAuth`):
   `offlineOnly()` shows only Offline. `sw.js` caches the page and every
   `/static/` script and stylesheet it names at install (the server stamps its
   own `?v=` into index.html, so the list is read from the page).
 - A secure context is needed (https, or localhost): on Tentacle's plain
   http LAN address the page says to open the https address.
+- **The server's part first** (`services/offline_saves.py`, Nov 2026): Save
+  offline POSTs `/api/offline/saves` (`device` phone|pc from the browser:
+  UA / touch + screen ≤ tablet, `can`, its push endpoint). `as_is` (a local
+  file the browser plays, phone: ≤1080p and ≤10 Mb/s) is ready at once;
+  anything else, every `.strm` title included, gets an `OfflineSave` row
+  (person, item, device, caps → `copy_key` = `offline_convert.job_key`) and
+  a making that runs with no page open (`offline_convert.wanted` keeps it
+  from the idle sweep; restarted by `resume_all` after a restart; started
+  on Tentacle's loop from a route thread via `_spawn`). Finished → rows
+  `ready`, a `Notification` kind `offline` ("<title> is ready to save", a
+  show's episodes share one; `/api/notifications` lists it only with
+  `offline=1`, which the plugin forwards from Jellyfin web and the TV app
+  never sends) and Web Push to the asking browser (`services/web_push.py`:
+  VAPID key in settings `webpush_private_key`, NEVER_SERVED; RFC 8291
+  aes128gcm; only push-service hosts). The device copies the finished file
+  and `DELETE`s its row; ready rows nobody fetched go after 3 days, then the
+  copy after `KEEP_DONE_S` unread. Copies live in `OFFLINE_READY_DIR` (put it
+  on a big disk) else `DATA_DIR/offline-ready`.
+- **Phone copies** (`offline_convert.plan(phone=True)`): ≤1920x1080 either
+  way round, HEVC (`can=hevc`; HDR kept, Main 10, PQ/HLG tags) else H.264
+  (HDR tone-mapped by `tonemap_vaapi`; no output colour options there: they
+  add a CPU scaler the GPU frames can't enter), VBR ~6 / 4 Mb/s at 1080p
+  scaled by picture size and ≤ 90% of the source, AAC 160k stereo; one GPU
+  making at a time (`_gpu`), ffmpeg at nice 19; x264/x265 without a GPU.
+- **Background Fetch** (Chrome): only a page may start one (a service
+  worker gets "not allowed in service worker environments"), so a push
+  marks the record `waiting` and shows the message; the page started from
+  it hands the copy to Background Fetch (room for it twice) and may close;
+  `sw.js` `backgroundfetchsuccess` stores it in OPFS (`createWritable`, else
+  the `tentacle-offline-files` cache: `where: 'cache'`). One that gets
+  nowhere for 60 s while the page is open is aborted and the page's worker
+  saves it (headless Chromium never runs them).
+
 
 ## Subtitles (`services/subtitles.py`, `subtitle_sync.py`, `subtitle_fetch.py`, `watch_prefs.py`, `routers/subtitles.py`)
 

@@ -4,7 +4,7 @@ SQLAlchemy models for all entities
 """
 
 from sqlalchemy import (
-    create_engine, Column, Integer, String, Boolean, Float,
+    create_engine, Column, Integer, String, Boolean, Float, BigInteger,
     DateTime, Text, JSON, ForeignKey, UniqueConstraint, or_
 )
 from sqlalchemy.ext.declarative import declarative_base
@@ -663,6 +663,40 @@ class SubtitleFile(Base):
     source_ref = Column(String, nullable=True)
     shifted_ms = Column(Integer, nullable=True)        # how far it was moved to line up with the sound
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class OfflineSave(Base):
+    """A title someone tapped Save offline on, whose copy the server makes
+    first (services/offline_saves.py): one per person, title and kind of
+    device. Gone once the device has it (or they removed it)."""
+    __tablename__ = "offline_saves"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("tentacle_users.id"), nullable=False, index=True)
+    jellyfin_item_id = Column(String, nullable=False, index=True)
+    device = Column(String, nullable=False, default="pc")       # phone | pc (what kind of copy)
+    caps = Column(String, nullable=False, default="")           # what its browser plays besides H.264 ("hevc")
+    name = Column(String, nullable=True)                        # "Bluey S1E2" / "Madden (2026)", for the message
+    copy_key = Column(String, nullable=False, index=True)       # the server's copy (services/offline_convert.job_key)
+    state = Column(String, nullable=False, default="preparing")  # preparing | ready | failed
+    error = Column(String, nullable=True)
+    size = Column(BigInteger, nullable=True)                    # the finished copy's size
+    push_endpoint = Column(String, nullable=True)               # the asking browser's push address, if it gave one
+    created_at = Column(DateTime, default=datetime.utcnow)
+    ready_at = Column(DateTime, nullable=True)
+    notified_at = Column(DateTime, nullable=True)
+
+
+class PushSubscription(Base):
+    """A browser that may show this person Tentacle's messages with no page
+    open (Web Push, services/web_push.py): "<title> is ready to save"."""
+    __tablename__ = "push_subscriptions"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("tentacle_users.id"), nullable=False, index=True)
+    endpoint = Column(String, nullable=False, unique=True)
+    p256dh = Column(String, nullable=False)
+    auth = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_sent_at = Column(DateTime, nullable=True)
 
 
 class SegmentJob(Base):

@@ -1651,7 +1651,10 @@ public class TentacleDiscoverController : ControllerBase
 
         try
         {
-            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/notifications"));
+            // offline=1: Save offline's "ready to save" too (Jellyfin in a
+            // browser asks; the TV app, which can't save offline, doesn't)
+            var offline = HttpContext.Request.Query["offline"].FirstOrDefault() == "1" ? "?offline=1" : string.Empty;
+            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/notifications{offline}"));
             return Content(response, "application/json");
         }
         catch (Exception ex)

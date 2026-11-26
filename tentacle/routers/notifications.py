@@ -6,6 +6,7 @@ Per-user download completion notifications
 import logging
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from datetime import datetime
 
@@ -19,11 +20,16 @@ router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 
 
 @router.get("")
-def get_notifications(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
-    """Return undismissed notifications for the current user."""
+def get_notifications(offline: bool = False, db: Session = Depends(get_db),
+                      user: TentacleUser = Depends(get_user_from_request)):
+    """Return undismissed notifications for the current user. Save offline's
+    "ready to save" (kind "offline") only to clients that ask (`offline=1`:
+    Jellyfin in a browser); the TV app can't save offline."""
+    q = db.query(Notification).filter(Notification.user_id == user.id, Notification.dismissed_at == None)
+    if not offline:
+        q = q.filter(or_(Notification.kind.is_(None), Notification.kind != "offline"))
     notifs = (
-        db.query(Notification)
-        .filter(Notification.user_id == user.id, Notification.dismissed_at == None)
+        q
         .order_by(Notification.created_at.desc())
         .limit(20)
         .all()
@@ -33,6 +39,11 @@ def get_notifications(db: Session = Depends(get_db), user: TentacleUser = Depend
     if for_ids:
         names = dict(db.query(TentacleUser.id, TentacleUser.display_name).filter(TentacleUser.id.in_(for_ids)).all())
     asks = _asks(db, user, notifs)
+    offline_url = ""
+    if any(n.kind == "offline" for n in notifs):
+        from services.family import addresses
+        tent = addresses(db).get("tentacle") or ""
+        offline_url = f"{tent}/#offline" if tent else ""
     return {
         "notifications": [
             {
@@ -53,6 +64,8 @@ def get_notifications(db: Session = Depends(get_db), user: TentacleUser = Depend
                 # An admin's "asked for this" message: the request it's about,
                 # whether it still waits, and Tentacle → Requests with it in view.
                 **asks.get(n.id, {}),
+                # "Ready to save": Tentacle's Offline page, where it is saved
+                **({"url": offline_url} if n.kind == "offline" and offline_url else {}),
             }
             for n in notifs
         ],

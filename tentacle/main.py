@@ -977,6 +977,11 @@ def setup_scheduler(db):
     scheduler.add_job(_offline_convert.sweep_left_files, IntervalTrigger(minutes=_offline_convert.SWEEP_MINUTES,
                                                                          start_date=datetime.now() + timedelta(seconds=600)),
                       id="offline_sweep", replace_existing=True, max_instances=1, coalesce=True)
+    # Save offline requests nobody came back for (services/offline_saves)
+    from services import offline_saves as _offline_saves
+    scheduler.add_job(_offline_saves.sweep, IntervalTrigger(minutes=_offline_convert.SWEEP_MINUTES,
+                                                            start_date=datetime.now() + timedelta(seconds=660)),
+                      id="offline_saves_sweep", replace_existing=True, max_instances=1, coalesce=True)
     # Live TV channel logos (services/channel_logos): the fallback chain and
     # the logo cache, a few logos checked per pass.
     from services import channel_logos as _logos
@@ -1109,6 +1114,9 @@ async def lifespan(app: FastAPI):
     # Skip intro / Skip credits found ahead of time (services/segments.py)
     from services import segments as _segments
     _segments.start()
+    # Save offline: copies the server makes first, picked up after a restart
+    from services import offline_saves as _offline_saves
+    _offline_saves.start()
     # An image without a release stamp asks GitHub which release it follows
     from services import versions
     versions.derive_in_background(BUILD_COMMIT)

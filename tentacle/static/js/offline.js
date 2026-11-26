@@ -15,6 +15,16 @@
 // plays from the file. Where they stopped goes back to Jellyfin when the
 // device is online again (/api/offline/progress).
 //
+// The server's part comes first (26 Nov 2026, services/offline_saves.py):
+// Save offline asks the server (POST /api/offline/saves), which gets the
+// title ready on its own, from the provider and converted where needed,
+// with this page closed ('preparing'), and says when it is ready (a push
+// message on this device where the browser allows it, and in Jellyfin).
+// This device then only copies the finished file: with the page closed in
+// Chrome (Background Fetch: sw.js stores it), else while the page is open,
+// carrying on from the byte it got to. A phone or a tablet gets the
+// server's smaller phone copy (_offDevice).
+//
 // iPhone: a browser tab (Safari, Chrome) saves as well as the home-screen app
 // (each keeps its own), only while it is open with the screen on: the screen
 // is kept awake while one runs, and it carries on when it is opened again.
@@ -26,6 +36,7 @@ const OFF_DB = 'tentacle-offline';
 const OFF_STORE = 'titles';
 const OFF_USER_KEY = 'tentacle-offline-user';
 const OFF_RETRY_MS = [5000, 15000, 30000, 60000, 120000];
+const OFF_POLL_MS = 10000;      // how often an open page asks the server how far it got
 
 const off = {
   db: null,
@@ -41,6 +52,7 @@ const off = {
   player: null,        // {id, video, url, saveTimer}
   syncing: false,
   offlineMode: false,  // opened with no internet (app.js)
+  pollTimer: null,
 };
 
 // ── Storage ────────────────────────────────────────────────────────────────
@@ -144,6 +156,66 @@ function _offCaps() {
   return v.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"') ? 'hevc' : '';
 }
 
+// A phone or a tablet gets the server's smaller copy (at most 1080p): told
+// by the browser's own name for the device, else by a touch screen no
+// bigger than a tablet's. No setting, nothing asked.
+function _offDevice() {
+  const ua = navigator.userAgent || '';
+  if (/Android|iPhone|iPad|iPod|Mobile|Silk|Kindle/i.test(ua) || _offIsIos()) return 'phone';
+  const touch = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+  const small = Math.min(screen.width || 0, screen.height || 0) <= 1100;
+  return touch && small ? 'phone' : 'pc';
+}
+
+// The video link for a title as this device takes it.
+function _offVideoUrl(rec) {
+  const q = new URLSearchParams();
+  if (rec.device) q.set('device', rec.device);
+  const can = rec.can != null ? rec.can : _offCaps();
+  if (can) q.set('can', can);
+  const qs = q.toString();
+  return `/api/offline/items/${rec.id}/video${qs ? `?${qs}` : ''}`;
+}
+
+function _offDeviceQuery(rec) {
+  return `device=${encodeURIComponent(rec.device || 'pc')}&can=${encodeURIComponent(rec.can || '')}`;
+}
+
+// ── Told when it is ready (Web Push) ───────────────────────────────────────
+
+function _offPushPossible() {
+  return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+}
+
+// Asks (once, from a tap) whether this device may show "ready to save"
+// messages, and gives the server its push address. '' when it can't.
+async function _offPush(ask) {
+  if (!_offPushPossible()) return '';
+  try {
+    if (Notification.permission === 'default' && ask) await Notification.requestPermission();
+    if (Notification.permission !== 'granted') return '';
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      const { key } = await api('/api/offline/push');
+      const raw = atob(key.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - key.length % 4) % 4));
+      sub = await reg.pushManager.subscribe({ userVisibleOnly: true,
+        applicationServerKey: Uint8Array.from(raw, c => c.charCodeAt(0)) });
+    }
+    const json = sub.toJSON();
+    await api('/api/offline/push', { method: 'POST', body: { endpoint: json.endpoint, keys: json.keys } });
+    return json.endpoint;
+  } catch (e) {
+    return '';
+  }
+}
+
+async function offAllowMessages(btn) {
+  if (btn) btn.disabled = true;
+  await _offPush(true);
+  offRender();
+}
+
 // ── Words ──────────────────────────────────────────────────────────────────
 
 function _offEsc(s) {
@@ -189,6 +261,8 @@ async function loadOffline(tab) {
   await offRefresh();
   offResume();
   offSyncProgress();
+  _offPollSoon(0);
+  _offBackgroundCheck();
   // Saved before their subtitles were ready (or saved before subtitles came
   // with titles): get them while there is internet.
   if (navigator.onLine) {
@@ -208,7 +282,7 @@ async function offRefresh() {
 function _offNavCount() {
   const badge = document.getElementById('offline-badge');
   if (!badge) return;
-  const busy = off.titles.filter(r => r.state === 'saving' || r.state === 'downloading' || r.state === 'waiting').length;
+  const busy = off.titles.filter(r => ['saving', 'downloading', 'waiting', 'preparing', 'bgfetch'].includes(r.state)).length;
   badge.textContent = busy;
   badge.style.display = busy ? '' : 'none';
 }
@@ -219,11 +293,26 @@ function offRender() {
   if (!el) return;
   const titles = off.titles;
   const busy = titles.filter(r => r.state === 'saving' || r.state === 'waiting' || r.state === 'downloading');
+  const background = titles.filter(r => r.state === 'bgfetch');
+  const preparing = titles.filter(r => r.state === 'preparing');
   if (head) {
     let line = '';
+    let ask = false;
+    const n = k => (k === 1 ? '1 title' : `${k} titles`);
     if (off.offlineMode || !navigator.onLine) line = 'No internet. What you saved here plays.';
-    else if (busy.length) line = busy.length === 1 ? 'Saving 1 title. Keep this page open.' : `Saving ${busy.length} titles. Keep this page open.`;
-    head.textContent = line;
+    else if (busy.length) {
+      line = _offIsIos() ? `Saving ${n(busy.length)}. Keep this page open with the screen on: on iPhone it saves only while it’s open, and carries on from where it stopped.`
+        : `Saving ${n(busy.length)}. Keep this page open.`;
+    } else if (background.length) line = `Saving ${n(background.length)} in the background. You can close this page.`;
+    else if (preparing.length) {
+      const told = _offPushPossible() && Notification.permission === 'granted';
+      ask = _offPushPossible() && Notification.permission === 'default';
+      line = `The server is getting ${n(preparing.length)} ready. You can close this page: ` +
+        (preparing.length === 1
+          ? (told ? 'you’ll get a message when it’s ready to save.' : 'come back here to save it when it’s ready.')
+          : (told ? 'you’ll get a message when they’re ready to save.' : 'come back here to save them when they’re ready.'));
+    }
+    head.innerHTML = _offEsc(line) + (ask ? ' <button class="btn btn-secondary btn-sm" onclick="offAllowMessages(this)">Tell me when it’s ready</button>' : '');
     head.style.display = line ? '' : 'none';
   }
   const note = document.getElementById('offline-note');
@@ -248,7 +337,9 @@ function offRender() {
       const got = live.received ?? rec.received ?? 0;
       const pct = _offPct(rec, live, got);
       const words = rec.state === 'failed' ? (rec.error || 'Stopped')
-        : rec.state === 'waiting' ? (rec.error || 'Waiting to carry on')
+        : rec.state === 'preparing' ? _offServerWords(rec)
+        : rec.state === 'bgfetch' ? `Saving in the background · ${_offProgressWords(rec, live, got)}`
+        : rec.state === 'waiting' ? (rec.error || (got ? `Saved ${_offSize(got)} of ${_offSize(rec.size) || 'it'}, carries on next` : 'Ready to save, next in line'))
         : off.current === rec.id ? _offProgressWords(rec, live, got)
         : 'Waiting its turn';
       meta = words;
@@ -276,6 +367,7 @@ function offRender() {
 // How far it got: of its size, or (an MP4 the server is still making) of
 // about how big it will be, never 100% before it has finished.
 function _offPct(rec, live, got) {
+  if (rec.state === 'preparing') return Math.min(99, Math.floor((rec.server_fraction || 0) * 100));
   const total = live.total || 0;
   if (total) return Math.min(100, Math.floor(got * 100 / total));
   const about = live.estimate || rec.size || 0;
@@ -291,14 +383,20 @@ function _offProgressWords(rec, live, got) {
   return `${_offSize(got)} so far`;
 }
 
+function _offServerWords(rec) {
+  const pct = Math.min(99, Math.floor((rec.server_fraction || 0) * 100));
+  return pct > 0 ? `Getting ready on the server · ${pct}%` : 'Getting ready on the server';
+}
+
 function _offShowProgress(id) {
   const rec = off.titles.find(r => r.id === id);
-  const live = off.live[id];
+  const live = off.live[id] || (rec && rec.state === 'preparing' ? {} : null);
   const row = document.querySelector(`.off-item[data-id="${id}"]`);
   if (!rec || !live || !row) return;
   const meta = row.querySelector('.off-meta');
   const fill = row.querySelector('.off-bar-fill');
-  if (meta) meta.textContent = _offProgressWords(rec, live, live.received || 0);
+  if (meta) meta.textContent = rec.state === 'preparing' ? _offServerWords(rec)
+    : (rec.state === 'bgfetch' ? 'Saving in the background · ' : '') + _offProgressWords(rec, live, live.received || 0);
   if (fill) fill.style.width = `${_offPct(rec, live, live.received || 0)}%`;
 }
 
@@ -324,11 +422,15 @@ async function offShowDownloadButtons(root) {
 
 // Save a Jellyfin movie, episode, show or season on this device (Library's
 // Save offline, Jellyfin's Save offline). A show or a season: every episode
-// of it not saved here yet (`season`: that season of the show).
+// of it not saved here yet (`season`: that season of the show). The server
+// gets each one ready first (POST /api/offline/saves); this device copies it
+// once it is.
 async function offlineSave(itemId, btn, season) {
   const id = String(itemId || '').replace(/-/g, '').toLowerCase();
   if (!/^[0-9a-f]{32}$/.test(id)) return;
   if (!offSupported()) { toast('This browser can’t keep videos to watch offline.', 'error', 6000); return; }
+  // Asked from the tap itself (Safari asks only then): may this device say when it's ready?
+  const pushing = _offPush(!!btn);
   const have = await _offGet(id).catch(() => null);
   if (have) {
     toast(have.state === 'done' ? 'It’s already saved on this device (Offline).' : 'It’s already saving (Offline).');
@@ -346,57 +448,146 @@ async function offlineSave(itemId, btn, season) {
   }
   try { if (navigator.storage.persist) await navigator.storage.persist(); } catch (e) { /* asked once */ }
   const can = _offCaps();
+  const device = _offDevice();
   const user = _offUser();
-  let added = 0;
+  let todo;
   let name;
   if (info.episodes) {
     // A show or a season: each episode not on this device yet, in order.
     const all = await _offAll().catch(() => []);
     const here = new Set(all.map(r => r.id));
-    const todo = info.episodes.filter(ep => !here.has(ep.id));
+    todo = info.episodes.filter(ep => !here.has(ep.id));
     if (!todo.length) {
       if (btn) btn.disabled = false;
       toast(`${info.name || 'They'}: every episode is already on this device (Offline).`);
       return;
     }
     if (!await _offRoomFor(todo)) { if (btn) btn.disabled = false; return; }
-    const now = Date.now();
-    for (let i = 0; i < todo.length; i++) {
-      await _offPut({ ..._offNewRecord(todo[i], user, can, '', now - i), batch: now, order: i });
-    }
-    added = todo.length;
     name = info.season != null ? `${info.name} season ${info.season}` : info.name;
   } else {
-    let poster = '';
-    try {
-      const r = await fetch(`/api/offline/items/${id}/poster`, { credentials: 'same-origin' });
-      if (r.ok) poster = await _offDataUrl(await r.blob());
-    } catch (e) { /* no picture */ }
-    await _offPut(_offNewRecord({ ...info, id }, user, can, poster, Date.now()));
-    added = 1;
+    todo = [{ ...info, id }];
     name = info.kind === 'episode' ? (info.series || info.name) : info.name;
+  }
+  // The server first: ready now, or it gets them ready on its own.
+  let answer;
+  try {
+    const endpoint = await pushing;
+    answer = await api('/api/offline/saves', { method: 'POST',
+      body: { items: todo.map(t => t.id), device, can, push_endpoint: endpoint || null } });
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    toast(e.message || 'It can’t be saved right now.', 'error', 7000);
+    return;
+  }
+  const byId = Object.fromEntries((answer.items || []).map(a => [a.id, a]));
+  const now = Date.now();
+  let added = 0;
+  let preparing = 0;
+  let refused = '';
+  for (let i = 0; i < todo.length; i++) {
+    const got = byId[todo[i].id] || { state: 'preparing' };
+    if (got.state === 'refused') { refused = refused || got.error; continue; }
+    let poster = '';
+    if (todo.length === 1) {
+      try {
+        const r = await fetch(`/api/offline/items/${id}/poster`, { credentials: 'same-origin' });
+        if (r.ok) poster = await _offDataUrl(await r.blob());
+      } catch (e) { /* no picture */ }
+    }
+    const rec = _offNewRecord(todo[i], user, can, poster, now - i);
+    Object.assign(rec, { device, batch: now, order: i }, _offServerState(got));
+    if (rec.state === 'preparing') preparing++;
+    await _offPut(rec);
+    added++;
   }
   if (btn) {
     btn.disabled = false;
     const label = btn.querySelector('span');
-    if (label) label.textContent = 'Saving';
+    if (label && added) label.textContent = 'Saving';
   }
-  toast(added === 1 ? `Saving ${name}. It’s on the Offline page.`
-    : `Saving ${added} episodes of ${name}. They’re on the Offline page.`);
+  if (!added) {
+    toast(refused || 'It can’t be saved right now.', 'error', 7000);
+    return;
+  }
+  const told = _offPushPossible() && Notification.permission === 'granted';
+  const what = added === 1 ? name : `${added} episodes of ${name}`;
+  toast(!preparing ? `Saving ${what}. It’s on the Offline page.`
+    : told ? `The server is getting ${what} ready. You can close this page: you’ll get a message when it’s ready to save.`
+    : `The server is getting ${what} ready. You can close this page and come back to Offline later.`, 'info', 8000);
   await offRefresh();
   offResume();
+  _offPollSoon();
+}
+
+// What the server said about a title, as its record keeps it.
+function _offServerState(got) {
+  if (got.state === 'ready') return { state: 'waiting', size: got.size || 0, server_fraction: 1, error: '' };
+  if (got.state === 'failed') return { state: 'failed', fatal: false, error: got.error || 'The server couldn’t get it ready.' };
+  return { state: 'preparing', server_fraction: got.fraction || 0, size: got.estimate || 0, error: '' };
+}
+
+// While something is being got ready on the server: ask how far it got.
+function _offPollSoon(wait) {
+  clearTimeout(off.pollTimer);
+  off.pollTimer = setTimeout(_offPoll, wait == null ? 1500 : wait);
+}
+
+async function _offPoll() {
+  const waiting = off.titles.filter(r => r.state === 'preparing');
+  if (!waiting.length || !navigator.onLine) return;
+  // Asked per kind of copy (a record saved on this device has one kind)
+  const groups = {};
+  waiting.forEach(r => { const k = _offDeviceQuery(r); (groups[k] = groups[k] || []).push(r); });
+  let changed = false;
+  for (const [q, recs] of Object.entries(groups)) {
+    let got;
+    try {
+      got = await api(`/api/offline/saves?ids=${recs.map(r => r.id).join(',')}&${q}`);
+    } catch (e) { continue; }
+    for (const a of got.items || []) {
+      const rec = recs.find(r => r.id === a.id);
+      if (!rec) continue;
+      if (a.state === 'unknown') {
+        // The server forgot it (a long time unfetched): ask again
+        try {
+          const again = await api('/api/offline/saves', { method: 'POST',
+            body: { items: [rec.id], device: rec.device || 'pc', can: rec.can || '' } });
+          Object.assign(a, (again.items || [])[0] || {});
+        } catch (e) { continue; }
+      }
+      if (a.state === 'refused') Object.assign(a, { state: 'failed' });
+      const change = _offServerState(a);
+      if (change.state === 'preparing') {
+        rec.server_fraction = change.server_fraction;
+        rec.size = change.size || rec.size;
+        _offShowProgress(rec.id);
+        await _offUpdate(rec.id, { server_fraction: change.server_fraction, size: rec.size });
+        continue;
+      }
+      await _offUpdate(rec.id, change);
+      changed = true;
+    }
+  }
+  if (changed) { await offRefresh(); offResume(); }
+  if (off.titles.some(r => r.state === 'preparing')) _offPollSoon(OFF_POLL_MS);
 }
 
 function _offNewRecord(info, user, can, poster, added) {
   return {
-    ...info, user, can, state: 'waiting', error: '', received: 0, fatal: false, job: '',
+    ...info, user, can, state: 'waiting', error: '', received: 0, fatal: false, job: '', server_fraction: 0,
     poster_url: poster, added_at: added, watched_at: 0, synced_at: 0,
   };
 }
 
 // Room on this device for a show's episodes? Said plainly before starting.
 async function _offRoomFor(eps) {
-  const need = eps.reduce((n, ep) => n + (ep.size || (ep.runtime_ticks || 0) / 1e7 * (1 << 20)), 0);
+  // A phone gets the server's smaller copy: about 0.8 MB a second at most
+  const phone = _offDevice() === 'phone';
+  const need = eps.reduce((n, ep) => {
+    const secs = (ep.runtime_ticks || 0) / 1e7;
+    const size = ep.size || secs * (1 << 20);
+    return n + (phone && secs ? Math.min(size, secs * 0.8e6) : size);
+  }, 0);
   try {
     const est = await navigator.storage.estimate();
     const free = (est.quota || 0) - (est.usage || 0);
@@ -444,6 +635,7 @@ function _offWorker() {
 }
 
 async function _offStart(rec) {
+  if (await _offBackground(rec)) { await offRefresh(); offResume(); return; }
   off.current = rec.id;
   await _offUpdate(rec.id, { state: 'saving', error: '' });
   rec.state = 'saving';
@@ -451,9 +643,80 @@ async function _offStart(rec) {
   off.live[rec.id] = { received: rec.received || 0, total: 0, estimate: rec.size || 0 };
   offRender();
   if (!rec.poster_url) _offPoster(rec);
-  const can = rec.can != null ? rec.can : _offCaps();
-  _offWorker().postMessage({ cmd: 'start', id: rec.id, job: rec.job || '', file: _offFile(rec),
-    url: `/api/offline/items/${rec.id}/video${can ? `?can=${encodeURIComponent(can)}` : ''}` });
+  _offWorker().postMessage({ cmd: 'start', id: rec.id, job: rec.job || '', file: _offFile(rec), url: _offVideoUrl(rec) });
+}
+
+// Chrome (Android, computers): the copy goes on with the page closed, with
+// the system's own progress notification (Background Fetch; sw.js stores
+// the file when it has all of it). Only a finished file from its start, and
+// only with room for it twice (the browser keeps its own copy until sw.js
+// has stored it). True when it was handed over.
+async function _offBackground(rec) {
+  if (!('BackgroundFetchManager' in window) || !navigator.serviceWorker || !navigator.serviceWorker.controller) return false;
+  if (rec.received || !rec.size || rec.state !== 'waiting' || rec.bg_failed) return false;
+  try {
+    const est = await navigator.storage.estimate();
+    if (est.quota && (est.quota - (est.usage || 0)) < rec.size * 2 + (200 << 20)) return false;
+    const reg = await navigator.serviceWorker.ready;
+    const t = _offTitle(rec);
+    const bg = await reg.backgroundFetch.fetch(`off-${rec.id}`, [new Request(_offVideoUrl(rec), { credentials: 'same-origin' })], {
+      title: `Saving ${t.main}${t.sub && rec.kind === 'episode' ? ` · ${t.sub}` : ''}`,
+      icons: [{ src: '/static/web-app-manifest-192x192.png', sizes: '192x192', type: 'image/png' }],
+      downloadTotal: rec.size,
+    });
+    await _offUpdate(rec.id, { state: 'bgfetch', error: '' });
+    _offWatchBackground(bg, rec.id);
+    return true;
+  } catch (e) {
+    // Not allowed here (no permission, an old Chrome, the same one running): the page saves it
+    return false;
+  }
+}
+
+// Shows a background copy's progress while the page is open.
+// One that gets nowhere for OFF_BG_STALL_MS while the page is open (the
+// browser holds it back) is stopped, and the page saves it instead.
+const OFF_BG_STALL_MS = 60000;
+function _offWatchBackground(bg, id) {
+  if (!bg || bg._offWatched) return;
+  bg._offWatched = true;
+  let seen = -1;
+  let since = Date.now();
+  bg.addEventListener('progress', () => {
+    off.live[id] = { received: bg.downloaded, total: bg.downloadTotal || 0 };
+    _offShowProgress(id);
+    if (bg.result === 'failure') _offBackgroundFailed(id);
+  });
+  const timer = setInterval(async () => {
+    if (bg.result) { clearInterval(timer); return; }
+    if (bg.downloaded !== seen) { seen = bg.downloaded; since = Date.now(); return; }
+    if (document.visibilityState === 'visible' && navigator.onLine && Date.now() - since > OFF_BG_STALL_MS) {
+      clearInterval(timer);
+      try { await bg.abort(); } catch (e) { /* already over */ }
+      _offBackgroundFailed(id);
+    }
+  }, 10000);
+}
+
+async function _offBackgroundFailed(id) {
+  // Chrome gave up (no room, the server went away): the page carries on the usual way
+  await _offUpdate(id, { state: 'waiting', bg_failed: true, received: 0 });
+  await offRefresh();
+  offResume();
+}
+
+// After the page was closed: background copies still running, and those
+// that finished or failed meanwhile (sw.js updated their records).
+async function _offBackgroundCheck() {
+  if (!('BackgroundFetchManager' in window) || !navigator.serviceWorker) return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const running = new Set(await reg.backgroundFetch.getIds());
+    for (const rec of off.titles.filter(r => r.state === 'bgfetch')) {
+      if (running.has(`off-${rec.id}`)) _offWatchBackground(await reg.backgroundFetch.get(`off-${rec.id}`), rec.id);
+      else if (!(await _offGet(rec.id).then(r => r && r.state === 'done').catch(() => false))) _offBackgroundFailed(rec.id);
+    }
+  } catch (e) { /* none */ }
 }
 
 // An episode saved with its show gets its picture when its turn comes.
@@ -500,6 +763,7 @@ async function _offMessage(msg) {
     delete off.live[id];
     const rec = off.titles.find(r => r.id === id);
     if (rec) toast(`${_offTitle(rec).main} is ready to watch offline.`);
+    if (rec) _offServerForget(rec);
     _offSubtitles(id);
   } else if (msg.type === 'failed') {
     await _offFailed(id, msg);
@@ -567,12 +831,31 @@ async function offRemove(id, btn) {
   if (!rec) return;
   if (off.player && off.player.id === id) offClosePlayer();
   _offWorker().postMessage({ cmd: 'remove', id, file: _offFile(rec) });
+  if (rec.state !== 'done') _offServerForget(rec);
+  if (rec.state === 'bgfetch' || rec.where === 'cache') {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const bg = reg.backgroundFetch && await reg.backgroundFetch.get(`off-${id}`);
+      if (bg) await bg.abort();
+      await (await caches.open(OFF_FILES)).delete(_offCacheKey(id));
+    } catch (e) { /* gone */ }
+  }
   if (off.current === id) off.current = null;
   delete off.live[id];
   await _offDelete(id);
   await offRefresh();
   offResume();
 }
+
+// The device has it (or it was removed here): the server's copy may go.
+function _offServerForget(rec) {
+  fetch(`/api/offline/saves/${rec.id}?${_offDeviceQuery(rec)}`, { method: 'DELETE', credentials: 'same-origin' }).catch(() => {});
+}
+
+// A copy Background Fetch saved where the browser couldn't write the file
+// itself (sw.js): kept in this cache, played from it.
+const OFF_FILES = 'tentacle-offline-files';
+function _offCacheKey(id) { return `/offline-file/${id}`; }
 
 // Keep the screen on while a title saves (an iPhone saves only while the
 // page is open with the screen on).
@@ -594,7 +877,15 @@ async function offPlay(id) {
   const rec = await _offGet(id).catch(() => null);
   if (!rec || rec.state !== 'done') return;
   let file;
-  try { file = await (await _offFileHandle(rec)).getFile(); } catch (e) {
+  try {
+    if (rec.where === 'cache') {
+      const hit = await (await caches.open(OFF_FILES)).match(_offCacheKey(rec.id));
+      if (!hit) throw new Error('missing');
+      file = await hit.blob();
+    } else {
+      file = await (await _offFileHandle(rec)).getFile();
+    }
+  } catch (e) {
     toast('That title is missing from this device. Remove it and save it again.', 'error', 8000);
     return;
   }
@@ -756,6 +1047,16 @@ async function offlineOnly() {
   showPage('offline');
 }
 
+// sw.js: a background copy finished (or failed), or a push said one is
+// ready on the server: read the records again.
+if (navigator.serviceWorker) {
+  navigator.serviceWorker.addEventListener('message', ev => {
+    const m = ev.data || {};
+    if (m.type !== 'offline-changed') return;
+    offRefresh().then(() => { offResume(); _offPollSoon(0); });
+  });
+}
+
 window.addEventListener('online', () => {
   if (off.offlineMode) {
     // Back online: the whole app again (signed in as before).
@@ -772,6 +1073,10 @@ window.addEventListener('offline', () => {
 });
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && off.current) _offWake(true);
+  // Back to the page: how far the server got, and carry on saving here
+  if (document.visibilityState === 'visible' && offSupported()) {
+    offRefresh().then(() => { offResume(); _offPollSoon(0); });
+  }
 });
 
 // Saving carries on whenever Tentacle is open, whatever page is showing.
@@ -787,6 +1092,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       offResume();
       offSyncProgress();
+      _offPollSoon(0);
+      _offBackgroundCheck();
       _offNavShown();
     } catch (e) { /* no storage */ }
   }, 3000);
