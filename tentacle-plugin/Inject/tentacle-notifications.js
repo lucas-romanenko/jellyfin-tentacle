@@ -97,7 +97,8 @@
   function poll() {
     if (!TN.apiClient || !TN.userId) return;
 
-    var url = TN.apiClient.getUrl('TentacleDiscover/Notifications?userId=' + TN.userId);
+    // offline=1: Save offline's "ready to save" messages too (a browser saves offline)
+    var url = TN.apiClient.getUrl('TentacleDiscover/Notifications?userId=' + TN.userId + '&offline=1');
     TN.apiClient.getJSON(url).then(function (data) {
       if (!data || !data.notifications) return;
       // A request answered anywhere else (Tentacle → Requests, another tab)
@@ -145,6 +146,7 @@
   function toastLabel(notif) {
     if (notif.kind === 'request') return 'Request';
     if (notif.kind === 'problem') return notif.title || 'Problem';
+    if (notif.kind === 'offline') return 'Ready to save';
     return notif.for ? 'Ready to Watch \u00b7 for ' + notif.for : 'Ready to Watch';
   }
 
@@ -172,8 +174,9 @@
 
     // Click poster/title to navigate to item
     var inner = toast.querySelector('.tentacle-toast-inner');
-    inner.style.cursor = notif.jellyfin_item_id ? 'pointer' : 'default';
-    if (notif.jellyfin_item_id) {
+    var opens = notif.jellyfin_item_id || (notif.kind === 'offline' && notif.url);
+    inner.style.cursor = opens ? 'pointer' : 'default';
+    if (opens) {
       inner.addEventListener('click', function (e) {
         if (e.target.classList.contains('tentacle-toast-close')) return;
         dismissAndNavigate(notif);
@@ -355,6 +358,11 @@
 
   function dismissAndNavigate(notif) {
     dismissNotification(notif.id);
+    if (notif.kind === 'offline') {
+      // Ready to save: Tentacle's Offline page, where the device copies it
+      if (notif.url) window.open(notif.url, '_blank', 'noopener');
+      return;
+    }
     if (notif.jellyfin_item_id) {
       // Use TentacleDetails overlay if available, otherwise navigate
       if (window.TentacleDetails && window.TentacleDetails.show) {

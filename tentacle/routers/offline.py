@@ -23,6 +23,7 @@ from routers.vod import _VodResponse, _pending_releases
 from services import family as F
 from services import offline
 from services import offline_convert as C
+from services import offline_saves as S
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -109,12 +110,14 @@ def subtitles(item_id: str, db: Session = Depends(get_db), user: TentacleUser = 
 
 
 @router.get("/api/offline/items/{item_id}/video")
-async def video(item_id: str, request: Request, can: str = "", db: Session = Depends(get_db),
+async def video(item_id: str, request: Request, can: str = "", device: str = "pc", db: Session = Depends(get_db),
                 user: TentacleUser = Depends(get_user_from_request)):
-    """The title's video as this browser plays it (`can`: the optional codecs
-    it said it plays). An MP4 that fits: Jellyfin's Download, byte ranges
-    passed through. Anything else: the MP4 Tentacle makes of it
-    (services/offline_convert.py), read as it grows."""
+    """The title's video as this device takes it (`can`: the optional codecs
+    its browser said it plays; `device`: "phone" for the smaller copy). A
+    file on the server that it plays as it is: Jellyfin's Download, byte
+    ranges passed through. Anything else: the copy Tentacle makes of it
+    (services/offline_convert.py, started by POST /api/offline/saves), a
+    normal file once finished (read as it grows before)."""
     try:
         got = await asyncio.to_thread(offline.check, db, user, item_id)
     except F.FamilyError as e:
@@ -125,16 +128,10 @@ async def video(item_id: str, request: Request, can: str = "", db: Session = Dep
         raise HTTPException(409, "Jellyfin isn't connected yet.")
     iid = offline.norm_item_id(item_id)
     caps = C.caps_of(can)
-    info = offline.summary(got)
-    as_is = C.fits(info["source_container"], C.streams_from_item(got), caps)
-    source = f"{url}/Items/{iid}/Download"
+    phone = device == "phone"
     try:
-        if as_is is None:
-            # An MP4 Jellyfin hasn't looked inside: look once (kept a while).
-            p = C.plan(await C.probe(source, key, iid), caps)
-            as_is = p["video"] == "copy" and p["audio"] in (None, "copy")
-        if not as_is:
-            job = C.get_or_start(iid, caps, source, key, _estimate(info), user.display_name)
+        if not S.as_is(got, phone, caps):
+            job = S.start_job(db, got, phone, caps, user.display_name)
             if not job.done:
                 # Its size once it has looked inside (the page shows "of about ...")
                 try:
@@ -201,14 +198,6 @@ async def video(item_id: str, request: Request, can: str = "", db: Session = Dep
             logger.info(f"[Offline] {user.display_name}: {iid} broke off: {type(e).__name__}")
 
     return _VodResponse(body(), status_code=resp.status_code, headers=passthrough, finish=finish)
-
-
-def _estimate(info: dict) -> int:
-    """About how big the title is: Jellyfin's size of it, else ~1 MB a second."""
-    size = info.get("size") or 0
-    if size > (50 << 20):
-        return int(size)
-    return int((info.get("runtime_ticks") or 0) / 1e7 * (1 << 20))
 
 
 def _made(job: C.Job, request: Request):
@@ -284,3 +273,80 @@ def progress(body: ProgressBody, db: Session = Depends(get_db),
         return offline.sync_progress(db, user, [e.model_dump() for e in body.items])
     except F.FamilyError as e:
         raise _refusal(e)
+
+
+# ── Save offline: the server makes the copy first ─────────────────────────
+
+class SaveBody(BaseModel):
+    items: List[str] = []
+    device: str = "pc"          # phone | pc (a tablet is a phone)
+    can: str = ""
+    push_endpoint: Optional[str] = None
+
+
+@router.post("/api/offline/saves")
+def save(body: SaveBody, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    """Save offline tapped on a device (services/offline_saves.py): for each
+    title, ready now, or the server makes its copy first and says when it is
+    ready. A title this person may not save: {"state": "refused", "error"}."""
+    if len(body.items) > 300:
+        raise HTTPException(400, "Too many at once")
+    phone = body.device == "phone"
+    caps = C.caps_of(body.can)
+    out = []
+    for item_id in body.items:
+        try:
+            out.append(S.request(db, user, item_id, phone, caps, body.push_endpoint or ""))
+        except F.FamilyError as e:
+            if e.status in (401, 403) and not out:
+                raise _refusal(e)
+            out.append({"id": offline.norm_item_id(item_id), "state": "refused", "error": e.message})
+    return {"items": out}
+
+
+@router.get("/api/offline/saves")
+def saves(ids: str = "", device: str = "pc", can: str = "", db: Session = Depends(get_db),
+          user: TentacleUser = Depends(get_user_from_request)):
+    """How far the server has got with this person's titles (`ids`, comma-separated)."""
+    wanted = [i for i in ids.split(",") if i.strip()]
+    return {"items": S.status(db, user, wanted, device == "phone", C.caps_of(can))}
+
+
+@router.delete("/api/offline/saves/{item_id}")
+def saved(item_id: str, device: str = "pc", can: str = "", db: Session = Depends(get_db),
+          user: TentacleUser = Depends(get_user_from_request)):
+    """The device has the title now, or it was removed there: the server's copy may go."""
+    return {"forgotten": S.forget(db, user, item_id, device == "phone", C.caps_of(can))}
+
+
+class PushBody(BaseModel):
+    endpoint: str
+    keys: dict = {}
+
+
+@router.get("/api/offline/push")
+def push_key(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    """The server's public push key, for the browser's subscription."""
+    from services import web_push
+    return {"key": web_push.public_key(db)}
+
+
+@router.post("/api/offline/push")
+def push_subscribe(body: PushBody, db: Session = Depends(get_db),
+                   user: TentacleUser = Depends(get_user_from_request)):
+    """This browser may show this person's messages with no page open."""
+    from services import web_push
+    try:
+        web_push.subscribe(db, user.id, body.endpoint, str(body.keys.get("p256dh") or ""),
+                           str(body.keys.get("auth") or ""))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@router.delete("/api/offline/push")
+def push_unsubscribe(body: PushBody, db: Session = Depends(get_db),
+                     user: TentacleUser = Depends(get_user_from_request)):
+    from services import web_push
+    web_push.unsubscribe(db, user.id, body.endpoint)
+    return {"ok": True}

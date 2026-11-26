@@ -165,7 +165,7 @@ Gotchas:
 | GET | `/TentacleDiscover/ListMissing` | user | GetListMissing | yes |
 | GET | `/TentacleDiscover/Lists` | user | GetLists | yes |
 | POST | `/TentacleDiscover/ManageEpisodes` | user | ManageEpisodes | yes |
-| GET | `/TentacleDiscover/Notifications` | user | GetNotifications | yes |
+| GET | `/TentacleDiscover/Notifications` | user | GetNotifications (`?offline=1` forwarded: Save offline's "ready to save" too; Jellyfin web sends it, the TV app doesn't) | yes |
 | POST | `/TentacleDiscover/Notifications/DismissAll` | user | DismissAllNotifications |  |
 | POST | `/TentacleDiscover/Notifications/Toggle` | user | ToggleNotifications |  |
 | POST | `/TentacleDiscover/Notifications/{notificationId}/Dismiss` | user | DismissNotification | yes |

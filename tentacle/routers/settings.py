@@ -50,12 +50,13 @@ SENSITIVE_KEYS = {"tmdb_bearer_token", "tmdb_api_key", "radarr_api_key", "sonarr
                   "jellyfin_api_key", "trakt_client_id", "mdblist_api_key", "vod_token_secret",
                   "youtube_api_key", "internal_secret", "webhook_secret",
                   "logodev_api_key", "pushover_app_token", "pushover_user_key",
-                  "qbittorrent_password"} | MUSIC_SECRET_KEYS
+                  "qbittorrent_password", "webpush_private_key"} | MUSIC_SECRET_KEYS
 
 # Signing keys: session_secret signs the dashboard's session cookies,
-# vod_token_secret the .strm playback tokens. Nothing in the dashboard shows or
+# vod_token_secret the .strm playback tokens, webpush_private_key the Web Push
+# messages (services/web_push.py). Nothing in the dashboard shows or
 # edits them, so no settings route serves them and a Save cannot set them.
-NEVER_SERVED = {"session_secret", "vod_token_secret"}
+NEVER_SERVED = {"session_secret", "vod_token_secret", "webpush_private_key"}
 
 
 # Passwords and shared secrets show no characters at all; API keys keep

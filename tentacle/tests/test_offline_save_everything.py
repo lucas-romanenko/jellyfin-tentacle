@@ -327,7 +327,7 @@ class AnMkvBecomesAnMp4AsItIsSent(_Spool):
         _Download.opened = []
         self.out = os.path.join(self.dir, "saved.mp4")
 
-    async def video(self, range_header=None, caps=""):
+    async def video(self, range_header=None, caps="", device="pc"):
         """The Offline route's answer for the film, made by a real ffmpeg."""
         from routers import offline as R
         from models.database import TentacleUser
@@ -337,8 +337,9 @@ class AnMkvBecomesAnMp4AsItIsSent(_Spool):
                 "MediaSources": [{"Path": "http://tentacle/api/vod/movie/1.2.abc.mkv", "Container": "strm"}]}
         settings = {"jellyfin_url": self.url.split("/Items/")[0], "jellyfin_api_key": _Download.token}
         with mock.patch.object(R.offline, "check", lambda db, user, item_id: item), \
-                mock.patch.object(R, "get_setting", lambda db, k, d=None: settings.get(k, d)):
-            return await R.video(ITEM, _request(range_header), can=caps, db=db, user=user)
+                mock.patch.object(R, "get_setting", lambda db, k, d=None: settings.get(k, d)), \
+                mock.patch.object(R.S, "get_setting", lambda db, k, d=None: settings.get(k, d)):
+            return await R.video(ITEM, _request(range_header), can=caps, device=device, db=db, user=user)
 
     async def read_all(self, resp):
         return b"".join([c async for c in resp.body_iterator])

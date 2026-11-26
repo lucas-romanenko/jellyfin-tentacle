@@ -280,7 +280,7 @@ Declared on the app in `main.py` (no router, all **none**; listed in
 | GET | `/api/my/channels` | user | my_livetv.py:my_channels |
 | PUT | `/api/my/channels/favourite` | user | my_livetv.py:set_my_favourite |
 | PUT | `/api/my/channels/favourites` | user | my_livetv.py:set_my_favourites |
-| GET | `/api/notifications` | user | notifications.py:get_notifications (an admin's "asked for this" message also has `request_id`, `request_status`, `requested_by`, `requests_url`; nobody else's) |
+| GET | `/api/notifications` | user | notifications.py:get_notifications (kind `offline`, "ready to save" with `url` = Tentacle's #offline, only with `?offline=1`: Jellyfin web asks, the TV app doesn't; an admin's "asked for this" message also has `request_id`, `request_status`, `requested_by`, `requests_url`; nobody else's) |
 | POST | `/api/notifications/dismiss-all` | user | notifications.py:dismiss_all |
 | PUT | `/api/notifications/others` | user (admins only, 403 otherwise) | notifications.py:show_others_downloads (`{"show": bool}`: other people's downloads in my Activity and messages) |
 | POST | `/api/notifications/toggle` | user | notifications.py:toggle_notifications |
@@ -289,8 +289,14 @@ Declared on the app in `main.py` (no router, all **none**; listed in
 | GET | `/api/offline/items/{item_id}` | user | offline.py:item (may this person save it: Can save offline, visible to them, not still recording; what the page keeps. A show or a season (`?season=N`: that season of a show): `{kind, name, episodes: [...]}`) |
 | GET | `/api/offline/items/{item_id}/poster` | user | offline.py:poster |
 | GET | `/api/offline/items/{item_id}/subtitles` | user | offline.py:subtitles (the files beside the title in the person's languages as WebVTT, their mode, `ready`; queues the title) |
-| GET | `/api/offline/items/{item_id}/video` | user | offline.py:video (`?can=hevc`: what the browser plays besides H.264/AAC. An MP4 that fits: Jellyfin's Download, ranges passed through; anything else: the MP4 Tentacle makes (services/offline_convert.py), read as it grows: `X-Offline-Job`, `X-Offline-From`, `X-Offline-Estimate`; a normal file with its size once made) |
+| GET | `/api/offline/items/{item_id}/video` | user | offline.py:video (`?can=hevc`: what the browser plays besides H.264/AAC; `device=phone`: the phone copy. An MP4 that fits: Jellyfin's Download, ranges passed through; anything else: the MP4 Tentacle makes (services/offline_convert.py), read as it grows: `X-Offline-Job`, `X-Offline-From`, `X-Offline-Estimate`; a normal file with its size once made) |
 | POST | `/api/offline/progress` | user | offline.py:progress (where they stopped offline → Jellyfin, unless Jellyfin's is newer) |
+| POST | `/api/offline/saves` | user | offline.py:save (`{items, device: phone\|pc, can, push_endpoint}` → per item `ready` (`direct` or `size`), `preparing` (`fraction`, `estimate`), `failed` or `refused` with words: services/offline_saves.py) |
+| GET | `/api/offline/saves` | user | offline.py:saves (`?ids=a,b&device=&can=`: how far the server got, this person's only; `unknown` when it has no such request) |
+| DELETE | `/api/offline/saves/{item_id}` | user | offline.py:saved (`?device=&can=`: the device has it, or removed it: the server's copy may go; unfinished and wanted by nobody → stopped) |
+| GET | `/api/offline/push` | user | offline.py:push_key (the server's VAPID public key) |
+| POST | `/api/offline/push` | user | offline.py:push_subscribe (`{endpoint, keys: {p256dh, auth}}`; 400 unless a browser push service's https address) |
+| DELETE | `/api/offline/push` | user | offline.py:push_unsubscribe |
 | GET | `/api/watch/prefs` | user | subtitles.py:my_prefs (their languages, mode, skip intro/credits, `own`, `kid`, the language list) |
 | PUT | `/api/watch/prefs` | user | subtitles.py:save_my_prefs (also written to their Jellyfin user configuration; topic "watch" to their clients) |
 | POST | `/api/watch/prefs/reset` | user | subtitles.py:reset_my_prefs (back to the household's) |

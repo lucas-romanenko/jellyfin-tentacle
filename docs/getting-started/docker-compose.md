@@ -110,7 +110,22 @@ tentacle:
     - /dev/dri:/dev/dri
 ```
 
-Nothing else needs it; leave it out if you don't use multi-view.
+Save offline uses it too: phones get a smaller copy made there.
+
+### Save offline's copies
+
+Save offline prepares each title on the server before a device copies it (a film can be many GB). By default those copies go in `/data`; to keep them on your media disk instead, add a folder for them:
+
+```yaml
+tentacle:
+  # ...
+  environment:
+    - OFFLINE_READY_DIR=/offline-ready
+  volumes:
+    - /mnt/media/offline-ready:/offline-ready
+```
+
+Tentacle deletes each copy once the device that asked has it (or after a few days).
 
 ## Hybrid Series (VOD + Downloaded Episodes)
 

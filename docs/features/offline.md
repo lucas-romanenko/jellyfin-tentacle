@@ -40,8 +40,24 @@ app on your home screen.
   is copied as it is whenever the device plays it, and only what must be is
   converted (the sound to AAC stereo; an old video format to H.264, on the
   server's graphics chip when it has one). The server needs room for the
-  title while it does this; it keeps the copy for a few hours so a second
-  device or a resume doesn't make it again.
+  title while it does this (set `OFFLINE_READY_DIR` to a folder on a big
+  disk, see [Docker Compose](../getting-started/docker-compose.md#gpu-for-multi-view));
+  it keeps the copy until your device has it.
+- **The server does the slow part first.** When you tap Save offline,
+  Tentacle gets the title from your provider and prepares it on its own;
+  you can close the page (and lock the phone). When it's ready you get a
+  message: "*Madden (2026) is ready to save*", on the phone or computer you
+  saved from (if you allowed Tentacle's notifications there; tap **Tell me
+  when it's ready** on the Offline page) and in Jellyfin. Your device then
+  only copies the finished file from your server, at full speed.
+- **Chrome (Android, computers)** carries on copying with the page closed,
+  with its own progress notification. On an iPhone the copy runs while the
+  Offline page is open, and carries on from where it stopped each time you
+  open it; the page says how far it got.
+- **Phones and tablets get a smaller copy**, by themselves: at most 1080p,
+  made on the server's graphics chip (HEVC with HDR kept on an iPhone,
+  H.264 elsewhere), with stereo sound. A 4K film is a few GB instead of
+  15+. Computers get the full picture.
 - **The page** shows what is saved here, what is still saving (with how far
   it got), and ✕ to remove a title from this device. Tap a title to play it.
 - **With no internet** the Tentacle app opens straight to Offline.
@@ -55,9 +71,11 @@ app on your home screen.
   Safari isn't in the home-screen app).
 - iOS may clear what a browser saved if you don't open Tentacle there for
   about a week; the home-screen app keeps it.
-- An iPhone saves only while the page is open with the screen on. Tentacle
-  keeps the screen awake while a title saves, and when you open it again it
-  carries on from where it stopped.
+- The server prepares the title with the page closed, but the iPhone's own
+  copy runs only while the page is open with the screen on. Tentacle keeps
+  the screen awake meanwhile, and when you open it again it carries on from
+  where it stopped. Notifications work in the home-screen app (iOS 16.4+),
+  not in a Safari or Chrome tab.
 
 ## Who can save offline
 
