@@ -134,6 +134,29 @@ class WhatTheServerDoes(unittest.TestCase):
             self.C.plan({"streams": [{"index": 0, "codec_type": "audio", "codec_name": "aac"}]}, frozenset())
 
 
+class HowBigItWillBe(unittest.TestCase):
+    """The page checks the device has room before saving: the MP4 leaves out
+    an MKV's other (often lossless) sound tracks, so its size comes from the
+    bit rates of what it keeps, not the source's size."""
+
+    def setUp(self):
+        from services import offline_convert as C
+        self.C = C
+
+    def test_from_the_kept_streams_bit_rates(self):
+        probe = _probe(audio=("truehd", "ac3"), duration="3600")
+        probe["streams"][0]["tags"] = {"BPS": "8000000"}
+        p = self.C.plan(probe, frozenset())
+        est = self.C.output_estimate(probe, p)
+        self.assertAlmostEqual((8_000_000 + 192_000) * 3600 / 8, est, delta=est * 0.03)
+
+    def test_unknown_when_the_source_doesnt_say(self):
+        p = self.C.plan(_probe(), frozenset())
+        self.assertEqual(0, self.C.output_estimate(_probe(), p))
+        enc = self.C.plan(_probe(video="mpeg4", audio=("mp3",), fmt="avi"), frozenset())
+        self.assertEqual(0, self.C.output_estimate(_probe(video="mpeg4"), enc))
+
+
 class _Spool(unittest.TestCase):
     def setUp(self):
         from services import offline_convert as C
