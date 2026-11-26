@@ -17,7 +17,7 @@ from fastapi.routing import APIRoute
 ROUTER_MODULES = [
     "auth", "settings", "providers", "sync", "library", "duplicates", "lists",
     "widget", "radarr", "sonarr", "tags", "collections", "smartlists",
-    "discover", "activity", "livetv", "livetv_checker", "my_livetv", "multiview", "family", "notifications", "health", "youtube", "vod", "music",
+    "discover", "activity", "livetv", "livetv_checker", "my_livetv", "multiview", "family", "notifications", "health", "youtube", "vod", "music", "offline", "subtitles",
 ]
 
 # (METHOD, path) -> reason. Keep this list short and justified.
@@ -53,6 +53,7 @@ ALLOW = {
     ("GET", "/api/vod/{kind}/{token_file}"): ".strm playback; signed token (services.vod_tokens)",
     ("HEAD", "/api/vod/{kind}/{token_file}"): ".strm probe; signed token",
     ("POST", "/api/vod/link"): "the plugin's Download hook; answers only for an address carrying a provider's own login",
+    ("GET", "/api/segments/{item_id}"): "the plugin's media segment provider (Jellyfin asks with no person); intro/credit times only",
     ("HEAD", "/api/youtube/v/{video_id}/master.m3u8"): ".strm probe",
     ("HEAD", "/api/youtube/live/{channel_id}/stream.ts"): "tuner probe",
     ("HEAD", "/api/youtube/live/{channel_id}/master.m3u8"): "tuner probe",

@@ -665,6 +665,41 @@ class SubtitleFile(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class SegmentJob(Base):
+    """One episode (or film) whose intro and end credits Tentacle looks for
+    (services/segments.py): its first and last minutes read in the
+    background, compared with the other episodes of its season."""
+    __tablename__ = "segment_jobs"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    jellyfin_item_id = Column(String, nullable=False, unique=True, index=True)
+    season_id = Column(String, nullable=True, index=True)
+    name = Column(String, nullable=True)
+    state = Column(String, nullable=False, default="queued", index=True)   # queued | running | done | failed
+    priority = Column(Integer, nullable=False, default=2)
+    duration_s = Column(Integer, nullable=True)
+    tail_start_s = Column(Integer, nullable=True)       # where its end fingerprint starts
+    attempts = Column(Integer, default=0)
+    error = Column(String, nullable=True)
+    queued_at = Column(DateTime, default=datetime.utcnow)
+    finished_at = Column(DateTime, nullable=True)
+
+
+class MediaSegment(Base):
+    """Where one copy's intro or end credits are (published to Jellyfin as
+    media segments by the plugin). Per copy: a stream and a download of the
+    same episode are separate Jellyfin items and can be cut differently."""
+    __tablename__ = "media_segments"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    jellyfin_item_id = Column(String, nullable=False, index=True)
+    kind = Column(String, nullable=False)              # intro | credits
+    start_ms = Column(Integer, nullable=False)
+    end_ms = Column(Integer, nullable=False)
+    source = Column(String, nullable=False)            # chapters | audio | black
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("jellyfin_item_id", "kind", name="uq_media_segment_item_kind"),)
+
+
 class SubtitleTried(Base):
     """A site subtitle someone said was wrong: "Get another" never brings it back."""
     __tablename__ = "subtitle_tried"

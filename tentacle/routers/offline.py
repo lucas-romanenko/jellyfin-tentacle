@@ -73,7 +73,8 @@ def poster(item_id: str, db: Session = Depends(get_db), user: TentacleUser = Dep
 def subtitles(item_id: str, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """The subtitles a saved title takes with it: the files beside it in this
     person's languages, as WebVTT (what a browser's player shows), and whether
-    they show by themselves. A title whose subtitles aren't ready yet is put in
+    they show by themselves; and its intro and end credits with the person's
+    skip choices. A title whose subtitles aren't ready yet is put in
     line ("ready": false; the Offline page asks again later)."""
     from services import subtitles as S, watch_prefs
     try:
@@ -100,7 +101,11 @@ def subtitles(item_id: str, db: Session = Depends(get_db), user: TentacleUser = 
                 tracks.append({"language": code, "label": watch_prefs.name(code) + (" SDH" if hi else "")
                                + (" (forced)" if forced else ""), "vtt": S.srt_to_vtt(text)})
     job = S.queue(db, item_id, S.WATCHING) if items else None
-    return {"tracks": tracks, "ready": job is None or job.state == "done", "mode": prefs["subtitle_mode"]}
+    from services import segments
+    return {"tracks": tracks, "ready": job is None or job.state == "done", "mode": prefs["subtitle_mode"],
+            # Skip intro / Skip credits go with it too, with the person's choice for each.
+            "segments": segments.for_item(db, item_id),
+            "skip": {"Intro": prefs["skip_intro"], "Outro": prefs["skip_credits"]}}
 
 
 @router.get("/api/offline/items/{item_id}/video")

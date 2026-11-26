@@ -340,6 +340,7 @@ Declared on the app in `main.py` (no router, all **none**; listed in
 | GET | `/api/settings/jellyfin-music/libraries` | admin | settings.py:jellyfin_music_libraries |
 | GET | `/api/settings/paths` | admin | settings.py:check_paths |
 | GET | `/api/settings/plugin-keys` | user | settings.py:get_plugin_keys |
+| GET | `/api/segments/{item_id}` | none (allowlisted: times only) | subtitles.py:segments_for (the plugin's media segment provider: `{segments: [{type: Intro|Outro, start_ms, end_ms, source}]}`) |
 | POST | `/api/subtitles/playing/{item_id}` | user | subtitles.py:playing (the plugin: someone started it; it and its season's next 6 episodes are queued) |
 | GET | `/api/subtitles/queue` | admin | subtitles.py:queue_list |
 | GET | `/api/subtitles/{item_id}/status` | user | subtitles.py:status (state, files, place in line, % read and seconds left) |

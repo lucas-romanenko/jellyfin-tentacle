@@ -2581,6 +2581,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 .off-player-close { background: rgba(255,255,255,.12); border: none; color: #fff; font-size: 16px; border-radius: 50%;
   width: 40px; height: 40px; cursor: pointer; flex-shrink: 0; }
 .off-player video { flex: 1; width: 100%; min-height: 0; background: #000; }
+.off-skip { position: absolute; right: 24px; bottom: 90px; z-index: 2; padding: 10px 18px; font: 600 15px 'DM Sans', sans-serif; color: #fff; background: rgba(20,20,20,.85); border: 1px solid rgba(255,255,255,.3); border-radius: 6px; cursor: pointer; }
 .off-player-note { color: #fff; text-align: center; padding: 14px; font-size: 14px; }
 /* Opened with no internet: only Offline */
 body.offline-mode .sidebar-nav .nav-item:not([data-page="offline"]),
@@ -5304,7 +5305,7 @@ body.offline-mode .sidebar-footer button { display: none !important; }
 <script src="/static/js/recordings.js?v=7"></script>
 <script src="/static/js/untracked.js?v=2"></script>
 <script src="/static/js/backup.js?v=1"></script>
-<script src="/static/js/offline.js?v=4"></script>
+<script src="/static/js/offline.js?v=5"></script>
 <script src="/static/js/watching.js?v=1"></script>
 <script>
   // ── Mobile off-canvas sidebar ──

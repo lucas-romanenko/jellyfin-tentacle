@@ -9,6 +9,7 @@
 //   plugin already cut it to the person's languages; Jellyfin adds the format.
 // - Under it: "Subtitles wrong? Get another" (the next one from the subtitle
 //   site, lined up with the sound), for the language that is on.
+// - Jellyfin's "Skip Outro" button says "Skip credits".
 // - After picking a subtitle that Tentacle is still reading out of a
 //   provider title, a note says so and how long; the subtitle shows up by
 //   itself when it is ready (the player's request waits for it).
@@ -179,8 +180,18 @@
   }
 
   // ── wiring ────────────────────────────────────────────────────────────
+  // Jellyfin Web calls the end credits "Outro".
+  function creditsWords() {
+    document.querySelectorAll('.skip-button').forEach(function (b) {
+      b.childNodes.forEach(function (n) {
+        if (n.nodeType === 3 && /Skip Outro/i.test(n.textContent)) n.textContent = n.textContent.replace(/Skip Outro/i, 'Skip credits');
+      });
+    });
+  }
+
   new MutationObserver(function () {
     document.querySelectorAll('.actionSheet').forEach(tidy);
+    creditsWords();
     if (onPlayer()) askPlaying();
   }).observe(document.documentElement, { childList: true, subtree: true });
 

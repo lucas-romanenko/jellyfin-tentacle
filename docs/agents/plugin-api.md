@@ -93,6 +93,7 @@ Gotchas:
 | GET | `/Tentacle/Offline` | user | GetOffline (asks Tentacle's `/api/offline/where` with the caller's own token: the Offline page's address, can_download) |  |
 | GET | `/Tentacle/MdbList/Ratings` | user | GetRatings |  |
 | POST | `/Tentacle/Notify` | admin | Notify |  |
+| POST | `/Tentacle/Segments/Refresh` | admin | SegmentsController.Refresh (`?itemIds=`: Tentacle found or changed their intro/credits; Jellyfin runs its segment providers for them, overwriting) |  |
 | GET | `/Tentacle/TimerCancelled/{timerId}` | admin | TimerCancelled (Tentacle confirms a cancel the plugin passed on) |  |
 | POST | `/Tentacle/Recordings/{itemId}/Retime` | admin | RecordingRetimeController.Retime (Tentacle's after-recording clock check, #869; `?dryRun=true` copies and checks only; `?start=` the programme's start, UTC; 409 while it records) |  |
 | POST | `/Tentacle/Recordings/{itemId}/Premiere` | admin | RecordingRetimeController.Premiere (`?date=` UTC; only when PremiereDate is empty) |  |

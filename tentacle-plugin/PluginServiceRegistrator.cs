@@ -60,6 +60,8 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         // A Tentacle VOD subtitle Jellyfin is asked for comes from Tentacle's
         // own copy (read in the background); else Jellyfin's read is kept only
         // when it read the whole file
+        // Skip intro / Skip credits: Tentacle's times as Jellyfin media segments
+        serviceCollection.AddSingleton<MediaBrowser.Controller.MediaSegments.IMediaSegmentProvider, SegmentProvider>();
         serviceCollection.AddSingleton<SubtitleCallerFilter>();
         serviceCollection.Configure<MvcOptions>(options => options.Filters.AddService<SubtitleCallerFilter>());
         serviceCollection.AddSingleton<IHostedService, VodSubtitleExtractionPatch>();
