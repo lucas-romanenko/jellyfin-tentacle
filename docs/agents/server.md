@@ -743,6 +743,11 @@ with `untracked_auto_add` (off by default), which adds the 95 %+ sure ones.
   (`apply_dolbyvision`, Vulkan derived from the VAAPI device; the image
   carries mesa-vulkan-drivers; `placebo()` checks it once) to HDR10 HEVC or
   BT.709 H.264. About 1.3x real time on an Intel UHD 770 at 4K in.
+- **Stuck makings**: ffmpeg waits for ever on a silent read (it must: a
+  making held back for a viewer gets nothing either), so `_watch_stall`
+  kills one with no progress for `STALL_S` (5 min) while nobody watches or
+  records, and `_ffmpeg_until_made` starts it again from the start, at most
+  3 times, then says it couldn't get it ready.
 - **Background Fetch** (Chrome): only a page may start one (a service
   worker gets "not allowed in service worker environments"), so a push
   marks the record `waiting` and shows the message; the page started from
